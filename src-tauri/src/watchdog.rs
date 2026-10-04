@@ -125,8 +125,8 @@ impl Drop for Process {
 
 /// The one app the service looks after.
 pub struct AppSlot {
-    /// False in development (`--service-console`), where there is nothing to look after: the app
-    /// is whatever `npm run dev` runs.
+    /// False where there is nothing to look after: development (the service's logic runs inside the
+    /// app, `service::local_handler`) and the pipe test.
     supervised: bool,
     current: Mutex<Option<Adopted>>,
 }

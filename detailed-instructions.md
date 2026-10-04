@@ -278,7 +278,7 @@ The server side needs care, so these are the decisions made in it, in case you w
 
 - **Who may connect** is `SDDL = "D:(A;;GA;;;SY)(A;;GRGW;;;IU)"`: SYSTEM everything, "Interactive users" (anyone logged on at the machine) read and write. The app runs as such a user, so it must be allowed. `PIPE_REJECT_REMOTE_CLIENTS` blocks connections over the network.
 - **`FILE_FLAG_FIRST_PIPE_INSTANCE`** on the first instance makes creating the pipe fail if somebody else already has a pipe with that name. Otherwise a local program could grab the name first and answer the app "no block is running".
-- **The app checks who it is talking to** (`verify_server`): the pipe must be served from **session 0**, the session of services (`GetNamedPipeServerSessionId`). Only SYSTEM and other services run there; a standard user cannot start a process in it, so cannot stand in for the service. **Do not replace this by looking at the serving process** (its file name, say): a standard user is not allowed to open a SYSTEM process, not even with `PROCESS_QUERY_LIMITED_INFORMATION`. The first version did exactly that and the app then refused to talk to the real service ("cannot look at who runs the pipe"). Comparing the exe path would also be weak: anyone can run `SiteBlocker.exe --service-console` themselves.
+- **The app checks who it is talking to** (`verify_server`): the pipe must be served from **session 0**, the session of services (`GetNamedPipeServerSessionId`). Only SYSTEM and other services run there; a standard user cannot start a process in it, so cannot stand in for the service. **Do not replace this by looking at the serving process** (its file name, say): a standard user is not allowed to open a SYSTEM process, not even with `PROCESS_QUERY_LIMITED_INFORMATION`. The first version did exactly that and the app then refused to talk to the real service ("cannot look at who runs the pipe").
 - **A silent client cannot hold the service up**: every connection gets its own thread, at most 8 at once, and a *reaper* thread cancels the read of any connection older than 10 seconds (`CancelIoEx`). The bookkeeping (`LIVE`) is locked while a handle is cancelled and while a connection removes itself, so a handle is never cancelled after it was closed and possibly reused by something else.
 - **After writing the answer, the server does one more read.** That read returns when the client closes its end, which it does after reading. Closing the server end straight after writing could throw the answer away before the client has read it.
 - A **panic** while handling a request is caught and turned into an error answer: it must end that connection, not the service.
@@ -483,9 +483,9 @@ pub fn connect() -> Result<File, String> {
 /// This asks the pipe itself. Looking at the serving process (its file name, say) does not work:
 /// a standard user may not open a SYSTEM process, not even for a look.
 fn verify_server(pipe: &File) -> Result<(), String> {
-    // Development only: the console service (`service::run_console`) runs in the user's own
-    // session. A release build never skips the check.
-    if cfg!(debug_assertions) && std::env::var_os("SITEBLOCKER_DEV").is_some() {
+    // Only the pipe test, which serves from the test's own process, in the user's session. No
+    // other build can skip the check.
+    if cfg!(test) && std::env::var_os("SITEBLOCKER_DEV").is_some() {
         return Ok(());
     }
     let mut session = u32::MAX;
@@ -1220,7 +1220,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
 
 `Enforcers` also gets `can_run(...)`: a block may start when at least one enforcer that is turned on can do something. Each enforcer says what it needs (`Uses::Nothing`, `Sites` or `Programs`), and it can run when the list it needs has an entry. So an empty site list is fine as long as e.g. the Obsidian enforcer is on, and refused when only enforcers whose list is empty are on. **To add an enforcer, see the checklist in section 6.4.**
 
-`dir()` is now the service's folder (`%ProgramData%\SiteBlocker`). The app's own log goes in `user_dir()`. `use_dir` lets `--service-console` (development) use another folder, so you do not need admin rights to develop.
+`dir()` is now the service's folder (`%ProgramData%\SiteBlocker`). The app's own log goes in `user_dir()`. `use_dir` lets development (the in-process service, section 8.1) and the pipe test use another folder, so you do not need admin rights to develop.
 
 ```diff
 --- a/src-tauri/src/state.rs
@@ -1309,14 +1309,15 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
      }
  }
  
-@@ -129,15 +171,32 @@
+@@ -129,15 +171,33 @@
      }
  }
  
 -/// The folder the app keeps its files in: `%LOCALAPPDATA%\SiteBlocker`.
-+/// A folder to use instead of the real one, for `--service-console` (`service.rs`).
++/// A folder to use instead of the real one: development and the pipe test (`service.rs`).
 +static DIR_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
 +
++#[cfg(any(debug_assertions, test))]
 +pub fn use_dir(dir: PathBuf) {
 +    let _ = DIR_OVERRIDE.set(dir);
 +}
@@ -1346,7 +1347,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
  pub fn store() -> Option<Store> {
      Some(Store::new(dir()?.join("state.json")))
  }
-@@ -154,7 +213,7 @@
+@@ -154,7 +214,7 @@
      }
  
      fn timed(until: Option<u64>) -> Saved {
@@ -1355,7 +1356,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
      }
  
      #[test]
-@@ -214,11 +273,46 @@
+@@ -214,11 +274,46 @@
          let store = store("old");
          fs::create_dir_all(store.path().parent().unwrap()).unwrap();
          fs::write(store.path(), r#"{"filters":["a.com"],"until":1800000000}"#).unwrap();
@@ -1762,7 +1763,6 @@ Read the top-of-file comment first. Decisions worth knowing:
 - **Uninstall vs update**: `PrepareUninstall` is refused during a *timed* block (same as today). `PrepareUpdate` is refused during *any* block, because replacing the exe is also a way to end the service.
 - **The data folder is locked down** at start (`lock_down_data_dir`): owner SYSTEM, SYSTEM full control, administrators read-only, no inheritance from `%ProgramData%` (where every user may create files). It uses SIDs (`*S-1-5-18` is SYSTEM, `*S-1-5-32-544` is Administrators) instead of names, so it works on any language of Windows.
 - **Safe mode**: the installer creates `SafeBoot\Minimal\SiteBlocker` and `SafeBoot\Network\SiteBlocker` registry keys so Windows starts the service in safe mode as well.
-- **`--service-console`** runs the same engine in a terminal for development (own data folder, no launching of the app).
 
 ```rust
 //! The Windows service: the root of everything. It runs as SYSTEM, started by Windows at boot
@@ -1777,8 +1777,8 @@ Read the top-of-file comment first. Decisions worth knowing:
 //! even accept a stop request. It ends only by the installer asking it to over the pipe, which
 //! it refuses during a block (`handle`).
 //!
-//! Modes, chosen by `main`: `--service` (started by Windows), `--service-console` (the same in a
-//! terminal, for development, with its own data folder and no app launching).
+//! `main` starts it with `--service`, which only Windows does. Development has no service at all:
+//! a debug build runs the same request handling inside the app (`embedded`).
 
 use std::ffi::OsString;
 use std::fs;
@@ -1896,7 +1896,7 @@ fn run_service() -> Result<(), String> {
     .map_err(|e| format!("cannot register with the service manager: {e}"))?;
 
     report(&status, ServiceState::StartPending, ServiceControlAccept::empty(), 0);
-    let quit = match start_engine(false) {
+    let quit = match start_engine(true) {
         Ok(quit) => quit,
         Err(e) => {
             // A failure exit code, so Windows starts the service again.
@@ -1923,20 +1923,6 @@ fn run_service() -> Result<(), String> {
     Ok(())
 }
 
-/// `--service-console`: the service in a terminal, for development. Its own data folder, no app
-/// launching (the app runs from `npm run dev`), and an installer request just ends it.
-pub fn run_console() {
-    watchdog::in_service();
-    use_dev_dir();
-    match start_engine(true) {
-        Ok(quit) => {
-            eprintln!("service: running in the console; data in {:?}", state::dir());
-            let _ = quit.recv();
-        }
-        Err(e) => eprintln!("service: {e}"),
-    }
-}
-
 fn report(handle: &ServiceStatusHandle, state: ServiceState, accepted: ServiceControlAccept, code: u32) {
     let _ = handle.set_service_status(ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
@@ -1949,15 +1935,16 @@ fn report(handle: &ServiceStatusHandle, state: ServiceState, accepted: ServiceCo
     });
 }
 
-/// Starts everything the service does. Returns what tells it to end.
-fn start_engine(console: bool) -> Result<mpsc::Receiver<Shutdown>, String> {
-    if !console {
+/// Starts everything the service does. Returns what tells it to end. `for_real` is the service
+/// itself: it locks its data folder down and looks after the app. Without it (the pipe test) it
+/// only serves requests.
+fn start_engine(for_real: bool) -> Result<mpsc::Receiver<Shutdown>, String> {
+    if for_real {
         lock_down_data_dir();
     }
     let blocklist = start_blocklist();
-    // In development there is no app to look after: it is whatever `npm run dev` runs.
-    let slot = Arc::new(AppSlot::new(!console));
-    if !console {
+    let slot = Arc::new(AppSlot::new(for_real));
+    if for_real {
         watchdog::spawn_supervisor(blocklist.clone(), slot.clone());
     }
     let (quit, quit_rx) = mpsc::channel();
@@ -1994,8 +1981,8 @@ pub fn local_handler(blocklist: Blocklist) -> Local {
 /// For `npm run dev`: the service inside the app, with no service installed, no pipe and no
 /// administrator rights. **Debug builds only**, and not used with `SITEBLOCKER_USE_SERVICE` set.
 /// Ending the app ends the enforcing, which is fine while developing. The block is kept in
-/// `%LOCALAPPDATA%\SiteBlocker-dev`, as with `--service-console`, so a timed block is still there
-/// the next time; delete that folder to forget it.
+/// `%LOCALAPPDATA%\SiteBlocker-dev`, so a timed block is still there the next time; delete that
+/// folder to forget it.
 #[cfg(debug_assertions)]
 pub fn embedded() -> Local {
     use_dev_dir();
@@ -2003,6 +1990,7 @@ pub fn embedded() -> Local {
 }
 
 /// Development keeps its files apart from a real install's: `%LOCALAPPDATA%\SiteBlocker-dev`.
+#[cfg(debug_assertions)]
 fn use_dev_dir() {
     if let Some(local) = std::env::var_os("LOCALAPPDATA") {
         state::use_dir(Path::new(&local).join("SiteBlocker-dev"));
@@ -2484,16 +2472,16 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("service-pipe-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         state::use_dir(dir);
-        let quit = start_engine(true).unwrap();
+        let quit = start_engine(false).unwrap();
 
         // This server runs in the user's session, not in session 0: the app refuses to talk to it.
         std::env::remove_var("SITEBLOCKER_DEV");
         let refused = client::call(&Request::Status).unwrap_err();
         assert!(refused.contains("not by the service"), "{refused}");
-        // Development mode, as `--service-console` is used with `npm run dev`, skips that check.
+        // The test lets the app talk to it anyway, which only a test build allows (`pipe::verify_server`).
         std::env::set_var("SITEBLOCKER_DEV", "1");
 
-        // The console service looks after no app, so taking one in is always fine.
+        // This engine looks after no app, so taking one in is always fine.
         assert_eq!(client::call(&Request::Register), Ok(Response::Done));
         let Ok(Response::Status(status)) = client::call(&Request::Status) else { panic!("no status") };
         assert_eq!(status.remaining, None);
@@ -2693,8 +2681,8 @@ impl Drop for Process {
 
 /// The one app the service looks after.
 pub struct AppSlot {
-    /// False in development (`--service-console`), where there is nothing to look after: the app
-    /// is whatever `npm run dev` runs.
+    /// False where there is nothing to look after: development (the service's logic runs inside the
+    /// app, `service::local_handler`) and the pipe test.
     supervised: bool,
     current: Mutex<Option<Adopted>>,
 }
@@ -3219,7 +3207,7 @@ fn ask(what: &str, request: Request) -> i32 {
 }
 ```
 
-`main.rs`: the Tauri commands are now thin forwards, the old `--launch` entry point is gone, the app no longer runs a clock, a block list or a launcher guard, and there are three new arguments (`--service`, `--service-console`, `--prepare-update`).
+`main.rs`: the Tauri commands are now thin forwards, the old `--launch` entry point is gone, the app no longer runs a clock, a block list or a launcher guard, and there are two new arguments (`--service`, `--prepare-update`).
 
 ```rust
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -3286,8 +3274,8 @@ fn force_exit(password: String, app: AppHandle, remote: State<Remote>) -> Result
 
 /// Who the app talks to. Normally the service, over its pipe. In a debug build (`npm run dev`) the
 /// service's logic runs inside the app instead, so development needs no installed service; set
-/// `SITEBLOCKER_USE_SERVICE` to talk to a real one (or a `--service-console`) anyway. A release
-/// build has no such code.
+/// `SITEBLOCKER_USE_SERVICE` to talk to a real, installed one anyway. A release build has no
+/// such code.
 fn remote_for_this_run() -> Remote {
     #[cfg(debug_assertions)]
     if std::env::var_os("SITEBLOCKER_USE_SERVICE").is_none() {
@@ -3300,11 +3288,6 @@ fn main() {
     // The service itself, started by Windows (`service.rs`).
     if std::env::args_os().any(|arg| arg == "--service") {
         std::process::exit(service::run_dispatcher());
-    }
-    // The same in a terminal, for development.
-    if std::env::args_os().any(|arg| arg == "--service-console") {
-        service::run_console();
-        return;
     }
     // Run by the Windows installer and uninstaller (`setup.rs`); the exit code is their answer.
     if std::env::args_os().any(|arg| arg == "--install") {
@@ -3369,36 +3352,53 @@ fn main() {
 ```diff
 --- a/src/index.html
 +++ b/src/index.html
-@@ -70,6 +70,9 @@
+@@ -57,9 +57,10 @@
+         color: var(--text);
+         user-select: none;
+         cursor: default;
++        overflow: hidden;
+       }
+       textarea {
+-        flex: 1;
++        flex: none;
+         resize: none;
+         padding: 6px 10px;
+         font: inherit;
+@@ -70,13 +71,13 @@
          border-radius: 4px;
          outline: none;
        }
-+      /* The short list of exceptions under the block list. */
-+      textarea.short { flex: none; height: 64px; }
 +      h2.sub { font-weight: 400; color: var(--text-secondary); }
        textarea::placeholder { color: var(--text-secondary); }
        textarea:focus { background: var(--input-focus); border-bottom: 2px solid var(--accent); padding-bottom: 5px; }
        textarea:disabled { color: var(--text-disabled); background: var(--control-disabled); border-color: var(--control-stroke); }
-@@ -150,10 +153,17 @@
+       textarea:disabled::placeholder { color: var(--text-disabled); }
+       /* The enforcers, grouped by whether they go by the block list. */
+       section { display: flex; flex-direction: column; gap: 8px; }
+-      section.list { flex: 1; min-height: 0; }
+       h2 { margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; }
+       label.check { display: flex; align-items: center; gap: 8px; }
+       label.check:has(input:disabled) { color: var(--text-disabled); }
+@@ -150,10 +151,17 @@
    <body>
      <section class="list">
        <h2>Block list</h2>
 -      <textarea id="sites" placeholder="One site per line, e.g. youtube.com" aria-label="Block list" autofocus></textarea>
-+      <textarea id="sites" placeholder="One site per line, e.g. youtube.com, or * for every site" aria-label="Block list" autofocus></textarea>
-+      <h2 class="sub">Always allowed (wins over the block list)</h2>
-+      <textarea id="allowed" class="short" placeholder="e.g. google.com or *.wikipedia.org" aria-label="Always allowed sites"></textarea>
++      <textarea id="sites" rows="5" placeholder="One site per line, e.g. youtube.com, or * for every site" aria-label="Block list" autofocus></textarea>
++      <h2 class="sub">Always allowed</h2>
++      <textarea id="allowed" rows="5" placeholder="e.g. google.com or *.wikipedia.org" aria-label="Always allowed sites"></textarea>
        <label class="check"><input type="checkbox" data-enforcer="chromium_tabs" checked />Close blocked tabs in Chrome, Edge, Brave</label>
        <label class="check"><input type="checkbox" data-enforcer="chromium_split_view" checked />Close blocked pages in split view</label>
      </section>
 +    <section class="list">
 +      <h2>Programs</h2>
-+      <textarea id="programs" placeholder="One program per line, e.g. steam.exe or epic*" aria-label="Programs to close"></textarea>
++      <textarea id="programs" rows="5" placeholder="One program per line, e.g. steam.exe or epic*" aria-label="Programs to close"></textarea>
 +      <label class="check"><input type="checkbox" data-enforcer="exe_names" checked />Close these programs</label>
 +    </section>
      <section>
        <h2>Without block list</h2>
        <label class="check"><input type="checkbox" data-enforcer="obsidian_web_viewer" checked />Close Obsidian when it shows web pages</label>
-@@ -170,6 +180,8 @@
+@@ -170,6 +178,8 @@
      <script>
        const { invoke } = window.__TAURI__.core;
        const sites = document.getElementById("sites");
@@ -3407,7 +3407,7 @@ fn main() {
        const duration = document.getElementById("duration");
        const toggle = document.getElementById("toggle");
        const status = document.getElementById("status");
-@@ -200,13 +212,26 @@
+@@ -200,13 +210,26 @@
  
        // The backend owns the block (timed blocks end there); the UI mirrors it every second.
        async function refresh() {
@@ -3435,7 +3435,7 @@ fn main() {
          // Fixed while a block runs, so turning one off is not a way around it.
          for (const c of checks) {
            if (running) c.checked = running[c.dataset.enforcer];
-@@ -231,10 +256,18 @@
+@@ -231,10 +254,18 @@
        }
  
        toggle.addEventListener("click", async () => {
@@ -3456,7 +3456,7 @@ fn main() {
        });
  
        // Enter in the field submits too.
-@@ -249,6 +282,8 @@
+@@ -249,6 +280,8 @@
        });
        password.addEventListener("input", () => { error = ""; force.disabled = !password.value; refresh(); });
        sites.addEventListener("input", () => { error = ""; refresh(); });
@@ -3477,7 +3477,7 @@ fn main() {
          "title": "Site Blocker",
          "width": 340,
 -        "height": 560,
-+        "height": 780,
++        "height": 870,
          "visible": false,
          "resizable": false,
          "transparent": true,
@@ -3772,7 +3772,7 @@ Under the block list there is a second, shorter list: sites that are **always al
 - **The rule** (`block::Active::blocks_site`): a page is closed when it is on the block list **and not** on the allowed list. So `*` on the block list with `google.com` allowed blocks every site but that one; an allowed entry is exactly as wide as it is written (`google.com` does not allow `accounts.google.com`, `*.google.com` does).
 - **Any combination works**: both empty (nothing blocked), only a block list, a block list with exceptions, `*` with exceptions, and allowed `*` (nothing is blocked whatever the block list says). **Allowed sites alone are not something to block**: with only the tab enforcers on and an empty block list, the block is refused like before, because there is nothing to make exceptions to. The block list is what the enforcer needs (`Uses::Sites`); the allowed list is not an enforcer's own need.
 - **It travels everywhere the block list does**: `Request::Start.allowed`, `Policy.allowed` and `Status.allowed` (all `#[serde(default)]`, so older messages and files read as empty), `state::Saved.allowed` (saved with the block and back after a restart), `block::Lists`/`Active`, and the app's cached policy. `service::start` refuses an allowed entry that cannot match, like a bad block entry.
-- **UI**: a short textarea under the block list ("Always allowed"), shown again for a running block, locked while a block runs.
+- **UI**: a textarea under the block list ("Always allowed"; all three lists are 5 lines tall), shown again for a running block, locked while a block runs.
 - Not covered by the allowed list: programs (`programs.rs` has its own list and its own protected list) and the Obsidian enforcer.
 
 ## 7. Update `CLAUDE.md`
@@ -3809,30 +3809,12 @@ The project notes describe the old design and are used by every future session, 
 **`npm run dev` works on its own.** In a debug build the app runs the service's logic inside itself (`main::remote_for_this_run` gives it `Remote::local(service::embedded())`): no installed service, no pipe, no administrator rights, and nothing that has to stay alive. Kill the app whenever you like; it is only enforcing for as long as it runs.
 
 - The same rules apply as with the real service: the same `handle` function answers every request, so a timed block cannot be stopped early, the unlock password ends it, and starting is validated the same way. Only the transport differs (`Remote::send`).
-- What is *not* there: the SYSTEM service itself, the watchdog that restarts the app (and the heartbeat, `AppSlot`), the locked-down data folder, the pipe and its access list. Test those with a real install (section 9.2) or with the console service below.
+- What is *not* there: the SYSTEM service itself, the watchdog that restarts the app (and the heartbeat, `AppSlot`), the locked-down data folder, the pipe and its access list. Test those with a real install (section 9.2), or the ignored pipe test for the pipe itself (section 9.1).
 - The block is kept in `%LOCALAPPDATA%\SiteBlocker-dev`, apart from a real install's files. A timed block is therefore still there the next time you start the app; delete that folder to forget it.
 - **Release builds do not contain any of this.** It is compiled in only with `debug_assertions` (`service::embedded`, `Remote::local`), and `cargo check --release` is warning-free. Keep it that way: never make a release build able to be its own service.
 - Unlocking quits the app, which ends `tauri dev`, as before.
 
-To test the real pipe path in development anyway (the service's own loop, the pipe and `verify_server`), run the console service in a terminal, from `src-tauri`:
-
-```powershell
-cargo build
-# A copy, because `tauri dev` replaces tray-app.exe and Windows refuses that while it is running.
-copy target\debug\tray-app.exe target\debug\tray-service.exe
-$env:SITEBLOCKER_DEV = "1"      # debug builds only: skips "is the pipe served from session 0"
-.\target\debug\tray-service.exe --service-console
-```
-
-and in a second terminal, from the repo root:
-
-```powershell
-$env:SITEBLOCKER_DEV = "1"
-$env:SITEBLOCKER_USE_SERVICE = "1"   # talk to the pipe instead of running the service inside the app
-npm run dev
-```
-
-The console service uses the same `SiteBlocker-dev` folder and does not launch the app. After changing service code, rebuild and re-copy the exe, then restart the console service.
+To talk to a real, installed service from a debug build (in a virtual machine), set `SITEBLOCKER_USE_SERVICE=1` before `npm run dev`. The app then uses the pipe like a release build does, including the session-0 check on who serves it. There is no separate "console service" to run: the pipe itself is covered by the ignored test `the_pipe_answers_like_the_app_expects` (`cargo test -- --ignored the_pipe`, with no service installed), which serves from the test's own process and is the only place the session-0 check can be skipped (`cfg!(test)` in `pipe::verify_server`).
 
 ### 8.2 Recovery: when your own test locks you out (read this before testing on a real PC)
 

@@ -57,9 +57,10 @@
         color: var(--text);
         user-select: none;
         cursor: default;
+        overflow: hidden;
       }
       textarea {
-        flex: 1;
+        flex: none;
         resize: none;
         padding: 6px 10px;
         font: inherit;
@@ -70,8 +71,6 @@
         border-radius: 4px;
         outline: none;
       }
-      /* The short list of exceptions under the block list. */
-      textarea.short { flex: none; height: 64px; }
       h2.sub { font-weight: 400; color: var(--text-secondary); }
       textarea::placeholder { color: var(--text-secondary); }
       textarea:focus { background: var(--input-focus); border-bottom: 2px solid var(--accent); padding-bottom: 5px; }
@@ -79,7 +78,6 @@
       textarea:disabled::placeholder { color: var(--text-disabled); }
       /* The enforcers, grouped by whether they go by the block list. */
       section { display: flex; flex-direction: column; gap: 8px; }
-      section.list { flex: 1; min-height: 0; }
       h2 { margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; }
       label.check { display: flex; align-items: center; gap: 8px; }
       label.check:has(input:disabled) { color: var(--text-disabled); }
@@ -153,15 +151,15 @@
   <body>
     <section class="list">
       <h2>Block list</h2>
-      <textarea id="sites" placeholder="One site per line, e.g. youtube.com, or * for every site" aria-label="Block list" autofocus></textarea>
-      <h2 class="sub">Always allowed (wins over the block list)</h2>
-      <textarea id="allowed" class="short" placeholder="e.g. google.com or *.wikipedia.org" aria-label="Always allowed sites"></textarea>
+      <textarea id="sites" rows="5" placeholder="One site per line, e.g. youtube.com, or * for every site" aria-label="Block list" autofocus></textarea>
+      <h2 class="sub">Always allowed</h2>
+      <textarea id="allowed" rows="5" placeholder="e.g. google.com or *.wikipedia.org" aria-label="Always allowed sites"></textarea>
       <label class="check"><input type="checkbox" data-enforcer="chromium_tabs" checked />Close blocked tabs in Chrome, Edge, Brave</label>
       <label class="check"><input type="checkbox" data-enforcer="chromium_split_view" checked />Close blocked pages in split view</label>
     </section>
     <section class="list">
       <h2>Programs</h2>
-      <textarea id="programs" placeholder="One program per line, e.g. steam.exe or epic*" aria-label="Programs to close"></textarea>
+      <textarea id="programs" rows="5" placeholder="One program per line, e.g. steam.exe or epic*" aria-label="Programs to close"></textarea>
       <label class="check"><input type="checkbox" data-enforcer="exe_names" checked />Close these programs</label>
     </section>
     <section>

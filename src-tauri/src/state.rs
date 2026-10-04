@@ -171,9 +171,10 @@ impl Store {
     }
 }
 
-/// A folder to use instead of the real one, for `--service-console` (`service.rs`).
+/// A folder to use instead of the real one: development and the pipe test (`service.rs`).
 static DIR_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
 
+#[cfg(any(debug_assertions, test))]
 pub fn use_dir(dir: PathBuf) {
     let _ = DIR_OVERRIDE.set(dir);
 }

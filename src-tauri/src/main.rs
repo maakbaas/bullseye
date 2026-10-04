@@ -62,8 +62,8 @@ fn force_exit(password: String, app: AppHandle, remote: State<Remote>) -> Result
 
 /// Who the app talks to. Normally the service, over its pipe. In a debug build (`npm run dev`) the
 /// service's logic runs inside the app instead, so development needs no installed service; set
-/// `SITEBLOCKER_USE_SERVICE` to talk to a real one (or a `--service-console`) anyway. A release
-/// build has no such code.
+/// `SITEBLOCKER_USE_SERVICE` to talk to a real, installed one anyway. A release build has no
+/// such code.
 fn remote_for_this_run() -> Remote {
     #[cfg(debug_assertions)]
     if std::env::var_os("SITEBLOCKER_USE_SERVICE").is_none() {
@@ -76,11 +76,6 @@ fn main() {
     // The service itself, started by Windows (`service.rs`).
     if std::env::args_os().any(|arg| arg == "--service") {
         std::process::exit(service::run_dispatcher());
-    }
-    // The same in a terminal, for development.
-    if std::env::args_os().any(|arg| arg == "--service-console") {
-        service::run_console();
-        return;
     }
     // Run by the Windows installer and uninstaller (`setup.rs`); the exit code is their answer.
     if std::env::args_os().any(|arg| arg == "--install") {

@@ -10,8 +10,8 @@
 //! even accept a stop request. It ends only by the installer asking it to over the pipe, which
 //! it refuses during a block (`handle`).
 //!
-//! Modes, chosen by `main`: `--service` (started by Windows), `--service-console` (the same in a
-//! terminal, for development, with its own data folder and no app launching).
+//! `main` starts it with `--service`, which only Windows does. Development has no service at all:
+//! a debug build runs the same request handling inside the app (`embedded`).
 
 use std::ffi::OsString;
 use std::fs;
@@ -129,7 +129,7 @@ fn run_service() -> Result<(), String> {
     .map_err(|e| format!("cannot register with the service manager: {e}"))?;
 
     report(&status, ServiceState::StartPending, ServiceControlAccept::empty(), 0);
-    let quit = match start_engine(false) {
+    let quit = match start_engine(true) {
         Ok(quit) => quit,
         Err(e) => {
             // A failure exit code, so Windows starts the service again.
@@ -156,20 +156,6 @@ fn run_service() -> Result<(), String> {
     Ok(())
 }
 
-/// `--service-console`: the service in a terminal, for development. Its own data folder, no app
-/// launching (the app runs from `npm run dev`), and an installer request just ends it.
-pub fn run_console() {
-    watchdog::in_service();
-    use_dev_dir();
-    match start_engine(true) {
-        Ok(quit) => {
-            eprintln!("service: running in the console; data in {:?}", state::dir());
-            let _ = quit.recv();
-        }
-        Err(e) => eprintln!("service: {e}"),
-    }
-}
-
 fn report(handle: &ServiceStatusHandle, state: ServiceState, accepted: ServiceControlAccept, code: u32) {
     let _ = handle.set_service_status(ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
@@ -182,15 +168,16 @@ fn report(handle: &ServiceStatusHandle, state: ServiceState, accepted: ServiceCo
     });
 }
 
-/// Starts everything the service does. Returns what tells it to end.
-fn start_engine(console: bool) -> Result<mpsc::Receiver<Shutdown>, String> {
-    if !console {
+/// Starts everything the service does. Returns what tells it to end. `for_real` is the service
+/// itself: it locks its data folder down and looks after the app. Without it (the pipe test) it
+/// only serves requests.
+fn start_engine(for_real: bool) -> Result<mpsc::Receiver<Shutdown>, String> {
+    if for_real {
         lock_down_data_dir();
     }
     let blocklist = start_blocklist();
-    // In development there is no app to look after: it is whatever `npm run dev` runs.
-    let slot = Arc::new(AppSlot::new(!console));
-    if !console {
+    let slot = Arc::new(AppSlot::new(for_real));
+    if for_real {
         watchdog::spawn_supervisor(blocklist.clone(), slot.clone());
     }
     let (quit, quit_rx) = mpsc::channel();
@@ -227,8 +214,8 @@ pub fn local_handler(blocklist: Blocklist) -> Local {
 /// For `npm run dev`: the service inside the app, with no service installed, no pipe and no
 /// administrator rights. **Debug builds only**, and not used with `SITEBLOCKER_USE_SERVICE` set.
 /// Ending the app ends the enforcing, which is fine while developing. The block is kept in
-/// `%LOCALAPPDATA%\SiteBlocker-dev`, as with `--service-console`, so a timed block is still there
-/// the next time; delete that folder to forget it.
+/// `%LOCALAPPDATA%\SiteBlocker-dev`, so a timed block is still there the next time; delete that
+/// folder to forget it.
 #[cfg(debug_assertions)]
 pub fn embedded() -> Local {
     use_dev_dir();
@@ -236,6 +223,7 @@ pub fn embedded() -> Local {
 }
 
 /// Development keeps its files apart from a real install's: `%LOCALAPPDATA%\SiteBlocker-dev`.
+#[cfg(debug_assertions)]
 fn use_dev_dir() {
     if let Some(local) = std::env::var_os("LOCALAPPDATA") {
         state::use_dir(Path::new(&local).join("SiteBlocker-dev"));
@@ -717,16 +705,16 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("service-pipe-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         state::use_dir(dir);
-        let quit = start_engine(true).unwrap();
+        let quit = start_engine(false).unwrap();
 
         // This server runs in the user's session, not in session 0: the app refuses to talk to it.
         std::env::remove_var("SITEBLOCKER_DEV");
         let refused = client::call(&Request::Status).unwrap_err();
         assert!(refused.contains("not by the service"), "{refused}");
-        // Development mode, as `--service-console` is used with `npm run dev`, skips that check.
+        // The test lets the app talk to it anyway, which only a test build allows (`pipe::verify_server`).
         std::env::set_var("SITEBLOCKER_DEV", "1");
 
-        // The console service looks after no app, so taking one in is always fine.
+        // This engine looks after no app, so taking one in is always fine.
         assert_eq!(client::call(&Request::Register), Ok(Response::Done));
         let Ok(Response::Status(status)) = client::call(&Request::Status) else { panic!("no status") };
         assert_eq!(status.remaining, None);

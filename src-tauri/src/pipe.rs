@@ -197,9 +197,9 @@ pub fn connect() -> Result<File, String> {
 /// This asks the pipe itself. Looking at the serving process (its file name, say) does not work:
 /// a standard user may not open a SYSTEM process, not even for a look.
 fn verify_server(pipe: &File) -> Result<(), String> {
-    // Development only: the console service (`service::run_console`) runs in the user's own
-    // session. A release build never skips the check.
-    if cfg!(debug_assertions) && std::env::var_os("SITEBLOCKER_DEV").is_some() {
+    // Only the pipe test, which serves from the test's own process, in the user's session. No
+    // other build can skip the check.
+    if cfg!(test) && std::env::var_os("SITEBLOCKER_DEV").is_some() {
         return Ok(());
     }
     let mut session = u32::MAX;
