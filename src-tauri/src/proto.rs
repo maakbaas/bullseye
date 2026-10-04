@@ -29,7 +29,14 @@ pub enum Request {
     /// The app, when it starts: asks the service to take it in as the app. Refused if another app
     /// is running or this is not the installed exe, and then the app ends itself.
     Register,
-    Start { filters: Vec<String>, duration: String, enforcers: Enforcers },
+    Start {
+        filters: Vec<String>,
+        /// Programs to close, one exe name per line (`programs.rs`).
+        #[serde(default)]
+        programs: Vec<String>,
+        duration: String,
+        enforcers: Enforcers,
+    },
     Stop,
     Unlock { password: String },
     /// From the installer: end the service and remove it. Refused during a timed block.
@@ -53,6 +60,8 @@ pub enum Response {
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Policy {
     pub filters: Vec<String>,
+    #[serde(default)]
+    pub programs: Vec<String>,
     pub enforcers: Enforcers,
 }
 
@@ -88,6 +97,7 @@ mod tests {
     fn a_request_survives_the_wire() {
         let request = Request::Start {
             filters: vec!["tweakers.net".into()],
+            programs: vec!["steam*".into()],
             duration: "10m".into(),
             enforcers: Enforcers::default(),
         };
@@ -102,13 +112,22 @@ mod tests {
 
     #[test]
     fn a_policy_survives_the_wire() {
-        let response = Response::Policy(Some(Policy { filters: vec!["a.com".into()], enforcers: Enforcers::default() }));
+        let response = Response::Policy(Some(Policy { filters: vec!["a.com".into()], programs: vec!["game.exe".into()], enforcers: Enforcers::default() }));
         let mut wire = Vec::new();
         write_message(&mut wire, &response).unwrap();
         assert_eq!(read_message::<Response>(&mut Cursor::new(wire)), Ok(response));
         let mut wire = Vec::new();
         write_message(&mut wire, &Response::Policy(None)).unwrap();
         assert_eq!(read_message::<Response>(&mut Cursor::new(wire)), Ok(Response::Policy(None)));
+    }
+
+    #[test]
+    fn a_start_without_programs_still_reads() {
+        let body = br#"{"cmd":"start","args":{"filters":["a.com"],"duration":"1h","enforcers":{}}}"#;
+        let mut wire = (body.len() as u32).to_le_bytes().to_vec();
+        wire.extend_from_slice(body);
+        let Ok(Request::Start { programs, .. }) = read_message::<Request>(&mut Cursor::new(wire)) else { panic!("not read") };
+        assert!(programs.is_empty());
     }
 
     #[test]

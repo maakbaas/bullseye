@@ -5,6 +5,7 @@ mod client;
 mod clock;
 mod filters;
 mod pipe;
+mod programs;
 mod proto;
 mod service;
 mod setup;
@@ -22,14 +23,20 @@ use tauri::{
     AppHandle, Manager, State, WindowEvent,
 };
 
-/// Starts blocking with the given filter lines and enforcers, for `duration` (`5s`, `10m`, `3h`,
+/// Starts blocking with the given filter lines, program lines and enforcers, for `duration` (`5s`, `10m`, `3h`,
 /// `1d`) or, when empty, until stopped.
 ///
 /// The service owns the block and checks all of this again (`service::start`); the answer here
 /// is only its verdict. It goes on even if this app is ended or Windows restarts.
 #[tauri::command]
-fn start_block(filters: Vec<String>, duration: String, enforcers: Enforcers, remote: State<Remote>) -> Result<(), String> {
-    remote.command(Request::Start { filters, duration, enforcers })
+fn start_block(
+    filters: Vec<String>,
+    programs: Vec<String>,
+    duration: String,
+    enforcers: Enforcers,
+    remote: State<Remote>,
+) -> Result<(), String> {
+    remote.command(Request::Start { filters, programs, duration, enforcers })
 }
 
 #[tauri::command]

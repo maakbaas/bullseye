@@ -34,8 +34,9 @@ use windows_service::service_control_handler::{self, ServiceControlHandlerResult
 use windows_service::service_dispatcher;
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
-use crate::block::{parse_duration, Blocklist};
+use crate::block::{parse_duration, Blocklist, Lists};
 use crate::filters::FilterList;
+use crate::programs::ProgramList;
 use crate::proto::{Policy, Request, Response};
 use crate::state::{self, Enforcers};
 use crate::watchdog::{self, note, AppSlot};
@@ -254,10 +255,16 @@ fn handle(context: &Context, caller: u32, request: Request) -> (Response, Option
             // This request comes from the thread that closes tabs: hearing it is how the service
             // knows that is going on. It counts only from the process taken in as the app.
             context.slot.heard(caller);
-            let policy = blocklist.active().map(|(filters, enforcers)| Policy { filters: filters.entries(), enforcers });
+            let policy = blocklist.active().map(|active| Policy {
+                filters: active.filters.entries(),
+                programs: active.programs.entries(),
+                enforcers: active.enforcers,
+            });
             (Response::Policy(policy), None)
         }
-        Request::Start { filters, duration, enforcers } => (done(start(blocklist, filters, &duration, enforcers)), None),
+        Request::Start { filters, programs, duration, enforcers } => {
+            (done(start(blocklist, filters, programs, &duration, enforcers)), None)
+        }
         Request::Stop => (done(blocklist.stop().map_err(|_| "A timed block cannot be stopped early".to_string())), None),
         Request::Unlock { password } => (done(unlock(context, &password)), None),
         // Refused during a timed block, judged by internet time, like the block itself.
@@ -274,18 +281,27 @@ fn handle(context: &Context, caller: u32, request: Request) -> (Response, Option
 }
 
 /// What `start_block` in the app used to check, now checked where it counts.
-fn start(blocklist: &Blocklist, filters: Vec<String>, duration: &str, enforcers: Enforcers) -> Result<(), String> {
+fn start(
+    blocklist: &Blocklist,
+    filters: Vec<String>,
+    programs: Vec<String>,
+    duration: &str,
+    enforcers: Enforcers,
+) -> Result<(), String> {
     let duration = parse_duration(duration)?;
-    let filters = FilterList::parse(&filters).map_err(|_| "Invalid block list syntax".to_string())?;
+    let sites = FilterList::parse(&filters).map_err(|_| "Invalid block list syntax".to_string())?;
+    // Also refuses what would close programs Windows needs (`programs.rs`), with the reason.
+    let programs = ProgramList::parse(&programs)?;
     if !enforcers.any() {
         return Err("Choose at least one enforcer".into());
     }
-    // An enforcer that goes by the list has nothing to do with an empty one, while the others
-    // (Obsidian's) do not need it. What matters is that something can run.
-    if !enforcers.can_run(!filters.is_empty()) {
-        return Err("Enter at least one site to block, or turn on an enforcer that does not use the list".into());
+    // An enforcer has nothing to do with an empty list of its own kind, while one that needs no
+    // list (Obsidian's) always does. What matters is that something can run.
+    let lists = Lists { sites, programs };
+    if !enforcers.can_run(|uses| lists.has(uses)) {
+        return Err("Enter at least one site or program to block, or turn on an enforcer that needs no list".into());
     }
-    blocklist.start(filters, duration, enforcers)
+    blocklist.start(lists, duration, enforcers)
 }
 
 /// Ends the block for the unlock password. After three wrong guesses in a row, guesses are
@@ -465,7 +481,7 @@ mod tests {
     }
 
     fn start_request(duration: &str) -> Request {
-        Request::Start { filters: vec!["a.com".into()], duration: duration.into(), enforcers: Enforcers::default() }
+        Request::Start { programs: vec![], filters: vec!["a.com".into()], duration: duration.into(), enforcers: Enforcers::default() }
     }
 
     #[test]
@@ -473,16 +489,17 @@ mod tests {
         let context = context("checked");
         // An empty list with only enforcers that go by it, nothing chosen, a bad duration, and an
         // address that cannot match.
-        let only_the_list = Enforcers { chromium_tabs: true, chromium_split_view: true, obsidian_web_viewer: false };
+        let only_the_list = Enforcers { chromium_tabs: true, chromium_split_view: true, obsidian_web_viewer: false, exe_names: false };
         let bad = [
-            Request::Start { filters: vec![], duration: "1h".into(), enforcers: only_the_list },
+            Request::Start { programs: vec![], filters: vec![], duration: "1h".into(), enforcers: only_the_list },
             Request::Start {
                 filters: vec!["a.com".into()],
+                programs: vec![],
                 duration: "1h".into(),
-                enforcers: Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: false },
+                enforcers: Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: false, exe_names: false },
             },
             start_request("soon"),
-            Request::Start { filters: vec!["has space.com".into()], duration: "1h".into(), enforcers: Enforcers::default() },
+            Request::Start { programs: vec![], filters: vec!["has space.com".into()], duration: "1h".into(), enforcers: Enforcers::default() },
         ];
         for request in bad {
             assert!(matches!(handle(&context, 0, request).0, Response::Failed(_)));
@@ -493,8 +510,8 @@ mod tests {
     #[test]
     fn an_empty_list_starts_a_block_when_an_enforcer_without_the_list_is_on() {
         let first = context("empty-list");
-        let obsidian_only = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: true };
-        let request = |enforcers| Request::Start { filters: vec![], duration: "1h".into(), enforcers };
+        let obsidian_only = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: true, exe_names: false };
+        let request = |enforcers| Request::Start { programs: vec![], filters: vec![], duration: "1h".into(), enforcers };
         assert_eq!(handle(&first, 0, request(obsidian_only)).0, Response::Done);
         // The block keeps what it was started with: no entries, and Obsidian's enforcer only.
         let Response::Policy(Some(policy)) = handle(&first, 0, Request::Policy).0 else { panic!("no policy") };
@@ -531,6 +548,34 @@ mod tests {
 
         let _ = stranger.kill();
         let _ = stranger.wait();
+    }
+
+    #[test]
+    fn programs_alone_can_start_a_block_and_what_windows_needs_is_refused() {
+        let programs_only = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: false, exe_names: true };
+        let request = |programs: &[&str]| Request::Start {
+            filters: vec![],
+            programs: programs.iter().map(|p| p.to_string()).collect(),
+            duration: "1h".into(),
+            enforcers: programs_only,
+        };
+        let context = context("programs");
+
+        // The programs enforcer alone, with nothing listed, has nothing to do.
+        assert!(matches!(handle(&context, 0, request(&[])).0, Response::Failed(_)));
+        // Entries that would close what Windows or this app needs, or are not names.
+        for bad in ["*", "explorer.exe", "s*", r"C:\Games\game.exe"] {
+            let Response::Failed(why) = handle(&context, 0, request(&[bad])).0 else { panic!("{bad} was accepted") };
+            assert!(why.contains("needs") || why.contains("Not a program name"), "{bad}: {why}");
+        }
+        assert!(context.blocklist.filters().is_none());
+
+        // A real one starts, and is what the app is told to close.
+        assert_eq!(handle(&context, 0, request(&["Steam*", "game"])).0, Response::Done);
+        let Response::Policy(Some(policy)) = handle(&context, 0, Request::Policy).0 else { panic!("no policy") };
+        assert_eq!(policy.programs, vec!["steam*.exe", "game.exe"]);
+        assert!(policy.filters.is_empty());
+        assert_eq!(policy.enforcers, programs_only);
     }
 
     #[test]

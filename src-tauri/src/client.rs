@@ -9,12 +9,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::block::Status;
+use crate::block::{Active, Status};
 use crate::filters::FilterList;
 use crate::pipe;
+use crate::programs::ProgramList;
 use crate::proto::{self, Policy, Request, Response};
 use crate::service;
-use crate::state::Enforcers;
 use crate::watchdog::note;
 
 /// One request and its answer.
@@ -39,7 +39,7 @@ const START_EVERY: Duration = Duration::from_secs(5);
 
 struct Cached {
     policy: Policy,
-    list: Arc<FilterList>,
+    active: Active,
 }
 
 impl Remote {
@@ -64,8 +64,8 @@ impl Remote {
         }
     }
 
-    /// The filters and enforcers to enforce right now, if any.
-    pub fn active(&self) -> Option<(Arc<FilterList>, Enforcers)> {
+    /// What to enforce right now, if anything.
+    pub fn active(&self) -> Option<Active> {
         match call(&Request::Policy) {
             Ok(Response::Policy(policy)) => {
                 self.failing.store(false, Ordering::Relaxed);
@@ -77,7 +77,7 @@ impl Remote {
                 self.revive_service();
             }
         }
-        self.cache.lock().unwrap().as_ref().map(|c| (c.list.clone(), c.policy.enforcers))
+        self.cache.lock().unwrap().as_ref().map(|c| c.active.clone())
     }
 
     /// Asks Windows to start the service if it is registered but not running (it only stays down
@@ -112,10 +112,13 @@ impl Remote {
         if cache.as_ref().is_some_and(|c| c.policy == policy) {
             return;
         }
-        match FilterList::parse(&policy.filters) {
-            Ok(list) => *cache = Some(Cached { policy, list: Arc::new(list) }),
+        match (FilterList::parse(&policy.filters), ProgramList::parse(&policy.programs)) {
+            (Ok(filters), Ok(programs)) => {
+                let active = Active { filters: Arc::new(filters), programs: Arc::new(programs), enforcers: policy.enforcers };
+                *cache = Some(Cached { policy, active });
+            }
             // Cannot happen with a service of this version; keep what is being enforced.
-            Err(_) => note("app", "the service sent a block list that cannot be read"),
+            _ => note("app", "the service sent a block list that cannot be read"),
         }
     }
 }
@@ -123,13 +126,14 @@ impl Remote {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::Enforcers;
 
     fn policy(filters: &[&str]) -> Policy {
-        Policy { filters: filters.iter().map(|f| f.to_string()).collect(), enforcers: Enforcers::default() }
+        Policy { filters: filters.iter().map(|f| f.to_string()).collect(), programs: Vec::new(), enforcers: Enforcers::default() }
     }
 
-    fn current(remote: &Remote) -> Option<(Arc<FilterList>, Enforcers)> {
-        remote.cache.lock().unwrap().as_ref().map(|c| (c.list.clone(), c.policy.enforcers))
+    fn current(remote: &Remote) -> Option<Active> {
+        remote.cache.lock().unwrap().as_ref().map(|c| c.active.clone())
     }
 
     #[test]
@@ -138,17 +142,30 @@ mod tests {
         assert!(current(&remote).is_none());
 
         remote.apply(Some(policy(&["tweakers.net"])));
-        let (list, _) = current(&remote).unwrap();
+        let list = current(&remote).unwrap().filters;
         assert!(list.is_blocked("https://tweakers.net/nieuws"));
 
         // The same policy again keeps the same parsed list.
         remote.apply(Some(policy(&["tweakers.net"])));
-        assert!(Arc::ptr_eq(&list, &current(&remote).unwrap().0));
+        assert!(Arc::ptr_eq(&list, &current(&remote).unwrap().filters));
 
         // A different one replaces it; none at all ends the block.
         remote.apply(Some(policy(&["b.com"])));
-        assert!(current(&remote).unwrap().0.is_blocked("b.com/x"));
+        assert!(current(&remote).unwrap().filters.is_blocked("b.com/x"));
         remote.apply(None);
         assert!(current(&remote).is_none());
+    }
+
+    #[test]
+    fn the_programs_come_along_and_are_parsed_with_the_policy() {
+        let remote = Remote::new();
+        let with_programs = Policy { filters: vec![], programs: vec!["Steam*".into()], enforcers: Enforcers::default() };
+        remote.apply(Some(with_programs));
+        let active = current(&remote).unwrap();
+        assert!(active.programs.is_blocked("steamwebhelper.exe") && !active.programs.is_blocked("chrome.exe"));
+        // A list that cannot be read leaves what is being enforced as it was.
+        let wrong = Policy { filters: vec![], programs: vec!["*".into()], enforcers: Enforcers::default() };
+        remote.apply(Some(wrong));
+        assert!(current(&remote).unwrap().programs.is_blocked("steamwebhelper.exe"));
     }
 }

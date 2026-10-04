@@ -17,14 +17,20 @@ use std::time::{Duration, Instant};
 
 use crate::client::Remote;
 use crate::filters::FilterList;
-use crate::state::Enforcers;
+use crate::programs::ProgramList;
+use crate::state::{Enforcers, Uses};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use uiautomation::patterns::{UIInvokePattern, UIValuePattern, UIWindowPattern};
 use uiautomation::types::{ControlType, TreeScope, UIProperty};
 use uiautomation::{UIAutomation, UIElement};
+use windows_sys::Win32::Foundation::{HWND, LPARAM};
+use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, PostMessageW, WM_CLOSE};
 
 const INTERVAL: Duration = Duration::from_secs(1);
 const RECHECK: Duration = Duration::from_secs(10);
+
+/// How long a program is given to close when asked to, before it is ended.
+const KILL_AFTER: Duration = Duration::from_secs(3);
 
 pub fn spawn(remote: Remote) {
     thread::spawn(move || {
@@ -32,18 +38,22 @@ pub fn spawn(remote: Remote) {
             Ok(a) => a,
             Err(e) => return eprintln!("tab_closer: UI Automation unavailable: {e}"),
         };
-        let mut closer = Closer { automation, windows: HashMap::new(), system: System::new() };
+        let mut closer = Closer { automation, windows: HashMap::new(), system: System::new(), asked: HashMap::new() };
         loop {
             let start = Instant::now();
-            if let Some((filters, enforcers)) = remote.active() {
+            if let Some(active) = remote.active() {
+                let enforcers = active.enforcers;
                 // With no entries there is nothing for these to match, so skip the UI Automation work.
-                if enforcers.use_block_list() && !filters.is_empty() {
-                    if let Err(e) = closer.tick(&filters, enforcers) {
+                if enforcers.uses(Uses::Sites) && !active.filters.is_empty() {
+                    if let Err(e) = closer.tick(&active.filters, enforcers) {
                         eprintln!("tab_closer: {e}");
                     }
                 }
                 if enforcers.obsidian_web_viewer {
                     closer.close_obsidian_with_web_content();
+                }
+                if enforcers.uses(Uses::Programs) && !active.programs.is_empty() {
+                    closer.close_programs(&active.programs);
                 }
             }
             thread::sleep(INTERVAL.saturating_sub(start.elapsed()));
@@ -56,6 +66,8 @@ struct Closer {
     /// Window runtime id -> its cached UI elements, so they are not searched for every second.
     windows: HashMap<Vec<i32>, Window>,
     system: System,
+    /// Programs that were asked to close, by process id and when, so the ones that do not are ended.
+    asked: HashMap<u32, Instant>,
 }
 
 enum Window {
@@ -152,6 +164,36 @@ impl Closer {
         }
     }
 
+    /// Closes the programs on the list: asks each to close like the X of its windows does, and ends
+    /// the ones still running `KILL_AFTER` later (or that have no window to ask). Programs Windows
+    /// needs are never touched (`ProgramList::is_blocked`), nor is this app.
+    fn close_programs(&mut self, programs: &ProgramList) {
+        self.system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+        let me = std::process::id();
+        let mut running = Vec::new();
+        for (pid, process) in self.system.processes() {
+            let pid = pid.as_u32();
+            if pid == me || !programs.is_blocked(&process.name().to_string_lossy()) {
+                continue;
+            }
+            running.push(pid);
+            match self.asked.get(&pid) {
+                None => {
+                    ask_to_close(pid);
+                    self.asked.insert(pid, Instant::now());
+                    eprintln!("tab_closer: asked {} ({pid}) to close", process.name().to_string_lossy());
+                }
+                Some(since) if since.elapsed() >= KILL_AFTER => {
+                    let ended = process.kill();
+                    eprintln!("tab_closer: {} {} ({pid})", if ended { "ended" } else { "could not end" }, process.name().to_string_lossy());
+                }
+                Some(_) => {}
+            }
+        }
+        // A program that has gone, whether it closed or was ended, is not remembered.
+        self.asked.retain(|pid, _| running.contains(pid));
+    }
+
     /// The window's cached browser elements, or None if it is not a browser window.
     fn browser(&mut self, window: &UIElement, id: &Vec<i32>) -> Option<Browser> {
         match self.windows.get(id) {
@@ -196,6 +238,24 @@ impl Closer {
     }
 }
 
+/// Posts a close request to every top-level window of the process, as the X button does. The
+/// program may ask to save first, or not close at all; that is what `KILL_AFTER` is for.
+fn ask_to_close(pid: u32) {
+    unsafe extern "system" fn each(window: HWND, pid: LPARAM) -> i32 {
+        let mut owner = 0u32;
+        // SAFETY: `window` is one Windows just handed over; `owner` is a valid place to write to.
+        unsafe {
+            GetWindowThreadProcessId(window, &mut owner);
+            if owner == pid as u32 {
+                PostMessageW(window, WM_CLOSE, 0, 0);
+            }
+        }
+        1
+    }
+    // SAFETY: the callback is the function above, and takes no state beyond the process id.
+    unsafe { EnumWindows(Some(each), pid as LPARAM) };
+}
+
 /// Presses the Close button of the selected tab showing `title`. In split view both tabs are
 /// selected and named "<title> - Left view" / "<title> - Right view", so the title picks one;
 /// with a single selected tab (or no title) the first selected tab is closed.
@@ -215,4 +275,51 @@ fn close_tab(a: &UIAutomation, window: &UIElement, title: &str) -> uiautomation:
         .ok_or_else(|| uiautomation::Error::new(-1, "no selected tab"))?;
     let button = a.create_property_condition(UIProperty::ControlType, (ControlType::Button as i32).into(), None)?;
     tab.find_first(TreeScope::Children, &button)?.get_pattern::<UIInvokePattern>()?.invoke()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::{Child, Command, Stdio};
+
+    /// A copy of a stock Windows program under a name of its own, so a test never touches a
+    /// program the person running it is using.
+    fn copy_of_ping(name: &str) -> Child {
+        let dir = std::env::temp_dir().join(format!("closer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{name}.exe"));
+        let ping = std::path::Path::new(&std::env::var("SystemRoot").unwrap()).join("System32").join("ping.exe");
+        std::fs::copy(ping, &path).unwrap();
+        Command::new(path).args(["-n", "60", "127.0.0.1"]).stdout(Stdio::null()).spawn().unwrap()
+    }
+
+    #[test]
+    fn a_listed_program_is_asked_to_close_then_ended_and_others_are_left_alone() {
+        let Ok(automation) = UIAutomation::new() else { return eprintln!("skipping: no UI Automation here") };
+        let mut closer = Closer { automation, windows: HashMap::new(), system: System::new(), asked: HashMap::new() };
+        let (mut listed, mut other) = (copy_of_ping("siteblocker-test-listed"), copy_of_ping("siteblocker-test-other"));
+        let programs = ProgramList::parse(&["siteblocker-test-l*"]).unwrap();
+
+        // The first pass asks. This program has no window to ask, so it carries on for now.
+        closer.close_programs(&programs);
+        assert!(closer.asked.contains_key(&listed.id()));
+        assert!(!closer.asked.contains_key(&other.id()));
+        assert!(listed.try_wait().unwrap().is_none());
+
+        // Once it has had its time, the next pass ends it.
+        thread::sleep(KILL_AFTER + Duration::from_millis(500));
+        closer.close_programs(&programs);
+        let ended = (0..50).any(|_| {
+            thread::sleep(Duration::from_millis(100));
+            listed.try_wait().unwrap().is_some()
+        });
+        assert!(ended, "the listed program should have been ended");
+
+        // A program that has gone is forgotten, and the one that was not listed never touched.
+        closer.close_programs(&programs);
+        assert!(closer.asked.is_empty());
+        assert!(other.try_wait().unwrap().is_none());
+        let _ = other.kill();
+        let _ = other.wait();
+    }
 }

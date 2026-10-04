@@ -28,6 +28,10 @@ pub struct Saved {
     /// Which enforcers the block runs. Missing in files from older versions, which ran all.
     #[serde(default)]
     pub enforcers: Enforcers,
+    /// The programs to close, one entry per line, as typed in the UI. Missing in files from older
+    /// versions, which had none.
+    #[serde(default)]
+    pub programs: Vec<String>,
 }
 
 /// The ways a block is enforced, chosen when it starts and fixed while it runs, so turning one
@@ -41,16 +45,31 @@ pub struct Enforcers {
     pub chromium_split_view: bool,
     /// Closes Obsidian while it shows web content; not linked to the block list.
     pub obsidian_web_viewer: bool,
+    /// Closes the programs on the program list (`programs.rs`).
+    pub exe_names: bool,
+}
+
+/// What an enforcer needs to have something to do.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Uses {
+    /// No list: it does its work on its own (Obsidian's).
+    Nothing,
+    /// The block list of sites (`filters.rs`).
+    Sites,
+    /// The list of programs (`programs.rs`).
+    Programs,
 }
 
 impl Enforcers {
-    /// Every enforcer as (turned on, goes by the block list). **The one place to list a new
-    /// enforcer**: add its field above and a line here; what may start and what runs follow from it.
-    fn all(&self) -> [(bool, bool); 3] {
-        [
-            (self.chromium_tabs, true),
-            (self.chromium_split_view, true),
-            (self.obsidian_web_viewer, false),
+    /// Every enforcer as (turned on, what it needs). **The one place to list a new enforcer**: add
+    /// its field above and a line here; what may start and what runs follow from it. (A new kind of
+    /// list also needs a `Uses` variant and an arm in `block::Lists::has`.)
+    fn all(&self) -> Vec<(bool, Uses)> {
+        vec![
+            (self.chromium_tabs, Uses::Sites),
+            (self.chromium_split_view, Uses::Sites),
+            (self.obsidian_web_viewer, Uses::Nothing),
+            (self.exe_names, Uses::Programs),
         ]
     }
 
@@ -59,22 +78,22 @@ impl Enforcers {
         self.all().iter().any(|&(on, _)| on)
     }
 
-    /// Whether any enforcer that is turned on goes by the block list.
-    pub fn use_block_list(&self) -> bool {
-        self.all().iter().any(|&(on, uses_list)| on && uses_list)
+    /// Whether any enforcer that is turned on needs this kind of list.
+    pub fn uses(&self, list: Uses) -> bool {
+        self.all().iter().any(|&(on, needs)| on && needs == list)
     }
 
-    /// Whether a block with these enforcers has anything to do, given whether the block list has
-    /// an entry: an enforcer that goes by the list has nothing to do with an empty one, the others
-    /// do not need it. A block that cannot do anything is not worth starting.
-    pub fn can_run(&self, has_entries: bool) -> bool {
-        self.all().iter().any(|&(on, uses_list)| on && (!uses_list || has_entries))
+    /// Whether a block with these enforcers has anything to do, given which lists have entries
+    /// (`has_entries`): an enforcer that needs a list has nothing to do with an empty one, the
+    /// others do not need one. A block that cannot do anything is not worth starting.
+    pub fn can_run(&self, has_entries: impl Fn(Uses) -> bool) -> bool {
+        self.all().iter().any(|&(on, needs)| on && has_entries(needs))
     }
 }
 
 impl Default for Enforcers {
     fn default() -> Enforcers {
-        Enforcers { chromium_tabs: true, chromium_split_view: true, obsidian_web_viewer: true }
+        Enforcers { chromium_tabs: true, chromium_split_view: true, obsidian_web_viewer: true, exe_names: true }
     }
 }
 
@@ -190,7 +209,7 @@ mod tests {
     }
 
     fn timed(until: Option<u64>) -> Saved {
-        Saved { filters: vec!["tweakers.net".to_string()], until, seen: None, enforcers: Enforcers::default() }
+        Saved { filters: vec!["tweakers.net".to_string()], until, seen: None, enforcers: Enforcers::default(), programs: Vec::new() }
     }
 
     #[test]
@@ -250,29 +269,43 @@ mod tests {
         let store = store("old");
         fs::create_dir_all(store.path().parent().unwrap()).unwrap();
         fs::write(store.path(), r#"{"filters":["a.com"],"until":1800000000}"#).unwrap();
-        assert_eq!(store.load(), Some(Saved { filters: vec!["a.com".into()], until: Some(1_800_000_000), seen: None, enforcers: Enforcers::default() }));
+        assert_eq!(store.load(), Some(Saved { filters: vec!["a.com".into()], until: Some(1_800_000_000), seen: None, enforcers: Enforcers::default(), programs: Vec::new() }));
         store.clear();
     }
 
     #[test]
-    fn what_can_run_depends_on_the_enforcers_and_the_list() {
-        let only = |tabs, split, obsidian| Enforcers { chromium_tabs: tabs, chromium_split_view: split, obsidian_web_viewer: obsidian };
+    fn what_can_run_depends_on_the_enforcers_and_the_lists() {
+        let only = |tabs, split, obsidian, exe| Enforcers {
+            chromium_tabs: tabs,
+            chromium_split_view: split,
+            obsidian_web_viewer: obsidian,
+            exe_names: exe,
+        };
+        // Which lists have entries.
+        let lists = |sites: bool, programs: bool| move |uses: Uses| match uses {
+            Uses::Nothing => true,
+            Uses::Sites => sites,
+            Uses::Programs => programs,
+        };
         // With entries, any enforcer that is on can run.
-        assert!(only(true, false, false).can_run(true));
-        assert!(only(false, true, false).can_run(true));
-        assert!(only(false, false, true).can_run(true));
-        // Without, only one that does not go by the list can: Obsidian, also next to ones that do.
-        assert!(only(false, false, true).can_run(false));
-        assert!(only(true, true, true).can_run(false));
-        assert!(Enforcers::default().can_run(false));
-        // Not the ones that go by the list alone, and not nothing at all.
-        assert!(!only(true, false, false).can_run(false));
-        assert!(!only(true, true, false).can_run(false));
-        assert!(!only(false, false, false).can_run(true));
-        assert!(!only(false, false, false).can_run(false));
-        // The checks the tab closer and the start use agree with it.
-        assert!(only(true, false, false).use_block_list() && !only(false, false, true).use_block_list());
-        assert!(only(false, false, true).any() && !only(false, false, false).any());
+        assert!(only(true, false, false, false).can_run(lists(true, false)));
+        assert!(only(false, true, false, false).can_run(lists(true, false)));
+        assert!(only(false, false, true, false).can_run(lists(false, false)));
+        assert!(only(false, false, false, true).can_run(lists(false, true)));
+        // An enforcer needs its own list: sites do not help the programs one, nor the other way round.
+        assert!(!only(false, false, false, true).can_run(lists(true, false)));
+        assert!(!only(true, false, false, false).can_run(lists(false, true)));
+        // Without any entries, only one that needs no list can run, also next to ones that do.
+        assert!(only(true, true, true, true).can_run(lists(false, false)));
+        assert!(Enforcers::default().can_run(lists(false, false)));
+        assert!(!only(true, true, false, true).can_run(lists(false, false)));
+        // And with nothing turned on, nothing can.
+        assert!(!only(false, false, false, false).can_run(lists(true, true)));
+        // The checks the closing code and the start use agree with it.
+        let programs_only = only(false, false, false, true);
+        assert!(programs_only.uses(Uses::Programs) && !programs_only.uses(Uses::Sites) && programs_only.any());
+        assert!(only(true, false, false, false).uses(Uses::Sites));
+        assert!(!only(false, false, false, false).any());
     }
 
     #[test]

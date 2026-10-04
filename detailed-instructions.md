@@ -1,6 +1,6 @@
 # Moving the watchdog to a SYSTEM service: implementation guide for this repo
 
-This guide is for implementing the SYSTEM-service design in *this* repo (`blocker`, Tauri tray app, Windows only). It is written against the actual code in `src-tauri/src/`. All the Rust below was compiled and the unit tests run in a scratch copy of the repo (`cargo check --tests`, no warnings; `cargo test`: 44 passed). One extra integration test (`the_pipe_answers_like_the_app_expects`, run with `--ignored`) started the real pipe server and talked to it like the app does: it passed. The service was also seen working on one real install (its logs showed it launching the app in the user's session and refusing an uninstall during a timed block). Section 9 lists what could **not** be tested without installing a real service, so you must test those parts yourself.
+This guide is for implementing the SYSTEM-service design in *this* repo (`blocker`, Tauri tray app, Windows only). It is written against the actual code in `src-tauri/src/`. All the Rust below was compiled and the unit tests run in a scratch copy of the repo (`cargo check --tests`, no warnings; `cargo test`: 56 passed). One extra integration test (`the_pipe_answers_like_the_app_expects`, run with `--ignored`) started the real pipe server and talked to it like the app does: it passed. The service was also seen working on one real install (its logs showed it launching the app in the user's session and refusing an uninstall during a timed block). Section 9 lists what could **not** be tested without installing a real service, so you must test those parts yourself.
 
 **Read sections 1 and 8 before you touch any code.** Section 8 is about how to get out if your own test setup locks you in.
 
@@ -42,6 +42,7 @@ Files at a glance:
 | `src-tauri/src/proto.rs` | **new** (the messages on the pipe) |
 | `src-tauri/src/pipe.rs` | **new** (pipe server and client) |
 | `src-tauri/src/client.rs` | **new** (the app's side) |
+| `src-tauri/src/programs.rs` | **new** (the list of programs to close, section 6.4) |
 | `src-tauri/src/service.rs` | **new** (the service) |
 | `src-tauri/src/watchdog.rs` | replace the whole file |
 | `src-tauri/src/setup.rs` | replace the whole file |
@@ -75,7 +76,7 @@ Each step ends in something you can compile or test. Do not move on while a step
 ```diff
 --- a/src-tauri/Cargo.toml
 +++ b/src-tauri/Cargo.toml
-@@ -16,8 +16,20 @@
+@@ -16,8 +16,21 @@
  sysinfo = "0.39.6"
  tauri = { version = "2", features = ["tray-icon"] }
  uiautomation = "0.25.1"
@@ -94,6 +95,7 @@ Each step ends in something you can compile or test. Do not move on while a step
 +    "Win32_System_Pipes",
 +    "Win32_System_RemoteDesktop",
 +    "Win32_System_Threading",
++    "Win32_UI_WindowsAndMessaging",
 +] }
  
  [profile.dev]
@@ -138,7 +140,14 @@ pub enum Request {
     /// The app, when it starts: asks the service to take it in as the app. Refused if another app
     /// is running or this is not the installed exe, and then the app ends itself.
     Register,
-    Start { filters: Vec<String>, duration: String, enforcers: Enforcers },
+    Start {
+        filters: Vec<String>,
+        /// Programs to close, one exe name per line (`programs.rs`).
+        #[serde(default)]
+        programs: Vec<String>,
+        duration: String,
+        enforcers: Enforcers,
+    },
     Stop,
     Unlock { password: String },
     /// From the installer: end the service and remove it. Refused during a timed block.
@@ -162,6 +171,8 @@ pub enum Response {
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Policy {
     pub filters: Vec<String>,
+    #[serde(default)]
+    pub programs: Vec<String>,
     pub enforcers: Enforcers,
 }
 
@@ -197,6 +208,7 @@ mod tests {
     fn a_request_survives_the_wire() {
         let request = Request::Start {
             filters: vec!["tweakers.net".into()],
+            programs: vec!["steam*".into()],
             duration: "10m".into(),
             enforcers: Enforcers::default(),
         };
@@ -211,13 +223,22 @@ mod tests {
 
     #[test]
     fn a_policy_survives_the_wire() {
-        let response = Response::Policy(Some(Policy { filters: vec!["a.com".into()], enforcers: Enforcers::default() }));
+        let response = Response::Policy(Some(Policy { filters: vec!["a.com".into()], programs: vec!["game.exe".into()], enforcers: Enforcers::default() }));
         let mut wire = Vec::new();
         write_message(&mut wire, &response).unwrap();
         assert_eq!(read_message::<Response>(&mut Cursor::new(wire)), Ok(response));
         let mut wire = Vec::new();
         write_message(&mut wire, &Response::Policy(None)).unwrap();
         assert_eq!(read_message::<Response>(&mut Cursor::new(wire)), Ok(Response::Policy(None)));
+    }
+
+    #[test]
+    fn a_start_without_programs_still_reads() {
+        let body = br#"{"cmd":"start","args":{"filters":["a.com"],"duration":"1h","enforcers":{}}}"#;
+        let mut wire = (body.len() as u32).to_le_bytes().to_vec();
+        wire.extend_from_slice(body);
+        let Ok(Request::Start { programs, .. }) = read_message::<Request>(&mut Cursor::new(wire)) else { panic!("not read") };
+        assert!(programs.is_empty());
     }
 
     #[test]
@@ -484,12 +505,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::block::Status;
+use crate::block::{Active, Status};
 use crate::filters::FilterList;
 use crate::pipe;
+use crate::programs::ProgramList;
 use crate::proto::{self, Policy, Request, Response};
 use crate::service;
-use crate::state::Enforcers;
 use crate::watchdog::note;
 
 /// One request and its answer.
@@ -514,7 +535,7 @@ const START_EVERY: Duration = Duration::from_secs(5);
 
 struct Cached {
     policy: Policy,
-    list: Arc<FilterList>,
+    active: Active,
 }
 
 impl Remote {
@@ -539,8 +560,8 @@ impl Remote {
         }
     }
 
-    /// The filters and enforcers to enforce right now, if any.
-    pub fn active(&self) -> Option<(Arc<FilterList>, Enforcers)> {
+    /// What to enforce right now, if anything.
+    pub fn active(&self) -> Option<Active> {
         match call(&Request::Policy) {
             Ok(Response::Policy(policy)) => {
                 self.failing.store(false, Ordering::Relaxed);
@@ -552,7 +573,7 @@ impl Remote {
                 self.revive_service();
             }
         }
-        self.cache.lock().unwrap().as_ref().map(|c| (c.list.clone(), c.policy.enforcers))
+        self.cache.lock().unwrap().as_ref().map(|c| c.active.clone())
     }
 
     /// Asks Windows to start the service if it is registered but not running (it only stays down
@@ -587,10 +608,13 @@ impl Remote {
         if cache.as_ref().is_some_and(|c| c.policy == policy) {
             return;
         }
-        match FilterList::parse(&policy.filters) {
-            Ok(list) => *cache = Some(Cached { policy, list: Arc::new(list) }),
+        match (FilterList::parse(&policy.filters), ProgramList::parse(&policy.programs)) {
+            (Ok(filters), Ok(programs)) => {
+                let active = Active { filters: Arc::new(filters), programs: Arc::new(programs), enforcers: policy.enforcers };
+                *cache = Some(Cached { policy, active });
+            }
             // Cannot happen with a service of this version; keep what is being enforced.
-            Err(_) => note("app", "the service sent a block list that cannot be read"),
+            _ => note("app", "the service sent a block list that cannot be read"),
         }
     }
 }
@@ -598,13 +622,14 @@ impl Remote {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::Enforcers;
 
     fn policy(filters: &[&str]) -> Policy {
-        Policy { filters: filters.iter().map(|f| f.to_string()).collect(), enforcers: Enforcers::default() }
+        Policy { filters: filters.iter().map(|f| f.to_string()).collect(), programs: Vec::new(), enforcers: Enforcers::default() }
     }
 
-    fn current(remote: &Remote) -> Option<(Arc<FilterList>, Enforcers)> {
-        remote.cache.lock().unwrap().as_ref().map(|c| (c.list.clone(), c.policy.enforcers))
+    fn current(remote: &Remote) -> Option<Active> {
+        remote.cache.lock().unwrap().as_ref().map(|c| c.active.clone())
     }
 
     #[test]
@@ -613,18 +638,31 @@ mod tests {
         assert!(current(&remote).is_none());
 
         remote.apply(Some(policy(&["tweakers.net"])));
-        let (list, _) = current(&remote).unwrap();
+        let list = current(&remote).unwrap().filters;
         assert!(list.is_blocked("https://tweakers.net/nieuws"));
 
         // The same policy again keeps the same parsed list.
         remote.apply(Some(policy(&["tweakers.net"])));
-        assert!(Arc::ptr_eq(&list, &current(&remote).unwrap().0));
+        assert!(Arc::ptr_eq(&list, &current(&remote).unwrap().filters));
 
         // A different one replaces it; none at all ends the block.
         remote.apply(Some(policy(&["b.com"])));
-        assert!(current(&remote).unwrap().0.is_blocked("b.com/x"));
+        assert!(current(&remote).unwrap().filters.is_blocked("b.com/x"));
         remote.apply(None);
         assert!(current(&remote).is_none());
+    }
+
+    #[test]
+    fn the_programs_come_along_and_are_parsed_with_the_policy() {
+        let remote = Remote::new();
+        let with_programs = Policy { filters: vec![], programs: vec!["Steam*".into()], enforcers: Enforcers::default() };
+        remote.apply(Some(with_programs));
+        let active = current(&remote).unwrap();
+        assert!(active.programs.is_blocked("steamwebhelper.exe") && !active.programs.is_blocked("chrome.exe"));
+        // A list that cannot be read leaves what is being enforced as it was.
+        let wrong = Policy { filters: vec![], programs: vec!["*".into()], enforcers: Enforcers::default() };
+        remote.apply(Some(wrong));
+        assert!(current(&remote).unwrap().programs.is_blocked("steamwebhelper.exe"));
     }
 }
 ```
@@ -638,7 +676,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
 ```diff
 --- a/src-tauri/src/block.rs
 +++ b/src-tauri/src/block.rs
-@@ -10,7 +10,7 @@
+@@ -10,11 +10,12 @@
  use std::sync::{Arc, Mutex};
  use std::time::{Duration, Instant, SystemTime};
  
@@ -647,7 +685,49 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
  
  use crate::clock::{self, Clock};
  use crate::filters::FilterList;
-@@ -38,7 +38,7 @@
+-use crate::state::{self, Enforcers, Store};
++use crate::programs::ProgramList;
++use crate::state::{self, Enforcers, Store, Uses};
+ 
+ /// How often a running timed block writes down the time it has reached (`Saved::seen`).
+ const CHECKPOINT: Duration = Duration::from_secs(60);
+@@ -29,8 +30,35 @@
+     clock: &'static Clock,
+ }
+ 
++/// What a block is told to block. **A new kind of list goes here**, together with a `state::Uses`
++/// variant, an arm in `has`, and a field in `Block` and `state::Saved`.
++pub struct Lists {
++    pub sites: FilterList,
++    pub programs: ProgramList,
++}
++
++impl Lists {
++    /// Whether the list an enforcer needs has an entry (`Enforcers::can_run`).
++    pub fn has(&self, uses: Uses) -> bool {
++        match uses {
++            Uses::Nothing => true,
++            Uses::Sites => !self.sites.is_empty(),
++            Uses::Programs => !self.programs.is_empty(),
++        }
++    }
++}
++
++/// What is to be enforced right now.
++#[derive(Clone)]
++pub struct Active {
++    pub filters: Arc<FilterList>,
++    pub programs: Arc<ProgramList>,
++    pub enforcers: Enforcers,
++}
++
+ struct Block {
+     filters: Arc<FilterList>,
++    programs: Arc<ProgramList>,
+     /// When a timed block ends, in internet time; `None` blocks until stopped.
+     until: Option<SystemTime>,
+     enforcers: Enforcers,
+@@ -38,13 +66,16 @@
      saved_at: Instant,
  }
  
@@ -656,7 +736,16 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
  pub struct Status {
      blocking: bool,
      /// Seconds left of a timed block.
-@@ -58,6 +58,12 @@
+     pub remaining: Option<u64>,
+     /// The blocked entries, so the UI can show what a resumed block is blocking.
+     pub filters: Vec<String>,
++    /// The blocked programs, for the same reason.
++    #[serde(default)]
++    pub programs: Vec<String>,
+     /// The running block's enforcers, so the UI shows what a resumed block enforces.
+     enforcers: Option<Enforcers>,
+     /// Whether the time comes from the internet yet; until then, time with the app not running
+@@ -58,15 +89,27 @@
          Blocklist { block: Arc::default(), store: state::store().map(Arc::new), clock: clock::global() }
      }
  
@@ -668,8 +757,83 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
 +
      /// Starts a block, unless one is running: checked here rather than only in the UI, so a
      /// timed block cannot be swapped for a shorter or untimed one.
-     pub fn start(&self, filters: FilterList, duration: Option<Duration>, enforcers: Enforcers) -> Result<(), String> {
-@@ -155,6 +161,13 @@
+-    pub fn start(&self, filters: FilterList, duration: Option<Duration>, enforcers: Enforcers) -> Result<(), String> {
++    pub fn start(&self, lists: Lists, duration: Option<Duration>, enforcers: Enforcers) -> Result<(), String> {
+         let mut block = self.block.lock().unwrap();
+         if block.as_ref().is_some_and(|b| b.until.is_none_or(|u| self.clock.now() < u)) {
+             return Err("A block is already running".into());
+         }
+         let until = duration.map(|d| self.clock.now() + d);
+-        let new = Block { filters: Arc::new(filters), until, enforcers, saved_at: Instant::now() };
++        let new = Block {
++            filters: Arc::new(lists.sites),
++            programs: Arc::new(lists.programs),
++            until,
++            enforcers,
++            saved_at: Instant::now(),
++        };
+         // Written before the block goes live, so a block cannot be missed after a restart. A
+         // block that cannot be written would not survive the app ending, so it does not start.
+         self.save(&new).map_err(|e| format!("Cannot save the block, so it would not survive a restart: {e}"))?;
+@@ -91,7 +134,7 @@
+         let Some(store) = &self.store else { return };
+         let Some(saved) = store.load() else { return };
+         // A block list we cannot read is dropped rather than resumed as something unknown.
+-        let Ok(filters) = FilterList::parse(&saved.filters) else {
++        let (Ok(filters), Ok(programs)) = (FilterList::parse(&saved.filters), ProgramList::parse(&saved.programs)) else {
+             eprintln!("block: dropping an unreadable saved block");
+             store.clear();
+             return;
+@@ -107,16 +150,22 @@
+             return;
+         }
+         let enforcers = saved.enforcers;
+-        *self.block.lock().unwrap() = Some(Block { filters: Arc::new(filters), until, enforcers, saved_at: Instant::now() });
++        *self.block.lock().unwrap() = Some(Block {
++            filters: Arc::new(filters),
++            programs: Arc::new(programs),
++            until,
++            enforcers,
++            saved_at: Instant::now(),
++        });
+     }
+ 
+-    /// The active filters, ending a timed block whose time is up.
++    /// The active filters, ending a timed block whose time is up. `Some` while any block runs.
+     pub fn filters(&self) -> Option<Arc<FilterList>> {
+-        self.active().map(|(filters, _)| filters)
++        self.active().map(|active| active.filters)
+     }
+ 
+-    /// The active filters and enforcers, ending a timed block whose time is up.
+-    pub fn active(&self) -> Option<(Arc<FilterList>, Enforcers)> {
++    /// What is to be enforced, ending a timed block whose time is up.
++    pub fn active(&self) -> Option<Active> {
+         let mut block = self.block.lock().unwrap();
+         if block.as_ref().is_some_and(|b| b.until.is_some_and(|u| self.clock.now() >= u)) {
+             // A timed block ends by itself and leaves nothing behind to resume.
+@@ -130,7 +179,7 @@
+                 eprintln!("block: {e}");
+             }
+         }
+-        block.as_ref().map(|b| (b.filters.clone(), b.enforcers))
++        block.as_ref().map(|b| Active { filters: b.filters.clone(), programs: b.programs.clone(), enforcers: b.enforcers })
+     }
+ 
+     pub fn status(&self) -> Status {
+@@ -140,6 +189,7 @@
+             blocking,
+             remaining: block.as_ref().and_then(|b| remaining(b, self.clock.now())),
+             filters: block.as_ref().map(|b| b.filters.entries()).unwrap_or_default(),
++            programs: block.as_ref().map(|b| b.programs.entries()).unwrap_or_default(),
+             enforcers: block.as_ref().map(|b| b.enforcers),
+             clock_synced: self.clock.synced(),
+         }
+@@ -152,9 +202,17 @@
+             until: block.until.and_then(state::to_unix),
+             seen: state::to_unix(self.clock.now()),
+             enforcers: block.enforcers,
++            programs: block.programs.entries(),
          })
      }
  
@@ -683,11 +847,178 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
      /// Removes the saved block: there is no longer one to resume.
      pub fn clear_saved(&self) {
          if let Some(store) = &self.store {
+@@ -219,6 +277,11 @@
+         blocklist_of(name, false)
+     }
+ 
++    /// Only sites to block; the program list is empty.
++    fn sites(entries: &[&str]) -> Lists {
++        Lists { sites: FilterList::parse(entries).unwrap(), programs: ProgramList::default() }
++    }
++
+     fn entries(blocklist: &Blocklist) -> Vec<String> {
+         blocklist.status().filters
+     }
+@@ -238,14 +301,14 @@
+     #[test]
+     fn timed_block_cannot_stop_early_and_ends_by_itself() {
+         let list = blocklist("timed");
+-        list.start(FilterList::parse(&["a.com"]).unwrap(), Some(Duration::from_millis(50)), Enforcers::default()).unwrap();
++        list.start(sites(&["a.com"]), Some(Duration::from_millis(50)), Enforcers::default()).unwrap();
+         assert_eq!(list.stop(), Err(1));
+         assert!(list.filters().is_some());
+         std::thread::sleep(Duration::from_millis(60));
+         assert!(list.filters().is_none());
+         assert!(list.stop().is_ok());
+ 
+-        list.start(FilterList::parse(&["a.com"]).unwrap(), None, Enforcers::default()).unwrap();
++        list.start(sites(&["a.com"]), None, Enforcers::default()).unwrap();
+         assert!(list.stop().is_ok());
+         assert!(list.filters().is_none());
+     }
+@@ -253,18 +316,18 @@
+     #[test]
+     fn a_running_block_cannot_be_replaced() {
+         let list = blocklist("replace");
+-        list.start(FilterList::parse(&["a.com"]).unwrap(), Some(Duration::from_secs(3600)), Enforcers::default()).unwrap();
++        list.start(sites(&["a.com"]), Some(Duration::from_secs(3600)), Enforcers::default()).unwrap();
+         // Not for a shorter one, nor for an untimed one that could then be stopped.
+-        assert!(list.start(FilterList::parse(&["a.com"]).unwrap(), Some(Duration::from_secs(1)), Enforcers::default()).is_err());
+-        assert!(list.start(FilterList::parse(&["a.com"]).unwrap(), None, Enforcers::default()).is_err());
++        assert!(list.start(sites(&["a.com"]), Some(Duration::from_secs(1)), Enforcers::default()).is_err());
++        assert!(list.start(sites(&["a.com"]), None, Enforcers::default()).is_err());
+         assert!(list.status().remaining.is_some_and(|left| left > 3500));
+ 
+         // An untimed block is stopped first, then a new one can start.
+         let untimed = blocklist("replace-untimed");
+-        untimed.start(FilterList::parse(&["a.com"]).unwrap(), None, Enforcers::default()).unwrap();
+-        assert!(untimed.start(FilterList::parse(&["b.com"]).unwrap(), None, Enforcers::default()).is_err());
++        untimed.start(sites(&["a.com"]), None, Enforcers::default()).unwrap();
++        assert!(untimed.start(sites(&["b.com"]), None, Enforcers::default()).is_err());
+         untimed.stop().unwrap();
+-        untimed.start(FilterList::parse(&["b.com"]).unwrap(), None, Enforcers::default()).unwrap();
++        untimed.start(sites(&["b.com"]), None, Enforcers::default()).unwrap();
+         assert_eq!(entries(&untimed), vec!["b.com"]);
+     }
+ 
+@@ -276,14 +339,14 @@
+         std::fs::create_dir_all(&dir).unwrap();
+         std::fs::write(dir.join("not-a-folder"), "").unwrap();
+         let list = Blocklist { block: Arc::default(), clock: test_clock(), store: Some(Arc::new(Store::new(dir.join("not-a-folder").join("state.json")))) };
+-        assert!(list.start(FilterList::parse(&["a.com"]).unwrap(), Some(Duration::from_secs(60)), Enforcers::default()).is_err());
++        assert!(list.start(sites(&["a.com"]), Some(Duration::from_secs(60)), Enforcers::default()).is_err());
+         assert!(list.filters().is_none());
+     }
+ 
+     #[test]
+     fn a_block_outlives_the_app_that_started_it() {
+         let list = blocklist("resume");
+-        list.start(FilterList::parse(&["https://tweakers.net/", "b.com"]).unwrap(), Some(Duration::from_secs(3600)), Enforcers::default()).unwrap();
++        list.start(sites(&["https://tweakers.net/", "b.com"]), Some(Duration::from_secs(3600)), Enforcers::default()).unwrap();
+         assert_eq!(entries(&list), vec!["tweakers.net", "b.com"]);
+ 
+         // A new run of the app over the same store: the block is still going.
+@@ -295,7 +358,7 @@
+ 
+         // An untimed block is picked up as well: it runs until it is stopped.
+         let untimed = blocklist("resume-untimed");
+-        untimed.start(FilterList::parse(&["b.com"]).unwrap(), None, Enforcers::default()).unwrap();
++        untimed.start(sites(&["b.com"]), None, Enforcers::default()).unwrap();
+         let resumed = reopened("resume-untimed");
+         resumed.restore();
+         assert!(resumed.filters().is_some());
+@@ -304,20 +367,49 @@
+     }
+ 
+     #[test]
++    fn a_resumed_block_keeps_its_programs() {
++        let list = blocklist("programs");
++        let lists = Lists { sites: FilterList::parse::<&str>(&[]).unwrap(), programs: ProgramList::parse(&["Steam*", "game"]).unwrap() };
++        list.start(lists, Some(Duration::from_secs(3600)), Enforcers::default()).unwrap();
++        assert_eq!(list.status().programs, vec!["steam*.exe", "game.exe"]);
++
++        // A new run over the same store: the programs are still on the block.
++        let resumed = reopened("programs");
++        resumed.restore();
++        let active = resumed.active().unwrap();
++        assert!(active.programs.is_blocked("steamwebhelper.exe") && active.programs.is_blocked("GAME.EXE"));
++        assert!(!active.programs.is_blocked("chrome.exe"));
++        assert_eq!(resumed.status().programs, vec!["steam*.exe", "game.exe"]);
++    }
++
++    #[test]
++    fn a_block_from_before_programs_still_resumes_without_any() {
++        let list = blocklist("before-programs");
++        let store = list.store.clone().unwrap();
++        std::fs::create_dir_all(store.path().parent().unwrap()).unwrap();
++        let until = state::now().unwrap().as_secs() + 3600;
++        std::fs::write(store.path(), format!(r#"{{"filters":["a.com"],"until":{until}}}"#)).unwrap();
++        let resumed = reopened("before-programs");
++        resumed.restore();
++        let active = resumed.active().unwrap();
++        assert!(active.filters.is_blocked("a.com") && active.programs.is_empty());
++    }
++
++    #[test]
+     fn a_resumed_block_keeps_its_enforcers() {
+-        let only_obsidian = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: true };
++        let only_obsidian = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: true, exe_names: false };
+         let list = blocklist("enforcers");
+-        list.start(FilterList::parse::<&str>(&[]).unwrap(), Some(Duration::from_secs(3600)), only_obsidian).unwrap();
++        list.start(sites(&[]), Some(Duration::from_secs(3600)), only_obsidian).unwrap();
+         let resumed = reopened("enforcers");
+         resumed.restore();
+-        assert_eq!(resumed.active().map(|(_, e)| e), Some(only_obsidian));
++        assert_eq!(resumed.active().map(|active| active.enforcers), Some(only_obsidian));
+         assert_eq!(resumed.status().enforcers, Some(only_obsidian));
+     }
+ 
+     #[test]
+     fn a_block_whose_time_is_up_is_not_resumed() {
+         let list = blocklist("expired");
+-        list.start(FilterList::parse(&["a.com"]).unwrap(), Some(Duration::from_secs(3600)), Enforcers::default()).unwrap();
++        list.start(sites(&["a.com"]), Some(Duration::from_secs(3600)), Enforcers::default()).unwrap();
+         // Rewritten as though it had been left behind by a run that ended an hour ago.
+         let store = list.store.clone().unwrap();
+         store.save(&Saved {
+@@ -325,6 +417,7 @@
+             until: Some(state::now().unwrap().as_secs() - 3600),
+             seen: None,
+             enforcers: Enforcers::default(),
++            programs: Vec::new(),
+         }).unwrap();
+ 
+         let resumed = reopened("expired");
+@@ -339,13 +432,13 @@
+     fn ending_a_block_clears_it() {
+         let list = blocklist("cleared");
+         let store = list.store.clone().unwrap();
+-        list.start(FilterList::parse(&["a.com"]).unwrap(), None, Enforcers::default()).unwrap();
++        list.start(sites(&["a.com"]), None, Enforcers::default()).unwrap();
+         assert!(store.load().is_some());
+         list.stop().unwrap();
+         assert_eq!(store.load(), None);
+ 
+         // A timed block that ends by itself is cleared too, so nothing is left to resume.
+-        list.start(FilterList::parse(&["a.com"]).unwrap(), Some(Duration::from_millis(50)), Enforcers::default()).unwrap();
++        list.start(sites(&["a.com"]), Some(Duration::from_millis(50)), Enforcers::default()).unwrap();
+         assert!(store.load().is_some());
+         std::thread::sleep(Duration::from_millis(60));
+         assert!(list.filters().is_none());
+@@ -359,7 +452,7 @@
+         let path = dir.join("state.json");
+ 
+         let list = Blocklist { block: Arc::default(), clock: test_clock(), store: None };
+-        list.start(FilterList::parse(&["a.com"]).unwrap(), Some(Duration::from_secs(60)), Enforcers::default()).unwrap();
++        list.start(sites(&["a.com"]), Some(Duration::from_secs(60)), Enforcers::default()).unwrap();
+         assert!(list.filters().is_some());
+         list.restore();
+         assert!(list.filters().is_some());
 ```
 
 ### 5.2 `state.rs`
 
-`Enforcers` also gets `can_run(has_entries)`: a block may start when at least one enforcer that is turned on can do something, which means it does not go by the block list, or the list has an entry. So an empty list is fine as long as e.g. the Obsidian enforcer is on, and refused when only list-based enforcers are on. **To add an enforcer: add its field and one line in `Enforcers::all()`**; the checks in `service::start` and the tab closer follow from that table, and the frontend already builds its checkboxes from `data-enforcer` attributes.
+`Enforcers` also gets `can_run(...)`: a block may start when at least one enforcer that is turned on can do something. Each enforcer says what it needs (`Uses::Nothing`, `Sites` or `Programs`), and it can run when the list it needs has an entry. So an empty site list is fine as long as e.g. the Obsidian enforcer is on, and refused when only enforcers whose list is empty are on. **To add an enforcer, see the checklist in section 6.4.**
 
 `dir()` is now the service's folder (`%ProgramData%\SiteBlocker`). The app's own log goes in `user_dir()`. `use_dir` lets `--service-console` (development) use another folder, so you do not need admin rights to develop.
 
@@ -702,20 +1033,49 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
  use std::time::{Duration, SystemTime, UNIX_EPOCH};
  
  use serde::{Deserialize, Serialize};
-@@ -43,13 +44,31 @@
+@@ -27,6 +28,10 @@
+     /// Which enforcers the block runs. Missing in files from older versions, which ran all.
+     #[serde(default)]
+     pub enforcers: Enforcers,
++    /// The programs to close, one entry per line, as typed in the UI. Missing in files from older
++    /// versions, which had none.
++    #[serde(default)]
++    pub programs: Vec<String>,
+ }
+ 
+ /// The ways a block is enforced, chosen when it starts and fixed while it runs, so turning one
+@@ -40,22 +45,55 @@
+     pub chromium_split_view: bool,
+     /// Closes Obsidian while it shows web content; not linked to the block list.
+     pub obsidian_web_viewer: bool,
++    /// Closes the programs on the program list (`programs.rs`).
++    pub exe_names: bool,
++}
++
++/// What an enforcer needs to have something to do.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub enum Uses {
++    /// No list: it does its work on its own (Obsidian's).
++    Nothing,
++    /// The block list of sites (`filters.rs`).
++    Sites,
++    /// The list of programs (`programs.rs`).
++    Programs,
  }
  
  impl Enforcers {
 -    /// Whether any enforcer goes by the block list, which then needs at least one entry.
 -    pub fn use_block_list(&self) -> bool {
 -        self.chromium_tabs || self.chromium_split_view
-+    /// Every enforcer as (turned on, goes by the block list). **The one place to list a new
-+    /// enforcer**: add its field above and a line here; what may start and what runs follow from it.
-+    fn all(&self) -> [(bool, bool); 3] {
-+        [
-+            (self.chromium_tabs, true),
-+            (self.chromium_split_view, true),
-+            (self.obsidian_web_viewer, false),
++    /// Every enforcer as (turned on, what it needs). **The one place to list a new enforcer**: add
++    /// its field above and a line here; what may start and what runs follow from it. (A new kind of
++    /// list also needs a `Uses` variant and an arm in `block::Lists::has`.)
++    fn all(&self) -> Vec<(bool, Uses)> {
++        vec![
++            (self.chromium_tabs, Uses::Sites),
++            (self.chromium_split_view, Uses::Sites),
++            (self.obsidian_web_viewer, Uses::Nothing),
++            (self.exe_names, Uses::Programs),
 +        ]
      }
  
@@ -725,20 +1085,27 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
 +        self.all().iter().any(|&(on, _)| on)
 +    }
 +
-+    /// Whether any enforcer that is turned on goes by the block list.
-+    pub fn use_block_list(&self) -> bool {
-+        self.all().iter().any(|&(on, uses_list)| on && uses_list)
++    /// Whether any enforcer that is turned on needs this kind of list.
++    pub fn uses(&self, list: Uses) -> bool {
++        self.all().iter().any(|&(on, needs)| on && needs == list)
 +    }
 +
-+    /// Whether a block with these enforcers has anything to do, given whether the block list has
-+    /// an entry: an enforcer that goes by the list has nothing to do with an empty one, the others
-+    /// do not need it. A block that cannot do anything is not worth starting.
-+    pub fn can_run(&self, has_entries: bool) -> bool {
-+        self.all().iter().any(|&(on, uses_list)| on && (!uses_list || has_entries))
++    /// Whether a block with these enforcers has anything to do, given which lists have entries
++    /// (`has_entries`): an enforcer that needs a list has nothing to do with an empty one, the
++    /// others do not need one. A block that cannot do anything is not worth starting.
++    pub fn can_run(&self, has_entries: impl Fn(Uses) -> bool) -> bool {
++        self.all().iter().any(|&(on, needs)| on && has_entries(needs))
      }
  }
  
-@@ -129,15 +148,32 @@
+ impl Default for Enforcers {
+     fn default() -> Enforcers {
+-        Enforcers { chromium_tabs: true, chromium_split_view: true, obsidian_web_viewer: true }
++        Enforcers { chromium_tabs: true, chromium_split_view: true, obsidian_web_viewer: true, exe_names: true }
+     }
+ }
+ 
+@@ -129,15 +167,32 @@
      }
  }
  
@@ -775,28 +1142,57 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
  pub fn store() -> Option<Store> {
      Some(Store::new(dir()?.join("state.json")))
  }
-@@ -219,6 +255,27 @@
+@@ -154,7 +209,7 @@
+     }
+ 
+     fn timed(until: Option<u64>) -> Saved {
+-        Saved { filters: vec!["tweakers.net".to_string()], until, seen: None, enforcers: Enforcers::default() }
++        Saved { filters: vec!["tweakers.net".to_string()], until, seen: None, enforcers: Enforcers::default(), programs: Vec::new() }
      }
  
      #[test]
-+    fn what_can_run_depends_on_the_enforcers_and_the_list() {
-+        let only = |tabs, split, obsidian| Enforcers { chromium_tabs: tabs, chromium_split_view: split, obsidian_web_viewer: obsidian };
+@@ -214,11 +269,46 @@
+         let store = store("old");
+         fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+         fs::write(store.path(), r#"{"filters":["a.com"],"until":1800000000}"#).unwrap();
+-        assert_eq!(store.load(), Some(Saved { filters: vec!["a.com".into()], until: Some(1_800_000_000), seen: None, enforcers: Enforcers::default() }));
++        assert_eq!(store.load(), Some(Saved { filters: vec!["a.com".into()], until: Some(1_800_000_000), seen: None, enforcers: Enforcers::default(), programs: Vec::new() }));
+         store.clear();
+     }
+ 
+     #[test]
++    fn what_can_run_depends_on_the_enforcers_and_the_lists() {
++        let only = |tabs, split, obsidian, exe| Enforcers {
++            chromium_tabs: tabs,
++            chromium_split_view: split,
++            obsidian_web_viewer: obsidian,
++            exe_names: exe,
++        };
++        // Which lists have entries.
++        let lists = |sites: bool, programs: bool| move |uses: Uses| match uses {
++            Uses::Nothing => true,
++            Uses::Sites => sites,
++            Uses::Programs => programs,
++        };
 +        // With entries, any enforcer that is on can run.
-+        assert!(only(true, false, false).can_run(true));
-+        assert!(only(false, true, false).can_run(true));
-+        assert!(only(false, false, true).can_run(true));
-+        // Without, only one that does not go by the list can: Obsidian, also next to ones that do.
-+        assert!(only(false, false, true).can_run(false));
-+        assert!(only(true, true, true).can_run(false));
-+        assert!(Enforcers::default().can_run(false));
-+        // Not the ones that go by the list alone, and not nothing at all.
-+        assert!(!only(true, false, false).can_run(false));
-+        assert!(!only(true, true, false).can_run(false));
-+        assert!(!only(false, false, false).can_run(true));
-+        assert!(!only(false, false, false).can_run(false));
-+        // The checks the tab closer and the start use agree with it.
-+        assert!(only(true, false, false).use_block_list() && !only(false, false, true).use_block_list());
-+        assert!(only(false, false, true).any() && !only(false, false, false).any());
++        assert!(only(true, false, false, false).can_run(lists(true, false)));
++        assert!(only(false, true, false, false).can_run(lists(true, false)));
++        assert!(only(false, false, true, false).can_run(lists(false, false)));
++        assert!(only(false, false, false, true).can_run(lists(false, true)));
++        // An enforcer needs its own list: sites do not help the programs one, nor the other way round.
++        assert!(!only(false, false, false, true).can_run(lists(true, false)));
++        assert!(!only(true, false, false, false).can_run(lists(false, true)));
++        // Without any entries, only one that needs no list can run, also next to ones that do.
++        assert!(only(true, true, true, true).can_run(lists(false, false)));
++        assert!(Enforcers::default().can_run(lists(false, false)));
++        assert!(!only(true, true, false, true).can_run(lists(false, false)));
++        // And with nothing turned on, nothing can.
++        assert!(!only(false, false, false, false).can_run(lists(true, true)));
++        // The checks the closing code and the start use agree with it.
++        let programs_only = only(false, false, false, true);
++        assert!(programs_only.uses(Uses::Programs) && !programs_only.uses(Uses::Sites) && programs_only.any());
++        assert!(only(true, false, false, false).uses(Uses::Sites));
++        assert!(!only(false, false, false, false).any());
 +    }
 +
 +    #[test]
@@ -812,36 +1208,182 @@ Only the source of the policy changes (plus one skipped call when the list has n
 ```diff
 --- a/src-tauri/src/tab_closer.rs
 +++ b/src-tauri/src/tab_closer.rs
-@@ -15,7 +15,7 @@
+@@ -15,35 +15,46 @@
  use std::thread;
  use std::time::{Duration, Instant};
  
 -use crate::block::Blocklist;
 +use crate::client::Remote;
  use crate::filters::FilterList;
- use crate::state::Enforcers;
+-use crate::state::Enforcers;
++use crate::programs::ProgramList;
++use crate::state::{Enforcers, Uses};
  use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-@@ -26,7 +26,7 @@
+ use uiautomation::patterns::{UIInvokePattern, UIValuePattern, UIWindowPattern};
+ use uiautomation::types::{ControlType, TreeScope, UIProperty};
+ use uiautomation::{UIAutomation, UIElement};
++use windows_sys::Win32::Foundation::{HWND, LPARAM};
++use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, PostMessageW, WM_CLOSE};
+ 
  const INTERVAL: Duration = Duration::from_secs(1);
  const RECHECK: Duration = Duration::from_secs(10);
  
 -pub fn spawn(blocklist: Blocklist) {
++/// How long a program is given to close when asked to, before it is ended.
++const KILL_AFTER: Duration = Duration::from_secs(3);
++
 +pub fn spawn(remote: Remote) {
      thread::spawn(move || {
          let automation = match UIAutomation::new() {
              Ok(a) => a,
-@@ -35,8 +35,9 @@
-         let mut closer = Closer { automation, windows: HashMap::new(), system: System::new() };
+             Err(e) => return eprintln!("tab_closer: UI Automation unavailable: {e}"),
+         };
+-        let mut closer = Closer { automation, windows: HashMap::new(), system: System::new() };
++        let mut closer = Closer { automation, windows: HashMap::new(), system: System::new(), asked: HashMap::new() };
          loop {
              let start = Instant::now();
 -            if let Some((filters, enforcers)) = blocklist.active() {
 -                if enforcers.use_block_list() {
-+            if let Some((filters, enforcers)) = remote.active() {
+-                    if let Err(e) = closer.tick(&filters, enforcers) {
++            if let Some(active) = remote.active() {
++                let enforcers = active.enforcers;
 +                // With no entries there is nothing for these to match, so skip the UI Automation work.
-+                if enforcers.use_block_list() && !filters.is_empty() {
-                     if let Err(e) = closer.tick(&filters, enforcers) {
++                if enforcers.uses(Uses::Sites) && !active.filters.is_empty() {
++                    if let Err(e) = closer.tick(&active.filters, enforcers) {
                          eprintln!("tab_closer: {e}");
                      }
+                 }
+                 if enforcers.obsidian_web_viewer {
+                     closer.close_obsidian_with_web_content();
+                 }
++                if enforcers.uses(Uses::Programs) && !active.programs.is_empty() {
++                    closer.close_programs(&active.programs);
++                }
+             }
+             thread::sleep(INTERVAL.saturating_sub(start.elapsed()));
+         }
+@@ -55,6 +66,8 @@
+     /// Window runtime id -> its cached UI elements, so they are not searched for every second.
+     windows: HashMap<Vec<i32>, Window>,
+     system: System,
++    /// Programs that were asked to close, by process id and when, so the ones that do not are ended.
++    asked: HashMap<u32, Instant>,
+ }
+ 
+ enum Window {
+@@ -151,6 +164,36 @@
+         }
+     }
+ 
++    /// Closes the programs on the list: asks each to close like the X of its windows does, and ends
++    /// the ones still running `KILL_AFTER` later (or that have no window to ask). Programs Windows
++    /// needs are never touched (`ProgramList::is_blocked`), nor is this app.
++    fn close_programs(&mut self, programs: &ProgramList) {
++        self.system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
++        let me = std::process::id();
++        let mut running = Vec::new();
++        for (pid, process) in self.system.processes() {
++            let pid = pid.as_u32();
++            if pid == me || !programs.is_blocked(&process.name().to_string_lossy()) {
++                continue;
++            }
++            running.push(pid);
++            match self.asked.get(&pid) {
++                None => {
++                    ask_to_close(pid);
++                    self.asked.insert(pid, Instant::now());
++                    eprintln!("tab_closer: asked {} ({pid}) to close", process.name().to_string_lossy());
++                }
++                Some(since) if since.elapsed() >= KILL_AFTER => {
++                    let ended = process.kill();
++                    eprintln!("tab_closer: {} {} ({pid})", if ended { "ended" } else { "could not end" }, process.name().to_string_lossy());
++                }
++                Some(_) => {}
++            }
++        }
++        // A program that has gone, whether it closed or was ended, is not remembered.
++        self.asked.retain(|pid, _| running.contains(pid));
++    }
++
+     /// The window's cached browser elements, or None if it is not a browser window.
+     fn browser(&mut self, window: &UIElement, id: &Vec<i32>) -> Option<Browser> {
+         match self.windows.get(id) {
+@@ -195,6 +238,24 @@
+     }
+ }
+ 
++/// Posts a close request to every top-level window of the process, as the X button does. The
++/// program may ask to save first, or not close at all; that is what `KILL_AFTER` is for.
++fn ask_to_close(pid: u32) {
++    unsafe extern "system" fn each(window: HWND, pid: LPARAM) -> i32 {
++        let mut owner = 0u32;
++        // SAFETY: `window` is one Windows just handed over; `owner` is a valid place to write to.
++        unsafe {
++            GetWindowThreadProcessId(window, &mut owner);
++            if owner == pid as u32 {
++                PostMessageW(window, WM_CLOSE, 0, 0);
++            }
++        }
++        1
++    }
++    // SAFETY: the callback is the function above, and takes no state beyond the process id.
++    unsafe { EnumWindows(Some(each), pid as LPARAM) };
++}
++
+ /// Presses the Close button of the selected tab showing `title`. In split view both tabs are
+ /// selected and named "<title> - Left view" / "<title> - Right view", so the title picks one;
+ /// with a single selected tab (or no title) the first selected tab is closed.
+@@ -215,3 +276,50 @@
+     let button = a.create_property_condition(UIProperty::ControlType, (ControlType::Button as i32).into(), None)?;
+     tab.find_first(TreeScope::Children, &button)?.get_pattern::<UIInvokePattern>()?.invoke()
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::process::{Child, Command, Stdio};
++
++    /// A copy of a stock Windows program under a name of its own, so a test never touches a
++    /// program the person running it is using.
++    fn copy_of_ping(name: &str) -> Child {
++        let dir = std::env::temp_dir().join(format!("closer-{}", std::process::id()));
++        std::fs::create_dir_all(&dir).unwrap();
++        let path = dir.join(format!("{name}.exe"));
++        let ping = std::path::Path::new(&std::env::var("SystemRoot").unwrap()).join("System32").join("ping.exe");
++        std::fs::copy(ping, &path).unwrap();
++        Command::new(path).args(["-n", "60", "127.0.0.1"]).stdout(Stdio::null()).spawn().unwrap()
++    }
++
++    #[test]
++    fn a_listed_program_is_asked_to_close_then_ended_and_others_are_left_alone() {
++        let Ok(automation) = UIAutomation::new() else { return eprintln!("skipping: no UI Automation here") };
++        let mut closer = Closer { automation, windows: HashMap::new(), system: System::new(), asked: HashMap::new() };
++        let (mut listed, mut other) = (copy_of_ping("siteblocker-test-listed"), copy_of_ping("siteblocker-test-other"));
++        let programs = ProgramList::parse(&["siteblocker-test-l*"]).unwrap();
++
++        // The first pass asks. This program has no window to ask, so it carries on for now.
++        closer.close_programs(&programs);
++        assert!(closer.asked.contains_key(&listed.id()));
++        assert!(!closer.asked.contains_key(&other.id()));
++        assert!(listed.try_wait().unwrap().is_none());
++
++        // Once it has had its time, the next pass ends it.
++        thread::sleep(KILL_AFTER + Duration::from_millis(500));
++        closer.close_programs(&programs);
++        let ended = (0..50).any(|_| {
++            thread::sleep(Duration::from_millis(100));
++            listed.try_wait().unwrap().is_some()
++        });
++        assert!(ended, "the listed program should have been ended");
++
++        // A program that has gone is forgotten, and the one that was not listed never touched.
++        closer.close_programs(&programs);
++        assert!(closer.asked.is_empty());
++        assert!(other.try_wait().unwrap().is_none());
++        let _ = other.kill();
++        let _ = other.wait();
++    }
++}
 ```
 
 ## 6. The service, and the files that change around it
@@ -897,8 +1439,9 @@ use windows_service::service_control_handler::{self, ServiceControlHandlerResult
 use windows_service::service_dispatcher;
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
-use crate::block::{parse_duration, Blocklist};
+use crate::block::{parse_duration, Blocklist, Lists};
 use crate::filters::FilterList;
+use crate::programs::ProgramList;
 use crate::proto::{Policy, Request, Response};
 use crate::state::{self, Enforcers};
 use crate::watchdog::{self, note, AppSlot};
@@ -1117,10 +1660,16 @@ fn handle(context: &Context, caller: u32, request: Request) -> (Response, Option
             // This request comes from the thread that closes tabs: hearing it is how the service
             // knows that is going on. It counts only from the process taken in as the app.
             context.slot.heard(caller);
-            let policy = blocklist.active().map(|(filters, enforcers)| Policy { filters: filters.entries(), enforcers });
+            let policy = blocklist.active().map(|active| Policy {
+                filters: active.filters.entries(),
+                programs: active.programs.entries(),
+                enforcers: active.enforcers,
+            });
             (Response::Policy(policy), None)
         }
-        Request::Start { filters, duration, enforcers } => (done(start(blocklist, filters, &duration, enforcers)), None),
+        Request::Start { filters, programs, duration, enforcers } => {
+            (done(start(blocklist, filters, programs, &duration, enforcers)), None)
+        }
         Request::Stop => (done(blocklist.stop().map_err(|_| "A timed block cannot be stopped early".to_string())), None),
         Request::Unlock { password } => (done(unlock(context, &password)), None),
         // Refused during a timed block, judged by internet time, like the block itself.
@@ -1137,18 +1686,27 @@ fn handle(context: &Context, caller: u32, request: Request) -> (Response, Option
 }
 
 /// What `start_block` in the app used to check, now checked where it counts.
-fn start(blocklist: &Blocklist, filters: Vec<String>, duration: &str, enforcers: Enforcers) -> Result<(), String> {
+fn start(
+    blocklist: &Blocklist,
+    filters: Vec<String>,
+    programs: Vec<String>,
+    duration: &str,
+    enforcers: Enforcers,
+) -> Result<(), String> {
     let duration = parse_duration(duration)?;
-    let filters = FilterList::parse(&filters).map_err(|_| "Invalid block list syntax".to_string())?;
+    let sites = FilterList::parse(&filters).map_err(|_| "Invalid block list syntax".to_string())?;
+    // Also refuses what would close programs Windows needs (`programs.rs`), with the reason.
+    let programs = ProgramList::parse(&programs)?;
     if !enforcers.any() {
         return Err("Choose at least one enforcer".into());
     }
-    // An enforcer that goes by the list has nothing to do with an empty one, while the others
-    // (Obsidian's) do not need it. What matters is that something can run.
-    if !enforcers.can_run(!filters.is_empty()) {
-        return Err("Enter at least one site to block, or turn on an enforcer that does not use the list".into());
+    // An enforcer has nothing to do with an empty list of its own kind, while one that needs no
+    // list (Obsidian's) always does. What matters is that something can run.
+    let lists = Lists { sites, programs };
+    if !enforcers.can_run(|uses| lists.has(uses)) {
+        return Err("Enter at least one site or program to block, or turn on an enforcer that needs no list".into());
     }
-    blocklist.start(filters, duration, enforcers)
+    blocklist.start(lists, duration, enforcers)
 }
 
 /// Ends the block for the unlock password. After three wrong guesses in a row, guesses are
@@ -1328,7 +1886,7 @@ mod tests {
     }
 
     fn start_request(duration: &str) -> Request {
-        Request::Start { filters: vec!["a.com".into()], duration: duration.into(), enforcers: Enforcers::default() }
+        Request::Start { programs: vec![], filters: vec!["a.com".into()], duration: duration.into(), enforcers: Enforcers::default() }
     }
 
     #[test]
@@ -1336,16 +1894,17 @@ mod tests {
         let context = context("checked");
         // An empty list with only enforcers that go by it, nothing chosen, a bad duration, and an
         // address that cannot match.
-        let only_the_list = Enforcers { chromium_tabs: true, chromium_split_view: true, obsidian_web_viewer: false };
+        let only_the_list = Enforcers { chromium_tabs: true, chromium_split_view: true, obsidian_web_viewer: false, exe_names: false };
         let bad = [
-            Request::Start { filters: vec![], duration: "1h".into(), enforcers: only_the_list },
+            Request::Start { programs: vec![], filters: vec![], duration: "1h".into(), enforcers: only_the_list },
             Request::Start {
                 filters: vec!["a.com".into()],
+                programs: vec![],
                 duration: "1h".into(),
-                enforcers: Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: false },
+                enforcers: Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: false, exe_names: false },
             },
             start_request("soon"),
-            Request::Start { filters: vec!["has space.com".into()], duration: "1h".into(), enforcers: Enforcers::default() },
+            Request::Start { programs: vec![], filters: vec!["has space.com".into()], duration: "1h".into(), enforcers: Enforcers::default() },
         ];
         for request in bad {
             assert!(matches!(handle(&context, 0, request).0, Response::Failed(_)));
@@ -1356,8 +1915,8 @@ mod tests {
     #[test]
     fn an_empty_list_starts_a_block_when_an_enforcer_without_the_list_is_on() {
         let first = context("empty-list");
-        let obsidian_only = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: true };
-        let request = |enforcers| Request::Start { filters: vec![], duration: "1h".into(), enforcers };
+        let obsidian_only = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: true, exe_names: false };
+        let request = |enforcers| Request::Start { programs: vec![], filters: vec![], duration: "1h".into(), enforcers };
         assert_eq!(handle(&first, 0, request(obsidian_only)).0, Response::Done);
         // The block keeps what it was started with: no entries, and Obsidian's enforcer only.
         let Response::Policy(Some(policy)) = handle(&first, 0, Request::Policy).0 else { panic!("no policy") };
@@ -1394,6 +1953,34 @@ mod tests {
 
         let _ = stranger.kill();
         let _ = stranger.wait();
+    }
+
+    #[test]
+    fn programs_alone_can_start_a_block_and_what_windows_needs_is_refused() {
+        let programs_only = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: false, exe_names: true };
+        let request = |programs: &[&str]| Request::Start {
+            filters: vec![],
+            programs: programs.iter().map(|p| p.to_string()).collect(),
+            duration: "1h".into(),
+            enforcers: programs_only,
+        };
+        let context = context("programs");
+
+        // The programs enforcer alone, with nothing listed, has nothing to do.
+        assert!(matches!(handle(&context, 0, request(&[])).0, Response::Failed(_)));
+        // Entries that would close what Windows or this app needs, or are not names.
+        for bad in ["*", "explorer.exe", "s*", r"C:\Games\game.exe"] {
+            let Response::Failed(why) = handle(&context, 0, request(&[bad])).0 else { panic!("{bad} was accepted") };
+            assert!(why.contains("needs") || why.contains("Not a program name"), "{bad}: {why}");
+        }
+        assert!(context.blocklist.filters().is_none());
+
+        // A real one starts, and is what the app is told to close.
+        assert_eq!(handle(&context, 0, request(&["Steam*", "game"])).0, Response::Done);
+        let Response::Policy(Some(policy)) = handle(&context, 0, Request::Policy).0 else { panic!("no policy") };
+        assert_eq!(policy.programs, vec!["steam*.exe", "game.exe"]);
+        assert!(policy.filters.is_empty());
+        assert_eq!(policy.enforcers, programs_only);
     }
 
     #[test]
@@ -2205,6 +2792,7 @@ mod client;
 mod clock;
 mod filters;
 mod pipe;
+mod programs;
 mod proto;
 mod service;
 mod setup;
@@ -2222,14 +2810,20 @@ use tauri::{
     AppHandle, Manager, State, WindowEvent,
 };
 
-/// Starts blocking with the given filter lines and enforcers, for `duration` (`5s`, `10m`, `3h`,
+/// Starts blocking with the given filter lines, program lines and enforcers, for `duration` (`5s`, `10m`, `3h`,
 /// `1d`) or, when empty, until stopped.
 ///
 /// The service owns the block and checks all of this again (`service::start`); the answer here
 /// is only its verdict. It goes on even if this app is ended or Windows restarts.
 #[tauri::command]
-fn start_block(filters: Vec<String>, duration: String, enforcers: Enforcers, remote: State<Remote>) -> Result<(), String> {
-    remote.command(Request::Start { filters, duration, enforcers })
+fn start_block(
+    filters: Vec<String>,
+    programs: Vec<String>,
+    duration: String,
+    enforcers: Enforcers,
+    remote: State<Remote>,
+) -> Result<(), String> {
+    remote.command(Request::Start { filters, programs, duration, enforcers })
 }
 
 #[tauri::command]
@@ -2321,7 +2915,27 @@ fn main() {
 ```diff
 --- a/src/index.html
 +++ b/src/index.html
-@@ -200,7 +200,16 @@
+@@ -154,6 +154,11 @@
+       <label class="check"><input type="checkbox" data-enforcer="chromium_tabs" checked />Close blocked tabs in Chrome, Edge, Brave</label>
+       <label class="check"><input type="checkbox" data-enforcer="chromium_split_view" checked />Close blocked pages in split view</label>
+     </section>
++    <section class="list">
++      <h2>Programs</h2>
++      <textarea id="programs" placeholder="One program per line, e.g. steam.exe or epic*" aria-label="Programs to close"></textarea>
++      <label class="check"><input type="checkbox" data-enforcer="exe_names" checked />Close these programs</label>
++    </section>
+     <section>
+       <h2>Without block list</h2>
+       <label class="check"><input type="checkbox" data-enforcer="obsidian_web_viewer" checked />Close Obsidian when it shows web pages</label>
+@@ -170,6 +175,7 @@
+     <script>
+       const { invoke } = window.__TAURI__.core;
+       const sites = document.getElementById("sites");
++      const programBox = document.getElementById("programs");
+       const duration = document.getElementById("duration");
+       const toggle = document.getElementById("toggle");
+       const status = document.getElementById("status");
+@@ -200,13 +206,24 @@
  
        // The backend owns the block (timed blocks end there); the UI mirrors it every second.
        async function refresh() {
@@ -2335,11 +2949,19 @@ fn main() {
 +          status.textContent = String(e);
 +          return;
 +        }
-+        const { blocking, remaining, filters, enforcers: running, clock_synced } = state;
++        const { blocking, remaining, filters, programs: programEntries, enforcers: running, clock_synced } = state;
          const timed = remaining != null;
          // A block resumed from disk comes with its list, so show it rather than an empty box.
          if (blocking && filters.length && !sites.value) sites.value = filters.join("\n");
-@@ -231,7 +240,13 @@
++        if (blocking && programEntries.length && !programBox.value) programBox.value = programEntries.join("\n");
+         toggle.textContent = blocking ? "Stop block" : "Start block";
+         toggle.disabled = timed;
+         sites.disabled = blocking;
++        programBox.disabled = blocking;
+         // Fixed while a block runs, so turning one off is not a way around it.
+         for (const c of checks) {
+           if (running) c.checked = running[c.dataset.enforcer];
+@@ -231,10 +248,17 @@
        }
  
        toggle.addEventListener("click", async () => {
@@ -2353,7 +2975,20 @@ fn main() {
 +        }
          if (blocking) return run("stop_block");
          const filters = sites.value.split(/\r?\n/);
-         await run("start_block", { filters, duration: duration.value, enforcers: enforcers() });
+-        await run("start_block", { filters, duration: duration.value, enforcers: enforcers() });
++        const programs = programBox.value.split(/\r?\n/);
++        await run("start_block", { filters, programs, duration: duration.value, enforcers: enforcers() });
+       });
+ 
+       // Enter in the field submits too.
+@@ -249,6 +273,7 @@
+       });
+       password.addEventListener("input", () => { error = ""; force.disabled = !password.value; refresh(); });
+       sites.addEventListener("input", () => { error = ""; refresh(); });
++      programBox.addEventListener("input", () => { error = ""; refresh(); });
+       duration.addEventListener("input", () => { error = ""; refresh(); });
+       for (const c of checks) {
+         c.addEventListener("change", () => {
 ```
 
 `tauri.conf.json`: the installer must run as administrator and install into `C:\Program Files`, **not** a folder the user can write to. If the user could replace the exe the service runs from, they could run anything as SYSTEM, which would defeat the whole thing.
@@ -2361,6 +2996,15 @@ fn main() {
 ```diff
 --- a/src-tauri/tauri.conf.json
 +++ b/src-tauri/tauri.conf.json
+@@ -14,7 +14,7 @@
+         "label": "main",
+         "title": "Site Blocker",
+         "width": 340,
+-        "height": 560,
++        "height": 720,
+         "visible": false,
+         "resizable": false,
+         "transparent": true,
 @@ -32,7 +32,7 @@
      "shortDescription": "Blocks distracting sites in Chromium browsers and Obsidian",
      "windows": {
@@ -2430,6 +3074,221 @@ The exit codes of `--uninstall`: `0` done (or no service registered), `1` the se
 !macroend
 ```
 
+### 6.4 The programs enforcer, and how to add the next enforcer
+
+The new enforcer closes programs by the name of their exe. It has its own list and its own textarea, next to the site list. Decisions worth knowing:
+
+- **Matching** (`programs.rs`): one entry per line, compared with the file name of the running program, never a path. Case is ignored, `*` stands for any characters, and `.exe` is added when missing: `discord` is `discord.exe`, `steam*` is `steam*.exe`, `*launcher.exe` covers `epiclauncher.exe`. Names with spaces are fine; paths and characters a file name cannot have are refused.
+- **A protected list** (`PROTECTED` in `programs.rs`) holds what must never be closed: Windows' own programs (`explorer.exe`, `svchost.exe`, `csrss.exe`, ...), this app's tray app and its WebView2, and the service. An entry that would match **any** of them is refused when the block starts, with the reason. That also refuses `*`, `*.exe` and `s*`, so a typo cannot take the desktop down. `is_blocked` also never says yes to a protected name, as a last line of defence for a list that was read back from disk.
+- **How a program is closed** (`tab_closer.rs`, `close_programs`): once a second the app lists the running programs. A listed one is first **asked to close** (a `WM_CLOSE` to each of its top-level windows, like the X button, so it can offer to save), and if it is still running **3 seconds later** it is ended. A program with no window to ask is therefore ended after those 3 seconds. The app never touches its own process.
+- **The app, not the service, does this**, like the tab closing: it runs as the user, so it can close the user's programs and cannot touch SYSTEM's. It also means the heartbeat in section 6.2 covers this enforcer too.
+- **The block remembers its programs**: they are saved in `state.json` (`Saved::programs`, which an older file simply lacks) and come back after a restart; the UI shows them again for a running block.
+- **Start rules**: an enforcer needs its own list. The programs enforcer on with an empty program list has nothing to do, so a block with only that enforcer and no programs is refused; a block with Obsidian on and both lists empty is fine.
+
+```rust
+//! Blocked programs: one exe name per line, `*` as wildcard.
+//!
+//! - Letter case is ignored, and only the file name counts, never a path: `steam.exe`.
+//! - `.exe` is added when it is missing: `discord` is `discord.exe`, `steam*` is `steam*.exe`.
+//! - `*` matches any characters: `*launcher.exe` covers `epiclauncher.exe` and `launcher.exe`.
+//!
+//! Some programs must never be closed, because closing them breaks Windows or this app: they are
+//! listed in `PROTECTED`. An entry that would match any of them is refused when the block starts,
+//! which also refuses `*` and `*.exe` and the like, so a typo cannot take the desktop down.
+
+use regex::RegexSet;
+
+/// Programs that are never closed: Windows' own, and this app's (the tray app, its WebView2 and
+/// the service). Lower case, as the names are compared.
+const PROTECTED: [&str; 25] = [
+    "explorer.exe",
+    "winlogon.exe",
+    "wininit.exe",
+    "csrss.exe",
+    "smss.exe",
+    "services.exe",
+    "lsass.exe",
+    "svchost.exe",
+    "dwm.exe",
+    "fontdrvhost.exe",
+    "sihost.exe",
+    "taskhostw.exe",
+    "ctfmon.exe",
+    "conhost.exe",
+    "runtimebroker.exe",
+    "searchhost.exe",
+    "startmenuexperiencehost.exe",
+    "shellexperiencehost.exe",
+    "msedgewebview2.exe",
+    "siteblocker.exe",
+    "tray-app.exe",
+    "system",
+    "registry",
+    "memory compression",
+    "secure system",
+];
+
+/// Characters a file name cannot contain, which also keeps paths out.
+const NOT_IN_A_NAME: [char; 8] = ['\\', '/', ':', '"', '<', '>', '|', '?'];
+
+pub struct ProgramList {
+    /// The normalized entries, kept so a block can be written to disk and resumed (`state.rs`).
+    entries: Vec<String>,
+    matchers: RegexSet,
+}
+
+impl Default for ProgramList {
+    fn default() -> ProgramList {
+        ProgramList { entries: Vec::new(), matchers: RegexSet::empty() }
+    }
+}
+
+impl ProgramList {
+    /// Parses one entry per line, ignoring empty lines. The error says in words what is wrong.
+    pub fn parse<S: AsRef<str>>(lines: &[S]) -> Result<ProgramList, String> {
+        let trimmed: Vec<&str> = lines.iter().map(|l| l.as_ref().trim()).filter(|l| !l.is_empty()).collect();
+        let invalid: Vec<&str> = trimmed.iter().copied().filter(|e| e.contains(NOT_IN_A_NAME)).collect();
+        if !invalid.is_empty() {
+            return Err(format!("Not a program name (give the name only, e.g. steam.exe): {}", invalid.join(", ")));
+        }
+        let entries: Vec<String> = trimmed.iter().map(|e| normalize(e)).collect();
+        // Entry by entry, so the message says which ones.
+        let too_wide: Vec<&str> = entries
+            .iter()
+            .filter(|entry| {
+                let one = RegexSet::new([to_regex(entry)]).unwrap();
+                PROTECTED.iter().any(|name| one.is_match(name))
+            })
+            .map(String::as_str)
+            .collect();
+        if !too_wide.is_empty() {
+            return Err(format!("Would close programs Windows or this app needs: {}", too_wide.join(", ")));
+        }
+        Ok(ProgramList { matchers: RegexSet::new(entries.iter().map(|e| to_regex(e))).unwrap(), entries })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// The entries as written down, which are normalized and so match exactly what they matched.
+    pub fn entries(&self) -> Vec<String> {
+        self.entries.clone()
+    }
+
+    /// Whether a program with this file name (`chrome.exe`) is on the list. Never one of
+    /// `PROTECTED`, whatever the list says.
+    pub fn is_blocked(&self, file_name: &str) -> bool {
+        let name = file_name.to_lowercase();
+        !PROTECTED.contains(&name.as_str()) && self.matchers.is_match(&name)
+    }
+}
+
+/// Lower case, with `.exe` added when missing.
+fn normalize(entry: &str) -> String {
+    let entry = entry.trim().to_lowercase();
+    if entry.ends_with(".exe") {
+        entry
+    } else {
+        format!("{entry}.exe")
+    }
+}
+
+/// `*` becomes "anything", everything else is literal, and the whole name has to match.
+fn to_regex(entry: &str) -> String {
+    let parts: Vec<String> = entry.split('*').map(regex::escape).collect();
+    format!("^{}$", parts.join(".*"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn list(entries: &[&str]) -> ProgramList {
+        ProgramList::parse(entries).unwrap()
+    }
+
+    #[test]
+    fn names_match_whole_and_ignore_case() {
+        let programs = list(&["Steam.exe", "discord"]);
+        assert!(programs.is_blocked("steam.exe"));
+        assert!(programs.is_blocked("STEAM.EXE"));
+        assert!(programs.is_blocked("Discord.exe"));
+        // The whole name, not a part of it.
+        assert!(!programs.is_blocked("steamwebhelper.exe"));
+        assert!(!programs.is_blocked("notsteam.exe"));
+        assert!(!programs.is_blocked("steam.exe.bak"));
+        assert_eq!(programs.entries(), vec!["steam.exe", "discord.exe"]);
+    }
+
+    #[test]
+    fn wildcards_stand_for_any_characters() {
+        let programs = list(&["steam*", "*launcher.exe", "a*b*c.exe"]);
+        assert!(programs.is_blocked("steam.exe"));
+        assert!(programs.is_blocked("steamwebhelper.exe"));
+        assert!(programs.is_blocked("epicgameslauncher.exe"));
+        assert!(programs.is_blocked("launcher.exe"));
+        assert!(programs.is_blocked("axxbyyc.exe"));
+        assert!(programs.is_blocked("abc.exe"));
+        assert!(!programs.is_blocked("steam.dll"));
+        assert!(!programs.is_blocked("axxc.exe"));
+        // Characters that mean something in a regular expression are just characters.
+        let dots = list(&["a.b+c(1).exe"]);
+        assert!(dots.is_blocked("a.b+c(1).exe"));
+        assert!(!dots.is_blocked("axb+c(1).exe"));
+    }
+
+    #[test]
+    fn empty_lines_are_skipped_and_an_empty_list_blocks_nothing() {
+        let programs = list(&["", "  ", "game.exe", ""]);
+        assert_eq!(programs.entries(), vec!["game.exe"]);
+        let none = list(&["", " "]);
+        assert!(none.is_empty());
+        assert!(!none.is_blocked("game.exe"));
+        assert!(!ProgramList::default().is_blocked("game.exe"));
+    }
+
+    #[test]
+    fn paths_and_odd_characters_are_not_names() {
+        for bad in [r"C:\Games\game.exe", "games/game.exe", r"..\game.exe", "game?.exe", "a|b.exe"] {
+            assert!(ProgramList::parse(&[bad]).is_err(), "{bad}");
+        }
+        // Spaces inside a name are fine: plenty of programs have them.
+        assert!(list(&["Some Game.exe"]).is_blocked("some game.exe"));
+    }
+
+    #[test]
+    fn what_windows_needs_cannot_be_listed() {
+        // Directly, in any case, and by wildcards that reach one of them.
+        for bad in ["explorer.exe", "Explorer", "svchost", "*", "*.exe", "s*", "*host*", "siteblocker", "msedgewebview2.exe"] {
+            let error = ProgramList::parse(&[bad]).err().unwrap_or_default();
+            assert!(error.contains("needs"), "{bad}: {error:?}");
+        }
+        // The message says which entry it is, and one bad entry refuses the lot.
+        let error = ProgramList::parse(&["steam.exe", "*"]).err().unwrap();
+        assert!(error.contains('*') && !error.contains("steam"), "{error}");
+        // Ordinary wildcards are fine.
+        assert!(ProgramList::parse(&["steam*", "*game*", "epic*launcher"]).is_ok());
+    }
+
+    #[test]
+    fn a_protected_program_is_never_blocked_even_if_a_list_somehow_has_it() {
+        // A list read back from disk is parsed again, but this is the last line of defence.
+        let programs = ProgramList { entries: vec!["explorer.exe".into()], matchers: RegexSet::new(["^explorer\\.exe$"]).unwrap() };
+        assert!(!programs.is_blocked("explorer.exe"));
+        assert!(!programs.is_blocked("Explorer.EXE"));
+    }
+}
+```
+
+**Checklist for another enforcer** (the code was arranged so this stays small):
+
+1. `state.rs`: add a `bool` field to `Enforcers` (and to `Default`), and **one line in `Enforcers::all()`** saying what it needs (`Uses::...`).
+2. If it needs a **new kind of list**: a `Uses` variant in `state.rs`, a field in `block::Lists`, in `block::Block` and in `state::Saved` (with `#[serde(default)]`), an arm in `Lists::has`, and the list in `proto::Request::Start`, `proto::Policy` and `service::start`/`Policy`. A new list type like `programs.rs` carries its own parsing and tests.
+3. `tab_closer.rs`: do the work, behind `enforcers.uses(Uses::...)` or the field.
+4. `index.html`: a checkbox with `data-enforcer="<field name>"` (and a textarea if it has a list). The checkboxes are read, saved and disabled by their attribute, nothing else to wire.
+5. Tests: `state::tests::what_can_run_...` covers the combinations; add the new enforcer to it.
+
 ## 7. Update `CLAUDE.md`
 
 The project notes describe the old design and are used by every future session, so update them in the same change. Replace these parts (wording is a suggestion; keep the style of the file):
@@ -2437,6 +3296,7 @@ The project notes describe the old design and are used by every future session, 
 **File list**: remove `task.rs`; add:
 
 - `src-tauri/src/service.rs` – the SYSTEM service: owns the block, answers the app over the pipe, installs / removes itself
+- `src-tauri/src/programs.rs` – the programs to close: exe names with `*`, a protected list that is never closed
 - `src-tauri/src/pipe.rs`, `proto.rs`, `client.rs` – the named pipe `\\.\pipe\SiteBlocker`: server, messages, and the app's side (keeps the last policy in memory)
 - `src-tauri/src/watchdog.rs` – the service's watch over the app (starts it as the logged-on user, at logon and while a block runs; decides which process is the app and ends one that stops asking for its policy)
 
@@ -2524,7 +3384,7 @@ rmdir /s /q "%ProgramData%\SiteBlocker"
 
 ```powershell
 cd src-tauri
-cargo test                               # 44 tests: block, clock, filters, state, unlock, proto, client, service, watchdog
+cargo test                               # 56 tests: block, clock, filters, programs, state, unlock, proto, client, service, watchdog, tab_closer
 cargo test -- --ignored the_pipe --nocapture   # starts the real pipe server in the test process, ~15 s; no service may be running
 ```
 
@@ -2561,6 +3421,10 @@ Build with `npm run build` (installer in `src-tauri\target\release\bundle\nsis\`
 | 22 | During a block, suspend the real app (Process Explorer, or `pssuspend` from Sysinternals) | within about 5 to 6 seconds `service.log` says "the app stopped asking for its policy; ending it", and a new app starts |
 | 23 | Start `SiteBlocker.exe` by hand while the app runs | the second one exits at once; `app.log` says "not starting: Site Blocker is already running" |
 | 24 | During a block, put the machine to sleep for a minute and wake it | the app is not ended because of the sleep (no "stopped asking" line in `service.log`) |
+| 25 | Put `steam*` (or a program you have open, say `notepad`) in the Programs box and start a block | the program gets a close request, and is ended about 3 seconds later if it is still running; `app.log` is not written, but the program is gone |
+| 26 | Put `*` or `explorer.exe` in the Programs box and start | refused with "Would close programs Windows or this app needs" |
+| 27 | Start a block with only Obsidian ticked and both lists empty | it starts; with only the programs box ticked and no programs it is refused |
+| 28 | Restart the PC during a block with programs | after the restart the block is back and the Programs box shows them |
 
 If test 1 fails: read `%ProgramData%\SiteBlocker\service.log` (administrators can read it) and the installer's error message; `%LOCALAPPDATA%\SiteBlocker\app.log` has the `--install` output.
 

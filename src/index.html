@@ -154,6 +154,11 @@
       <label class="check"><input type="checkbox" data-enforcer="chromium_tabs" checked />Close blocked tabs in Chrome, Edge, Brave</label>
       <label class="check"><input type="checkbox" data-enforcer="chromium_split_view" checked />Close blocked pages in split view</label>
     </section>
+    <section class="list">
+      <h2>Programs</h2>
+      <textarea id="programs" placeholder="One program per line, e.g. steam.exe or epic*" aria-label="Programs to close"></textarea>
+      <label class="check"><input type="checkbox" data-enforcer="exe_names" checked />Close these programs</label>
+    </section>
     <section>
       <h2>Without block list</h2>
       <label class="check"><input type="checkbox" data-enforcer="obsidian_web_viewer" checked />Close Obsidian when it shows web pages</label>
@@ -170,6 +175,7 @@
     <script>
       const { invoke } = window.__TAURI__.core;
       const sites = document.getElementById("sites");
+      const programBox = document.getElementById("programs");
       const duration = document.getElementById("duration");
       const toggle = document.getElementById("toggle");
       const status = document.getElementById("status");
@@ -209,13 +215,15 @@
           status.textContent = String(e);
           return;
         }
-        const { blocking, remaining, filters, enforcers: running, clock_synced } = state;
+        const { blocking, remaining, filters, programs: programEntries, enforcers: running, clock_synced } = state;
         const timed = remaining != null;
         // A block resumed from disk comes with its list, so show it rather than an empty box.
         if (blocking && filters.length && !sites.value) sites.value = filters.join("\n");
+        if (blocking && programEntries.length && !programBox.value) programBox.value = programEntries.join("\n");
         toggle.textContent = blocking ? "Stop block" : "Start block";
         toggle.disabled = timed;
         sites.disabled = blocking;
+        programBox.disabled = blocking;
         // Fixed while a block runs, so turning one off is not a way around it.
         for (const c of checks) {
           if (running) c.checked = running[c.dataset.enforcer];
@@ -249,7 +257,8 @@
         }
         if (blocking) return run("stop_block");
         const filters = sites.value.split(/\r?\n/);
-        await run("start_block", { filters, duration: duration.value, enforcers: enforcers() });
+        const programs = programBox.value.split(/\r?\n/);
+        await run("start_block", { filters, programs, duration: duration.value, enforcers: enforcers() });
       });
 
       // Enter in the field submits too.
@@ -264,6 +273,7 @@
       });
       password.addEventListener("input", () => { error = ""; force.disabled = !password.value; refresh(); });
       sites.addEventListener("input", () => { error = ""; refresh(); });
+      programBox.addEventListener("input", () => { error = ""; refresh(); });
       duration.addEventListener("input", () => { error = ""; refresh(); });
       for (const c of checks) {
         c.addEventListener("change", () => {
