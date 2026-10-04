@@ -32,6 +32,10 @@ pub struct Saved {
     /// versions, which had none.
     #[serde(default)]
     pub programs: Vec<String>,
+    /// The sites that are always allowed, one entry per line, as typed in the UI. They win over
+    /// `filters`. Missing in files from older versions, which had none.
+    #[serde(default)]
+    pub allowed: Vec<String>,
 }
 
 /// The ways a block is enforced, chosen when it starts and fixed while it runs, so turning one
@@ -209,7 +213,7 @@ mod tests {
     }
 
     fn timed(until: Option<u64>) -> Saved {
-        Saved { filters: vec!["tweakers.net".to_string()], until, seen: None, enforcers: Enforcers::default(), programs: Vec::new() }
+        Saved { filters: vec!["tweakers.net".to_string()], until, seen: None, enforcers: Enforcers::default(), programs: Vec::new(), allowed: Vec::new() }
     }
 
     #[test]
@@ -269,7 +273,7 @@ mod tests {
         let store = store("old");
         fs::create_dir_all(store.path().parent().unwrap()).unwrap();
         fs::write(store.path(), r#"{"filters":["a.com"],"until":1800000000}"#).unwrap();
-        assert_eq!(store.load(), Some(Saved { filters: vec!["a.com".into()], until: Some(1_800_000_000), seen: None, enforcers: Enforcers::default(), programs: Vec::new() }));
+        assert_eq!(store.load(), Some(Saved { filters: vec!["a.com".into()], until: Some(1_800_000_000), seen: None, enforcers: Enforcers::default(), programs: Vec::new(), allowed: Vec::new() }));
         store.clear();
     }
 

@@ -70,6 +70,9 @@
         border-radius: 4px;
         outline: none;
       }
+      /* The short list of exceptions under the block list. */
+      textarea.short { flex: none; height: 64px; }
+      h2.sub { font-weight: 400; color: var(--text-secondary); }
       textarea::placeholder { color: var(--text-secondary); }
       textarea:focus { background: var(--input-focus); border-bottom: 2px solid var(--accent); padding-bottom: 5px; }
       textarea:disabled { color: var(--text-disabled); background: var(--control-disabled); border-color: var(--control-stroke); }
@@ -150,7 +153,9 @@
   <body>
     <section class="list">
       <h2>Block list</h2>
-      <textarea id="sites" placeholder="One site per line, e.g. youtube.com" aria-label="Block list" autofocus></textarea>
+      <textarea id="sites" placeholder="One site per line, e.g. youtube.com, or * for every site" aria-label="Block list" autofocus></textarea>
+      <h2 class="sub">Always allowed (wins over the block list)</h2>
+      <textarea id="allowed" class="short" placeholder="e.g. google.com or *.wikipedia.org" aria-label="Always allowed sites"></textarea>
       <label class="check"><input type="checkbox" data-enforcer="chromium_tabs" checked />Close blocked tabs in Chrome, Edge, Brave</label>
       <label class="check"><input type="checkbox" data-enforcer="chromium_split_view" checked />Close blocked pages in split view</label>
     </section>
@@ -176,6 +181,7 @@
       const { invoke } = window.__TAURI__.core;
       const sites = document.getElementById("sites");
       const programBox = document.getElementById("programs");
+      const allowedBox = document.getElementById("allowed");
       const duration = document.getElementById("duration");
       const toggle = document.getElementById("toggle");
       const status = document.getElementById("status");
@@ -215,14 +221,16 @@
           status.textContent = String(e);
           return;
         }
-        const { blocking, remaining, filters, programs: programEntries, enforcers: running, clock_synced } = state;
+        const { blocking, remaining, filters, allowed: allowedEntries, programs: programEntries, enforcers: running, clock_synced } = state;
         const timed = remaining != null;
         // A block resumed from disk comes with its list, so show it rather than an empty box.
         if (blocking && filters.length && !sites.value) sites.value = filters.join("\n");
+        if (blocking && allowedEntries.length && !allowedBox.value) allowedBox.value = allowedEntries.join("\n");
         if (blocking && programEntries.length && !programBox.value) programBox.value = programEntries.join("\n");
         toggle.textContent = blocking ? "Stop block" : "Start block";
         toggle.disabled = timed;
         sites.disabled = blocking;
+        allowedBox.disabled = blocking;
         programBox.disabled = blocking;
         // Fixed while a block runs, so turning one off is not a way around it.
         for (const c of checks) {
@@ -258,7 +266,8 @@
         if (blocking) return run("stop_block");
         const filters = sites.value.split(/\r?\n/);
         const programs = programBox.value.split(/\r?\n/);
-        await run("start_block", { filters, programs, duration: duration.value, enforcers: enforcers() });
+        const allowed = allowedBox.value.split(/\r?\n/);
+        await run("start_block", { filters, allowed, programs, duration: duration.value, enforcers: enforcers() });
       });
 
       // Enter in the field submits too.
@@ -274,6 +283,7 @@
       password.addEventListener("input", () => { error = ""; force.disabled = !password.value; refresh(); });
       sites.addEventListener("input", () => { error = ""; refresh(); });
       programBox.addEventListener("input", () => { error = ""; refresh(); });
+      allowedBox.addEventListener("input", () => { error = ""; refresh(); });
       duration.addEventListener("input", () => { error = ""; refresh(); });
       for (const c of checks) {
         c.addEventListener("change", () => {

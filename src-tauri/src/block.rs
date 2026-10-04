@@ -33,7 +33,12 @@ pub struct Blocklist {
 /// What a block is told to block. **A new kind of list goes here**, together with a `state::Uses`
 /// variant, an arm in `has`, and a field in `Block` and `state::Saved`.
 pub struct Lists {
+    /// The sites to block.
     pub sites: FilterList,
+    /// The sites that are always allowed, which win over `sites`. They are not something an
+    /// enforcer needs on its own (`Uses::Sites` is about the block list), they only make
+    /// exceptions to it.
+    pub allowed: FilterList,
     pub programs: ProgramList,
 }
 
@@ -52,12 +57,23 @@ impl Lists {
 #[derive(Clone)]
 pub struct Active {
     pub filters: Arc<FilterList>,
+    pub allowed: Arc<FilterList>,
     pub programs: Arc<ProgramList>,
     pub enforcers: Enforcers,
 }
 
+impl Active {
+    /// Whether a page is to be closed: on the block list, and not on the list of allowed sites.
+    /// Allowed wins, whatever the block list says, so `*` on the block list with `google.com`
+    /// allowed blocks every site but that one.
+    pub fn blocks_site(&self, url: &str) -> bool {
+        self.filters.is_blocked(url) && !self.allowed.is_blocked(url)
+    }
+}
+
 struct Block {
     filters: Arc<FilterList>,
+    allowed: Arc<FilterList>,
     programs: Arc<ProgramList>,
     /// When a timed block ends, in internet time; `None` blocks until stopped.
     until: Option<SystemTime>,
@@ -73,6 +89,9 @@ pub struct Status {
     pub remaining: Option<u64>,
     /// The blocked entries, so the UI can show what a resumed block is blocking.
     pub filters: Vec<String>,
+    /// The allowed sites, for the same reason.
+    #[serde(default)]
+    pub allowed: Vec<String>,
     /// The blocked programs, for the same reason.
     #[serde(default)]
     pub programs: Vec<String>,
@@ -105,6 +124,7 @@ impl Blocklist {
         let until = duration.map(|d| self.clock.now() + d);
         let new = Block {
             filters: Arc::new(lists.sites),
+            allowed: Arc::new(lists.allowed),
             programs: Arc::new(lists.programs),
             until,
             enforcers,
@@ -134,7 +154,9 @@ impl Blocklist {
         let Some(store) = &self.store else { return };
         let Some(saved) = store.load() else { return };
         // A block list we cannot read is dropped rather than resumed as something unknown.
-        let (Ok(filters), Ok(programs)) = (FilterList::parse(&saved.filters), ProgramList::parse(&saved.programs)) else {
+        let (Ok(filters), Ok(allowed), Ok(programs)) =
+            (FilterList::parse(&saved.filters), FilterList::parse(&saved.allowed), ProgramList::parse(&saved.programs))
+        else {
             eprintln!("block: dropping an unreadable saved block");
             store.clear();
             return;
@@ -152,6 +174,7 @@ impl Blocklist {
         let enforcers = saved.enforcers;
         *self.block.lock().unwrap() = Some(Block {
             filters: Arc::new(filters),
+            allowed: Arc::new(allowed),
             programs: Arc::new(programs),
             until,
             enforcers,
@@ -179,7 +202,12 @@ impl Blocklist {
                 eprintln!("block: {e}");
             }
         }
-        block.as_ref().map(|b| Active { filters: b.filters.clone(), programs: b.programs.clone(), enforcers: b.enforcers })
+        block.as_ref().map(|b| Active {
+            filters: b.filters.clone(),
+            allowed: b.allowed.clone(),
+            programs: b.programs.clone(),
+            enforcers: b.enforcers,
+        })
     }
 
     pub fn status(&self) -> Status {
@@ -189,6 +217,7 @@ impl Blocklist {
             blocking,
             remaining: block.as_ref().and_then(|b| remaining(b, self.clock.now())),
             filters: block.as_ref().map(|b| b.filters.entries()).unwrap_or_default(),
+            allowed: block.as_ref().map(|b| b.allowed.entries()).unwrap_or_default(),
             programs: block.as_ref().map(|b| b.programs.entries()).unwrap_or_default(),
             enforcers: block.as_ref().map(|b| b.enforcers),
             clock_synced: self.clock.synced(),
@@ -203,6 +232,7 @@ impl Blocklist {
             seen: state::to_unix(self.clock.now()),
             enforcers: block.enforcers,
             programs: block.programs.entries(),
+            allowed: block.allowed.entries(),
         })
     }
 
@@ -279,7 +309,7 @@ mod tests {
 
     /// Only sites to block; the program list is empty.
     fn sites(entries: &[&str]) -> Lists {
-        Lists { sites: FilterList::parse(entries).unwrap(), programs: ProgramList::default() }
+        Lists { sites: FilterList::parse(entries).unwrap(), allowed: FilterList::default(), programs: ProgramList::default() }
     }
 
     fn entries(blocklist: &Blocklist) -> Vec<String> {
@@ -366,10 +396,97 @@ mod tests {
         assert!(resumed.stop().is_ok());
     }
 
+    /// A block that blocks `block` and always allows `allow`.
+    fn with_allowed(block: &[&str], allow: &[&str]) -> Active {
+        let list = Blocklist::with_store(Store::new(
+            std::env::temp_dir().join(format!("block-{}-allowed-{}", std::process::id(), block.join("_").len() + allow.len())).join("state.json"),
+        ));
+        let lists = Lists {
+            sites: FilterList::parse(block).unwrap(),
+            allowed: FilterList::parse(allow).unwrap(),
+            programs: ProgramList::default(),
+        };
+        // `Enforcers::default()` has an enforcer that needs no list, so an empty block list starts too.
+        list.start(lists, None, Enforcers::default()).unwrap();
+        list.active().unwrap()
+    }
+
+    #[test]
+    fn allowed_sites_win_over_the_block_list() {
+        // Everything is blocked, except what is allowed.
+        let active = with_allowed(&["*"], &["google.com", "*.wikipedia.org"]);
+        assert!(active.blocks_site("https://youtube.com/watch?v=1"));
+        assert!(active.blocks_site("https://tweakers.net/"));
+        assert!(!active.blocks_site("https://google.com/search?q=a"));
+        assert!(!active.blocks_site("https://www.google.com/"));
+        assert!(!active.blocks_site("https://nl.wikipedia.org/wiki/Rust"));
+        // An allowed entry is exactly as wide as it is written: not the sites around it.
+        assert!(active.blocks_site("https://accounts.google.com/"));
+        assert!(active.blocks_site("https://wikipedia.org/"));
+
+        // A specific block and an exception inside it: the exception wins.
+        let active = with_allowed(&["youtube.com"], &["youtube.com/watch*"]);
+        assert!(active.blocks_site("https://youtube.com/"));
+        assert!(active.blocks_site("https://youtube.com/shorts/abc"));
+        assert!(!active.blocks_site("https://youtube.com/watch?v=1"));
+
+        // Allowed everything is allowed everything, whatever the block list says.
+        let active = with_allowed(&["youtube.com", "*.tweakers.net"], &["*"]);
+        assert!(!active.blocks_site("https://youtube.com/") && !active.blocks_site("https://a.tweakers.net/"));
+    }
+
+    #[test]
+    fn any_combination_of_the_two_lists_is_possible() {
+        // Neither: nothing is blocked.
+        let active = with_allowed(&[], &[]);
+        assert!(!active.blocks_site("https://youtube.com/"));
+        // Allowed alone: there is nothing to make exceptions to.
+        let active = with_allowed(&[], &["google.com"]);
+        assert!(!active.blocks_site("https://youtube.com/") && !active.blocks_site("https://google.com/"));
+        // Blocked alone.
+        let active = with_allowed(&["youtube.com"], &[]);
+        assert!(active.blocks_site("https://youtube.com/") && !active.blocks_site("https://google.com/"));
+        // The browser's own pages are neither blocked nor in need of an exception.
+        let active = with_allowed(&["*"], &[]);
+        assert!(!active.blocks_site("chrome://newtab/") && !active.blocks_site("about:blank"));
+    }
+
+    #[test]
+    fn the_allowed_sites_survive_a_restart_and_older_blocks_have_none() {
+        let list = blocklist("allowed-resume");
+        let lists = Lists {
+            sites: FilterList::parse(&["*"]).unwrap(),
+            allowed: FilterList::parse(&["Google.com", "*.wikipedia.org"]).unwrap(),
+            programs: ProgramList::default(),
+        };
+        list.start(lists, Some(Duration::from_secs(3600)), Enforcers::default()).unwrap();
+        assert_eq!(list.status().allowed, vec!["google.com", "*.wikipedia.org"]);
+
+        let resumed = reopened("allowed-resume");
+        resumed.restore();
+        let active = resumed.active().unwrap();
+        assert!(active.blocks_site("https://youtube.com/") && !active.blocks_site("https://google.com/"));
+        assert_eq!(resumed.status().allowed, vec!["google.com", "*.wikipedia.org"]);
+
+        // A saved block from before the allowed list resumes with none.
+        let older = blocklist("allowed-older");
+        let store = older.store.clone().unwrap();
+        std::fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        let until = state::now().unwrap().as_secs() + 3600;
+        std::fs::write(store.path(), format!(r#"{{"filters":["a.com"],"until":{until}}}"#)).unwrap();
+        let resumed = reopened("allowed-older");
+        resumed.restore();
+        assert!(resumed.status().allowed.is_empty() && resumed.active().unwrap().blocks_site("https://a.com/"));
+    }
+
     #[test]
     fn a_resumed_block_keeps_its_programs() {
         let list = blocklist("programs");
-        let lists = Lists { sites: FilterList::parse::<&str>(&[]).unwrap(), programs: ProgramList::parse(&["Steam*", "game"]).unwrap() };
+        let lists = Lists {
+            sites: FilterList::default(),
+            allowed: FilterList::default(),
+            programs: ProgramList::parse(&["Steam*", "game"]).unwrap(),
+        };
         list.start(lists, Some(Duration::from_secs(3600)), Enforcers::default()).unwrap();
         assert_eq!(list.status().programs, vec!["steam*.exe", "game.exe"]);
 
@@ -418,6 +535,7 @@ mod tests {
             seen: None,
             enforcers: Enforcers::default(),
             programs: Vec::new(),
+            allowed: Vec::new(),
         }).unwrap();
 
         let resumed = reopened("expired");

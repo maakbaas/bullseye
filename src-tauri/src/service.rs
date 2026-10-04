@@ -257,13 +257,14 @@ fn handle(context: &Context, caller: u32, request: Request) -> (Response, Option
             context.slot.heard(caller);
             let policy = blocklist.active().map(|active| Policy {
                 filters: active.filters.entries(),
+                allowed: active.allowed.entries(),
                 programs: active.programs.entries(),
                 enforcers: active.enforcers,
             });
             (Response::Policy(policy), None)
         }
-        Request::Start { filters, programs, duration, enforcers } => {
-            (done(start(blocklist, filters, programs, &duration, enforcers)), None)
+        Request::Start { filters, allowed, programs, duration, enforcers } => {
+            (done(start(blocklist, filters, allowed, programs, &duration, enforcers)), None)
         }
         Request::Stop => (done(blocklist.stop().map_err(|_| "A timed block cannot be stopped early".to_string())), None),
         Request::Unlock { password } => (done(unlock(context, &password)), None),
@@ -284,12 +285,14 @@ fn handle(context: &Context, caller: u32, request: Request) -> (Response, Option
 fn start(
     blocklist: &Blocklist,
     filters: Vec<String>,
+    allowed: Vec<String>,
     programs: Vec<String>,
     duration: &str,
     enforcers: Enforcers,
 ) -> Result<(), String> {
     let duration = parse_duration(duration)?;
     let sites = FilterList::parse(&filters).map_err(|_| "Invalid block list syntax".to_string())?;
+    let allowed = FilterList::parse(&allowed).map_err(|_| "Invalid syntax in the list of allowed sites".to_string())?;
     // Also refuses what would close programs Windows needs (`programs.rs`), with the reason.
     let programs = ProgramList::parse(&programs)?;
     if !enforcers.any() {
@@ -297,7 +300,7 @@ fn start(
     }
     // An enforcer has nothing to do with an empty list of its own kind, while one that needs no
     // list (Obsidian's) always does. What matters is that something can run.
-    let lists = Lists { sites, programs };
+    let lists = Lists { sites, allowed, programs };
     if !enforcers.can_run(|uses| lists.has(uses)) {
         return Err("Enter at least one site or program to block, or turn on an enforcer that needs no list".into());
     }
@@ -481,7 +484,7 @@ mod tests {
     }
 
     fn start_request(duration: &str) -> Request {
-        Request::Start { programs: vec![], filters: vec!["a.com".into()], duration: duration.into(), enforcers: Enforcers::default() }
+        Request::Start { programs: vec![], allowed: vec![], filters: vec!["a.com".into()], duration: duration.into(), enforcers: Enforcers::default() }
     }
 
     #[test]
@@ -491,15 +494,16 @@ mod tests {
         // address that cannot match.
         let only_the_list = Enforcers { chromium_tabs: true, chromium_split_view: true, obsidian_web_viewer: false, exe_names: false };
         let bad = [
-            Request::Start { programs: vec![], filters: vec![], duration: "1h".into(), enforcers: only_the_list },
+            Request::Start { programs: vec![], allowed: vec![], filters: vec![], duration: "1h".into(), enforcers: only_the_list },
             Request::Start {
                 filters: vec!["a.com".into()],
                 programs: vec![],
+                allowed: vec![],
                 duration: "1h".into(),
                 enforcers: Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: false, exe_names: false },
             },
             start_request("soon"),
-            Request::Start { programs: vec![], filters: vec!["has space.com".into()], duration: "1h".into(), enforcers: Enforcers::default() },
+            Request::Start { programs: vec![], allowed: vec![], filters: vec!["has space.com".into()], duration: "1h".into(), enforcers: Enforcers::default() },
         ];
         for request in bad {
             assert!(matches!(handle(&context, 0, request).0, Response::Failed(_)));
@@ -511,7 +515,7 @@ mod tests {
     fn an_empty_list_starts_a_block_when_an_enforcer_without_the_list_is_on() {
         let first = context("empty-list");
         let obsidian_only = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: true, exe_names: false };
-        let request = |enforcers| Request::Start { programs: vec![], filters: vec![], duration: "1h".into(), enforcers };
+        let request = |enforcers| Request::Start { programs: vec![], allowed: vec![], filters: vec![], duration: "1h".into(), enforcers };
         assert_eq!(handle(&first, 0, request(obsidian_only)).0, Response::Done);
         // The block keeps what it was started with: no entries, and Obsidian's enforcer only.
         let Response::Policy(Some(policy)) = handle(&first, 0, Request::Policy).0 else { panic!("no policy") };
@@ -555,6 +559,7 @@ mod tests {
         let programs_only = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: false, exe_names: true };
         let request = |programs: &[&str]| Request::Start {
             filters: vec![],
+            allowed: vec![],
             programs: programs.iter().map(|p| p.to_string()).collect(),
             duration: "1h".into(),
             enforcers: programs_only,
@@ -576,6 +581,45 @@ mod tests {
         assert_eq!(policy.programs, vec!["steam*.exe", "game.exe"]);
         assert!(policy.filters.is_empty());
         assert_eq!(policy.enforcers, programs_only);
+    }
+
+    #[test]
+    fn allowed_sites_travel_with_the_block_and_must_be_valid() {
+        let context = context("allowed");
+        let request = |filters: &[&str], allowed: &[&str]| Request::Start {
+            filters: filters.iter().map(|f| f.to_string()).collect(),
+            allowed: allowed.iter().map(|f| f.to_string()).collect(),
+            programs: vec![],
+            duration: "1h".into(),
+            enforcers: Enforcers::default(),
+        };
+        // An allowed entry that cannot match is refused like a bad block entry.
+        assert!(matches!(handle(&context, 0, request(&["*"], &["has space.com"])).0, Response::Failed(_)));
+        assert!(context.blocklist.filters().is_none());
+
+        // Everything blocked but one site: the app is told about both.
+        assert_eq!(handle(&context, 0, request(&["*"], &["Google.com"])).0, Response::Done);
+        let Response::Policy(Some(policy)) = handle(&context, 0, Request::Policy).0 else { panic!("no policy") };
+        assert_eq!(policy.filters, vec!["*"]);
+        assert_eq!(policy.allowed, vec!["google.com"]);
+        let Response::Status(status) = handle(&context, 0, Request::Status).0 else { panic!("no status") };
+        assert_eq!(status.allowed, vec!["google.com"]);
+    }
+
+    #[test]
+    fn allowed_sites_alone_are_not_something_to_block() {
+        let context = context("allowed-alone");
+        // Only the tab enforcers, no sites to block and only an allowed one: nothing to do.
+        let tabs_only = Enforcers { chromium_tabs: true, chromium_split_view: true, obsidian_web_viewer: false, exe_names: false };
+        let request = Request::Start {
+            filters: vec![],
+            allowed: vec!["google.com".into()],
+            programs: vec![],
+            duration: "1h".into(),
+            enforcers: tabs_only,
+        };
+        assert!(matches!(handle(&context, 0, request).0, Response::Failed(_)));
+        assert!(context.blocklist.filters().is_none());
     }
 
     #[test]

@@ -112,9 +112,14 @@ impl Remote {
         if cache.as_ref().is_some_and(|c| c.policy == policy) {
             return;
         }
-        match (FilterList::parse(&policy.filters), ProgramList::parse(&policy.programs)) {
-            (Ok(filters), Ok(programs)) => {
-                let active = Active { filters: Arc::new(filters), programs: Arc::new(programs), enforcers: policy.enforcers };
+        match (FilterList::parse(&policy.filters), FilterList::parse(&policy.allowed), ProgramList::parse(&policy.programs)) {
+            (Ok(filters), Ok(allowed), Ok(programs)) => {
+                let active = Active {
+                    filters: Arc::new(filters),
+                    allowed: Arc::new(allowed),
+                    programs: Arc::new(programs),
+                    enforcers: policy.enforcers,
+                };
                 *cache = Some(Cached { policy, active });
             }
             // Cannot happen with a service of this version; keep what is being enforced.
@@ -129,7 +134,12 @@ mod tests {
     use crate::state::Enforcers;
 
     fn policy(filters: &[&str]) -> Policy {
-        Policy { filters: filters.iter().map(|f| f.to_string()).collect(), programs: Vec::new(), enforcers: Enforcers::default() }
+        Policy {
+            filters: filters.iter().map(|f| f.to_string()).collect(),
+            allowed: Vec::new(),
+            programs: Vec::new(),
+            enforcers: Enforcers::default(),
+        }
     }
 
     fn current(remote: &Remote) -> Option<Active> {
@@ -159,12 +169,12 @@ mod tests {
     #[test]
     fn the_programs_come_along_and_are_parsed_with_the_policy() {
         let remote = Remote::new();
-        let with_programs = Policy { filters: vec![], programs: vec!["Steam*".into()], enforcers: Enforcers::default() };
+        let with_programs = Policy { filters: vec![], allowed: vec![], programs: vec!["Steam*".into()], enforcers: Enforcers::default() };
         remote.apply(Some(with_programs));
         let active = current(&remote).unwrap();
         assert!(active.programs.is_blocked("steamwebhelper.exe") && !active.programs.is_blocked("chrome.exe"));
         // A list that cannot be read leaves what is being enforced as it was.
-        let wrong = Policy { filters: vec![], programs: vec!["*".into()], enforcers: Enforcers::default() };
+        let wrong = Policy { filters: vec![], allowed: vec![], programs: vec!["*".into()], enforcers: Enforcers::default() };
         remote.apply(Some(wrong));
         assert!(current(&remote).unwrap().programs.is_blocked("steamwebhelper.exe"));
     }

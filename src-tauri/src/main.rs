@@ -23,7 +23,7 @@ use tauri::{
     AppHandle, Manager, State, WindowEvent,
 };
 
-/// Starts blocking with the given filter lines, program lines and enforcers, for `duration` (`5s`, `10m`, `3h`,
+/// Starts blocking with the given filter lines, allowed-site lines, program lines and enforcers, for `duration` (`5s`, `10m`, `3h`,
 /// `1d`) or, when empty, until stopped.
 ///
 /// The service owns the block and checks all of this again (`service::start`); the answer here
@@ -31,12 +31,13 @@ use tauri::{
 #[tauri::command]
 fn start_block(
     filters: Vec<String>,
+    allowed: Vec<String>,
     programs: Vec<String>,
     duration: String,
     enforcers: Enforcers,
     remote: State<Remote>,
 ) -> Result<(), String> {
-    remote.command(Request::Start { filters, programs, duration, enforcers })
+    remote.command(Request::Start { filters, allowed, programs, duration, enforcers })
 }
 
 #[tauri::command]

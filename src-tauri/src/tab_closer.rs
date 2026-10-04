@@ -16,7 +16,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::client::Remote;
-use crate::filters::FilterList;
+use crate::block::Active;
 use crate::programs::ProgramList;
 use crate::state::{Enforcers, Uses};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -45,7 +45,7 @@ pub fn spawn(remote: Remote) {
                 let enforcers = active.enforcers;
                 // With no entries there is nothing for these to match, so skip the UI Automation work.
                 if enforcers.uses(Uses::Sites) && !active.filters.is_empty() {
-                    if let Err(e) = closer.tick(&active.filters, enforcers) {
+                    if let Err(e) = closer.tick(&active, enforcers) {
                         eprintln!("tab_closer: {e}");
                     }
                 }
@@ -90,7 +90,7 @@ struct Page {
 }
 
 impl Closer {
-    fn tick(&mut self, filters: &FilterList, enforcers: Enforcers) -> uiautomation::Result<()> {
+    fn tick(&mut self, active: &Active, enforcers: Enforcers) -> uiautomation::Result<()> {
         // Window class shared by all Chromium-based browsers (and Electron apps, which have
         // no address bar and are skipped in `browser`).
         let cond = self.automation.create_property_condition(UIProperty::ClassName, "Chrome_WidgetWin_1".into(), None)?;
@@ -111,7 +111,7 @@ impl Closer {
             if !enforced {
                 continue;
             }
-            if let Some(page) = pages.iter().find(|p| filters.is_blocked(&p.url)) {
+            if let Some(page) = pages.iter().find(|p| active.blocks_site(&p.url)) {
                 match close_tab(&self.automation, &window, &page.title) {
                     Ok(()) => eprintln!("tab_closer: closed {}", page.url),
                     Err(e) => eprintln!("tab_closer: failed to close {}: {e}", page.url),

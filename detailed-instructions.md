@@ -1,6 +1,6 @@
 # Moving the watchdog to a SYSTEM service: implementation guide for this repo
 
-This guide is for implementing the SYSTEM-service design in *this* repo (`blocker`, Tauri tray app, Windows only). It is written against the actual code in `src-tauri/src/`. All the Rust below was compiled and the unit tests run in a scratch copy of the repo (`cargo check --tests`, no warnings; `cargo test`: 56 passed). One extra integration test (`the_pipe_answers_like_the_app_expects`, run with `--ignored`) started the real pipe server and talked to it like the app does: it passed. The service was also seen working on one real install (its logs showed it launching the app in the user's session and refusing an uninstall during a timed block). Section 9 lists what could **not** be tested without installing a real service, so you must test those parts yourself.
+This guide is for implementing the SYSTEM-service design in *this* repo (`blocker`, Tauri tray app, Windows only). It is written against the actual code in `src-tauri/src/`. All the Rust below was compiled and the unit tests run in a scratch copy of the repo (`cargo check --tests`, no warnings; `cargo test`: 63 passed). One extra integration test (`the_pipe_answers_like_the_app_expects`, run with `--ignored`) started the real pipe server and talked to it like the app does: it passed. The service was also seen working on one real install (its logs showed it launching the app in the user's session and refusing an uninstall during a timed block). Section 9 lists what could **not** be tested without installing a real service, so you must test those parts yourself.
 
 **Read sections 1 and 8 before you touch any code.** Section 8 is about how to get out if your own test setup locks you in.
 
@@ -49,7 +49,8 @@ Files at a glance:
 | `src-tauri/src/main.rs` | replace the whole file |
 | `src-tauri/src/block.rs`, `state.rs`, `tab_closer.rs` | small edits (diffs below) |
 | `src-tauri/src/task.rs` | **delete** |
-| `src-tauri/src/clock.rs`, `unlock.rs`, `filters.rs` | **unchanged** |
+| `src-tauri/src/filters.rs` | small edits (section 5.4: web pages only, the scheme fix) |
+| `src-tauri/src/clock.rs`, `unlock.rs` | **unchanged** |
 | `src/index.html` | small edit (show the error when the service is unreachable) |
 | `src-tauri/tauri.conf.json` | one line: `perMachine` |
 | `src-tauri/windows/hooks.nsh` | replace the whole file |
@@ -142,6 +143,9 @@ pub enum Request {
     Register,
     Start {
         filters: Vec<String>,
+        /// Sites that are always allowed, which win over `filters`.
+        #[serde(default)]
+        allowed: Vec<String>,
         /// Programs to close, one exe name per line (`programs.rs`).
         #[serde(default)]
         programs: Vec<String>,
@@ -171,6 +175,8 @@ pub enum Response {
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Policy {
     pub filters: Vec<String>,
+    #[serde(default)]
+    pub allowed: Vec<String>,
     #[serde(default)]
     pub programs: Vec<String>,
     pub enforcers: Enforcers,
@@ -208,6 +214,7 @@ mod tests {
     fn a_request_survives_the_wire() {
         let request = Request::Start {
             filters: vec!["tweakers.net".into()],
+            allowed: vec!["gathering.tweakers.net".into()],
             programs: vec!["steam*".into()],
             duration: "10m".into(),
             enforcers: Enforcers::default(),
@@ -223,7 +230,12 @@ mod tests {
 
     #[test]
     fn a_policy_survives_the_wire() {
-        let response = Response::Policy(Some(Policy { filters: vec!["a.com".into()], programs: vec!["game.exe".into()], enforcers: Enforcers::default() }));
+        let response = Response::Policy(Some(Policy {
+            filters: vec!["a.com".into()],
+            allowed: vec!["b.com".into()],
+            programs: vec!["game.exe".into()],
+            enforcers: Enforcers::default(),
+        }));
         let mut wire = Vec::new();
         write_message(&mut wire, &response).unwrap();
         assert_eq!(read_message::<Response>(&mut Cursor::new(wire)), Ok(response));
@@ -237,8 +249,8 @@ mod tests {
         let body = br#"{"cmd":"start","args":{"filters":["a.com"],"duration":"1h","enforcers":{}}}"#;
         let mut wire = (body.len() as u32).to_le_bytes().to_vec();
         wire.extend_from_slice(body);
-        let Ok(Request::Start { programs, .. }) = read_message::<Request>(&mut Cursor::new(wire)) else { panic!("not read") };
-        assert!(programs.is_empty());
+        let Ok(Request::Start { programs, allowed, .. }) = read_message::<Request>(&mut Cursor::new(wire)) else { panic!("not read") };
+        assert!(programs.is_empty() && allowed.is_empty());
     }
 
     #[test]
@@ -608,9 +620,14 @@ impl Remote {
         if cache.as_ref().is_some_and(|c| c.policy == policy) {
             return;
         }
-        match (FilterList::parse(&policy.filters), ProgramList::parse(&policy.programs)) {
-            (Ok(filters), Ok(programs)) => {
-                let active = Active { filters: Arc::new(filters), programs: Arc::new(programs), enforcers: policy.enforcers };
+        match (FilterList::parse(&policy.filters), FilterList::parse(&policy.allowed), ProgramList::parse(&policy.programs)) {
+            (Ok(filters), Ok(allowed), Ok(programs)) => {
+                let active = Active {
+                    filters: Arc::new(filters),
+                    allowed: Arc::new(allowed),
+                    programs: Arc::new(programs),
+                    enforcers: policy.enforcers,
+                };
                 *cache = Some(Cached { policy, active });
             }
             // Cannot happen with a service of this version; keep what is being enforced.
@@ -625,7 +642,12 @@ mod tests {
     use crate::state::Enforcers;
 
     fn policy(filters: &[&str]) -> Policy {
-        Policy { filters: filters.iter().map(|f| f.to_string()).collect(), programs: Vec::new(), enforcers: Enforcers::default() }
+        Policy {
+            filters: filters.iter().map(|f| f.to_string()).collect(),
+            allowed: Vec::new(),
+            programs: Vec::new(),
+            enforcers: Enforcers::default(),
+        }
     }
 
     fn current(remote: &Remote) -> Option<Active> {
@@ -655,12 +677,12 @@ mod tests {
     #[test]
     fn the_programs_come_along_and_are_parsed_with_the_policy() {
         let remote = Remote::new();
-        let with_programs = Policy { filters: vec![], programs: vec!["Steam*".into()], enforcers: Enforcers::default() };
+        let with_programs = Policy { filters: vec![], allowed: vec![], programs: vec!["Steam*".into()], enforcers: Enforcers::default() };
         remote.apply(Some(with_programs));
         let active = current(&remote).unwrap();
         assert!(active.programs.is_blocked("steamwebhelper.exe") && !active.programs.is_blocked("chrome.exe"));
         // A list that cannot be read leaves what is being enforced as it was.
-        let wrong = Policy { filters: vec![], programs: vec!["*".into()], enforcers: Enforcers::default() };
+        let wrong = Policy { filters: vec![], allowed: vec![], programs: vec!["*".into()], enforcers: Enforcers::default() };
         remote.apply(Some(wrong));
         assert!(current(&remote).unwrap().programs.is_blocked("steamwebhelper.exe"));
     }
@@ -691,14 +713,19 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
  
  /// How often a running timed block writes down the time it has reached (`Saved::seen`).
  const CHECKPOINT: Duration = Duration::from_secs(60);
-@@ -29,8 +30,35 @@
+@@ -29,8 +30,51 @@
      clock: &'static Clock,
  }
  
 +/// What a block is told to block. **A new kind of list goes here**, together with a `state::Uses`
 +/// variant, an arm in `has`, and a field in `Block` and `state::Saved`.
 +pub struct Lists {
++    /// The sites to block.
 +    pub sites: FilterList,
++    /// The sites that are always allowed, which win over `sites`. They are not something an
++    /// enforcer needs on its own (`Uses::Sites` is about the block list), they only make
++    /// exceptions to it.
++    pub allowed: FilterList,
 +    pub programs: ProgramList,
 +}
 +
@@ -717,17 +744,28 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
 +#[derive(Clone)]
 +pub struct Active {
 +    pub filters: Arc<FilterList>,
++    pub allowed: Arc<FilterList>,
 +    pub programs: Arc<ProgramList>,
 +    pub enforcers: Enforcers,
 +}
 +
++impl Active {
++    /// Whether a page is to be closed: on the block list, and not on the list of allowed sites.
++    /// Allowed wins, whatever the block list says, so `*` on the block list with `google.com`
++    /// allowed blocks every site but that one.
++    pub fn blocks_site(&self, url: &str) -> bool {
++        self.filters.is_blocked(url) && !self.allowed.is_blocked(url)
++    }
++}
++
  struct Block {
      filters: Arc<FilterList>,
++    allowed: Arc<FilterList>,
 +    programs: Arc<ProgramList>,
      /// When a timed block ends, in internet time; `None` blocks until stopped.
      until: Option<SystemTime>,
      enforcers: Enforcers,
-@@ -38,13 +66,16 @@
+@@ -38,13 +82,19 @@
      saved_at: Instant,
  }
  
@@ -739,13 +777,16 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
      pub remaining: Option<u64>,
      /// The blocked entries, so the UI can show what a resumed block is blocking.
      pub filters: Vec<String>,
++    /// The allowed sites, for the same reason.
++    #[serde(default)]
++    pub allowed: Vec<String>,
 +    /// The blocked programs, for the same reason.
 +    #[serde(default)]
 +    pub programs: Vec<String>,
      /// The running block's enforcers, so the UI shows what a resumed block enforces.
      enforcers: Option<Enforcers>,
      /// Whether the time comes from the internet yet; until then, time with the app not running
-@@ -58,15 +89,27 @@
+@@ -58,15 +108,28 @@
          Blocklist { block: Arc::default(), store: state::store().map(Arc::new), clock: clock::global() }
      }
  
@@ -767,6 +808,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
 -        let new = Block { filters: Arc::new(filters), until, enforcers, saved_at: Instant::now() };
 +        let new = Block {
 +            filters: Arc::new(lists.sites),
++            allowed: Arc::new(lists.allowed),
 +            programs: Arc::new(lists.programs),
 +            until,
 +            enforcers,
@@ -775,22 +817,25 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
          // Written before the block goes live, so a block cannot be missed after a restart. A
          // block that cannot be written would not survive the app ending, so it does not start.
          self.save(&new).map_err(|e| format!("Cannot save the block, so it would not survive a restart: {e}"))?;
-@@ -91,7 +134,7 @@
+@@ -91,7 +154,9 @@
          let Some(store) = &self.store else { return };
          let Some(saved) = store.load() else { return };
          // A block list we cannot read is dropped rather than resumed as something unknown.
 -        let Ok(filters) = FilterList::parse(&saved.filters) else {
-+        let (Ok(filters), Ok(programs)) = (FilterList::parse(&saved.filters), ProgramList::parse(&saved.programs)) else {
++        let (Ok(filters), Ok(allowed), Ok(programs)) =
++            (FilterList::parse(&saved.filters), FilterList::parse(&saved.allowed), ProgramList::parse(&saved.programs))
++        else {
              eprintln!("block: dropping an unreadable saved block");
              store.clear();
              return;
-@@ -107,16 +150,22 @@
+@@ -107,16 +172,23 @@
              return;
          }
          let enforcers = saved.enforcers;
 -        *self.block.lock().unwrap() = Some(Block { filters: Arc::new(filters), until, enforcers, saved_at: Instant::now() });
 +        *self.block.lock().unwrap() = Some(Block {
 +            filters: Arc::new(filters),
++            allowed: Arc::new(allowed),
 +            programs: Arc::new(programs),
 +            until,
 +            enforcers,
@@ -812,28 +857,35 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
          let mut block = self.block.lock().unwrap();
          if block.as_ref().is_some_and(|b| b.until.is_some_and(|u| self.clock.now() >= u)) {
              // A timed block ends by itself and leaves nothing behind to resume.
-@@ -130,7 +179,7 @@
+@@ -130,7 +202,12 @@
                  eprintln!("block: {e}");
              }
          }
 -        block.as_ref().map(|b| (b.filters.clone(), b.enforcers))
-+        block.as_ref().map(|b| Active { filters: b.filters.clone(), programs: b.programs.clone(), enforcers: b.enforcers })
++        block.as_ref().map(|b| Active {
++            filters: b.filters.clone(),
++            allowed: b.allowed.clone(),
++            programs: b.programs.clone(),
++            enforcers: b.enforcers,
++        })
      }
  
      pub fn status(&self) -> Status {
-@@ -140,6 +189,7 @@
+@@ -140,6 +217,8 @@
              blocking,
              remaining: block.as_ref().and_then(|b| remaining(b, self.clock.now())),
              filters: block.as_ref().map(|b| b.filters.entries()).unwrap_or_default(),
++            allowed: block.as_ref().map(|b| b.allowed.entries()).unwrap_or_default(),
 +            programs: block.as_ref().map(|b| b.programs.entries()).unwrap_or_default(),
              enforcers: block.as_ref().map(|b| b.enforcers),
              clock_synced: self.clock.synced(),
          }
-@@ -152,9 +202,17 @@
+@@ -152,9 +231,18 @@
              until: block.until.and_then(state::to_unix),
              seen: state::to_unix(self.clock.now()),
              enforcers: block.enforcers,
 +            programs: block.programs.entries(),
++            allowed: block.allowed.entries(),
          })
      }
  
@@ -847,19 +899,19 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
      /// Removes the saved block: there is no longer one to resume.
      pub fn clear_saved(&self) {
          if let Some(store) = &self.store {
-@@ -219,6 +277,11 @@
+@@ -219,6 +307,11 @@
          blocklist_of(name, false)
      }
  
 +    /// Only sites to block; the program list is empty.
 +    fn sites(entries: &[&str]) -> Lists {
-+        Lists { sites: FilterList::parse(entries).unwrap(), programs: ProgramList::default() }
++        Lists { sites: FilterList::parse(entries).unwrap(), allowed: FilterList::default(), programs: ProgramList::default() }
 +    }
 +
      fn entries(blocklist: &Blocklist) -> Vec<String> {
          blocklist.status().filters
      }
-@@ -238,14 +301,14 @@
+@@ -238,14 +331,14 @@
      #[test]
      fn timed_block_cannot_stop_early_and_ends_by_itself() {
          let list = blocklist("timed");
@@ -876,7 +928,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
          assert!(list.stop().is_ok());
          assert!(list.filters().is_none());
      }
-@@ -253,18 +316,18 @@
+@@ -253,18 +346,18 @@
      #[test]
      fn a_running_block_cannot_be_replaced() {
          let list = blocklist("replace");
@@ -901,7 +953,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
          assert_eq!(entries(&untimed), vec!["b.com"]);
      }
  
-@@ -276,14 +339,14 @@
+@@ -276,14 +369,14 @@
          std::fs::create_dir_all(&dir).unwrap();
          std::fs::write(dir.join("not-a-folder"), "").unwrap();
          let list = Blocklist { block: Arc::default(), clock: test_clock(), store: Some(Arc::new(Store::new(dir.join("not-a-folder").join("state.json")))) };
@@ -918,7 +970,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
          assert_eq!(entries(&list), vec!["tweakers.net", "b.com"]);
  
          // A new run of the app over the same store: the block is still going.
-@@ -295,7 +358,7 @@
+@@ -295,7 +388,7 @@
  
          // An untimed block is picked up as well: it runs until it is stopped.
          let untimed = blocklist("resume-untimed");
@@ -927,13 +979,101 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
          let resumed = reopened("resume-untimed");
          resumed.restore();
          assert!(resumed.filters().is_some());
-@@ -304,20 +367,49 @@
+@@ -303,21 +396,137 @@
+         assert!(resumed.stop().is_ok());
      }
  
-     #[test]
++    /// A block that blocks `block` and always allows `allow`.
++    fn with_allowed(block: &[&str], allow: &[&str]) -> Active {
++        let list = Blocklist::with_store(Store::new(
++            std::env::temp_dir().join(format!("block-{}-allowed-{}", std::process::id(), block.join("_").len() + allow.len())).join("state.json"),
++        ));
++        let lists = Lists {
++            sites: FilterList::parse(block).unwrap(),
++            allowed: FilterList::parse(allow).unwrap(),
++            programs: ProgramList::default(),
++        };
++        // `Enforcers::default()` has an enforcer that needs no list, so an empty block list starts too.
++        list.start(lists, None, Enforcers::default()).unwrap();
++        list.active().unwrap()
++    }
++
++    #[test]
++    fn allowed_sites_win_over_the_block_list() {
++        // Everything is blocked, except what is allowed.
++        let active = with_allowed(&["*"], &["google.com", "*.wikipedia.org"]);
++        assert!(active.blocks_site("https://youtube.com/watch?v=1"));
++        assert!(active.blocks_site("https://tweakers.net/"));
++        assert!(!active.blocks_site("https://google.com/search?q=a"));
++        assert!(!active.blocks_site("https://www.google.com/"));
++        assert!(!active.blocks_site("https://nl.wikipedia.org/wiki/Rust"));
++        // An allowed entry is exactly as wide as it is written: not the sites around it.
++        assert!(active.blocks_site("https://accounts.google.com/"));
++        assert!(active.blocks_site("https://wikipedia.org/"));
++
++        // A specific block and an exception inside it: the exception wins.
++        let active = with_allowed(&["youtube.com"], &["youtube.com/watch*"]);
++        assert!(active.blocks_site("https://youtube.com/"));
++        assert!(active.blocks_site("https://youtube.com/shorts/abc"));
++        assert!(!active.blocks_site("https://youtube.com/watch?v=1"));
++
++        // Allowed everything is allowed everything, whatever the block list says.
++        let active = with_allowed(&["youtube.com", "*.tweakers.net"], &["*"]);
++        assert!(!active.blocks_site("https://youtube.com/") && !active.blocks_site("https://a.tweakers.net/"));
++    }
++
++    #[test]
++    fn any_combination_of_the_two_lists_is_possible() {
++        // Neither: nothing is blocked.
++        let active = with_allowed(&[], &[]);
++        assert!(!active.blocks_site("https://youtube.com/"));
++        // Allowed alone: there is nothing to make exceptions to.
++        let active = with_allowed(&[], &["google.com"]);
++        assert!(!active.blocks_site("https://youtube.com/") && !active.blocks_site("https://google.com/"));
++        // Blocked alone.
++        let active = with_allowed(&["youtube.com"], &[]);
++        assert!(active.blocks_site("https://youtube.com/") && !active.blocks_site("https://google.com/"));
++        // The browser's own pages are neither blocked nor in need of an exception.
++        let active = with_allowed(&["*"], &[]);
++        assert!(!active.blocks_site("chrome://newtab/") && !active.blocks_site("about:blank"));
++    }
++
++    #[test]
++    fn the_allowed_sites_survive_a_restart_and_older_blocks_have_none() {
++        let list = blocklist("allowed-resume");
++        let lists = Lists {
++            sites: FilterList::parse(&["*"]).unwrap(),
++            allowed: FilterList::parse(&["Google.com", "*.wikipedia.org"]).unwrap(),
++            programs: ProgramList::default(),
++        };
++        list.start(lists, Some(Duration::from_secs(3600)), Enforcers::default()).unwrap();
++        assert_eq!(list.status().allowed, vec!["google.com", "*.wikipedia.org"]);
++
++        let resumed = reopened("allowed-resume");
++        resumed.restore();
++        let active = resumed.active().unwrap();
++        assert!(active.blocks_site("https://youtube.com/") && !active.blocks_site("https://google.com/"));
++        assert_eq!(resumed.status().allowed, vec!["google.com", "*.wikipedia.org"]);
++
++        // A saved block from before the allowed list resumes with none.
++        let older = blocklist("allowed-older");
++        let store = older.store.clone().unwrap();
++        std::fs::create_dir_all(store.path().parent().unwrap()).unwrap();
++        let until = state::now().unwrap().as_secs() + 3600;
++        std::fs::write(store.path(), format!(r#"{{"filters":["a.com"],"until":{until}}}"#)).unwrap();
++        let resumed = reopened("allowed-older");
++        resumed.restore();
++        assert!(resumed.status().allowed.is_empty() && resumed.active().unwrap().blocks_site("https://a.com/"));
++    }
++
++    #[test]
 +    fn a_resumed_block_keeps_its_programs() {
 +        let list = blocklist("programs");
-+        let lists = Lists { sites: FilterList::parse::<&str>(&[]).unwrap(), programs: ProgramList::parse(&["Steam*", "game"]).unwrap() };
++        let lists = Lists {
++            sites: FilterList::default(),
++            allowed: FilterList::default(),
++            programs: ProgramList::parse(&["Steam*", "game"]).unwrap(),
++        };
 +        list.start(lists, Some(Duration::from_secs(3600)), Enforcers::default()).unwrap();
 +        assert_eq!(list.status().programs, vec!["steam*.exe", "game.exe"]);
 +
@@ -959,7 +1099,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
 +        assert!(active.filters.is_blocked("a.com") && active.programs.is_empty());
 +    }
 +
-+    #[test]
+     #[test]
      fn a_resumed_block_keeps_its_enforcers() {
 -        let only_obsidian = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: true };
 +        let only_obsidian = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: true, exe_names: false };
@@ -981,15 +1121,16 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
          // Rewritten as though it had been left behind by a run that ended an hour ago.
          let store = list.store.clone().unwrap();
          store.save(&Saved {
-@@ -325,6 +417,7 @@
+@@ -325,6 +534,8 @@
              until: Some(state::now().unwrap().as_secs() - 3600),
              seen: None,
              enforcers: Enforcers::default(),
 +            programs: Vec::new(),
++            allowed: Vec::new(),
          }).unwrap();
  
          let resumed = reopened("expired");
-@@ -339,13 +432,13 @@
+@@ -339,13 +550,13 @@
      fn ending_a_block_clears_it() {
          let list = blocklist("cleared");
          let store = list.store.clone().unwrap();
@@ -1005,7 +1146,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
          assert!(store.load().is_some());
          std::thread::sleep(Duration::from_millis(60));
          assert!(list.filters().is_none());
-@@ -359,7 +452,7 @@
+@@ -359,7 +570,7 @@
          let path = dir.join("state.json");
  
          let list = Blocklist { block: Arc::default(), clock: test_clock(), store: None };
@@ -1033,7 +1174,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
  use std::time::{Duration, SystemTime, UNIX_EPOCH};
  
  use serde::{Deserialize, Serialize};
-@@ -27,6 +28,10 @@
+@@ -27,6 +28,14 @@
      /// Which enforcers the block runs. Missing in files from older versions, which ran all.
      #[serde(default)]
      pub enforcers: Enforcers,
@@ -1041,10 +1182,14 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
 +    /// versions, which had none.
 +    #[serde(default)]
 +    pub programs: Vec<String>,
++    /// The sites that are always allowed, one entry per line, as typed in the UI. They win over
++    /// `filters`. Missing in files from older versions, which had none.
++    #[serde(default)]
++    pub allowed: Vec<String>,
  }
  
  /// The ways a block is enforced, chosen when it starts and fixed while it runs, so turning one
-@@ -40,22 +45,55 @@
+@@ -40,22 +49,55 @@
      pub chromium_split_view: bool,
      /// Closes Obsidian while it shows web content; not linked to the block list.
      pub obsidian_web_viewer: bool,
@@ -1105,7 +1250,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
      }
  }
  
-@@ -129,15 +167,32 @@
+@@ -129,15 +171,32 @@
      }
  }
  
@@ -1142,21 +1287,21 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
  pub fn store() -> Option<Store> {
      Some(Store::new(dir()?.join("state.json")))
  }
-@@ -154,7 +209,7 @@
+@@ -154,7 +213,7 @@
      }
  
      fn timed(until: Option<u64>) -> Saved {
 -        Saved { filters: vec!["tweakers.net".to_string()], until, seen: None, enforcers: Enforcers::default() }
-+        Saved { filters: vec!["tweakers.net".to_string()], until, seen: None, enforcers: Enforcers::default(), programs: Vec::new() }
++        Saved { filters: vec!["tweakers.net".to_string()], until, seen: None, enforcers: Enforcers::default(), programs: Vec::new(), allowed: Vec::new() }
      }
  
      #[test]
-@@ -214,11 +269,46 @@
+@@ -214,11 +273,46 @@
          let store = store("old");
          fs::create_dir_all(store.path().parent().unwrap()).unwrap();
          fs::write(store.path(), r#"{"filters":["a.com"],"until":1800000000}"#).unwrap();
 -        assert_eq!(store.load(), Some(Saved { filters: vec!["a.com".into()], until: Some(1_800_000_000), seen: None, enforcers: Enforcers::default() }));
-+        assert_eq!(store.load(), Some(Saved { filters: vec!["a.com".into()], until: Some(1_800_000_000), seen: None, enforcers: Enforcers::default(), programs: Vec::new() }));
++        assert_eq!(store.load(), Some(Saved { filters: vec!["a.com".into()], until: Some(1_800_000_000), seen: None, enforcers: Enforcers::default(), programs: Vec::new(), allowed: Vec::new() }));
          store.clear();
      }
  
@@ -1213,9 +1358,10 @@ Only the source of the policy changes (plus one skipped call when the list has n
  use std::time::{Duration, Instant};
  
 -use crate::block::Blocklist;
-+use crate::client::Remote;
- use crate::filters::FilterList;
+-use crate::filters::FilterList;
 -use crate::state::Enforcers;
++use crate::client::Remote;
++use crate::block::Active;
 +use crate::programs::ProgramList;
 +use crate::state::{Enforcers, Uses};
  use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -1249,7 +1395,7 @@ Only the source of the policy changes (plus one skipped call when the list has n
 +                let enforcers = active.enforcers;
 +                // With no entries there is nothing for these to match, so skip the UI Automation work.
 +                if enforcers.uses(Uses::Sites) && !active.filters.is_empty() {
-+                    if let Err(e) = closer.tick(&active.filters, enforcers) {
++                    if let Err(e) = closer.tick(&active, enforcers) {
                          eprintln!("tab_closer: {e}");
                      }
                  }
@@ -1271,6 +1417,24 @@ Only the source of the policy changes (plus one skipped call when the list has n
  }
  
  enum Window {
+@@ -77,7 +90,7 @@
+ }
+ 
+ impl Closer {
+-    fn tick(&mut self, filters: &FilterList, enforcers: Enforcers) -> uiautomation::Result<()> {
++    fn tick(&mut self, active: &Active, enforcers: Enforcers) -> uiautomation::Result<()> {
+         // Window class shared by all Chromium-based browsers (and Electron apps, which have
+         // no address bar and are skipped in `browser`).
+         let cond = self.automation.create_property_condition(UIProperty::ClassName, "Chrome_WidgetWin_1".into(), None)?;
+@@ -98,7 +111,7 @@
+             if !enforced {
+                 continue;
+             }
+-            if let Some(page) = pages.iter().find(|p| filters.is_blocked(&p.url)) {
++            if let Some(page) = pages.iter().find(|p| active.blocks_site(&p.url)) {
+                 match close_tab(&self.automation, &window, &page.title) {
+                     Ok(()) => eprintln!("tab_closer: closed {}", page.url),
+                     Err(e) => eprintln!("tab_closer: failed to close {}: {e}", page.url),
 @@ -151,6 +164,36 @@
          }
      }
@@ -1384,6 +1548,145 @@ Only the source of the policy changes (plus one skipped call when the list has n
 +        let _ = other.wait();
 +    }
 +}
+```
+
+### 5.4 `filters.rs`
+
+The site lists (the block list, and the list of allowed sites, section 6.5) are matched here. Two fixes and one convenience:
+
+- **A lone `*` blocks every website**, as intended: the host wildcard matches any host and the path may be anything. What it must **not** do is close the browser's own pages, so only **web pages** are matched now (`is_website`): `http`, `https`, `ftp`, `ws`, `wss`, and an address with no scheme at all (the address bar leaves `https://` off). `chrome://settings`, `edge://newtab`, `about:blank`, `view-source:`, extensions, `file://` and an empty address are never matched, by either list.
+- **Scheme stripping was wrong for addresses without a scheme.** It cut at the first `://` anywhere, so `google.com/url?q=https://tweakers.net/nieuws` (a Google redirect page as the address bar shows it) was read as `tweakers.net/nieuws` and blocked by a `tweakers.net` entry. Only text that looks like a scheme (letters, digits, `+`, `-`, `.`, no `/` or `?`) before the `://` is cut off now (`split_scheme`). This only affected the address-bar fallback.
+- `FilterList` has a `Default` (an empty list), for a block without allowed sites.
+
+```diff
+--- a/src-tauri/src/filters.rs
++++ b/src-tauri/src/filters.rs
+@@ -1,5 +1,9 @@
+-//! Blocked-site list: one address per line, `*` as wildcard.
++//! A list of sites: one address per line, `*` as wildcard. Used twice: for the sites to block, and
++//! for the sites that are always allowed, which win over the block list (`block::Active::blocks_site`).
+ //!
++//! - Only web pages count. The browser's own pages (`chrome://settings`, `edge://newtab`,
++//!   `about:blank`), extensions and local files are never matched, so even a lone `*`, which
++//!   matches every site, leaves the browser itself usable.
+ //! - `https://`, `www.` and letter case are ignored.
+ //! - An entry blocks everything that continues it at a break (`/ ? # & :`):
+ //!   `tweakers.net` blocks `tweakers.net/nieuws?x=1`, not `tweakers.network`.
+@@ -14,6 +18,12 @@
+     matchers: RegexSet,
+ }
+ 
++impl Default for FilterList {
++    fn default() -> FilterList {
++        FilterList { entries: Vec::new(), matchers: RegexSet::empty() }
++    }
++}
++
+ impl FilterList {
+     /// Parses one entry per line, ignoring empty lines. Errors list the invalid lines.
+     pub fn parse<S: AsRef<str>>(lines: &[S]) -> Result<FilterList, Vec<String>> {
+@@ -37,16 +47,45 @@
+         self.entries.clone()
+     }
+ 
++    /// Whether the address is a web page that an entry of this list matches.
+     pub fn is_blocked(&self, url: &str) -> bool {
+-        self.matchers.is_match(&normalize(url))
++        is_website(url) && self.matchers.is_match(&normalize(url))
+     }
+ }
+ 
+ /// Lowercases and strips scheme, `www.` and trailing slashes.
+ fn normalize(url: &str) -> String {
+     let url = url.trim().to_lowercase();
+-    let url = url.split_once("://").map_or(url.as_str(), |(_, rest)| rest);
+-    url.strip_prefix("www.").unwrap_or(url).trim_end_matches('/').to_string()
++    let rest = split_scheme(&url).1;
++    rest.strip_prefix("www.").unwrap_or(rest).trim_end_matches('/').to_string()
++}
++
++/// The scheme of an address (`https`) and the rest of it, if it starts with a scheme. Only text that
++/// looks like one counts: an address with none (the address bar leaves it off) can still have a
++/// `://` further on, in its query, and must not be cut there.
++fn split_scheme(url: &str) -> (Option<&str>, &str) {
++    match url.split_once("://") {
++        Some((scheme, rest))
++            if !scheme.is_empty() && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) =>
++        {
++            (Some(scheme), rest)
++        }
++        _ => (None, url),
++    }
++}
++
++/// Whether the address is a page on the web, which is all these lists are about. Not the browser's
++/// own pages, extensions, local files or an empty address. An address without a scheme counts: the
++/// address bar leaves it off.
++fn is_website(url: &str) -> bool {
++    let url = url.trim().to_lowercase();
++    if url.is_empty() {
++        return false;
++    }
++    match split_scheme(&url) {
++        (Some(scheme), _) => matches!(scheme, "http" | "https" | "ftp" | "ws" | "wss"),
++        (None, rest) => !["about:", "data:", "javascript:", "blob:", "view-source:"].iter().any(|p| rest.starts_with(p)),
++    }
+ }
+ 
+ fn to_regex(entry: &str) -> String {
+@@ -96,6 +135,52 @@
+     }
+ 
+     #[test]
++    fn a_lone_star_blocks_every_site_but_not_the_browser_itself() {
++        let everything = FilterList::parse(&["*"]).unwrap();
++        for url in [
++            "https://youtube.com/watch?v=1",
++            "http://example.org/",
++            "https://sub.domain.example.co.uk/a/b?c=d#e",
++            "https://www.tweakers.net/",
++            "localhost:3000/app",
++            "youtube.com/watch?v=1",
++            "example.com",
++            "ftp://files.example.com/pub",
++        ] {
++            assert!(everything.is_blocked(url), "{url}");
++        }
++        // The browser's own pages, extensions, local files and an empty address are not sites.
++        for url in [
++            "chrome://settings",
++            "chrome://newtab/",
++            "edge://newtab/",
++            "brave://settings/",
++            "about:blank",
++            "chrome-extension://abcdef/popup.html",
++            "devtools://devtools/bundled/inspector.html",
++            "view-source:https://example.com/",
++            "file:///C:/Users/me/page.html",
++            "data:text/html,hello",
++            "",
++            "   ",
++        ] {
++            assert!(!everything.is_blocked(url), "{url:?}");
++        }
++    }
++
++    #[test]
++    fn only_a_real_scheme_is_cut_off() {
++        // An address without a scheme can have a "://" in its query: that is not its scheme.
++        assert!(!blocks("tweakers.net", "google.com/url?q=https://tweakers.net/nieuws"));
++        assert!(blocks("google.com", "google.com/url?q=https://tweakers.net/nieuws"));
++        assert!(!blocks("tweakers.net", "https://google.com/url?q=https://tweakers.net/nieuws"));
++        // Real schemes still go, whatever they are written like.
++        assert!(blocks("tweakers.net", "HTTPS://tweakers.net/"));
++        assert!(blocks("tweakers.net", "http://tweakers.net/x"));
++        assert!(blocks("tweakers.net", "wss://tweakers.net/socket"));
++    }
++
++    #[test]
+     fn invalid_and_empty() {
+         assert_eq!(FilterList::parse(&["tweakers .net"]).err(), Some(vec!["tweakers .net".to_string()]));
+         assert!(FilterList::parse(&["", "  "]).unwrap().is_empty());
 ```
 
 ## 6. The service, and the files that change around it
@@ -1662,13 +1965,14 @@ fn handle(context: &Context, caller: u32, request: Request) -> (Response, Option
             context.slot.heard(caller);
             let policy = blocklist.active().map(|active| Policy {
                 filters: active.filters.entries(),
+                allowed: active.allowed.entries(),
                 programs: active.programs.entries(),
                 enforcers: active.enforcers,
             });
             (Response::Policy(policy), None)
         }
-        Request::Start { filters, programs, duration, enforcers } => {
-            (done(start(blocklist, filters, programs, &duration, enforcers)), None)
+        Request::Start { filters, allowed, programs, duration, enforcers } => {
+            (done(start(blocklist, filters, allowed, programs, &duration, enforcers)), None)
         }
         Request::Stop => (done(blocklist.stop().map_err(|_| "A timed block cannot be stopped early".to_string())), None),
         Request::Unlock { password } => (done(unlock(context, &password)), None),
@@ -1689,12 +1993,14 @@ fn handle(context: &Context, caller: u32, request: Request) -> (Response, Option
 fn start(
     blocklist: &Blocklist,
     filters: Vec<String>,
+    allowed: Vec<String>,
     programs: Vec<String>,
     duration: &str,
     enforcers: Enforcers,
 ) -> Result<(), String> {
     let duration = parse_duration(duration)?;
     let sites = FilterList::parse(&filters).map_err(|_| "Invalid block list syntax".to_string())?;
+    let allowed = FilterList::parse(&allowed).map_err(|_| "Invalid syntax in the list of allowed sites".to_string())?;
     // Also refuses what would close programs Windows needs (`programs.rs`), with the reason.
     let programs = ProgramList::parse(&programs)?;
     if !enforcers.any() {
@@ -1702,7 +2008,7 @@ fn start(
     }
     // An enforcer has nothing to do with an empty list of its own kind, while one that needs no
     // list (Obsidian's) always does. What matters is that something can run.
-    let lists = Lists { sites, programs };
+    let lists = Lists { sites, allowed, programs };
     if !enforcers.can_run(|uses| lists.has(uses)) {
         return Err("Enter at least one site or program to block, or turn on an enforcer that needs no list".into());
     }
@@ -1886,7 +2192,7 @@ mod tests {
     }
 
     fn start_request(duration: &str) -> Request {
-        Request::Start { programs: vec![], filters: vec!["a.com".into()], duration: duration.into(), enforcers: Enforcers::default() }
+        Request::Start { programs: vec![], allowed: vec![], filters: vec!["a.com".into()], duration: duration.into(), enforcers: Enforcers::default() }
     }
 
     #[test]
@@ -1896,15 +2202,16 @@ mod tests {
         // address that cannot match.
         let only_the_list = Enforcers { chromium_tabs: true, chromium_split_view: true, obsidian_web_viewer: false, exe_names: false };
         let bad = [
-            Request::Start { programs: vec![], filters: vec![], duration: "1h".into(), enforcers: only_the_list },
+            Request::Start { programs: vec![], allowed: vec![], filters: vec![], duration: "1h".into(), enforcers: only_the_list },
             Request::Start {
                 filters: vec!["a.com".into()],
                 programs: vec![],
+                allowed: vec![],
                 duration: "1h".into(),
                 enforcers: Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: false, exe_names: false },
             },
             start_request("soon"),
-            Request::Start { programs: vec![], filters: vec!["has space.com".into()], duration: "1h".into(), enforcers: Enforcers::default() },
+            Request::Start { programs: vec![], allowed: vec![], filters: vec!["has space.com".into()], duration: "1h".into(), enforcers: Enforcers::default() },
         ];
         for request in bad {
             assert!(matches!(handle(&context, 0, request).0, Response::Failed(_)));
@@ -1916,7 +2223,7 @@ mod tests {
     fn an_empty_list_starts_a_block_when_an_enforcer_without_the_list_is_on() {
         let first = context("empty-list");
         let obsidian_only = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: true, exe_names: false };
-        let request = |enforcers| Request::Start { programs: vec![], filters: vec![], duration: "1h".into(), enforcers };
+        let request = |enforcers| Request::Start { programs: vec![], allowed: vec![], filters: vec![], duration: "1h".into(), enforcers };
         assert_eq!(handle(&first, 0, request(obsidian_only)).0, Response::Done);
         // The block keeps what it was started with: no entries, and Obsidian's enforcer only.
         let Response::Policy(Some(policy)) = handle(&first, 0, Request::Policy).0 else { panic!("no policy") };
@@ -1960,6 +2267,7 @@ mod tests {
         let programs_only = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: false, exe_names: true };
         let request = |programs: &[&str]| Request::Start {
             filters: vec![],
+            allowed: vec![],
             programs: programs.iter().map(|p| p.to_string()).collect(),
             duration: "1h".into(),
             enforcers: programs_only,
@@ -1981,6 +2289,45 @@ mod tests {
         assert_eq!(policy.programs, vec!["steam*.exe", "game.exe"]);
         assert!(policy.filters.is_empty());
         assert_eq!(policy.enforcers, programs_only);
+    }
+
+    #[test]
+    fn allowed_sites_travel_with_the_block_and_must_be_valid() {
+        let context = context("allowed");
+        let request = |filters: &[&str], allowed: &[&str]| Request::Start {
+            filters: filters.iter().map(|f| f.to_string()).collect(),
+            allowed: allowed.iter().map(|f| f.to_string()).collect(),
+            programs: vec![],
+            duration: "1h".into(),
+            enforcers: Enforcers::default(),
+        };
+        // An allowed entry that cannot match is refused like a bad block entry.
+        assert!(matches!(handle(&context, 0, request(&["*"], &["has space.com"])).0, Response::Failed(_)));
+        assert!(context.blocklist.filters().is_none());
+
+        // Everything blocked but one site: the app is told about both.
+        assert_eq!(handle(&context, 0, request(&["*"], &["Google.com"])).0, Response::Done);
+        let Response::Policy(Some(policy)) = handle(&context, 0, Request::Policy).0 else { panic!("no policy") };
+        assert_eq!(policy.filters, vec!["*"]);
+        assert_eq!(policy.allowed, vec!["google.com"]);
+        let Response::Status(status) = handle(&context, 0, Request::Status).0 else { panic!("no status") };
+        assert_eq!(status.allowed, vec!["google.com"]);
+    }
+
+    #[test]
+    fn allowed_sites_alone_are_not_something_to_block() {
+        let context = context("allowed-alone");
+        // Only the tab enforcers, no sites to block and only an allowed one: nothing to do.
+        let tabs_only = Enforcers { chromium_tabs: true, chromium_split_view: true, obsidian_web_viewer: false, exe_names: false };
+        let request = Request::Start {
+            filters: vec![],
+            allowed: vec!["google.com".into()],
+            programs: vec![],
+            duration: "1h".into(),
+            enforcers: tabs_only,
+        };
+        assert!(matches!(handle(&context, 0, request).0, Response::Failed(_)));
+        assert!(context.blocklist.filters().is_none());
     }
 
     #[test]
@@ -2810,7 +3157,7 @@ use tauri::{
     AppHandle, Manager, State, WindowEvent,
 };
 
-/// Starts blocking with the given filter lines, program lines and enforcers, for `duration` (`5s`, `10m`, `3h`,
+/// Starts blocking with the given filter lines, allowed-site lines, program lines and enforcers, for `duration` (`5s`, `10m`, `3h`,
 /// `1d`) or, when empty, until stopped.
 ///
 /// The service owns the block and checks all of this again (`service::start`); the answer here
@@ -2818,12 +3165,13 @@ use tauri::{
 #[tauri::command]
 fn start_block(
     filters: Vec<String>,
+    allowed: Vec<String>,
     programs: Vec<String>,
     duration: String,
     enforcers: Enforcers,
     remote: State<Remote>,
 ) -> Result<(), String> {
-    remote.command(Request::Start { filters, programs, duration, enforcers })
+    remote.command(Request::Start { filters, allowed, programs, duration, enforcers })
 }
 
 #[tauri::command]
@@ -2915,7 +3263,24 @@ fn main() {
 ```diff
 --- a/src/index.html
 +++ b/src/index.html
-@@ -154,6 +154,11 @@
+@@ -70,6 +70,9 @@
+         border-radius: 4px;
+         outline: none;
+       }
++      /* The short list of exceptions under the block list. */
++      textarea.short { flex: none; height: 64px; }
++      h2.sub { font-weight: 400; color: var(--text-secondary); }
+       textarea::placeholder { color: var(--text-secondary); }
+       textarea:focus { background: var(--input-focus); border-bottom: 2px solid var(--accent); padding-bottom: 5px; }
+       textarea:disabled { color: var(--text-disabled); background: var(--control-disabled); border-color: var(--control-stroke); }
+@@ -150,10 +153,17 @@
+   <body>
+     <section class="list">
+       <h2>Block list</h2>
+-      <textarea id="sites" placeholder="One site per line, e.g. youtube.com" aria-label="Block list" autofocus></textarea>
++      <textarea id="sites" placeholder="One site per line, e.g. youtube.com, or * for every site" aria-label="Block list" autofocus></textarea>
++      <h2 class="sub">Always allowed (wins over the block list)</h2>
++      <textarea id="allowed" class="short" placeholder="e.g. google.com or *.wikipedia.org" aria-label="Always allowed sites"></textarea>
        <label class="check"><input type="checkbox" data-enforcer="chromium_tabs" checked />Close blocked tabs in Chrome, Edge, Brave</label>
        <label class="check"><input type="checkbox" data-enforcer="chromium_split_view" checked />Close blocked pages in split view</label>
      </section>
@@ -2927,15 +3292,16 @@ fn main() {
      <section>
        <h2>Without block list</h2>
        <label class="check"><input type="checkbox" data-enforcer="obsidian_web_viewer" checked />Close Obsidian when it shows web pages</label>
-@@ -170,6 +175,7 @@
+@@ -170,6 +180,8 @@
      <script>
        const { invoke } = window.__TAURI__.core;
        const sites = document.getElementById("sites");
 +      const programBox = document.getElementById("programs");
++      const allowedBox = document.getElementById("allowed");
        const duration = document.getElementById("duration");
        const toggle = document.getElementById("toggle");
        const status = document.getElementById("status");
-@@ -200,13 +206,24 @@
+@@ -200,13 +212,26 @@
  
        // The backend owns the block (timed blocks end there); the UI mirrors it every second.
        async function refresh() {
@@ -2949,19 +3315,21 @@ fn main() {
 +          status.textContent = String(e);
 +          return;
 +        }
-+        const { blocking, remaining, filters, programs: programEntries, enforcers: running, clock_synced } = state;
++        const { blocking, remaining, filters, allowed: allowedEntries, programs: programEntries, enforcers: running, clock_synced } = state;
          const timed = remaining != null;
          // A block resumed from disk comes with its list, so show it rather than an empty box.
          if (blocking && filters.length && !sites.value) sites.value = filters.join("\n");
++        if (blocking && allowedEntries.length && !allowedBox.value) allowedBox.value = allowedEntries.join("\n");
 +        if (blocking && programEntries.length && !programBox.value) programBox.value = programEntries.join("\n");
          toggle.textContent = blocking ? "Stop block" : "Start block";
          toggle.disabled = timed;
          sites.disabled = blocking;
++        allowedBox.disabled = blocking;
 +        programBox.disabled = blocking;
          // Fixed while a block runs, so turning one off is not a way around it.
          for (const c of checks) {
            if (running) c.checked = running[c.dataset.enforcer];
-@@ -231,10 +248,17 @@
+@@ -231,10 +256,18 @@
        }
  
        toggle.addEventListener("click", async () => {
@@ -2977,15 +3345,17 @@ fn main() {
          const filters = sites.value.split(/\r?\n/);
 -        await run("start_block", { filters, duration: duration.value, enforcers: enforcers() });
 +        const programs = programBox.value.split(/\r?\n/);
-+        await run("start_block", { filters, programs, duration: duration.value, enforcers: enforcers() });
++        const allowed = allowedBox.value.split(/\r?\n/);
++        await run("start_block", { filters, allowed, programs, duration: duration.value, enforcers: enforcers() });
        });
  
        // Enter in the field submits too.
-@@ -249,6 +273,7 @@
+@@ -249,6 +282,8 @@
        });
        password.addEventListener("input", () => { error = ""; force.disabled = !password.value; refresh(); });
        sites.addEventListener("input", () => { error = ""; refresh(); });
 +      programBox.addEventListener("input", () => { error = ""; refresh(); });
++      allowedBox.addEventListener("input", () => { error = ""; refresh(); });
        duration.addEventListener("input", () => { error = ""; refresh(); });
        for (const c of checks) {
          c.addEventListener("change", () => {
@@ -3001,7 +3371,7 @@ fn main() {
          "title": "Site Blocker",
          "width": 340,
 -        "height": 560,
-+        "height": 720,
++        "height": 780,
          "visible": false,
          "resizable": false,
          "transparent": true,
@@ -3289,6 +3659,16 @@ mod tests {
 4. `index.html`: a checkbox with `data-enforcer="<field name>"` (and a textarea if it has a list). The checkboxes are read, saved and disabled by their attribute, nothing else to wire.
 5. Tests: `state::tests::what_can_run_...` covers the combinations; add the new enforcer to it.
 
+### 6.5 The list of allowed sites (the whitelist)
+
+Under the block list there is a second, shorter list: sites that are **always allowed** and **win over the block list**. It uses the same syntax and the same matcher (`FilterList`), so `*`, `*.example.org` and `example.com/path*` all work in both.
+
+- **The rule** (`block::Active::blocks_site`): a page is closed when it is on the block list **and not** on the allowed list. So `*` on the block list with `google.com` allowed blocks every site but that one; an allowed entry is exactly as wide as it is written (`google.com` does not allow `accounts.google.com`, `*.google.com` does).
+- **Any combination works**: both empty (nothing blocked), only a block list, a block list with exceptions, `*` with exceptions, and allowed `*` (nothing is blocked whatever the block list says). **Allowed sites alone are not something to block**: with only the tab enforcers on and an empty block list, the block is refused like before, because there is nothing to make exceptions to. The block list is what the enforcer needs (`Uses::Sites`); the allowed list is not an enforcer's own need.
+- **It travels everywhere the block list does**: `Request::Start.allowed`, `Policy.allowed` and `Status.allowed` (all `#[serde(default)]`, so older messages and files read as empty), `state::Saved.allowed` (saved with the block and back after a restart), `block::Lists`/`Active`, and the app's cached policy. `service::start` refuses an allowed entry that cannot match, like a bad block entry.
+- **UI**: a short textarea under the block list ("Always allowed"), shown again for a running block, locked while a block runs.
+- Not covered by the allowed list: programs (`programs.rs` has its own list and its own protected list) and the Obsidian enforcer.
+
 ## 7. Update `CLAUDE.md`
 
 The project notes describe the old design and are used by every future session, so update them in the same change. Replace these parts (wording is a suggestion; keep the style of the file):
@@ -3296,6 +3676,7 @@ The project notes describe the old design and are used by every future session, 
 **File list**: remove `task.rs`; add:
 
 - `src-tauri/src/service.rs` – the SYSTEM service: owns the block, answers the app over the pipe, installs / removes itself
+- `src-tauri/src/filters.rs` – site lists: plain address prefixes plus `*`, used for the block list and for the allowed list (which wins over it); only web pages are ever matched, never the browser's own pages
 - `src-tauri/src/programs.rs` – the programs to close: exe names with `*`, a protected list that is never closed
 - `src-tauri/src/pipe.rs`, `proto.rs`, `client.rs` – the named pipe `\\.\pipe\SiteBlocker`: server, messages, and the app's side (keeps the last policy in memory)
 - `src-tauri/src/watchdog.rs` – the service's watch over the app (starts it as the logged-on user, at logon and while a block runs; decides which process is the app and ends one that stops asking for its policy)
@@ -3384,7 +3765,7 @@ rmdir /s /q "%ProgramData%\SiteBlocker"
 
 ```powershell
 cd src-tauri
-cargo test                               # 56 tests: block, clock, filters, programs, state, unlock, proto, client, service, watchdog, tab_closer
+cargo test                               # 63 tests: block, clock, filters, programs, state, unlock, proto, client, service, watchdog, tab_closer
 cargo test -- --ignored the_pipe --nocapture   # starts the real pipe server in the test process, ~15 s; no service may be running
 ```
 
@@ -3425,6 +3806,10 @@ Build with `npm run build` (installer in `src-tauri\target\release\bundle\nsis\`
 | 26 | Put `*` or `explorer.exe` in the Programs box and start | refused with "Would close programs Windows or this app needs" |
 | 27 | Start a block with only Obsidian ticked and both lists empty | it starts; with only the programs box ticked and no programs it is refused |
 | 28 | Restart the PC during a block with programs | after the restart the block is back and the Programs box shows them |
+| 29 | Block list `*`, allowed `google.com`; start | every tab is closed except google.com pages; the new-tab page, `chrome://settings` and the like stay open |
+| 30 | Block list `youtube.com`, allowed `youtube.com/watch*` | the YouTube front page and shorts close, a watch page stays |
+| 31 | Allowed list filled, block list empty, only the tab options ticked | refused (nothing to make exceptions to) |
+| 32 | Open a Google redirect page (a result link that goes through `google.com/url?q=https://...`) with a block entry for the target site | the redirect page itself is not closed because of the target in its query |
 
 If test 1 fails: read `%ProgramData%\SiteBlocker\service.log` (administrators can read it) and the installer's error message; `%LOCALAPPDATA%\SiteBlocker\app.log` has the `--install` output.
 
