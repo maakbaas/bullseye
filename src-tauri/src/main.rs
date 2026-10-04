@@ -14,6 +14,7 @@ mod setup;
 mod state;
 mod sync;
 mod tab_closer;
+mod ui;
 mod unlock;
 mod watchdog;
 
@@ -23,7 +24,7 @@ use proto::{Request, Response};
 use state::Enforcers;
 use tauri::{
     tray::{MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, State, WindowEvent,
+    AppHandle, RunEvent, State, WindowEvent,
 };
 
 /// Starts blocking with the given filter lines, allowed-site lines, program lines and enforcers, for `duration` (`5s`, `10m`, `3h`,
@@ -108,12 +109,13 @@ fn main() {
 
     tauri::Builder::default()
         .manage(remote)
-        .invoke_handler(tauri::generate_handler![start_block, stop_block, block_status, force_exit])
-        // The window's X hides to the tray; only the unlock password quits.
+        .manage(ui::Ui::new())
+        .invoke_handler(tauri::generate_handler![start_block, stop_block, block_status, force_exit, ui::window_ready])
+        // The window's X hides it (it is destroyed after a while, `ui.rs`); only the unlock password quits.
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                let _ = window.hide();
+                ui::dismiss(window);
             }
         })
         .setup(|app| {
@@ -121,16 +123,25 @@ fn main() {
                 .icon(app.default_window_icon().unwrap().clone())
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click { button_state: MouseButtonState::Up, .. } = event {
-                        if let Some(window) = tray.app_handle().get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
+                        ui::show_in_background(tray.app_handle().clone());
                     }
                 })
                 .build(app)?;
+            ui::spawn_reaper(app.handle().clone());
+            #[cfg(debug_assertions)]
+            ui::debug_aids(app.handle());
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            // With no window the app has nothing to show but must not end: an exit that nobody asked
+            // for (the last window going away) is refused, while the unlock password's is allowed.
+            if let RunEvent::ExitRequested { api, code, .. } = event {
+                if code.is_none() {
+                    api.prevent_exit();
+                }
+            }
+        });
 }

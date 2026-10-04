@@ -290,8 +290,15 @@
         });
       }
 
-      refresh();
-      setInterval(refresh, 1000);
+      // The window is made when it is asked for and shown once this page has drawn (`ui::window_ready`);
+      // its X only hides it. While it is hidden nothing is looked at, so nothing is asked of the service.
+      let visible = true;
+      window.__TAURI__.event.listen("visibility", (event) => {
+        visible = event.payload;
+        if (visible) refresh();
+      });
+      setInterval(() => { if (visible && !document.hidden) refresh(); }, 1000);
+      refresh().finally(() => invoke("window_ready"));
     </script>
   </body>
 </html>

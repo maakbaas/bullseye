@@ -9,18 +9,7 @@
   },
   "app": {
     "withGlobalTauri": true,
-    "windows": [
-      {
-        "label": "main",
-        "title": "Site Blocker",
-        "width": 340,
-        "height": 850,
-        "visible": false,
-        "resizable": false,
-        "transparent": true,
-        "windowEffects": { "effects": ["mica"] }
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }
