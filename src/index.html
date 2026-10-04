@@ -1,0 +1,265 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Site Blocker</title>
+    <style>
+      /* Windows 11 Fluent styling; the window background is Mica (see tauri.conf.json). */
+      :root {
+        color-scheme: light dark;
+        --text: rgba(0, 0, 0, 0.896);
+        --text-secondary: rgba(0, 0, 0, 0.606);
+        --control: rgba(255, 255, 255, 0.7);
+        --control-hover: rgba(249, 249, 249, 0.5);
+        --control-pressed: rgba(249, 249, 249, 0.3);
+        --control-stroke: rgba(0, 0, 0, 0.0578);
+        --control-stroke-bottom: rgba(0, 0, 0, 0.1622);
+        --input-stroke-bottom: rgba(0, 0, 0, 0.4458);
+        --input-focus: #ffffff;
+        --text-disabled: rgba(0, 0, 0, 0.3614);
+        --control-disabled: rgba(249, 249, 249, 0.3);
+        --accent: #005fb8;
+        --accent-hover: #1a6fc0;
+        --accent-pressed: #3381c8;
+        --on-accent: #ffffff;
+        --error: #c42b1c;
+        --check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 6.5l2.5 2.5L10 3.5' fill='none' stroke='white' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --text: #ffffff;
+          --text-secondary: rgba(255, 255, 255, 0.786);
+          --control: rgba(255, 255, 255, 0.0605);
+          --control-hover: rgba(255, 255, 255, 0.0837);
+          --control-pressed: rgba(255, 255, 255, 0.0326);
+          --control-stroke: rgba(255, 255, 255, 0.0698);
+          --control-stroke-bottom: rgba(255, 255, 255, 0.093);
+          --input-stroke-bottom: rgba(255, 255, 255, 0.5442);
+          --input-focus: rgba(30, 30, 30, 0.7);
+          --text-disabled: rgba(255, 255, 255, 0.3628);
+          --control-disabled: rgba(255, 255, 255, 0.0419);
+          --accent: #60cdff;
+          --accent-hover: #5abce9;
+          --accent-pressed: #52aad3;
+          --on-accent: #000000;
+          --error: #ff99a4;
+          --check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 6.5l2.5 2.5L10 3.5' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+        }
+      }
+      html, body { margin: 0; height: 100%; background: transparent; }
+      body {
+        box-sizing: border-box;
+        padding: 16px 16px 0;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        font: 14px/20px "Segoe UI Variable Text", "Segoe UI", sans-serif;
+        color: var(--text);
+        user-select: none;
+        cursor: default;
+      }
+      textarea {
+        flex: 1;
+        resize: none;
+        padding: 6px 10px;
+        font: inherit;
+        color: var(--text);
+        background: var(--control);
+        border: 1px solid var(--control-stroke);
+        border-bottom-color: var(--input-stroke-bottom);
+        border-radius: 4px;
+        outline: none;
+      }
+      textarea::placeholder { color: var(--text-secondary); }
+      textarea:focus { background: var(--input-focus); border-bottom: 2px solid var(--accent); padding-bottom: 5px; }
+      textarea:disabled { color: var(--text-disabled); background: var(--control-disabled); border-color: var(--control-stroke); }
+      textarea:disabled::placeholder { color: var(--text-disabled); }
+      /* The enforcers, grouped by whether they go by the block list. */
+      section { display: flex; flex-direction: column; gap: 8px; }
+      section.list { flex: 1; min-height: 0; }
+      h2 { margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; }
+      label.check { display: flex; align-items: center; gap: 8px; }
+      label.check:has(input:disabled) { color: var(--text-disabled); }
+      input[type="checkbox"] {
+        appearance: none;
+        flex: none;
+        width: 20px;
+        height: 20px;
+        margin: 0;
+        padding: 0;
+        background: var(--control);
+        border: 1px solid var(--input-stroke-bottom);
+        border-radius: 4px;
+      }
+      input[type="checkbox"]:checked {
+        border-color: transparent;
+        background: var(--accent) var(--check) center / 12px no-repeat;
+      }
+      input[type="checkbox"]:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
+      input[type="checkbox"]:disabled { border-color: var(--text-disabled); background-color: var(--control-disabled); }
+      input[type="checkbox"]:checked:disabled { border-color: transparent; background-color: var(--text-disabled); }
+      /* Every control on its own line, full width. */
+      .buttons { display: flex; flex-direction: column; gap: 8px; }
+      button {
+        min-width: 96px;
+        padding: 5px 12px;
+        font: inherit;
+        color: var(--text);
+        background: var(--control);
+        border: 1px solid var(--control-stroke);
+        border-bottom-color: var(--control-stroke-bottom);
+        border-radius: 4px;
+      }
+      button:hover:not(:disabled) { background: var(--control-hover); }
+      button:active:not(:disabled) { background: var(--control-pressed); color: var(--text-secondary); }
+      button.accent { color: var(--on-accent); background: var(--accent); border-color: transparent; }
+      button.accent:hover:not(:disabled) { background: var(--accent-hover); }
+      button.accent:active:not(:disabled) { background: var(--accent-pressed); }
+      button:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
+      button:disabled, button.accent:disabled { color: var(--text-disabled); background: var(--control-disabled); border-color: var(--control-stroke); }
+      input {
+        padding: 4px 10px;
+        font: inherit;
+        color: var(--text);
+        background: var(--control);
+        border: 1px solid var(--control-stroke);
+        border-bottom-color: var(--input-stroke-bottom);
+        border-radius: 4px;
+        outline: none;
+      }
+      input::placeholder { color: var(--text-secondary); }
+      input:focus { background: var(--input-focus); border-bottom: 2px solid var(--accent); padding-bottom: 3px; }
+      input:disabled { color: var(--text-disabled); background: var(--control-disabled); border-color: var(--control-stroke); }
+      /* A status bar along the bottom edge: full width, past the body's side and bottom padding. */
+      #status {
+        margin: 0 -16px;
+        padding: 4px 16px 8px;
+        min-height: 16px;
+        font-family: "Cascadia Mono", Consolas, monospace;
+        font-size: 12px;
+        line-height: 16px;
+        color: var(--text-secondary);
+        background: var(--control);
+        border-top: 1px solid var(--control-stroke-bottom);
+      }
+      #status.error { color: var(--error); }
+      /* The emergency stop: set apart below a divider, so it is not mistaken for the normal flow. */
+      .emergency { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; padding: 20px 0 4px; border-top: 1px solid var(--control-stroke-bottom); }
+    </style>
+  </head>
+  <body>
+    <section class="list">
+      <h2>Block list</h2>
+      <textarea id="sites" placeholder="One site per line, e.g. youtube.com" aria-label="Block list" autofocus></textarea>
+      <label class="check"><input type="checkbox" data-enforcer="chromium_tabs" checked />Close blocked tabs in Chrome, Edge, Brave</label>
+      <label class="check"><input type="checkbox" data-enforcer="chromium_split_view" checked />Close blocked pages in split view</label>
+    </section>
+    <section>
+      <h2>Without block list</h2>
+      <label class="check"><input type="checkbox" data-enforcer="obsidian_web_viewer" checked />Close Obsidian when it shows web pages</label>
+    </section>
+    <div class="buttons">
+      <input id="duration" placeholder="Duration, e.g. 10m" title="Empty: block until stopped. Or 5s, 10m, 3h, 1d: block for that long, without stopping early." />
+      <button id="toggle" class="accent">Start block</button>
+    </div>
+    <form class="emergency" id="unlock">
+      <input id="password" type="password" placeholder="Unlock password" aria-label="Unlock password" autocomplete="off" />
+      <button id="force" type="submit" title="Ends the block, the app, its launcher and the login task, so nothing starts again by itself." disabled>Unlock</button>
+    </form>
+    <div id="status" role="status">No active block</div>
+    <script>
+      const { invoke } = window.__TAURI__.core;
+      const sites = document.getElementById("sites");
+      const duration = document.getElementById("duration");
+      const toggle = document.getElementById("toggle");
+      const status = document.getElementById("status");
+      const force = document.getElementById("force");
+      const password = document.getElementById("password");
+      const checks = [...document.querySelectorAll("[data-enforcer]")];
+      let error = "";
+
+      // The enforcers as the backend takes them: { chromium_tabs: true, ... }.
+      function enforcers() {
+        return Object.fromEntries(checks.map((c) => [c.dataset.enforcer, c.checked]));
+      }
+
+      // The last choice is remembered for the next block; a running block shows its own instead.
+      try {
+        const saved = JSON.parse(localStorage.getItem("enforcers") || "{}");
+        for (const c of checks) if (c.dataset.enforcer in saved) c.checked = saved[c.dataset.enforcer];
+      } catch {}
+
+      function formatRemaining(seconds) {
+        const d = Math.floor(seconds / 86400);
+        const h = Math.floor((seconds % 86400) / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = seconds % 60;
+        const parts = d ? [`${d}d`, `${h}h`, `${m}m`] : h ? [`${h}h`, `${m}m`, `${s}s`] : m ? [`${m}m`, `${s}s`] : [`${s}s`];
+        return parts.join(" ");
+      }
+
+      // The backend owns the block (timed blocks end there); the UI mirrors it every second.
+      async function refresh() {
+        const { blocking, remaining, filters, enforcers: running, clock_synced } = await invoke("block_status");
+        const timed = remaining != null;
+        // A block resumed from disk comes with its list, so show it rather than an empty box.
+        if (blocking && filters.length && !sites.value) sites.value = filters.join("\n");
+        toggle.textContent = blocking ? "Stop block" : "Start block";
+        toggle.disabled = timed;
+        sites.disabled = blocking;
+        // Fixed while a block runs, so turning one off is not a way around it.
+        for (const c of checks) {
+          if (running) c.checked = running[c.dataset.enforcer];
+          c.disabled = blocking;
+        }
+        duration.disabled = blocking;
+        status.classList.toggle("error", !!error);
+        // Until internet time is in, time with the app closed does not count, so say why it lags.
+        const offline = clock_synced ? "" : " (waiting for internet time)";
+        status.textContent = error
+          || (timed ? `Remaining time in active block: ${formatRemaining(remaining)}${offline}` : blocking ? "Unlocked block active" : "No active block");
+      }
+
+      async function run(command, args) {
+        try {
+          await invoke(command, args);
+          error = "";
+        } catch (e) {
+          error = String(e);
+        }
+        await refresh();
+      }
+
+      toggle.addEventListener("click", async () => {
+        const { blocking } = await invoke("block_status");
+        if (blocking) return run("stop_block");
+        const filters = sites.value.split(/\r?\n/);
+        await run("start_block", { filters, duration: duration.value, enforcers: enforcers() });
+      });
+
+      // Enter in the field submits too.
+      document.getElementById("unlock").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!password.value) return;
+        force.disabled = true;
+        // The app exits on success, so only a wrong password (or a failure) comes back here.
+        await run("force_exit", { password: password.value });
+        password.value = "";
+        password.focus();
+      });
+      password.addEventListener("input", () => { error = ""; force.disabled = !password.value; refresh(); });
+      sites.addEventListener("input", () => { error = ""; refresh(); });
+      duration.addEventListener("input", () => { error = ""; refresh(); });
+      for (const c of checks) {
+        c.addEventListener("change", () => {
+          error = "";
+          try { localStorage.setItem("enforcers", JSON.stringify(enforcers())); } catch {}
+          refresh();
+        });
+      }
+
+      refresh();
+      setInterval(refresh, 1000);
+    </script>
+  </body>
+</html>

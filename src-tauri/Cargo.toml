@@ -1,0 +1,36 @@
+[package]
+name = "tray-app"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# the unlock password is kept as a PBKDF2 hash (see src/unlock.rs)
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+regex = "1.13.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.10"
+sysinfo = "0.39.6"
+tauri = { version = "2", features = ["tray-icon"] }
+uiautomation = "0.25.1"
+# named mutexes, for the app/watchdog pair (see src/watchdog.rs)
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
+
+[profile.dev]
+incremental = false       # don't accumulate a multi-GB incremental cache
+debug = "line-tables-only" # keep panic line numbers, drop the bulk of debug symbols
+
+# PBKDF2 runs 600 000 rounds; unoptimised that takes seconds per password check in dev and tests.
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.hmac]
+opt-level = 3
+[profile.dev.package.pbkdf2]
+opt-level = 3
+[profile.dev.package.digest]
+opt-level = 3
+[profile.dev.package.block-buffer]
+opt-level = 3
