@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::block::Blocklist;
+use crate::client::Remote;
 use crate::filters::FilterList;
 use crate::state::Enforcers;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -26,7 +26,7 @@ use uiautomation::{UIAutomation, UIElement};
 const INTERVAL: Duration = Duration::from_secs(1);
 const RECHECK: Duration = Duration::from_secs(10);
 
-pub fn spawn(blocklist: Blocklist) {
+pub fn spawn(remote: Remote) {
     thread::spawn(move || {
         let automation = match UIAutomation::new() {
             Ok(a) => a,
@@ -35,7 +35,7 @@ pub fn spawn(blocklist: Blocklist) {
         let mut closer = Closer { automation, windows: HashMap::new(), system: System::new() };
         loop {
             let start = Instant::now();
-            if let Some((filters, enforcers)) = blocklist.active() {
+            if let Some((filters, enforcers)) = remote.active() {
                 if enforcers.use_block_list() {
                     if let Err(e) = closer.tick(&filters, enforcers) {
                         eprintln!("tab_closer: {e}");

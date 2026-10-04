@@ -32,7 +32,7 @@
     "shortDescription": "Blocks distracting sites in Chromium browsers and Obsidian",
     "windows": {
       "nsis": {
-        "installMode": "currentUser",
+        "installMode": "perMachine",
         "installerHooks": "./windows/hooks.nsh"
       }
     },

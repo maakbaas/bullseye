@@ -9,6 +9,7 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -129,15 +130,32 @@ impl Store {
     }
 }
 
-/// The folder the app keeps its files in: `%LOCALAPPDATA%\SiteBlocker`.
+/// A folder to use instead of the real one, for `--service-console` (`service.rs`).
+static DIR_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn use_dir(dir: PathBuf) {
+    let _ = DIR_OVERRIDE.set(dir);
+}
+
+/// The folder the service keeps its files in: `%ProgramData%\SiteBlocker`, which the service
+/// locks down to SYSTEM (`service::lock_down_data_dir`). The saved block lives here, so the user
+/// whose block it is cannot edit or delete it.
 ///
-/// `None` only if there is no local app-data folder for this user, in which case the app still
-/// blocks for as long as it runs, it just does not survive a restart.
+/// `None` only if there is no such folder, in which case the service still blocks for as long as
+/// it runs, it just does not survive a restart.
 pub fn dir() -> Option<PathBuf> {
+    if let Some(dir) = DIR_OVERRIDE.get() {
+        return Some(dir.clone());
+    }
+    Some(PathBuf::from(std::env::var_os("ProgramData")?).join("SiteBlocker"))
+}
+
+/// The app's own folder, for its log: `%LOCALAPPDATA%\SiteBlocker`. Nothing in it matters to a block.
+pub fn user_dir() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("SiteBlocker"))
 }
 
-/// The store the app uses: `%LOCALAPPDATA%\SiteBlocker\state.json`.
+/// The store the service uses: `%ProgramData%\SiteBlocker\state.json`.
 pub fn store() -> Option<Store> {
     Some(Store::new(dir()?.join("state.json")))
 }

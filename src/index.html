@@ -200,7 +200,16 @@
 
       // The backend owns the block (timed blocks end there); the UI mirrors it every second.
       async function refresh() {
-        const { blocking, remaining, filters, enforcers: running, clock_synced } = await invoke("block_status");
+        let state;
+        try {
+          state = await invoke("block_status");
+        } catch (e) {
+          // The service did not answer: say so, and leave the rest as it was.
+          status.classList.add("error");
+          status.textContent = String(e);
+          return;
+        }
+        const { blocking, remaining, filters, enforcers: running, clock_synced } = state;
         const timed = remaining != null;
         // A block resumed from disk comes with its list, so show it rather than an empty box.
         if (blocking && filters.length && !sites.value) sites.value = filters.join("\n");
@@ -231,7 +240,13 @@
       }
 
       toggle.addEventListener("click", async () => {
-        const { blocking } = await invoke("block_status");
+        let blocking;
+        try {
+          ({ blocking } = await invoke("block_status"));
+        } catch (e) {
+          error = String(e);
+          return refresh();
+        }
         if (blocking) return run("stop_block");
         const filters = sites.value.split(/\r?\n/);
         await run("start_block", { filters, duration: duration.value, enforcers: enforcers() });

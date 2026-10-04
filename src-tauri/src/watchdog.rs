@@ -1,213 +1,204 @@
-//! The entry point: one command that starts the app and keeps it alive.
+//! The service's watch over the app, and the little the app itself needs from this module.
 //!
-//! Running the executable with `--launch` starts the app and then watches over it. While a
-//! timed block is saved on disk, the app is started again within about half a second of it
-//! ending, so ending the app does not end the block. The app in turn watches the launcher and
-//! starts a new one within about a second of it ending (`guard_launcher`), so ending either half
-//! of the pair is undone by the other. The login task (`task.rs`, registered by the installer) runs this same
-//! `--launch` command at every logon, which brings the pair back after both were ended.
+//! The service (`service.rs`) runs as SYSTEM in session 0, which has no desktop, so it cannot
+//! close browser tabs itself. The app does that, in the logged-on user's session, and the service
+//! keeps it there: it starts the app at every logon, and while a timed block runs it starts the
+//! app again within about a second of it ending. Ending the app does not end the block, and
+//! ending the service is up to Windows (`service::install` sets it to restart on failure and
+//! takes the right to stop it away from everyone but SYSTEM).
 //!
-//! Nothing here is hidden or protected, on purpose: every process runs under the app's own
-//! name and shows up in Task Manager, the login task is named and can be disabled or deleted
-//! in Task Scheduler, and uninstalling the app removes it. The mechanism is here to add
+//! Nothing here is hidden or protected beyond that, on purpose: the service is named
+//! `SiteBlocker` in the services list, the app runs under its own name in Task Manager, and
+//! uninstalling the app (Settings > Apps) removes the service. The mechanism is here to add
 //! friction at a weak moment, not to be unknowable.
 //!
-//! Each role is claimed through a named mutex, so a second app or launcher finds its role taken
-//! and exits instead of doubling up. Windows releases a mutex when the process holding it ends,
-//! however it ends, which is how the launcher notices the app is gone.
+//! The app claims `Local\SiteBlocker-app`, so a second copy of it exits instead of doubling up.
+//! That mutex is per session and the service is in another one, which is why the service finds
+//! the app by looking at processes instead.
 
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::ptr::{null, null_mut};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
+use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+use windows_sys::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
+use windows_sys::Win32::System::RemoteDesktop::{ProcessIdToSessionId, WTSGetActiveConsoleSessionId, WTSQueryUserToken};
 use windows_sys::Win32::System::Threading::{
-    CreateMutexW, OpenMutexW, ReleaseMutex, WaitForSingleObject, MUTEX_MODIFY_STATE, SYNCHRONIZATION_SYNCHRONIZE,
+    CreateMutexW, CreateProcessAsUserW, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, STARTUPINFOW,
 };
 
-use crate::{state, task};
+use crate::block::Blocklist;
+use crate::state;
 
-/// How often the launcher looks at the saved block and at the app.
-const POLL: Duration = Duration::from_millis(500);
-
-/// Cap on how fast the app is started again when it never gets as far as running at all, so a
-/// broken build cannot turn into a process being started over and over.
+/// Cap, in seconds, on how long the app is left alone after failing to start, so a broken build
+/// cannot turn into a process being started over and over.
 const MAX_BACKOFF: u32 = 10;
 
-/// The argument that makes the executable the launcher instead of the app.
-const LAUNCH: &str = "--launch";
-
-/// What the launcher and the app write to, next to the saved block, so the user can see what
-/// they did.
-const LOG: &str = "launcher.log";
-
-/// Session-scoped mutex names. `Local\` keeps them out of other sessions and needs no privilege
-/// to create.
+/// Session-scoped mutex name. `Local\` keeps it out of other sessions and needs no privilege.
 const APP_MUTEX: &str = r"Local\SiteBlocker-app";
-const LAUNCHER_MUTEX: &str = r"Local\SiteBlocker-launcher";
 
-/// How often the app looks for its launcher.
-const LAUNCHER_POLL: Duration = Duration::from_secs(1);
+/// Set at logon (and when the service starts): the app is wanted even without a timed block.
+/// Cleared once the app is seen running, so quitting it with the unlock password sticks.
+pub static LAUNCH_APP: AtomicBool = AtomicBool::new(true);
 
-/// `--launch`: the one entry point. Starts the app, then keeps it alive while a timed block is
-/// saved on disk. Returns when a launcher is already running (or there is no executable to
-/// start); otherwise it ends the process once there is no timed block left to keep alive.
-pub fn launch_main() {
-    // A launcher is already doing this.
-    if !claim(LAUNCHER_MUTEX) {
-        return;
-    }
-    let Some(exe) = exe() else { return };
-    note("launch", "started");
+/// Whether this process is the service, which only decides where `note` writes.
+static IN_SERVICE: AtomicBool = AtomicBool::new(false);
 
-    // The app is what closes tabs and shows the tray; the launcher only watches over it, so
-    // the app starts even when no block is running. First, because schtasks below can take
-    // seconds.
-    spawn(&exe, &[]);
-
-    // The app turns the login task back on as it starts (`restore_task`).
-    supervise(&exe);
-}
-
-/// Keeps the app alive for as long as a timed block is saved on disk.
-fn supervise(exe: &PathBuf) {
-    note("launch", "watching for the app to end while a timed block runs");
-    // How many polls the app has been missing without ever being seen running, which slows the
-    // restarting down if the app is not surviving its own startup.
-    let mut missed = 0;
-    loop {
-        if !timed_block_saved() {
-            break;
-        }
-        let wait = if app_is_running() {
-            missed = 0;
-            POLL
-        } else {
-            spawn(exe, &[]);
-            missed += 1;
-            POLL * missed.min(MAX_BACKOFF)
-        };
-        thread::sleep(wait);
-    }
-    note("launch", "no timed block left to watch; standing down");
-    std::process::exit(0);
+pub fn in_service() {
+    IN_SERVICE.store(true, Ordering::Relaxed);
 }
 
 /// Whether this process is the one app instance, claiming the app's mutex if it is free.
 ///
-/// A second copy (started by the launcher, or by launching the executable again) leaves the
+/// A second copy (started by the service, or by launching the executable again) leaves the
 /// running one to do the work rather than closing tabs twice over.
 pub fn claim_app() -> bool {
     claim(APP_MUTEX)
 }
 
-/// Starts a launcher, which starts the app. A second one finds the mutex taken and exits.
-pub fn spawn_launcher() {
-    let Some(exe) = exe() else { return };
-    spawn(&exe, &[LAUNCH]);
-}
-
-/// The app's half of the pair: while a timed block is saved, starts a launcher whenever none is
-/// running. The launcher brings the app back and this brings the launcher back, so ending one
-/// of them is undone by the other; only ending both at once stops the pair until the next logon.
-pub fn guard_launcher() {
-    thread::spawn(|| loop {
-        if timed_block_saved() && !is_held(LAUNCHER_MUTEX) {
-            note("app", "no launcher is watching the timed block; starting one");
-            spawn_launcher();
+/// The service's half: keeps the app running in the logged-on user's session while a timed block
+/// is running, and starts it when `LAUNCH_APP` is set.
+pub fn spawn_supervisor(blocklist: Blocklist) {
+    thread::spawn(move || {
+        let mut system = System::new();
+        // How many starts in a row have not led to a running app, which slows the starting down.
+        let mut missed = 0u32;
+        let mut not_before = Instant::now();
+        let mut last_error = String::new();
+        loop {
+            thread::sleep(Duration::from_secs(1));
+            if blocklist.status().remaining.is_none() && !LAUNCH_APP.load(Ordering::SeqCst) {
+                missed = 0;
+                continue;
+            }
+            if app_is_running(&mut system) {
+                LAUNCH_APP.store(false, Ordering::SeqCst);
+                missed = 0;
+                continue;
+            }
+            if Instant::now() < not_before {
+                continue;
+            }
+            match launch_app() {
+                Ok(()) => {
+                    LAUNCH_APP.store(false, Ordering::SeqCst);
+                    last_error.clear();
+                    note("service", "started the app");
+                }
+                // Nobody is logged on yet, say: expected, and not worth a line every second.
+                Err(e) if e != last_error => {
+                    note("service", &format!("cannot start the app: {e}"));
+                    last_error = e;
+                }
+                Err(_) => {}
+            }
+            missed += 1;
+            not_before = Instant::now() + Duration::from_secs(u64::from(missed.min(MAX_BACKOFF)));
         }
-        // Long enough for a new launcher to have claimed its mutex by the next look; should
-        // two be started anyway, the second finds the mutex taken and exits.
-        thread::sleep(LAUNCHER_POLL);
     });
 }
 
-/// Undoes the forced stop's turning off of the login task, so starting the app, however it is
-/// started, puts everything back as it was. In the background, since schtasks can take seconds.
-///
-/// Best effort: a task installed from an administrator shell can only be turned on from an
-/// elevated process. Installed without (the intended setup), this always works.
-pub fn restore_task() {
-    thread::spawn(|| {
-        if let Err(e) = task::set_enabled(true) {
-            note("app", &e);
-        }
-    });
-}
-
-/// Ends every other process of this app: the launcher first, then the app instances, so that
-/// none is left to start the others again. Returns the process ids that were ended.
-pub fn kill_all() -> Vec<u32> {
-    let Some(exe) = exe() else { return Vec::new() };
+/// Whether the app is running in the session of whoever is at the screen. It is the same
+/// executable without arguments: the service, the installer's calls and the like all have some.
+fn app_is_running(system: &mut System) -> bool {
+    let Some(exe) = exe() else { return false };
     let name = file_name(&exe);
-    let me = std::process::id();
-    let mut system = System::new();
-    let mut ended = Vec::new();
-    for launchers_first in [true, false] {
-        system.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            true,
-            // The executable path is how this app's processes are recognised; sysinfo leaves it
-            // empty unless asked for.
-            ProcessRefreshKind::nothing().with_cmd(UpdateKind::OnlyIfNotSet).with_exe(UpdateKind::OnlyIfNotSet),
-        );
-        for (pid, process) in system.processes() {
-            let same = process.exe().is_some_and(|other| file_name(other) == name);
-            if pid.as_u32() == me || !same {
-                continue;
-            }
-            let is_launcher = process.cmd().iter().any(|arg| arg.to_string_lossy() == LAUNCH);
-            if is_launcher != launchers_first {
-                continue;
-            }
-            let label = format!("{} ({})", process.name().to_string_lossy(), pid);
-            if process.kill() {
-                ended.push(pid.as_u32());
-                note("stop", &format!("ended {label}"));
-            } else {
-                note("stop", &format!("could not end {label}"));
-            }
-        }
-    }
-    ended
-}
-
-/// Whether a timed block is saved on disk: the thing to keep the app alive for.
-///
-/// Whether its time is up is left to the app, which goes by internet time (`clock.rs`) and
-/// deletes the file when the block ends. Judging it here by the Windows clock would let moving
-/// that clock forward stand the launcher down.
-fn timed_block_saved() -> bool {
-    state::store().and_then(|store| store.load()).is_some_and(|saved| saved.until.is_some())
-}
-
-/// Whether some app instance is running, i.e. the app's mutex is held.
-fn app_is_running() -> bool {
-    is_held(APP_MUTEX)
-}
-
-/// Whether another thread, normally in another process, holds the mutex for `role`.
-fn is_held(role: &str) -> bool {
-    let name = wide(role);
-    // SAFETY: `name` is null-terminated, a mutex taken here is released again, and the handle
-    // is closed before returning.
-    unsafe {
-        let handle = OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE | MUTEX_MODIFY_STATE, 0, name.as_ptr());
-        if handle.is_null() {
+    // SAFETY: plain query with no arguments.
+    let console = unsafe { WTSGetActiveConsoleSessionId() };
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_cmd(UpdateKind::OnlyIfNotSet).with_exe(UpdateKind::OnlyIfNotSet),
+    );
+    system.processes().iter().any(|(pid, process)| {
+        let same = process.exe().is_some_and(|other| file_name(other) == name) && process.cmd().len() <= 1;
+        if !same || pid.as_u32() == std::process::id() {
             return false;
         }
-        // While its holder runs, the wait times out. A mutex that is free, or abandoned by a
-        // process that was ended, is taken by the wait instead, so give it straight back.
-        let result = WaitForSingleObject(handle, 0);
-        if result == WAIT_OBJECT_0 || result == WAIT_ABANDONED {
-            ReleaseMutex(handle);
+        let mut session = 0u32;
+        // SAFETY: `session` is a valid place to write to.
+        let ok = unsafe { ProcessIdToSessionId(pid.as_u32(), &mut session) };
+        ok != 0 && session == console
+    })
+}
+
+/// Starts the app on the desktop of whoever is at the screen, as that user and not as SYSTEM:
+/// closing their browser tabs goes through UI Automation, which needs their desktop, and the
+/// app has no business being SYSTEM.
+fn launch_app() -> Result<(), String> {
+    let exe = exe().ok_or("no executable to start")?;
+    let mut command = wide(&format!("\"{}\"", exe.display()));
+    let mut desktop = wide(r"winsta0\default");
+    // SAFETY: every pointer passed is valid for the call; the token, the environment block and
+    // the two process handles are released again whatever happens.
+    unsafe {
+        let session = WTSGetActiveConsoleSessionId();
+        if session == u32::MAX {
+            return Err("nobody is at the screen".into());
         }
-        CloseHandle(handle);
-        result == WAIT_TIMEOUT
+        let mut token: HANDLE = null_mut();
+        if WTSQueryUserToken(session, &mut token) == 0 {
+            return Err(format!("no user is logged on yet (error {})", GetLastError()));
+        }
+        let mut environment = null_mut();
+        let have_environment = CreateEnvironmentBlock(&mut environment, token, 0) != 0;
+
+        let mut startup: STARTUPINFOW = std::mem::zeroed();
+        startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+        startup.lpDesktop = desktop.as_mut_ptr();
+        let mut process: PROCESS_INFORMATION = std::mem::zeroed();
+        let none: *const SECURITY_ATTRIBUTES = null();
+        let started = CreateProcessAsUserW(
+            token,
+            null(),
+            command.as_mut_ptr(),
+            none,
+            none,
+            0,
+            CREATE_UNICODE_ENVIRONMENT,
+            if have_environment { environment } else { null() },
+            null(),
+            &startup,
+            &mut process,
+        );
+        let error = GetLastError();
+        if have_environment {
+            DestroyEnvironmentBlock(environment);
+        }
+        CloseHandle(token);
+        if started == 0 {
+            return Err(format!("CreateProcessAsUserW failed (error {error})"));
+        }
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+    }
+    Ok(())
+}
+
+/// Ends the app, when the service goes away for an update or an uninstall. Every other process
+/// of this executable that was started without arguments; the service itself and the installer's
+/// calls are left alone.
+pub fn kill_apps() {
+    let Some(exe) = exe() else { return };
+    let name = file_name(&exe);
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_cmd(UpdateKind::OnlyIfNotSet).with_exe(UpdateKind::OnlyIfNotSet),
+    );
+    for (pid, process) in system.processes() {
+        let same = process.exe().is_some_and(|other| file_name(other) == name) && process.cmd().len() <= 1;
+        if same && pid.as_u32() != std::process::id() {
+            let ended = process.kill();
+            note("service", &format!("{} the app ({pid})", if ended { "ended" } else { "could not end" }));
+        }
     }
 }
 
@@ -218,33 +209,35 @@ fn claim(role: &str) -> bool {
     // handle is deliberately never closed: it must stay open for as long as this process runs,
     // which is what keeps the role claimed, so not closing it is the point.
     unsafe {
-        let handle = CreateMutexW(std::ptr::null(), 1, name.as_ptr());
+        let handle = CreateMutexW(null(), 1, name.as_ptr());
         // Read before anything else can overwrite the thread's last error.
-        let taken = GetLastError() == windows_sys::Win32::Foundation::ERROR_ALREADY_EXISTS;
+        let taken = GetLastError() == ERROR_ALREADY_EXISTS;
         if handle.is_null() {
             // Nothing to hold the mutex with, so do not risk running a second copy.
-            note("launch", &format!("cannot claim {role}"));
+            note("app", &format!("cannot claim {role}"));
             return false;
         }
         !taken
     }
 }
 
-/// This executable, for starting the other half of the pair.
+/// This executable, for starting and recognising the app.
 fn exe() -> Option<PathBuf> {
     std::env::current_exe().ok()
 }
 
-/// Writes a line to `%LOCALAPPDATA%\SiteBlocker\launcher.log` as well as to stderr.
+/// Writes a line to a log file as well as to stderr: `service.log` next to the saved block for
+/// the service, `app.log` in `%LOCALAPPDATA%\SiteBlocker` for the app.
 ///
-/// The launcher runs without a window, so stderr goes nowhere in a release build; the file is
-/// how the user can see what the launcher actually did.
+/// Neither runs with a window, so stderr goes nowhere in a release build; the file is how the
+/// user can see what they actually did.
 pub fn note(who: &str, message: &str) {
     eprintln!("{who}: {message}");
-    let Some(dir) = state::dir() else { return };
-    // The folder only exists once a block has been saved, and this runs before that.
+    let (dir, file) = if IN_SERVICE.load(Ordering::Relaxed) { (state::dir(), "service.log") } else { (state::user_dir(), "app.log") };
+    let Some(dir) = dir else { return };
+    // The folder only exists once something has been written to it.
     let _ = fs::create_dir_all(&dir);
-    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(dir.join(LOG)) {
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(dir.join(file)) {
         let _ = writeln!(file, "{} {who}: {message}", timestamp());
     }
 }
@@ -277,21 +270,13 @@ fn civil(days: u64) -> (u64, u64, u64) {
     (year as u64, month as u64, day as u64)
 }
 
-/// Starts `exe` detached, so it outlives this process.
-fn spawn(exe: &PathBuf, args: &[&str]) {
-    let started = Command::new(exe).args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
-    if let Err(e) = started {
-        note("launch", &format!("cannot start {}: {e}", exe.display()));
-    }
-}
-
 /// Lowercased file name, so processes are matched on this one build whatever its path.
 fn file_name(path: &std::path::Path) -> String {
     path.file_name().unwrap_or_default().to_string_lossy().to_lowercase()
 }
 
 /// A null-terminated UTF-16 name, as the Win32 calls want it.
-fn wide(name: &str) -> Vec<u16> {
+pub fn wide(name: &str) -> Vec<u16> {
     name.encode_utf16().chain([0]).collect()
 }
 
@@ -303,7 +288,6 @@ mod tests {
     fn names_are_null_terminated() {
         assert_eq!(wide("ab"), vec![b'a' as u16, b'b' as u16, 0]);
         assert_eq!(*wide(APP_MUTEX).last().unwrap(), 0);
-        assert_eq!(*wide(LAUNCHER_MUTEX).last().unwrap(), 0);
     }
 
     #[test]
@@ -330,35 +314,5 @@ mod tests {
     fn claiming_a_role_twice_fails() {
         assert!(claim("Local\\SiteBlocker-test-role"));
         assert!(!claim("Local\\SiteBlocker-test-role"));
-    }
-
-    /// One test, because the app mutex is per-session and the tests run in parallel.
-    #[test]
-    fn the_app_mutex_reports_whether_the_app_runs() {
-        // A real app running while the tests run holds this same mutex, so the test only means
-        // anything when nothing is up.
-        if app_is_running() {
-            eprintln!("skipping: the app mutex is already held, so an app is running");
-            return;
-        }
-        // The app holds the mutex on a thread of its own and the launcher asks from another
-        // process. A thread may take a mutex it already owns, so asking from the claiming
-        // thread would always say "free"; another thread is the closest a test gets.
-        let (claimed_tx, claimed) = std::sync::mpsc::channel();
-        let (end, ended) = std::sync::mpsc::channel::<()>();
-        let app = thread::spawn(move || {
-            claimed_tx.send(claim_app()).unwrap();
-            let _ = ended.recv();
-        });
-        assert!(claimed.recv().unwrap());
-        assert!(app_is_running());
-        // Asking does not take the mutex away from the app.
-        assert!(app_is_running());
-        assert!(!claim_app());
-
-        // The holder ending abandons the mutex, as ending the app in Task Manager does.
-        drop(end);
-        app.join().unwrap();
-        assert!(!app_is_running());
     }
 }

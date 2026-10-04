@@ -16,8 +16,20 @@ sha2 = "0.10"
 sysinfo = "0.39.6"
 tauri = { version = "2", features = ["tray-icon"] }
 uiautomation = "0.25.1"
-# named mutexes, for the app/watchdog pair (see src/watchdog.rs)
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
+# the service (src/service.rs); install, failure actions, session notifications
+windows-service = "0.8"
+# named mutexes, the named pipe, starting the app in the user's session (see src/watchdog.rs, src/pipe.rs)
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Environment",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_Threading",
+] }
 
 [profile.dev]
 incremental = false       # don't accumulate a multi-GB incremental cache

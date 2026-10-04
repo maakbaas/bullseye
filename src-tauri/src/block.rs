@@ -10,7 +10,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::clock::{self, Clock};
 use crate::filters::FilterList;
@@ -38,7 +38,7 @@ struct Block {
     saved_at: Instant,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Status {
     blocking: bool,
     /// Seconds left of a timed block.
@@ -56,6 +56,12 @@ impl Blocklist {
     /// The app's own block list, over the real store in the local app-data folder.
     pub fn new() -> Blocklist {
         Blocklist { block: Arc::default(), store: state::store().map(Arc::new), clock: clock::global() }
+    }
+
+    /// A block list over a store of its own and a clock of its own, for other modules' tests.
+    #[cfg(test)]
+    pub fn with_store(store: Store) -> Blocklist {
+        Blocklist { block: Arc::default(), store: Some(Arc::new(store)), clock: Box::leak(Box::default()) }
     }
 
     /// Starts a block, unless one is running: checked here rather than only in the UI, so a
@@ -153,6 +159,13 @@ impl Blocklist {
             seen: state::to_unix(self.clock.now()),
             enforcers: block.enforcers,
         })
+    }
+
+    /// Ends the block whatever its time, and forgets it. Only for the unlock password
+    /// (`service::unlock`): everything else goes through `stop`, which keeps a timed block.
+    pub fn reset(&self) {
+        *self.block.lock().unwrap() = None;
+        self.clear_saved();
     }
 
     /// Removes the saved block: there is no longer one to resume.
