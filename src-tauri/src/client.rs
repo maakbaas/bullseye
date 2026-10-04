@@ -7,11 +7,13 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::block::Status;
 use crate::filters::FilterList;
 use crate::pipe;
 use crate::proto::{self, Policy, Request, Response};
+use crate::service;
 use crate::state::Enforcers;
 use crate::watchdog::note;
 
@@ -28,7 +30,12 @@ pub struct Remote {
     cache: Arc<Mutex<Option<Cached>>>,
     /// Whether the last call failed, so a failing service is logged once rather than every second.
     failing: Arc<AtomicBool>,
+    /// When the service was last asked to start, so that is not tried every second.
+    last_start: Arc<Mutex<Option<Instant>>>,
 }
+
+/// The least time between two attempts to start the service.
+const START_EVERY: Duration = Duration::from_secs(5);
 
 struct Cached {
     policy: Policy,
@@ -65,9 +72,28 @@ impl Remote {
                 self.apply(policy);
             }
             Ok(other) => self.fail(&format!("unexpected answer: {other:?}")),
-            Err(e) => self.fail(&e),
+            Err(e) => {
+                self.fail(&e);
+                self.revive_service();
+            }
         }
         self.cache.lock().unwrap().as_ref().map(|c| (c.list.clone(), c.policy.enforcers))
+    }
+
+    /// Asks Windows to start the service if it is registered but not running (it only stays down
+    /// if something ended it with exit code 0, or an update did not finish). Starting is the only
+    /// thing the app may do to the service: the access list gives interactive users no more
+    /// (`service::SDDL`). A service that is not registered at all, as in development, just fails
+    /// quietly.
+    fn revive_service(&self) {
+        let mut last = self.last_start.lock().unwrap();
+        if last.is_some_and(|at| at.elapsed() < START_EVERY) {
+            return;
+        }
+        *last = Some(Instant::now());
+        if let Ok(true) = service::start_registered() {
+            note("app", "the service was not running; started it");
+        }
     }
 
     fn fail(&self, why: &str) {

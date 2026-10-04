@@ -488,11 +488,13 @@ fn verify_server(pipe: &File) -> Result<(), String> {
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::block::Status;
 use crate::filters::FilterList;
 use crate::pipe;
 use crate::proto::{self, Policy, Request, Response};
+use crate::service;
 use crate::state::Enforcers;
 use crate::watchdog::note;
 
@@ -509,7 +511,12 @@ pub struct Remote {
     cache: Arc<Mutex<Option<Cached>>>,
     /// Whether the last call failed, so a failing service is logged once rather than every second.
     failing: Arc<AtomicBool>,
+    /// When the service was last asked to start, so that is not tried every second.
+    last_start: Arc<Mutex<Option<Instant>>>,
 }
+
+/// The least time between two attempts to start the service.
+const START_EVERY: Duration = Duration::from_secs(5);
 
 struct Cached {
     policy: Policy,
@@ -546,9 +553,28 @@ impl Remote {
                 self.apply(policy);
             }
             Ok(other) => self.fail(&format!("unexpected answer: {other:?}")),
-            Err(e) => self.fail(&e),
+            Err(e) => {
+                self.fail(&e);
+                self.revive_service();
+            }
         }
         self.cache.lock().unwrap().as_ref().map(|c| (c.list.clone(), c.policy.enforcers))
+    }
+
+    /// Asks Windows to start the service if it is registered but not running (it only stays down
+    /// if something ended it with exit code 0, or an update did not finish). Starting is the only
+    /// thing the app may do to the service: the access list gives interactive users no more
+    /// (`service::SDDL`). A service that is not registered at all, as in development, just fails
+    /// quietly.
+    fn revive_service(&self) {
+        let mut last = self.last_start.lock().unwrap();
+        if last.is_some_and(|at| at.elapsed() < START_EVERY) {
+            return;
+        }
+        *last = Some(Instant::now());
+        if let Ok(true) = service::start_registered() {
+            note("app", "the service was not running; started it");
+        }
     }
 
     fn fail(&self, why: &str) {
@@ -762,7 +788,7 @@ Only the source of the policy changes; none of the UI Automation code does.
 Read the top-of-file comment first. Decisions worth knowing:
 
 - **`controls_accepted` does not include STOP.** A service that does not accept stop cannot be stopped with `sc stop` or from the services list, by anyone, including administrators. It only accepts `SESSION_CHANGE`, which tells it when someone logs on.
-- **The SDDL** gives SYSTEM everything (it needs delete to remove itself on uninstall), administrators query/enumerate/**start**/read-the-list only, and everybody else query only. Administrators keep *start* on purpose: the installer (an administrator) has to be able to start the service again after an update. They get no stop, pause, change-config, delete, write-DACL or write-owner. `sc sdset` is the **last** step of the install: after it, an administrator can no longer change the service (the handle the installer already holds keeps its rights).
+- **The SDDL** gives SYSTEM everything (it needs delete to remove itself on uninstall), administrators **and interactive users** query/enumerate/**start**/read-the-list only, and service accounts query only. Administrators keep *start* on purpose: the installer has to be able to start the service again after an update. Interactive users get *start* because the app, which runs as one, starts the service again when it is not running (`client::Remote::revive_service`, at most every 5 s). Starting is harmless: starting a running service does nothing, and a stopped one only goes back to blocking. Nobody but SYSTEM gets stop, pause, change-config, delete, write-DACL or write-owner. **Never widen what interactive users may do beyond start**: the app runs as the user, so anything the app may do, the user may do. `sc sdset` is the **last** step of the install: after it, an administrator can no longer change the service (the handle the installer already holds keeps its rights).
 - **Failure actions** are "restart immediately", three times over, and the last one repeats forever. `set_failure_actions_on_non_crash_failures(true)` makes that apply also when the process ends with a failure *exit code*, not just when it is killed. A clean exit code 0 is **not** restarted: the installer relies on that.
 - **Every request is checked again in `handle`/`start`/`unlock`.** The code that used to validate in the Tauri command (`parse_duration`, `FilterList::parse`, "at least one enforcer", ...) is now here, because the pipe can be reached by any program.
 - **Unlock rate limit**: after 3 wrong passwords in a row, the next guesses are refused for 5 s, 10 s, 20 s, ... (capped at about 21 minutes). The lock is held while the password is hashed, so guesses cannot be tried in parallel. (The hash is still in the binary, so an offline attack on a weak password is unchanged: see section 8.4.)
@@ -819,9 +845,12 @@ use crate::{clock, pipe, unlock};
 pub const NAME: &str = "SiteBlocker";
 
 /// Who may do what with the service. SYSTEM: everything (it deletes itself on uninstall).
-/// Administrators: query, enumerate, start and read the list, but not stop, pause, change,
-/// delete or rewrite this list. Interactive users and service accounts: query only.
-const SDDL: &str = "D:(A;;CCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCLCSWRPLOCRRC;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)";
+/// Administrators and interactive users: query, enumerate, read the list and start, but not stop,
+/// pause, change, delete or rewrite it. Interactive users may start it because the app (which
+/// runs as one) starts it again when it is not running (`client::Remote::revive_service`);
+/// starting a running service does nothing, and a stopped one only goes back to blocking.
+/// Service accounts: query only.
+const SDDL: &str = "D:(A;;CCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCLCSWRPLOCRRC;;;BA)(A;;CCLCSWRPLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)";
 
 /// The service is started in safe mode too, when these keys exist.
 const SAFE_BOOT: [&str; 2] = [
@@ -1158,14 +1187,16 @@ pub fn exists() -> bool {
     manager(ServiceManagerAccess::CONNECT).is_ok_and(|m| m.open_service(NAME, ServiceAccess::QUERY_STATUS).is_ok())
 }
 
-/// Starts the service, if it is registered and not running. Administrators may.
-pub fn start_registered() -> Result<(), String> {
+/// Starts the service, if it is registered and not running. Administrators and interactive users
+/// may. Says whether it was started just now (`false`: it was running already).
+pub fn start_registered() -> Result<bool, String> {
     let service = manager(ServiceManagerAccess::CONNECT)?
         .open_service(NAME, ServiceAccess::START)
         .map_err(|e| format!("cannot open the service: {e}"))?;
     match service.start::<OsString>(&[]) {
-        Err(e) if !is_os_error(&e, ERROR_SERVICE_ALREADY_RUNNING) => Err(format!("cannot start the service: {e}")),
-        _ => Ok(()),
+        Ok(()) => Ok(true),
+        Err(e) if is_os_error(&e, ERROR_SERVICE_ALREADY_RUNNING) => Ok(false),
+        Err(e) => Err(format!("cannot start the service: {e}")),
     }
 }
 
@@ -1347,12 +1378,18 @@ mod tests {
 
     #[test]
     fn the_access_lists_say_what_they_should() {
-        // Administrators may start (RP) but not stop (WP), delete (SD), change (DC) or rewrite (WD, WO).
-        let administrators = SDDL.split('(').find(|ace| ace.ends_with(";;;BA)")).unwrap();
-        assert!(administrators.contains("RP"));
-        for right in ["WP", "SD", "DC", "WD", "WO", "DT"] {
-            assert!(!administrators.contains(right), "{right}");
+        // Administrators and interactive users may start (RP) but not stop (WP), delete (SD),
+        // change (DC) or rewrite (WD, WO).
+        for who in [";;;BA)", ";;;IU)"] {
+            let ace = SDDL.split('(').find(|ace| ace.ends_with(who)).unwrap();
+            assert!(ace.contains("RP"), "{who}");
+            for right in ["WP", "SD", "DC", "WD", "WO", "DT"] {
+                assert!(!ace.contains(right), "{who} {right}");
+            }
         }
+        // Service accounts only look.
+        let accounts = SDDL.split('(').find(|ace| ace.ends_with(";;;SU)")).unwrap();
+        assert!(!accounts.contains("RP"));
         // The pipe's list is separate, in `pipe.rs`.
     }
 }
@@ -2089,6 +2126,9 @@ rmdir /s /q "%ProgramData%\SiteBlocker"
 - **The unlock hash is in the binary** (`unlock.rs`, unchanged): a short password can be brute-forced offline, the new rate limit only slows *online* guessing through the pipe. Use a long password.
 - **Only the console session gets the app.** On a PC with several users logged on (fast user switching), the app is started for whoever is at the screen; another user's session is not watched. Remote Desktop sessions are not watched either.
 - **Which token the app gets.** `WTSQueryUserToken` normally returns the user's *limited* (non-elevated) token, like the old scheduled task (`LeastPrivilege`). Check once (section 9.2) that the app is not elevated.
+- **Who restarts the service**: Windows (failure actions, at once) after a crash or kill, and the app (start only, every 5 s) if the service is not running. A service that ended with exit code 0 (an update or uninstall request) is not restarted by Windows; the app or the installer starts it again. While it is down the app keeps enforcing the last policy it got (in memory), but an app that is restarted meanwhile has none.
+- **The access list is set once, when the service is created.** An update only starts the existing service, and administrators cannot change the list, so an install made before the interactive-users start right keeps the old list. Uninstall and install again (in the VM) to pick it up.
+- **The service does not restart the app for an untimed block** (only for a timed one, and once after each logon); if the app is ended during an untimed block, nothing is blocked until it is started again.
 - **Offline time** works as before (`clock.rs`), but now the clock lives in the service.
 - **Code signing.** The service runs the exe with SYSTEM rights, so a signed build is worth having; unsigned, SmartScreen and antivirus tools may complain at install. Not part of this change.
 
@@ -2129,6 +2169,7 @@ Build with `npm run build` (installer in `src-tauri\target\release\bundle\nsis\`
 | 17 | Kill the service with a SYSTEM shell (`psexec -s`) | Windows restarts it at once; app keeps enforcing meanwhile |
 | 18 | Uninstall while the service is registered but not answering (in the VM, suspend the service process with a SYSTEM shell tool first) | the uninstall stops with "did not respond, so nothing was removed" (exit code 1); no files are deleted |
 | 19 | Uninstall after the service was deleted by hand (`sc delete`, via the recovery steps) | carries on and removes the files (no service registered is exit code 0) |
+| 20 | The app starts a stopped service. In a SYSTEM shell turn the restart off (`sc failure SiteBlocker reset= 0 actions= ""`), then `taskkill /f /im SiteBlocker.exe` the service while the app runs | within about 5 s the app log says "the service was not running; started it" and the service runs again. **Put the restart back afterwards**: `sc failure SiteBlocker reset= 86400 actions= restart/0/restart/0/restart/0` |
 
 If test 1 fails: read `%ProgramData%\SiteBlocker\service.log` (administrators can read it) and the installer's error message; `%LOCALAPPDATA%\SiteBlocker\app.log` has the `--install` output.
 

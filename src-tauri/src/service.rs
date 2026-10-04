@@ -45,9 +45,12 @@ use crate::{clock, pipe, unlock};
 pub const NAME: &str = "SiteBlocker";
 
 /// Who may do what with the service. SYSTEM: everything (it deletes itself on uninstall).
-/// Administrators: query, enumerate, start and read the list, but not stop, pause, change,
-/// delete or rewrite this list. Interactive users and service accounts: query only.
-const SDDL: &str = "D:(A;;CCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCLCSWRPLOCRRC;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)";
+/// Administrators and interactive users: query, enumerate, read the list and start, but not stop,
+/// pause, change, delete or rewrite it. Interactive users may start it because the app (which
+/// runs as one) starts it again when it is not running (`client::Remote::revive_service`);
+/// starting a running service does nothing, and a stopped one only goes back to blocking.
+/// Service accounts: query only.
+const SDDL: &str = "D:(A;;CCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCLCSWRPLOCRRC;;;BA)(A;;CCLCSWRPLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)";
 
 /// The service is started in safe mode too, when these keys exist.
 const SAFE_BOOT: [&str; 2] = [
@@ -384,14 +387,16 @@ pub fn exists() -> bool {
     manager(ServiceManagerAccess::CONNECT).is_ok_and(|m| m.open_service(NAME, ServiceAccess::QUERY_STATUS).is_ok())
 }
 
-/// Starts the service, if it is registered and not running. Administrators may.
-pub fn start_registered() -> Result<(), String> {
+/// Starts the service, if it is registered and not running. Administrators and interactive users
+/// may. Says whether it was started just now (`false`: it was running already).
+pub fn start_registered() -> Result<bool, String> {
     let service = manager(ServiceManagerAccess::CONNECT)?
         .open_service(NAME, ServiceAccess::START)
         .map_err(|e| format!("cannot open the service: {e}"))?;
     match service.start::<OsString>(&[]) {
-        Err(e) if !is_os_error(&e, ERROR_SERVICE_ALREADY_RUNNING) => Err(format!("cannot start the service: {e}")),
-        _ => Ok(()),
+        Ok(()) => Ok(true),
+        Err(e) if is_os_error(&e, ERROR_SERVICE_ALREADY_RUNNING) => Ok(false),
+        Err(e) => Err(format!("cannot start the service: {e}")),
     }
 }
 
@@ -573,12 +578,18 @@ mod tests {
 
     #[test]
     fn the_access_lists_say_what_they_should() {
-        // Administrators may start (RP) but not stop (WP), delete (SD), change (DC) or rewrite (WD, WO).
-        let administrators = SDDL.split('(').find(|ace| ace.ends_with(";;;BA)")).unwrap();
-        assert!(administrators.contains("RP"));
-        for right in ["WP", "SD", "DC", "WD", "WO", "DT"] {
-            assert!(!administrators.contains(right), "{right}");
+        // Administrators and interactive users may start (RP) but not stop (WP), delete (SD),
+        // change (DC) or rewrite (WD, WO).
+        for who in [";;;BA)", ";;;IU)"] {
+            let ace = SDDL.split('(').find(|ace| ace.ends_with(who)).unwrap();
+            assert!(ace.contains("RP"), "{who}");
+            for right in ["WP", "SD", "DC", "WD", "WO", "DT"] {
+                assert!(!ace.contains(right), "{who} {right}");
+            }
         }
+        // Service accounts only look.
+        let accounts = SDDL.split('(').find(|ace| ace.ends_with(";;;SU)")).unwrap();
+        assert!(!accounts.contains("RP"));
         // The pipe's list is separate, in `pipe.rs`.
     }
 }
