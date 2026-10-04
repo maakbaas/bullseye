@@ -1953,6 +1953,8 @@ fn main() {
 
 `windows/hooks.nsh` (replace the whole file). Tauri's NSIS template runs its own "is the app running?" check (and tries to kill the process) right *after* the pre-install and pre-uninstall hooks. Our hooks run first and make the service end the app, so that check finds nothing. This order was read from the generated `installer.nsi` of the existing build (hook at the `Section Install` start, the check on the next line; same in `Section Uninstall`). An update (`/UPDATE`) goes straight into `Section Install`, so `--prepare-update` belongs in `PREINSTALL`.
 
+The exit codes of `--uninstall`: `0` done (or no service registered), `1` the service is registered but did not answer or did not end in time, `2` it answered that a timed block is running. **Both 1 and 2 stop the uninstall** and nothing is removed: continuing after a failure would delete files under a service that may still be running and leave a half-removed install. If a broken service blocks the uninstall, use the recovery steps in section 8.2.
+
 ```nsis
 ; Hooks into Tauri's NSIS installer (tauri.conf.json > bundle > windows > nsis > installerHooks).
 ; The installer runs as an administrator (installMode "perMachine"). The work itself is in the
@@ -1996,7 +1998,12 @@ fn main() {
       SetErrorLevel 2
       Quit
     ${ElseIf} $0 <> 0
-      MessageBox MB_ICONEXCLAMATION "The Site Blocker service could not be removed. Some files may be left behind in the install folder." /SD IDOK
+      ; The service is registered but did not answer or did not end. Stopping here, rather than
+      ; deleting files under a service that may still be running, avoids a half-removed install.
+      ; (No service at all is exit code 0, so that case goes on.)
+      MessageBox MB_ICONSTOP "Site Blocker's service did not respond, so nothing was removed.$\n$\nSee C:\ProgramData\SiteBlocker\service.log, or use the recovery steps in detailed-instructions.md." /SD IDOK
+      SetErrorLevel 1
+      Quit
     ${EndIf}
   ${EndIf}
 !macroend
@@ -2022,7 +2029,7 @@ The project notes describe the old design and are used by every future session, 
 
 **Replace the "Deliberately not hidden" and "honest ceiling" paragraphs' technical content:** still nothing is hidden (service named `SiteBlocker` in the services list, app in Settings > Apps, logs in `%ProgramData%\SiteBlocker\service.log`). The honest ceiling is now: an administrator who knows how can still get around it: run a shell as SYSTEM (for example PsExec `-s`), take ownership of the service object or the data folder (administrators hold `SeTakeOwnershipPrivilege`) and rewrite its access list, delete the service from the Windows recovery environment, or boot with an offline registry edit. NTP spoofing needs admin as before. The password hash is in the binary, so a short password can be brute-forced offline. **What changed is the effort**: a normal administrator now needs one of those, instead of "End task".
 
-**Replace "Install / remove":** per-machine NSIS installer, needs admin (UAC), installs to `C:\Program Files\Site Blocker`. Hooks: `--prepare-update` (before replacing files; refused during any block), `--install` (register + lock down + start the service), `--uninstall` (service removes itself and ends the app; refused during a timed block, exit code 2).
+**Replace "Install / remove":** per-machine NSIS installer, needs admin (UAC), installs to `C:\Program Files\Site Blocker`. Hooks: `--prepare-update` (before replacing files; refused during any block), `--install` (register + lock down + start the service), `--uninstall` (service removes itself and ends the app; refused during a timed block, exit code 2; if the service is registered but does not answer or does not end, exit code 1 also stops the uninstall; with no service registered it carries on).
 
 **Dev workflow**: see section 8.1 below, and drop the sentence about `restore_task` / re-enabling the login task.
 
@@ -2074,7 +2081,7 @@ rmdir /s /q "%ProgramData%\SiteBlocker"
 - **Migration:** an existing per-user install lives elsewhere and does not know `--prepare-update`: uninstall it first (Settings > Apps). Do not install the new version over it: the pre-install hook would run the *old* exe with an unknown argument, which starts the old tray app and waits for it forever.
 - The login task is gone. "Unlock" no longer disables anything: it clears the block and quits the app, and the app returns at the next logon.
 - `launcher.log` is replaced by `%ProgramData%\SiteBlocker\service.log` (readable by administrators) and `%LOCALAPPDATA%\SiteBlocker\app.log`.
-- Updating is refused during any block (timed or not); uninstalling only during a timed block (as before).
+- Updating is refused during any block (timed or not); uninstalling during a timed block (as before), and also when the service is registered but does not answer, in which case nothing is removed (see `service.log` and section 8.2).
 
 ### 8.4 Known limits (do not hide these in the UI)
 
@@ -2120,6 +2127,8 @@ Build with `npm run build` (installer in `src-tauri\target\release\bundle\nsis\`
 | 15 | Uninstall without a block | service, `%ProgramData%\SiteBlocker` and the safe-mode keys are gone |
 | 16 | Open the pipe with a script and send garbage / a huge length / nothing | service keeps answering the app |
 | 17 | Kill the service with a SYSTEM shell (`psexec -s`) | Windows restarts it at once; app keeps enforcing meanwhile |
+| 18 | Uninstall while the service is registered but not answering (in the VM, suspend the service process with a SYSTEM shell tool first) | the uninstall stops with "did not respond, so nothing was removed" (exit code 1); no files are deleted |
+| 19 | Uninstall after the service was deleted by hand (`sc delete`, via the recovery steps) | carries on and removes the files (no service registered is exit code 0) |
 
 If test 1 fails: read `%ProgramData%\SiteBlocker\service.log` (administrators can read it) and the installer's error message; `%LOCALAPPDATA%\SiteBlocker\app.log` has the `--install` output.
 

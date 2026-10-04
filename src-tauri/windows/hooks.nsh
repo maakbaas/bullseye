@@ -40,7 +40,12 @@
       SetErrorLevel 2
       Quit
     ${ElseIf} $0 <> 0
-      MessageBox MB_ICONEXCLAMATION "The Site Blocker service could not be removed. Some files may be left behind in the install folder." /SD IDOK
+      ; The service is registered but did not answer or did not end. Stopping here, rather than
+      ; deleting files under a service that may still be running, avoids a half-removed install.
+      ; (No service at all is exit code 0, so that case goes on.)
+      MessageBox MB_ICONSTOP "Site Blocker's service did not respond, so nothing was removed.$\n$\nSee C:\ProgramData\SiteBlocker\service.log, or use the recovery steps in detailed-instructions.md." /SD IDOK
+      SetErrorLevel 1
+      Quit
     ${EndIf}
   ${EndIf}
 !macroend
