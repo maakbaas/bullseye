@@ -540,6 +540,13 @@ mod tests {
         state::use_dir(dir);
         let quit = start_engine(true).unwrap();
 
+        // This server runs in the user's session, not in session 0: the app refuses to talk to it.
+        std::env::remove_var("SITEBLOCKER_DEV");
+        let refused = client::call(&Request::Status).unwrap_err();
+        assert!(refused.contains("not by the service"), "{refused}");
+        // Development mode, as `--service-console` is used with `npm run dev`, skips that check.
+        std::env::set_var("SITEBLOCKER_DEV", "1");
+
         let Ok(Response::Status(status)) = client::call(&Request::Status) else { panic!("no status") };
         assert_eq!(status.remaining, None);
         assert_eq!(client::call(&start_request("1h")), Ok(Response::Done));

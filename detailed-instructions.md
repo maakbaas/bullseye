@@ -241,7 +241,7 @@ The server side needs care, so these are the decisions made in it, in case you w
 
 - **Who may connect** is `SDDL = "D:(A;;GA;;;SY)(A;;GRGW;;;IU)"`: SYSTEM everything, "Interactive users" (anyone logged on at the machine) read and write. The app runs as such a user, so it must be allowed. `PIPE_REJECT_REMOTE_CLIENTS` blocks connections over the network.
 - **`FILE_FLAG_FIRST_PIPE_INSTANCE`** on the first instance makes creating the pipe fail if somebody else already has a pipe with that name. Otherwise a local program could grab the name first and answer the app "no block is running".
-- **The app checks who it is talking to** (`verify_server`): the process serving the pipe must be this same executable file. A standard user cannot write to `C:\Program Files`, so cannot run a look-alike from there.
+- **The app checks who it is talking to** (`verify_server`): the pipe must be served from **session 0**, the session of services (`GetNamedPipeServerSessionId`). Only SYSTEM and other services run there; a standard user cannot start a process in it, so cannot stand in for the service. **Do not replace this by looking at the serving process** (its file name, say): a standard user is not allowed to open a SYSTEM process, not even with `PROCESS_QUERY_LIMITED_INFORMATION`. The first version did exactly that and the app then refused to talk to the real service ("cannot look at who runs the pipe"). Comparing the exe path would also be weak: anyone can run `SiteBlocker.exe --service-console` themselves.
 - **A silent client cannot hold the service up**: every connection gets its own thread, at most 8 at once, and a *reaper* thread cancels the read of any connection older than 10 seconds (`CancelIoEx`). The bookkeeping (`LIVE`) is locked while a handle is cancelled and while a connection removes itself, so a handle is never cancelled after it was closed and possibly reused by something else.
 - **After writing the answer, the server does one more read.** That read returns when the client closes its end, which it does after reading. Closing the server end straight after writing could throw the answer away before the client has read it.
 - A **panic** while handling a request is caught and turned into an error answer: it must end that connection, not the service.
@@ -252,7 +252,7 @@ The server side needs care, so these are the decisions made in it, in case you w
 //!
 //! The pipe is open to any interactively logged-on user (`SDDL`), because the app runs as one.
 //! So the service never trusts what comes in (`service::handle`), and the app never trusts who
-//! answers (`verify_server`).
+//! answers (`verify_server`: only a pipe served from session 0, the services' session).
 
 use std::fs::{File, OpenOptions};
 use std::io::Read;
@@ -272,10 +272,9 @@ use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
 use windows_sys::Win32::System::IO::CancelIoEx;
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeServerProcessId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
+    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeServerSessionId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
     PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
-use windows_sys::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION};
 
 use crate::proto::{self, Request, Response, PIPE};
 use crate::watchdog::{note, wide};
@@ -434,42 +433,27 @@ pub fn connect() -> Result<File, String> {
     Err("the Site Blocker service is busy".into())
 }
 
-/// Checks that whoever serves the pipe is this very executable. The service is the installed exe,
-/// started by Windows as SYSTEM; a standard user cannot write to that path, so cannot run a
-/// look-alike from it. Without this, anything could open the pipe first and tell the app there is
-/// no block.
+/// Checks that the pipe is served from session 0, the session of services. Only SYSTEM and other
+/// services run there: a standard user cannot start a process in it, so cannot stand in for the
+/// service. Without this, anything could open the pipe first and tell the app there is no block.
+///
+/// This asks the pipe itself. Looking at the serving process (its file name, say) does not work:
+/// a standard user may not open a SYSTEM process, not even for a look.
 fn verify_server(pipe: &File) -> Result<(), String> {
-    // Development only: `tauri dev` replaces the exe while it is running, which Windows refuses if
-    // the console service is running from that same file, so the console service runs from a copy.
-    // A release build never skips the check.
+    // Development only: the console service (`service::run_console`) runs in the user's own
+    // session. A release build never skips the check.
     if cfg!(debug_assertions) && std::env::var_os("SITEBLOCKER_DEV").is_some() {
         return Ok(());
     }
-    // SAFETY: the handle is a valid pipe; the process handle is closed again; the buffer is as
-    // long as the length says.
-    let theirs = unsafe {
-        let mut pid = 0u32;
-        if GetNamedPipeServerProcessId(pipe.as_raw_handle() as HANDLE, &mut pid) == 0 {
-            return Err("cannot tell who runs the pipe".into());
-        }
-        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if process.is_null() {
-            return Err("cannot look at who runs the pipe".into());
-        }
-        let mut buffer = [0u16; 1024];
-        let mut length = buffer.len() as u32;
-        let ok = QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length);
-        CloseHandle(process);
-        if ok == 0 {
-            return Err("cannot read the name of whoever runs the pipe".into());
-        }
-        String::from_utf16_lossy(&buffer[..length as usize])
-    };
-    let mine = std::env::current_exe().map_err(|e| e.to_string())?;
-    if theirs.eq_ignore_ascii_case(&mine.to_string_lossy()) {
+    let mut session = u32::MAX;
+    // SAFETY: the handle is a valid pipe and `session` a valid place to write to.
+    if unsafe { GetNamedPipeServerSessionId(pipe.as_raw_handle() as HANDLE, &mut session) } == 0 {
+        return Err(format!("cannot tell where the pipe is served from (error {})", unsafe { GetLastError() }));
+    }
+    if session == 0 {
         Ok(())
     } else {
-        Err(format!("the pipe is served by {theirs}, not by this installation"))
+        Err(format!("the pipe is served from session {session}, not by the service"))
     }
 }
 ```
@@ -1340,6 +1324,13 @@ mod tests {
         state::use_dir(dir);
         let quit = start_engine(true).unwrap();
 
+        // This server runs in the user's session, not in session 0: the app refuses to talk to it.
+        std::env::remove_var("SITEBLOCKER_DEV");
+        let refused = client::call(&Request::Status).unwrap_err();
+        assert!(refused.contains("not by the service"), "{refused}");
+        // Development mode, as `--service-console` is used with `npm run dev`, skips that check.
+        std::env::set_var("SITEBLOCKER_DEV", "1");
+
         let Ok(Response::Status(status)) = client::call(&Request::Status) else { panic!("no status") };
         assert_eq!(status.remaining, None);
         assert_eq!(client::call(&start_request("1h")), Ok(Response::Done));
@@ -2110,7 +2101,7 @@ You do not need admin rights or a real service to develop. In a terminal, from `
 cargo build
 # A copy, because `tauri dev` replaces tray-app.exe and Windows refuses that while it is running.
 copy target\debug\tray-app.exe target\debug\tray-service.exe
-$env:SITEBLOCKER_DEV = "1"      # debug builds only: skips "is the pipe served by my own exe file"
+$env:SITEBLOCKER_DEV = "1"      # debug builds only: skips "is the pipe served from session 0"
 .\target\debug\tray-service.exe --service-console
 ```
 
@@ -2132,14 +2123,15 @@ The service you install is, by design, not stoppable by you. If you install it o
 - If it still goes wrong, as an administrator, run a shell as SYSTEM, for example with Sysinternals PsExec: `psexec -s -i cmd`. In that shell:
 
 ```bat
-taskkill /f /im SiteBlocker.exe
 sc delete SiteBlocker
+taskkill /f /im SiteBlocker.exe
 reg delete "HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Minimal\SiteBlocker" /f
 reg delete "HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Network\SiteBlocker" /f
 rmdir /s /q "%ProgramData%\SiteBlocker"
 ```
 
-  (`sc delete` takes effect when the process has ended; the `taskkill` first makes sure it has. Windows restarts the service immediately if it fails, so do the `taskkill` and `sc delete` together.)
+  (`sc delete` comes first: it marks the service for deletion, so Windows does not start it again when the `taskkill` ends the process.)
+- No PsExec? As administrator you can borrow Task Scheduler to get a SYSTEM shell: save the five lines above as `C:ecover.cmd`, then run `schtasks /create /tn recover /sc once /st 00:00 /ru SYSTEM /tr C:ecover.cmd /f`, `schtasks /run /tn recover`, and afterwards `schtasks /delete /tn recover /f`.
 - Last resort: boot into the Windows recovery environment's command prompt (which runs as SYSTEM) and delete the registry keys / files there.
 
 ### 8.3 Behaviour changes the user will notice

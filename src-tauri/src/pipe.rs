@@ -3,7 +3,7 @@
 //!
 //! The pipe is open to any interactively logged-on user (`SDDL`), because the app runs as one.
 //! So the service never trusts what comes in (`service::handle`), and the app never trusts who
-//! answers (`verify_server`).
+//! answers (`verify_server`: only a pipe served from session 0, the services' session).
 
 use std::fs::{File, OpenOptions};
 use std::io::Read;
@@ -23,10 +23,9 @@ use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
 use windows_sys::Win32::System::IO::CancelIoEx;
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeServerProcessId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
+    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeServerSessionId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
     PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
-use windows_sys::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION};
 
 use crate::proto::{self, Request, Response, PIPE};
 use crate::watchdog::{note, wide};
@@ -185,41 +184,26 @@ pub fn connect() -> Result<File, String> {
     Err("the Site Blocker service is busy".into())
 }
 
-/// Checks that whoever serves the pipe is this very executable. The service is the installed exe,
-/// started by Windows as SYSTEM; a standard user cannot write to that path, so cannot run a
-/// look-alike from it. Without this, anything could open the pipe first and tell the app there is
-/// no block.
+/// Checks that the pipe is served from session 0, the session of services. Only SYSTEM and other
+/// services run there: a standard user cannot start a process in it, so cannot stand in for the
+/// service. Without this, anything could open the pipe first and tell the app there is no block.
+///
+/// This asks the pipe itself. Looking at the serving process (its file name, say) does not work:
+/// a standard user may not open a SYSTEM process, not even for a look.
 fn verify_server(pipe: &File) -> Result<(), String> {
-    // Development only: `tauri dev` replaces the exe while it is running, which Windows refuses if
-    // the console service is running from that same file, so the console service runs from a copy.
-    // A release build never skips the check.
+    // Development only: the console service (`service::run_console`) runs in the user's own
+    // session. A release build never skips the check.
     if cfg!(debug_assertions) && std::env::var_os("SITEBLOCKER_DEV").is_some() {
         return Ok(());
     }
-    // SAFETY: the handle is a valid pipe; the process handle is closed again; the buffer is as
-    // long as the length says.
-    let theirs = unsafe {
-        let mut pid = 0u32;
-        if GetNamedPipeServerProcessId(pipe.as_raw_handle() as HANDLE, &mut pid) == 0 {
-            return Err("cannot tell who runs the pipe".into());
-        }
-        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if process.is_null() {
-            return Err("cannot look at who runs the pipe".into());
-        }
-        let mut buffer = [0u16; 1024];
-        let mut length = buffer.len() as u32;
-        let ok = QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length);
-        CloseHandle(process);
-        if ok == 0 {
-            return Err("cannot read the name of whoever runs the pipe".into());
-        }
-        String::from_utf16_lossy(&buffer[..length as usize])
-    };
-    let mine = std::env::current_exe().map_err(|e| e.to_string())?;
-    if theirs.eq_ignore_ascii_case(&mine.to_string_lossy()) {
+    let mut session = u32::MAX;
+    // SAFETY: the handle is a valid pipe and `session` a valid place to write to.
+    if unsafe { GetNamedPipeServerSessionId(pipe.as_raw_handle() as HANDLE, &mut session) } == 0 {
+        return Err(format!("cannot tell where the pipe is served from (error {})", unsafe { GetLastError() }));
+    }
+    if session == 0 {
         Ok(())
     } else {
-        Err(format!("the pipe is served by {theirs}, not by this installation"))
+        Err(format!("the pipe is served from session {session}, not by the service"))
     }
 }
