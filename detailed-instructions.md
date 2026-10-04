@@ -1,6 +1,6 @@
 # Moving the watchdog to a SYSTEM service: implementation guide for this repo
 
-This guide is for implementing the SYSTEM-service design in *this* repo (`blocker`, Tauri tray app, Windows only). It is written against the actual code in `src-tauri/src/`. All the Rust below was compiled and the unit tests run in a scratch copy of the repo (`cargo check --tests`, no warnings; `cargo test`: 64 passed). One extra integration test (`the_pipe_answers_like_the_app_expects`, run with `--ignored`) started the real pipe server and talked to it like the app does: it passed. The service was also seen working on one real install (its logs showed it launching the app in the user's session and refusing an uninstall during a timed block). Section 9 lists what could **not** be tested without installing a real service, so you must test those parts yourself.
+This guide is for implementing the SYSTEM-service design in *this* repo (`blocker`, Tauri tray app, Windows only). It is written against the actual code in `src-tauri/src/`. All the Rust below was compiled and the unit tests run in a scratch copy of the repo (`cargo check --tests`, no warnings; `cargo test`: 67 passed). One extra integration test (`the_pipe_answers_like_the_app_expects`, run with `--ignored`) started the real pipe server and talked to it like the app does: it passed. The service was also seen working on one real install (its logs showed it launching the app in the user's session and refusing an uninstall during a timed block). Section 9 lists what could **not** be tested without installing a real service, so you must test those parts yourself.
 
 **Read sections 1 and 8 before you touch any code.** Section 8 is about how to get out if your own test setup locks you in.
 
@@ -43,7 +43,11 @@ Files at a glance:
 | `src-tauri/src/pipe.rs` | **new** (pipe server and client) |
 | `src-tauri/src/client.rs` | **new** (the app's side) |
 | `src-tauri/src/programs.rs` | **new** (the list of programs to close, section 6.4) |
-| `src-tauri/src/service.rs` | **new** (the service) |
+| `src-tauri/src/service.rs` | **new** (the running service, section 6.1) |
+| `src-tauri/src/handler.rs` | **new** (what the service does with each request, section 6.1) |
+| `src-tauri/src/registration.rs` | **new** (installing, locking down and removing the service, section 6.1) |
+| `src-tauri/src/sync.rs` | **new** (locks that survive a crash, threads that must not die quietly, section 4.4) |
+| `src-tauri/src/ui.rs` | **new** (the window, made on demand and destroyed after a while, section 6.6) |
 | `src-tauri/src/watchdog.rs` | replace the whole file |
 | `src-tauri/src/setup.rs` | replace the whole file |
 | `src-tauri/src/main.rs` | replace the whole file |
@@ -52,7 +56,7 @@ Files at a glance:
 | `src-tauri/src/filters.rs` | small edits (section 5.4: web pages only, the scheme fix) |
 | `src-tauri/src/clock.rs`, `unlock.rs` | **unchanged** |
 | `src/index.html` | small edit (show the error when the service is unreachable) |
-| `src-tauri/tauri.conf.json` | one line: `perMachine` |
+| `src-tauri/tauri.conf.json` | `perMachine`, and no window at startup (section 6.6) |
 | `src-tauri/windows/hooks.nsh` | replace the whole file |
 | `CLAUDE.md` | update (section 7) |
 
@@ -314,6 +318,7 @@ use windows_sys::Win32::System::Pipes::{
 };
 
 use crate::proto::{self, Request, Response, PIPE};
+use crate::sync::{spawn_critical, LockExt};
 use crate::watchdog::{note, wide};
 
 /// SYSTEM: everything. Interactive users: read and write, which is all a client needs.
@@ -342,17 +347,17 @@ pub fn serve<A: Send + 'static>(
 ) -> Result<(), String> {
     let first = create_instance(true)?;
     let handler = Arc::new(handler);
-    thread::spawn(reaper);
+    spawn_critical("pipe reaper", reaper);
     // Raw handles are not `Send`; the accept loop below owns this one from here on.
     let first = first as usize;
-    thread::spawn(move || {
+    spawn_critical("pipe", move || {
         // The instance a client can connect to right now.
         let mut listening = first as HANDLE;
         loop {
             // SAFETY: `listening` is a pipe instance made by `create_instance`. A client that
             // connected before this call is reported as an error, but is a success.
             let connected = unsafe { ConnectNamedPipe(listening, null_mut()) != 0 || GetLastError() == ERROR_PIPE_CONNECTED };
-            let full = LIVE.lock().unwrap().len() >= MAX_CLIENTS;
+            let full = LIVE.locked().len() >= MAX_CLIENTS;
             // The next instance exists before this one is handed off. A client that arrives in
             // between is told the pipe is busy and tries again (`connect`).
             let next = match create_instance(false) {
@@ -384,7 +389,7 @@ pub fn serve<A: Send + 'static>(
 
 fn serve_one<A>(mut pipe: File, handler: &dyn Fn(u32, Request) -> (Response, Option<A>), after: Sender<A>) {
     let key = pipe.as_raw_handle() as usize;
-    LIVE.lock().unwrap().push((key, Instant::now() + DEADLINE));
+    LIVE.locked().push((key, Instant::now() + DEADLINE));
 
     // Who is on the other end, as Windows knows it. 0 if that cannot be told.
     let mut client = 0u32;
@@ -402,7 +407,7 @@ fn serve_one<A>(mut pipe: File, handler: &dyn Fn(u32, Request) -> (Response, Opt
     // it. This read returns once the client has closed its end, which it does when it has read.
     let _ = pipe.read(&mut [0u8; 1]);
 
-    LIVE.lock().unwrap().retain(|&(handle, _)| handle != key);
+    LIVE.locked().retain(|&(handle, _)| handle != key);
     drop(pipe);
     if let Some(then) = then {
         let _ = after.send(then);
@@ -414,7 +419,7 @@ fn reaper() {
     loop {
         thread::sleep(Duration::from_secs(1));
         let now = Instant::now();
-        for &(handle, deadline) in LIVE.lock().unwrap().iter() {
+        for &(handle, deadline) in LIVE.locked().iter() {
             if deadline <= now {
                 // SAFETY: the handle is still open: its connection removes itself from `LIVE`
                 // under the same lock before closing it.
@@ -526,7 +531,8 @@ use crate::filters::FilterList;
 use crate::pipe;
 use crate::programs::ProgramList;
 use crate::proto::{self, Policy, Request, Response};
-use crate::service;
+use crate::registration;
+use crate::sync::LockExt;
 use crate::watchdog::note;
 
 /// The service's logic called directly, in place of the pipe (`service::local_handler`).
@@ -613,24 +619,24 @@ impl Remote {
                 self.revive_service();
             }
         }
-        self.cache.lock().unwrap().as_ref().map(|c| c.active.clone())
+        self.cache.locked().as_ref().map(|c| c.active.clone())
     }
 
     /// Asks Windows to start the service if it is registered but not running (it only stays down
     /// if something ended it with exit code 0, or an update did not finish). Starting is the only
     /// thing the app may do to the service: the access list gives interactive users no more
-    /// (`service::SDDL`). A service that is not registered at all, as in development, just fails
+    /// (`registration::SDDL`). A service that is not registered at all, as in development, just fails
     /// quietly.
     fn revive_service(&self) {
         if self.is_local() {
             return;
         }
-        let mut last = self.last_start.lock().unwrap();
+        let mut last = self.last_start.locked();
         if last.is_some_and(|at| at.elapsed() < START_EVERY) {
             return;
         }
         *last = Some(Instant::now());
-        if let Ok(true) = service::start_registered() {
+        if let Ok(true) = registration::start_registered() {
             note("app", "the service was not running; started it");
         }
     }
@@ -643,7 +649,7 @@ impl Remote {
 
     /// Takes in what the service said; the list is only parsed again when it changed.
     fn apply(&self, policy: Option<Policy>) {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.locked();
         let Some(policy) = policy else {
             *cache = None;
             return;
@@ -670,6 +676,7 @@ impl Remote {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::service;
     use crate::state::Enforcers;
 
     fn policy(filters: &[&str]) -> Policy {
@@ -682,7 +689,7 @@ mod tests {
     }
 
     fn current(remote: &Remote) -> Option<Active> {
-        remote.cache.lock().unwrap().as_ref().map(|c| c.active.clone())
+        remote.cache.locked().as_ref().map(|c| c.active.clone())
     }
 
     #[test]
@@ -748,6 +755,81 @@ mod tests {
 }
 ```
 
+### 4.4 `src-tauri/src/sync.rs`: locks and threads that must not die quietly
+
+Two small things, used everywhere:
+
+- **`LockExt::locked()`** replaces every `.lock().unwrap()`. A lock is "poisoned" when a thread crashed while holding it, and `.unwrap()` then crashes every thread that touches it next. In the service those would be the ticker, the supervisor and every request, while the process stays up, so Windows would **not** restart it: a service that looks healthy and does nothing. The data behind the locks is plain (a list, an end time, some flags) and still valid after a crash, so `locked()` just takes the lock.
+- **`spawn_critical(name, work)`** starts the threads that are part of keeping things working (the clock, the ticker, the supervisor, the pipe and its reaper, the tab closer). If one crashes, the **process ends**: Windows restarts the service, the service restarts the app, and the block is read back from disk. Per-connection pipe threads are plain threads: a crashed request is caught (`catch_unwind` in `pipe.rs`) and answered with an error, it does not end the service.
+
+```rust
+//! Small helpers for state shared between threads, and for threads that must not die quietly.
+
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::thread;
+
+use crate::watchdog::note;
+
+/// Locking that carries on after another thread crashed while holding the lock.
+///
+/// Rust marks such a lock "poisoned", and the usual `.lock().unwrap()` then crashes every thread
+/// that touches it next: in the service that would be the ticker, the supervisor and every request,
+/// while the process itself stays up, so Windows would not restart it. What this app keeps behind
+/// its locks is plain data (a list, an end time, a few flags) that is still valid after a crash,
+/// so the right answer is to take the lock anyway.
+pub trait LockExt<T> {
+    fn locked(&self) -> MutexGuard<'_, T>;
+}
+
+impl<T> LockExt<T> for Mutex<T> {
+    fn locked(&self) -> MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Starts a thread that is part of what keeps the app or the service working: the ticker, the
+/// supervisor, the pipe, the tab closer. If it crashes, the whole process ends. Windows then
+/// starts the service again (and the service starts the app again), and the block is read back
+/// from disk, which beats a process that looks healthy while one of its jobs is no longer done.
+pub fn spawn_critical(name: &'static str, work: impl FnOnce() + Send + 'static) {
+    thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            if catch_unwind(AssertUnwindSafe(work)).is_err() {
+                note("thread", &format!("the {name} thread crashed; ending the process so it is started again"));
+                std::process::exit(1);
+            }
+        })
+        .expect("cannot start a thread");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn a_lock_is_still_usable_after_a_thread_crashed_holding_it() {
+        let shared = Arc::new(Mutex::new(vec![1, 2, 3]));
+        let crashing = shared.clone();
+        let result = thread::spawn(move || {
+            let mut list = crashing.lock().unwrap();
+            list.push(4);
+            panic!("crashed while holding the lock");
+        })
+        .join();
+        assert!(result.is_err());
+        // The plain way now fails for everyone...
+        assert!(shared.lock().is_err());
+        // ...this way carries on, with the data as the crashed thread left it.
+        assert_eq!(*shared.locked(), vec![1, 2, 3, 4]);
+        shared.locked().push(5);
+        assert_eq!(shared.locked().len(), 5);
+    }
+}
+```
+
 ## 5. Small edits to existing files
 
 ### 5.1 `block.rs`
@@ -757,7 +839,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
 ```diff
 --- a/src-tauri/src/block.rs
 +++ b/src-tauri/src/block.rs
-@@ -10,11 +10,12 @@
+@@ -10,11 +10,13 @@
  use std::sync::{Arc, Mutex};
  use std::time::{Duration, Instant, SystemTime};
  
@@ -769,10 +851,11 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
 -use crate::state::{self, Enforcers, Store};
 +use crate::programs::ProgramList;
 +use crate::state::{self, Enforcers, Store, Uses};
++use crate::sync::LockExt;
  
  /// How often a running timed block writes down the time it has reached (`Saved::seen`).
  const CHECKPOINT: Duration = Duration::from_secs(60);
-@@ -29,8 +30,51 @@
+@@ -29,8 +31,51 @@
      clock: &'static Clock,
  }
  
@@ -824,7 +907,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
      /// When a timed block ends, in internet time; `None` blocks until stopped.
      until: Option<SystemTime>,
      enforcers: Enforcers,
-@@ -38,13 +82,19 @@
+@@ -38,13 +83,19 @@
      saved_at: Instant,
  }
  
@@ -845,7 +928,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
      /// The running block's enforcers, so the UI shows what a resumed block enforces.
      enforcers: Option<Enforcers>,
      /// Whether the time comes from the internet yet; until then, time with the app not running
-@@ -58,15 +108,28 @@
+@@ -58,15 +109,28 @@
          Blocklist { block: Arc::default(), store: state::store().map(Arc::new), clock: clock::global() }
      }
  
@@ -858,8 +941,9 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
      /// Starts a block, unless one is running: checked here rather than only in the UI, so a
      /// timed block cannot be swapped for a shorter or untimed one.
 -    pub fn start(&self, filters: FilterList, duration: Option<Duration>, enforcers: Enforcers) -> Result<(), String> {
+-        let mut block = self.block.lock().unwrap();
 +    pub fn start(&self, lists: Lists, duration: Option<Duration>, enforcers: Enforcers) -> Result<(), String> {
-         let mut block = self.block.lock().unwrap();
++        let mut block = self.block.locked();
          if block.as_ref().is_some_and(|b| b.until.is_none_or(|u| self.clock.now() < u)) {
              return Err("A block is already running".into());
          }
@@ -876,7 +960,16 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
          // Written before the block goes live, so a block cannot be missed after a restart. A
          // block that cannot be written would not survive the app ending, so it does not start.
          self.save(&new).map_err(|e| format!("Cannot save the block, so it would not survive a restart: {e}"))?;
-@@ -91,7 +154,9 @@
+@@ -76,7 +140,7 @@
+ 
+     /// Stops the block unless it is timed and still running; then returns the seconds left.
+     pub fn stop(&self) -> Result<(), u64> {
+-        let mut block = self.block.lock().unwrap();
++        let mut block = self.block.locked();
+         if let Some(left) = block.as_ref().and_then(|b| remaining(b, self.clock.now())) {
+             return Err(left);
+         }
+@@ -91,7 +155,9 @@
          let Some(store) = &self.store else { return };
          let Some(saved) = store.load() else { return };
          // A block list we cannot read is dropped rather than resumed as something unknown.
@@ -887,12 +980,12 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
              eprintln!("block: dropping an unreadable saved block");
              store.clear();
              return;
-@@ -107,16 +172,23 @@
+@@ -107,17 +173,24 @@
              return;
          }
          let enforcers = saved.enforcers;
 -        *self.block.lock().unwrap() = Some(Block { filters: Arc::new(filters), until, enforcers, saved_at: Instant::now() });
-+        *self.block.lock().unwrap() = Some(Block {
++        *self.block.locked() = Some(Block {
 +            filters: Arc::new(filters),
 +            allowed: Arc::new(allowed),
 +            programs: Arc::new(programs),
@@ -911,12 +1004,14 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
  
 -    /// The active filters and enforcers, ending a timed block whose time is up.
 -    pub fn active(&self) -> Option<(Arc<FilterList>, Enforcers)> {
+-        let mut block = self.block.lock().unwrap();
 +    /// What is to be enforced, ending a timed block whose time is up.
 +    pub fn active(&self) -> Option<Active> {
-         let mut block = self.block.lock().unwrap();
++        let mut block = self.block.locked();
          if block.as_ref().is_some_and(|b| b.until.is_some_and(|u| self.clock.now() >= u)) {
              // A timed block ends by itself and leaves nothing behind to resume.
-@@ -130,7 +202,12 @@
+             *block = None;
+@@ -130,16 +203,23 @@
                  eprintln!("block: {e}");
              }
          }
@@ -930,7 +1025,10 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
      }
  
      pub fn status(&self) -> Status {
-@@ -140,6 +217,8 @@
+         let blocking = self.filters().is_some();
+-        let block = self.block.lock().unwrap();
++        let block = self.block.locked();
+         Status {
              blocking,
              remaining: block.as_ref().and_then(|b| remaining(b, self.clock.now())),
              filters: block.as_ref().map(|b| b.filters.entries()).unwrap_or_default(),
@@ -939,7 +1037,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
              enforcers: block.as_ref().map(|b| b.enforcers),
              clock_synced: self.clock.synced(),
          }
-@@ -152,9 +231,18 @@
+@@ -152,9 +232,18 @@
              until: block.until.and_then(state::to_unix),
              seen: state::to_unix(self.clock.now()),
              enforcers: block.enforcers,
@@ -951,14 +1049,14 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
 +    /// Ends the block whatever its time, and forgets it. Only for the unlock password
 +    /// (`service::unlock`): everything else goes through `stop`, which keeps a timed block.
 +    pub fn reset(&self) {
-+        *self.block.lock().unwrap() = None;
++        *self.block.locked() = None;
 +        self.clear_saved();
 +    }
 +
      /// Removes the saved block: there is no longer one to resume.
      pub fn clear_saved(&self) {
          if let Some(store) = &self.store {
-@@ -219,6 +307,11 @@
+@@ -219,6 +308,11 @@
          blocklist_of(name, false)
      }
  
@@ -970,7 +1068,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
      fn entries(blocklist: &Blocklist) -> Vec<String> {
          blocklist.status().filters
      }
-@@ -238,14 +331,14 @@
+@@ -238,14 +332,14 @@
      #[test]
      fn timed_block_cannot_stop_early_and_ends_by_itself() {
          let list = blocklist("timed");
@@ -987,7 +1085,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
          assert!(list.stop().is_ok());
          assert!(list.filters().is_none());
      }
-@@ -253,18 +346,18 @@
+@@ -253,18 +347,18 @@
      #[test]
      fn a_running_block_cannot_be_replaced() {
          let list = blocklist("replace");
@@ -1012,7 +1110,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
          assert_eq!(entries(&untimed), vec!["b.com"]);
      }
  
-@@ -276,14 +369,14 @@
+@@ -276,14 +370,14 @@
          std::fs::create_dir_all(&dir).unwrap();
          std::fs::write(dir.join("not-a-folder"), "").unwrap();
          let list = Blocklist { block: Arc::default(), clock: test_clock(), store: Some(Arc::new(Store::new(dir.join("not-a-folder").join("state.json")))) };
@@ -1029,7 +1127,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
          assert_eq!(entries(&list), vec!["tweakers.net", "b.com"]);
  
          // A new run of the app over the same store: the block is still going.
-@@ -295,7 +388,7 @@
+@@ -295,7 +389,7 @@
  
          // An untimed block is picked up as well: it runs until it is stopped.
          let untimed = blocklist("resume-untimed");
@@ -1038,7 +1136,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
          let resumed = reopened("resume-untimed");
          resumed.restore();
          assert!(resumed.filters().is_some());
-@@ -303,21 +396,137 @@
+@@ -303,21 +397,137 @@
          assert!(resumed.stop().is_ok());
      }
  
@@ -1180,7 +1278,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
          // Rewritten as though it had been left behind by a run that ended an hour ago.
          let store = list.store.clone().unwrap();
          store.save(&Saved {
-@@ -325,6 +534,8 @@
+@@ -325,6 +535,8 @@
              until: Some(state::now().unwrap().as_secs() - 3600),
              seen: None,
              enforcers: Enforcers::default(),
@@ -1189,7 +1287,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
          }).unwrap();
  
          let resumed = reopened("expired");
-@@ -339,13 +550,13 @@
+@@ -339,13 +551,13 @@
      fn ending_a_block_clears_it() {
          let list = blocklist("cleared");
          let store = list.store.clone().unwrap();
@@ -1205,7 +1303,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
          assert!(store.load().is_some());
          std::thread::sleep(Duration::from_millis(60));
          assert!(list.filters().is_none());
-@@ -359,7 +570,7 @@
+@@ -359,7 +571,7 @@
          let path = dir.join("state.json");
  
          let list = Blocklist { block: Arc::default(), clock: test_clock(), store: None };
@@ -1408,12 +1506,17 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
 
 ### 5.3 `tab_closer.rs`
 
-Only the source of the policy changes (plus one skipped call when the list has no entries); none of the UI Automation code does.
+What changed here, with measurements (release build, 341 running programs, real browser windows):
+
+- **The sweep was 20 to 40 times too expensive, in one place.** Of a 93 ms pass, **92 ms was a single UI Automation call that searched the desktop's top-level windows for browser windows**. They are now found with a plain `EnumWindows` (0.3 ms), and UI Automation is only used on the windows found (`browser_windows`, `Closer::browser`), with the cache keyed by window handle. A pass with real browser windows takes 4 to 10 ms, where the old one took 166 to 413 ms. Creating the UI Automation condition objects costs nothing (0.001 ms), so they are **not** cached: measure before optimizing.
+- **One process scan per pass** (`scan_processes`, about 6 ms) shared by the Obsidian and programs checks, instead of one each.
+- **Edge calls its tabs `EdgeTab`, not `Tab`.** `close_tab` only looked for class `Tab`, so with Edge the page was found and judged blocked but "no selected tab" was found and nothing was ever closed. Both names are accepted now (`TAB_CLASSES`). The class is what tells a browser tab from a tab-like widget inside a web page, so it is **not** dropped. A manual check against a real browser is the ignored test `a_real_browser_tab_is_closed`.
+- A missing UI Automation now ends the app (and the service starts it again) instead of leaving the closing thread quietly dead.
 
 ```diff
 --- a/src-tauri/src/tab_closer.rs
 +++ b/src-tauri/src/tab_closer.rs
-@@ -15,35 +15,46 @@
+@@ -15,35 +15,59 @@
  use std::thread;
  use std::time::{Duration, Instant};
  
@@ -1424,25 +1527,36 @@ Only the source of the policy changes (plus one skipped call when the list has n
 +use crate::block::Active;
 +use crate::programs::ProgramList;
 +use crate::state::{Enforcers, Uses};
++use crate::sync::spawn_critical;
++use crate::watchdog::note;
  use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
  use uiautomation::patterns::{UIInvokePattern, UIValuePattern, UIWindowPattern};
- use uiautomation::types::{ControlType, TreeScope, UIProperty};
+-use uiautomation::types::{ControlType, TreeScope, UIProperty};
++use uiautomation::types::{ControlType, Handle, TreeScope, UIProperty};
  use uiautomation::{UIAutomation, UIElement};
 +use windows_sys::Win32::Foundation::{HWND, LPARAM};
-+use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, PostMessageW, WM_CLOSE};
++use windows_sys::Win32::UI::WindowsAndMessaging::{
++    EnumWindows, GetClassNameW, GetWindowThreadProcessId, IsWindowVisible, PostMessageW, WM_CLOSE,
++};
  
  const INTERVAL: Duration = Duration::from_secs(1);
  const RECHECK: Duration = Duration::from_secs(10);
  
 -pub fn spawn(blocklist: Blocklist) {
+-    thread::spawn(move || {
 +/// How long a program is given to close when asked to, before it is ended.
 +const KILL_AFTER: Duration = Duration::from_secs(3);
 +
 +pub fn spawn(remote: Remote) {
-     thread::spawn(move || {
++    spawn_critical("tab closer", move || {
          let automation = match UIAutomation::new() {
              Ok(a) => a,
-             Err(e) => return eprintln!("tab_closer: UI Automation unavailable: {e}"),
+-            Err(e) => return eprintln!("tab_closer: UI Automation unavailable: {e}"),
++            // Without it nothing is enforced, so say so loudly: the process ends and is started again.
++            Err(e) => {
++                note("app", &format!("UI Automation is unavailable: {e}"));
++                std::process::exit(1);
++            }
          };
 -        let mut closer = Closer { automation, windows: HashMap::new(), system: System::new() };
 +        let mut closer = Closer { automation, windows: HashMap::new(), system: System::new(), asked: HashMap::new() };
@@ -1459,43 +1573,115 @@ Only the source of the policy changes (plus one skipped call when the list has n
                          eprintln!("tab_closer: {e}");
                      }
                  }
++                // Obsidian and the programs both look at the running programs: one scan serves both.
++                let programs = enforcers.uses(Uses::Programs) && !active.programs.is_empty();
++                if enforcers.obsidian_web_viewer || programs {
++                    closer.scan_processes(enforcers.obsidian_web_viewer);
++                }
                  if enforcers.obsidian_web_viewer {
                      closer.close_obsidian_with_web_content();
                  }
-+                if enforcers.uses(Uses::Programs) && !active.programs.is_empty() {
++                if programs {
 +                    closer.close_programs(&active.programs);
 +                }
              }
              thread::sleep(INTERVAL.saturating_sub(start.elapsed()));
          }
-@@ -55,6 +66,8 @@
-     /// Window runtime id -> its cached UI elements, so they are not searched for every second.
-     windows: HashMap<Vec<i32>, Window>,
+@@ -52,9 +76,11 @@
+ 
+ struct Closer {
+     automation: UIAutomation,
+-    /// Window runtime id -> its cached UI elements, so they are not searched for every second.
+-    windows: HashMap<Vec<i32>, Window>,
++    /// Window handle -> its cached UI elements, so they are not searched for every second.
++    windows: HashMap<isize, Window>,
      system: System,
 +    /// Programs that were asked to close, by process id and when, so the ones that do not are ended.
 +    asked: HashMap<u32, Instant>,
  }
  
  enum Window {
-@@ -77,7 +90,7 @@
+@@ -65,6 +91,8 @@
+ 
+ #[derive(Clone)]
+ struct Browser {
++    /// The browser window itself.
++    window: UIElement,
+     omnibox: UIElement,
+     /// Parent of the visible pages (`MultiContentsView`); holds two pages in split view.
+     contents: Option<UIElement>,
+@@ -77,20 +105,17 @@
  }
  
  impl Closer {
 -    fn tick(&mut self, filters: &FilterList, enforcers: Enforcers) -> uiautomation::Result<()> {
+-        // Window class shared by all Chromium-based browsers (and Electron apps, which have
+-        // no address bar and are skipped in `browser`).
+-        let cond = self.automation.create_property_condition(UIProperty::ClassName, "Chrome_WidgetWin_1".into(), None)?;
+-        let windows = self.automation.get_root_element()?.find_all(TreeScope::Children, &cond)?;
+-
+-        let mut seen = Vec::new();
+-        for window in windows {
+-            let Ok(id) = window.get_runtime_id() else { continue };
+-            seen.push(id.clone());
+-            let Some(browser) = self.browser(&window, &id) else { continue };
 +    fn tick(&mut self, active: &Active, enforcers: Enforcers) -> uiautomation::Result<()> {
-         // Window class shared by all Chromium-based browsers (and Electron apps, which have
-         // no address bar and are skipped in `browser`).
-         let cond = self.automation.create_property_condition(UIProperty::ClassName, "Chrome_WidgetWin_1".into(), None)?;
-@@ -98,7 +111,7 @@
++        // The browser windows are found by a plain window enumeration, which takes a fraction of a
++        // millisecond. Asking UI Automation to search the desktop for them took about 90.
++        let handles = browser_windows();
++        let mut seen = Vec::with_capacity(handles.len());
++        for handle in handles {
++            seen.push(handle);
++            let Some(browser) = self.browser(handle) else { continue };
+             let Ok(pages) = self.pages(&browser) else {
+                 // Cached elements went stale; look them up again next tick.
+-                self.windows.remove(&id);
++                self.windows.remove(&handle);
+                 continue;
+             };
+             // Two pages at once is a split view; one is an ordinary tab.
+@@ -98,26 +123,32 @@
              if !enforced {
                  continue;
              }
 -            if let Some(page) = pages.iter().find(|p| filters.is_blocked(&p.url)) {
+-                match close_tab(&self.automation, &window, &page.title) {
 +            if let Some(page) = pages.iter().find(|p| active.blocks_site(&p.url)) {
-                 match close_tab(&self.automation, &window, &page.title) {
++                match close_tab(&self.automation, &browser.window, &page.title) {
                      Ok(()) => eprintln!("tab_closer: closed {}", page.url),
                      Err(e) => eprintln!("tab_closer: failed to close {}: {e}", page.url),
-@@ -151,6 +164,36 @@
+                 }
+             }
+         }
+-        self.windows.retain(|id, _| seen.contains(id));
++        self.windows.retain(|handle, _| seen.contains(handle));
+         Ok(())
+     }
+ 
++    /// Looks at the running programs, once, for the checks below (`close_obsidian_with_web_content`,
++    /// `close_programs`). Command lines are only fetched when Obsidian's check needs them.
++    fn scan_processes(&mut self, command_lines: bool) {
++        let kind = if command_lines {
++            ProcessRefreshKind::nothing().with_cmd(UpdateKind::OnlyIfNotSet)
++        } else {
++            ProcessRefreshKind::nothing()
++        };
++        self.system.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
++    }
++
+     /// Closes Obsidian (like clicking its X) when it hosts web content. Obsidian's own UI runs in
+     /// an unsandboxed renderer (it needs Node); web viewer pages run in sandboxed ones. Ending
+     /// those renderers instead makes Obsidian quit on the next navigation, so close it cleanly.
+     fn close_obsidian_with_web_content(&mut self) {
+-        self.system.refresh_processes_specifics(
+-            ProcessesToUpdate::All,
+-            true,
+-            ProcessRefreshKind::nothing().with_cmd(UpdateKind::OnlyIfNotSet),
+-        );
+         let obsidian = |p: &&sysinfo::Process| p.name().eq_ignore_ascii_case("obsidian.exe");
+         let has = |p: &sysinfo::Process, flag: &str| p.cmd().iter().any(|a| a.to_string_lossy() == flag);
+         let processes = self.system.processes();
+@@ -151,23 +182,58 @@
          }
      }
  
@@ -1503,7 +1689,6 @@ Only the source of the policy changes (plus one skipped call when the list has n
 +    /// the ones still running `KILL_AFTER` later (or that have no window to ask). Programs Windows
 +    /// needs are never touched (`ProgramList::is_blocked`), nor is this app.
 +    fn close_programs(&mut self, programs: &ProgramList) {
-+        self.system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
 +        let me = std::process::id();
 +        let mut running = Vec::new();
 +        for (pid, process) in self.system.processes() {
@@ -1530,12 +1715,60 @@ Only the source of the policy changes (plus one skipped call when the list has n
 +    }
 +
      /// The window's cached browser elements, or None if it is not a browser window.
-     fn browser(&mut self, window: &UIElement, id: &Vec<i32>) -> Option<Browser> {
-         match self.windows.get(id) {
-@@ -195,6 +238,24 @@
+-    fn browser(&mut self, window: &UIElement, id: &Vec<i32>) -> Option<Browser> {
+-        match self.windows.get(id) {
++    fn browser(&mut self, handle: isize) -> Option<Browser> {
++        match self.windows.get(&handle) {
+             Some(Window::Browser(b)) => return Some(b.clone()),
+             Some(Window::Other(since)) if since.elapsed() < RECHECK => return None,
+             _ => {}
+         }
++        let Ok(window) = self.automation.element_from_handle(Handle::from(handle)) else {
++            // Gone already, or not ours to look at.
++            self.windows.insert(handle, Window::Other(Instant::now()));
++            return None;
++        };
+         let find = |class: &str| {
+             let cond = self.automation.create_property_condition(UIProperty::ClassName, class.into(), None).ok()?;
+             window.find_first(TreeScope::Descendants, &cond).ok()
+         };
+         let Some(omnibox) = find("OmniboxViewViews") else {
+-            self.windows.insert(id.clone(), Window::Other(Instant::now()));
++            self.windows.insert(handle, Window::Other(Instant::now()));
+             return None;
+         };
+-        let browser = Browser { omnibox, contents: find("MultiContentsView") };
+-        self.windows.insert(id.clone(), Window::Browser(browser.clone()));
++        let contents = find("MultiContentsView");
++        let browser = Browser { window, omnibox, contents };
++        self.windows.insert(handle, Window::Browser(browser.clone()));
+         Some(browser)
+     }
+ 
+@@ -195,12 +261,59 @@
      }
  }
  
++/// The visible top-level windows of the class all Chromium-based browsers share (Electron apps
++/// have it too; they have no address bar and are skipped in `Closer::browser`). Visible ones only,
++/// which is what UI Automation lists as the desktop's children too.
++fn browser_windows() -> Vec<isize> {
++    unsafe extern "system" fn each(window: HWND, found: LPARAM) -> i32 {
++        let mut name = [0u16; 32];
++        // SAFETY: the buffer is as long as the length says; `window` is one Windows just handed over.
++        let (length, visible) = unsafe { (GetClassNameW(window, name.as_mut_ptr(), 32), IsWindowVisible(window) != 0) };
++        if visible && length > 0 && String::from_utf16_lossy(&name[..length as usize]) == "Chrome_WidgetWin_1" {
++            // SAFETY: `found` is the vector below, which outlives the enumeration.
++            unsafe { (*(found as *mut Vec<isize>)).push(window as isize) };
++        }
++        1
++    }
++    let mut found: Vec<isize> = Vec::new();
++    // SAFETY: the callback is the function above, and `found` outlives the call.
++    unsafe { EnumWindows(Some(each), &mut found as *mut Vec<isize> as LPARAM) };
++    found
++}
++
 +/// Posts a close request to every top-level window of the process, as the X button does. The
 +/// program may ask to save first, or not close at all; that is what `KILL_AFTER` is for.
 +fn ask_to_close(pid: u32) {
@@ -1554,10 +1787,26 @@ Only the source of the policy changes (plus one skipped call when the list has n
 +    unsafe { EnumWindows(Some(each), pid as LPARAM) };
 +}
 +
++/// Window classes of a browser's tab strip entries: Chrome and Brave call them `Tab`, Edge calls
++/// them `EdgeTab`. The class is what tells a browser tab from a tab-like widget inside a web page
++/// (an ARIA tablist), whose close button must never be pressed.
++const TAB_CLASSES: [&str; 2] = ["Tab", "EdgeTab"];
++
  /// Presses the Close button of the selected tab showing `title`. In split view both tabs are
  /// selected and named "<title> - Left view" / "<title> - Right view", so the title picks one;
  /// with a single selected tab (or no title) the first selected tab is closed.
-@@ -215,3 +276,50 @@
+ fn close_tab(a: &UIAutomation, window: &UIElement, title: &str) -> uiautomation::Result<()> {
++    let is_a_tab_class = a.create_or_condition(
++        a.create_property_condition(UIProperty::ClassName, TAB_CLASSES[0].into(), None)?,
++        a.create_property_condition(UIProperty::ClassName, TAB_CLASSES[1].into(), None)?,
++    )?;
+     let cond = a.create_and_condition(
+-        a.create_property_condition(UIProperty::ClassName, "Tab".into(), None)?,
++        is_a_tab_class,
+         a.create_and_condition(
+             a.create_property_condition(UIProperty::ControlType, (ControlType::TabItem as i32).into(), None)?,
+             a.create_property_condition(UIProperty::SelectionItemIsSelected, true.into(), None)?,
+@@ -215,3 +328,99 @@
      let button = a.create_property_condition(UIProperty::ControlType, (ControlType::Button as i32).into(), None)?;
      tab.find_first(TreeScope::Children, &button)?.get_pattern::<UIInvokePattern>()?.invoke()
  }
@@ -1578,6 +1827,12 @@ Only the source of the policy changes (plus one skipped call when the list has n
 +        Command::new(path).args(["-n", "60", "127.0.0.1"]).stdout(Stdio::null()).spawn().unwrap()
 +    }
 +
++    /// What the loop does for the programs: one scan, then the check.
++    fn pass(closer: &mut Closer, programs: &ProgramList) {
++        closer.scan_processes(false);
++        closer.close_programs(programs);
++    }
++
 +    #[test]
 +    fn a_listed_program_is_asked_to_close_then_ended_and_others_are_left_alone() {
 +        let Ok(automation) = UIAutomation::new() else { return eprintln!("skipping: no UI Automation here") };
@@ -1586,14 +1841,14 @@ Only the source of the policy changes (plus one skipped call when the list has n
 +        let programs = ProgramList::parse(&["siteblocker-test-l*"]).unwrap();
 +
 +        // The first pass asks. This program has no window to ask, so it carries on for now.
-+        closer.close_programs(&programs);
++        pass(&mut closer, &programs);
 +        assert!(closer.asked.contains_key(&listed.id()));
 +        assert!(!closer.asked.contains_key(&other.id()));
 +        assert!(listed.try_wait().unwrap().is_none());
 +
 +        // Once it has had its time, the next pass ends it.
 +        thread::sleep(KILL_AFTER + Duration::from_millis(500));
-+        closer.close_programs(&programs);
++        pass(&mut closer, &programs);
 +        let ended = (0..50).any(|_| {
 +            thread::sleep(Duration::from_millis(100));
 +            listed.try_wait().unwrap().is_some()
@@ -1601,12 +1856,55 @@ Only the source of the policy changes (plus one skipped call when the list has n
 +        assert!(ended, "the listed program should have been ended");
 +
 +        // A program that has gone is forgotten, and the one that was not listed never touched.
-+        closer.close_programs(&programs);
++        pass(&mut closer, &programs);
 +        assert!(closer.asked.is_empty());
 +        assert!(other.try_wait().unwrap().is_none());
 +        let _ = other.kill();
 +        let _ = other.wait();
 +    }
++
++    /// A manual check against a real browser: have a Chromium browser window open on
++    /// `https://example.com` (`msedge --new-window https://example.com`), then
++    /// `cargo test -- --ignored a_real_browser_tab_is_closed --nocapture`. The tab must be closed by the
++    /// sweep, which also prints how long a pass takes. (Needs a window that shows that page itself: a
++    /// browser extension that replaces the page would hide it.)
++    #[test]
++    #[ignore]
++    fn a_real_browser_tab_is_closed() {
++        use crate::filters::FilterList;
++        let automation = UIAutomation::new().unwrap();
++        let mut closer = Closer { automation, windows: HashMap::new(), system: System::new(), asked: HashMap::new() };
++        let active = |entry: &str| crate::block::Active {
++            filters: std::sync::Arc::new(FilterList::parse(&[entry]).unwrap()),
++            allowed: std::sync::Arc::new(FilterList::default()),
++            programs: std::sync::Arc::new(ProgramList::default()),
++            enforcers: Enforcers::default(),
++        };
++        println!("chromium-class visible windows: {}", browser_windows().len());
++        let quiet = active("real-check-nothing.invalid");
++        let _ = closer.tick(&quiet, Enforcers::default());
++        let runs = 20;
++        let start = Instant::now();
++        for _ in 0..runs {
++            closer.tick(&quiet, Enforcers::default()).unwrap();
++        }
++        println!("tick, nothing to close: {:.2} ms per pass", start.elapsed().as_secs_f64() * 1000.0 / runs as f64);
++        let browsers = closer.windows.values().filter(|w| matches!(w, Window::Browser(_))).count();
++        println!("browser windows recognised: {browsers}");
++        assert!(browsers >= 1, "open a Chromium browser window first");
++
++        let block = active("example.com");
++        let before = browser_windows().len();
++        let start = Instant::now();
++        let closed = (0..60).any(|_| {
++            let _ = closer.tick(&block, Enforcers::default());
++            thread::sleep(Duration::from_millis(250));
++            browser_windows().len() < before
++        });
++        println!("blocked tab closed: {closed} (after {:?})", start.elapsed());
++        assert!(closed, "the tab on example.com should have been closed");
++    }
++
 +}
 ```
 
@@ -1751,18 +2049,16 @@ The site lists (the block list, and the list of allowed sites, section 6.5) are 
 
 ## 6. The service, and the files that change around it
 
-### 6.1 `src-tauri/src/service.rs`
+### 6.1 The service: `service.rs`, `handler.rs` and `registration.rs`
 
-Read the top-of-file comment first. Decisions worth knowing:
+The service is three files, each with one job. Read the top-of-file comment of each first.
+
+**`service.rs`: the running service** (talking to the service manager, starting everything, the data folder, and the in-process mode for development).
 
 - **`controls_accepted` does not include STOP.** A service that does not accept stop cannot be stopped with `sc stop` or from the services list, by anyone, including administrators. It only accepts `SESSION_CHANGE`, which tells it when someone logs on.
-- **The SDDL** gives SYSTEM everything (it needs delete to remove itself on uninstall), administrators **and interactive users** query/enumerate/**start**/read-the-list only, and service accounts query only. Administrators keep *start* on purpose: the installer has to be able to start the service again after an update. Interactive users get *start* because the app, which runs as one, starts the service again when it is not running (`client::Remote::revive_service`, at most every 5 s). Starting is harmless: starting a running service does nothing, and a stopped one only goes back to blocking. Nobody but SYSTEM gets stop, pause, change-config, delete, write-DACL or write-owner. **Never widen what interactive users may do beyond start**: the app runs as the user, so anything the app may do, the user may do. `sc sdset` is the **last** step of the install: after it, an administrator can no longer change the service (the handle the installer already holds keeps its rights).
-- **Failure actions** are "restart immediately", three times over, and the last one repeats forever. `set_failure_actions_on_non_crash_failures(true)` makes that apply also when the process ends with a failure *exit code*, not just when it is killed. A clean exit code 0 is **not** restarted: the installer relies on that.
-- **Every request is checked again in `handle`/`start`/`unlock`.** The code that used to validate in the Tauri command (`parse_duration`, `FilterList::parse`, "at least one enforcer", ...) is now here, because the pipe can be reached by any program.
-- **Unlock rate limit**: after 3 wrong passwords in a row, the next guesses are refused for 5 s, 10 s, 20 s, ... (capped at about 21 minutes). The lock is held while the password is hashed, so guesses cannot be tried in parallel. (The hash is still in the binary, so an offline attack on a weak password is unchanged: see section 8.4.)
-- **Uninstall vs update**: `PrepareUninstall` is refused during a *timed* block (same as today). `PrepareUpdate` is refused during *any* block, because replacing the exe is also a way to end the service.
 - **The data folder is locked down** at start (`lock_down_data_dir`): owner SYSTEM, SYSTEM full control, administrators read-only, no inheritance from `%ProgramData%` (where every user may create files). It uses SIDs (`*S-1-5-18` is SYSTEM, `*S-1-5-32-544` is Administrators) instead of names, so it works on any language of Windows.
-- **Safe mode**: the installer creates `SafeBoot\Minimal\SiteBlocker` and `SafeBoot\Network\SiteBlocker` registry keys so Windows starts the service in safe mode as well.
+- **A crash in one of its long-lived threads ends the process** (`sync::spawn_critical`), so Windows restarts it.
+- `local_handler` / `embedded`: the same request handling without a service or a pipe, for `npm run dev` (section 8.1). Compiled in only with `debug_assertions`.
 
 ```rust
 //! The Windows service: the root of everything. It runs as SYSTEM, started by Windows at boot
@@ -1779,86 +2075,38 @@ Read the top-of-file comment first. Decisions worth knowing:
 //!
 //! `main` starts it with `--service`, which only Windows does. Development has no service at all:
 //! a debug build runs the same request handling inside the app (`embedded`).
+//!
+//! This file is the running service: talking to the service manager, starting everything, and the
+//! data folder. What it does with a request is `handler.rs`; how it is installed, locked down and
+//! removed is `registration.rs`.
 
 use std::ffi::OsString;
 use std::fs;
 use std::os::windows::process::CommandExt;
+#[cfg(debug_assertions)]
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::Ordering;
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use windows_service::define_windows_service;
 use windows_service::service::{
-    ServiceAccess, ServiceAction, ServiceActionType, ServiceControl, ServiceControlAccept, ServiceErrorControl,
-    ServiceExitCode, ServiceFailureActions, ServiceFailureResetPeriod, ServiceInfo, ServiceStartType, ServiceState,
-    ServiceStatus, ServiceType, SessionChangeReason,
+    ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType, SessionChangeReason,
 };
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult, ServiceStatusHandle};
 use windows_service::service_dispatcher;
-use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
-use crate::block::{parse_duration, Blocklist, Lists};
+use crate::block::Blocklist;
 #[cfg(any(debug_assertions, test))]
 use crate::client::Local;
-use crate::filters::FilterList;
-use crate::programs::ProgramList;
-use crate::proto::{Policy, Request, Response};
-use crate::state::{self, Enforcers};
+use crate::handler::{handle, Context, Shutdown};
+use crate::registration::{self, CREATE_NO_WINDOW, NAME};
+use crate::state;
+use crate::sync::spawn_critical;
 use crate::watchdog::{self, note, AppSlot};
-use crate::{clock, pipe, unlock};
-
-/// The service's name, exactly as it appears in the services list.
-pub const NAME: &str = "SiteBlocker";
-
-/// Who may do what with the service. SYSTEM: everything (it deletes itself on uninstall).
-/// Administrators and interactive users: query, enumerate, read the list and start, but not stop,
-/// pause, change, delete or rewrite it. Interactive users may start it because the app (which
-/// runs as one) starts it again when it is not running (`client::Remote::revive_service`);
-/// starting a running service does nothing, and a stopped one only goes back to blocking.
-/// Service accounts: query only.
-const SDDL: &str = "D:(A;;CCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCLCSWRPLOCRRC;;;BA)(A;;CCLCSWRPLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)";
-
-/// The service is started in safe mode too, when these keys exist.
-const SAFE_BOOT: [&str; 2] = [
-    r"HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Minimal\SiteBlocker",
-    r"HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Network\SiteBlocker",
-];
-
-/// `CREATE_NO_WINDOW`: the tools below are console programs, which would flash a window.
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
-const ERROR_SERVICE_EXISTS: i32 = 1073;
-const ERROR_SERVICE_ALREADY_RUNNING: i32 = 1056;
-
-/// What the installer asked the service to end for.
-pub enum Shutdown {
-    /// Let go of the exe so it can be replaced; the installer starts the service again.
-    Update,
-    /// Remove the service and everything it keeps.
-    Remove,
-}
-
-/// What `handle` works with.
-struct Context {
-    blocklist: Blocklist,
-    lockout: Mutex<Lockout>,
-    /// Which process is the app (`watchdog.rs`).
-    slot: Arc<AppSlot>,
-}
-
-/// Wrong unlock passwords in a row, and until when the next guess is refused.
-#[derive(Default)]
-struct Lockout {
-    failures: u32,
-    until: Option<Instant>,
-}
-
-// ---------------------------------------------------------------------------------------------
-// Running
+use crate::{clock, pipe};
 
 define_windows_service!(ffi_service_main, service_main);
 
@@ -1915,7 +2163,7 @@ fn run_service() -> Result<(), String> {
     };
     watchdog::kill_apps();
     if matches!(shutdown, Shutdown::Remove) {
-        remove_registration();
+        registration::remove();
     }
     note("service", "ending at the installer's request");
     // Exit code 0: Windows does not start a service again that ended cleanly.
@@ -1948,7 +2196,7 @@ fn start_engine(for_real: bool) -> Result<mpsc::Receiver<Shutdown>, String> {
         watchdog::spawn_supervisor(blocklist.clone(), slot.clone());
     }
     let (quit, quit_rx) = mpsc::channel();
-    let context = Arc::new(Context { blocklist, lockout: Mutex::default(), slot });
+    let context = Arc::new(Context::new(blocklist, slot));
     pipe::serve(move |caller, request| handle(&context, caller, request), quit)?;
     Ok(quit_rx)
 }
@@ -1962,7 +2210,7 @@ fn start_blocklist() -> Blocklist {
     let blocklist = Blocklist::new();
     blocklist.restore();
     let ticking = blocklist.clone();
-    thread::spawn(move || loop {
+    spawn_critical("ticker", move || loop {
         ticking.active();
         thread::sleep(Duration::from_secs(1));
     });
@@ -1974,7 +2222,7 @@ fn start_blocklist() -> Blocklist {
 /// app (`AppSlot::new(false)`).
 #[cfg(any(debug_assertions, test))]
 pub fn local_handler(blocklist: Blocklist) -> Local {
-    let context = Context { blocklist, lockout: Mutex::default(), slot: Arc::new(AppSlot::new(false)) };
+    let context = Context::new(blocklist, Arc::new(AppSlot::new(false)));
     Arc::new(move |request| handle(&context, 0, request).0)
 }
 
@@ -2018,13 +2266,141 @@ fn lock_down_data_dir() {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Answering the app and the installer
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::{Request, Response};
+    use crate::state::Enforcers;
+    use std::time::Duration;
+
+    fn start_request(duration: &str) -> Request {
+        Request::Start {
+            programs: vec![],
+            allowed: vec![],
+            filters: vec!["a.com".into()],
+            duration: duration.into(),
+            enforcers: Enforcers::default(),
+        }
+    }
+
+    /// Runs the real pipe server in this process and talks to it like the app and the installer
+    /// do. Needs no service installed, but no service may be running either (it would hold the
+    /// pipe): `cargo test -- --ignored the_pipe`. Takes about 15 seconds.
+    #[test]
+    #[ignore]
+    fn the_pipe_answers_like_the_app_expects() {
+        use crate::{client, proto};
+        use std::io::Write;
+
+        let dir = std::env::temp_dir().join(format!("service-pipe-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        state::use_dir(dir);
+        let quit = start_engine(false).unwrap();
+
+        // This server runs in the user's session, not in session 0: the app refuses to talk to it.
+        std::env::remove_var("SITEBLOCKER_DEV");
+        let refused = client::call(&Request::Status).unwrap_err();
+        assert!(refused.contains("not by the service"), "{refused}");
+        // The test lets the app talk to it anyway, which only a test build allows (`pipe::verify_server`).
+        std::env::set_var("SITEBLOCKER_DEV", "1");
+
+        // This engine looks after no app, so taking one in is always fine.
+        assert_eq!(client::call(&Request::Register), Ok(Response::Done));
+        let Ok(Response::Status(status)) = client::call(&Request::Status) else { panic!("no status") };
+        assert_eq!(status.remaining, None);
+        assert_eq!(client::call(&start_request("1h")), Ok(Response::Done));
+        let Ok(Response::Policy(Some(policy))) = client::call(&Request::Policy) else { panic!("no policy") };
+        assert_eq!(policy.filters, vec!["a.com"]);
+        assert!(matches!(client::call(&Request::Stop), Ok(Response::Failed(_))));
+        assert!(matches!(client::call(&Request::PrepareUninstall), Ok(Response::Refused(_))));
+
+        // A length far beyond the limit gets an error back, not an allocation.
+        let mut pipe = crate::pipe::connect().unwrap();
+        pipe.write_all(&u32::MAX.to_le_bytes()).unwrap();
+        assert!(matches!(proto::read_message::<Response>(&mut pipe), Ok(Response::Failed(_))));
+        drop(pipe);
+
+        // Several requests at once, as the app's ticks and the UI's polls make.
+        let threads: Vec<_> = (0..6)
+            .map(|_| std::thread::spawn(|| assert!(matches!(client::call(&Request::Status), Ok(Response::Status(_))))))
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        // A client that connects and says nothing is cut off, and does not hold the service up.
+        let mut silent = crate::pipe::connect().unwrap();
+        assert!(matches!(client::call(&Request::Status), Ok(Response::Status(_))));
+        std::thread::sleep(Duration::from_secs(13));
+        // What it gets is a refusal, or a closed pipe; never an answer to a request it did not make.
+        assert!(matches!(proto::read_message::<Response>(&mut silent), Ok(Response::Failed(_)) | Err(_)));
+
+        // The password ends the block; then the installer may update, and the service says so.
+        let unlock = Request::Unlock { password: "test1234".into() };
+        assert_eq!(client::call(&unlock), Ok(Response::Done));
+        assert_eq!(client::call(&Request::PrepareUpdate), Ok(Response::Done));
+        assert!(matches!(quit.recv_timeout(Duration::from_secs(5)), Ok(Shutdown::Update)));
+    }
+}
+```
+
+**`handler.rs`: what the service does with each request.** The same `handle` answers over the pipe and, in a debug build, inside the app, so the rules cannot differ between the two.
+
+- **Every request is checked again** (`handle`, `start`, `unlock`). The code that used to validate in the Tauri command (`parse_duration`, `FilterList::parse`, "at least one enforcer", ...) is here, because the pipe can be reached by any program.
+- **Unlock rate limit**: after 3 wrong passwords in a row, the next guesses are refused for 5 s, 10 s, 20 s, ... (capped at about 21 minutes). The lock is held while the password is hashed, so guesses cannot be tried in parallel. (The hash is still in the binary, so an offline attack on a weak password is unchanged: see section 8.4.)
+- **Uninstall vs update**: `PrepareUninstall` is refused during a *timed* block. `PrepareUpdate` is refused during *any* block, because replacing the exe is also a way to end the service.
+
+```rust
+//! What the service does with each request from the app and the installer. Everything in a request
+//! is checked here again: it comes from any local user's program, not necessarily ours. The same
+//! `handle` answers over the pipe (`service.rs`) and, in a debug build, inside the app
+//! (`service::local_handler`), so the rules cannot differ between the two.
+
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use crate::block::{parse_duration, Blocklist, Lists};
+use crate::filters::FilterList;
+use crate::programs::ProgramList;
+use crate::proto::{Policy, Request, Response};
+use crate::state::Enforcers;
+use crate::sync::LockExt;
+use crate::unlock;
+use crate::watchdog::AppSlot;
+
+/// What the installer asked the service to end for.
+pub enum Shutdown {
+    /// Let go of the exe so it can be replaced; the installer starts the service again.
+    Update,
+    /// Remove the service and everything it keeps.
+    Remove,
+}
+
+/// What `handle` works with.
+pub struct Context {
+    blocklist: Blocklist,
+    lockout: Mutex<Lockout>,
+    /// Which process is the app (`watchdog.rs`).
+    slot: Arc<AppSlot>,
+}
+
+impl Context {
+    pub fn new(blocklist: Blocklist, slot: Arc<AppSlot>) -> Context {
+        Context { blocklist, lockout: Mutex::default(), slot }
+    }
+}
+
+/// Wrong unlock passwords in a row, and until when the next guess is refused.
+#[derive(Default)]
+struct Lockout {
+    failures: u32,
+    until: Option<Instant>,
+}
 
 /// Answers one request from the process `caller`, and says whether the service should end
 /// afterwards. Everything in the request is checked here again: it comes from any local user's
 /// program, not necessarily ours.
-fn handle(context: &Context, caller: u32, request: Request) -> (Response, Option<Shutdown>) {
+pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Option<Shutdown>) {
     let blocklist = &context.blocklist;
     let done = |result: Result<(), String>| match result {
         Ok(()) => Response::Done,
@@ -2097,7 +2473,7 @@ fn start(
 /// refused for longer each time. The lock is held while the hash is computed, so guesses cannot
 /// be made in parallel either.
 fn unlock(context: &Context, password: &str) -> Result<(), String> {
-    let mut lockout = context.lockout.lock().unwrap();
+    let mut lockout = context.lockout.locked();
     if let Some(left) = lockout.until.and_then(|until| until.checked_duration_since(Instant::now())) {
         return Err(format!("Too many wrong passwords; wait {}s", left.as_secs() + 1));
     }
@@ -2114,153 +2490,11 @@ fn unlock(context: &Context, password: &str) -> Result<(), String> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------------------------
-// Installing, starting and removing (the installer runs these as an administrator)
-
-fn manager(access: ServiceManagerAccess) -> Result<ServiceManager, String> {
-    ServiceManager::local_computer(None::<&str>, access).map_err(|e| format!("cannot reach the service manager: {e}"))
-}
-
-fn is_os_error(error: &windows_service::Error, code: i32) -> bool {
-    matches!(error, windows_service::Error::Winapi(e) if e.raw_os_error() == Some(code))
-}
-
-/// Registers the service for `exe`, locks it down, and starts it. Needs an administrator. If
-/// the service is already there (an update), it is only started again: its settings stay, and
-/// could not be changed by an administrator anyway.
-pub fn install(exe: &Path) -> Result<(), String> {
-    let manager = manager(ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE)?;
-    let info = ServiceInfo {
-        name: NAME.into(),
-        display_name: "Site Blocker".into(),
-        service_type: ServiceType::OWN_PROCESS,
-        start_type: ServiceStartType::AutoStart,
-        error_control: ServiceErrorControl::Normal,
-        executable_path: exe.to_path_buf(),
-        launch_arguments: vec!["--service".into()],
-        dependencies: vec![],
-        // No account: LocalSystem.
-        account_name: None,
-        account_password: None,
-    };
-    let access = ServiceAccess::CHANGE_CONFIG | ServiceAccess::START | ServiceAccess::QUERY_STATUS;
-    let (service, created) = match manager.create_service(&info, access) {
-        Ok(service) => (service, true),
-        Err(e) if is_os_error(&e, ERROR_SERVICE_EXISTS) => {
-            let service = manager
-                .open_service(NAME, ServiceAccess::START | ServiceAccess::QUERY_STATUS)
-                .map_err(|e| format!("the service exists but cannot be opened: {e}"))?;
-            (service, false)
-        }
-        Err(e) => return Err(format!("cannot create the service: {e}")),
-    };
-    if created {
-        let describe = |what: &str, e: windows_service::Error| format!("{what}: {e}");
-        service
-            .set_description("Blocks distracting sites while a block is running. Started with Windows and restarted if it fails.")
-            .map_err(|e| describe("cannot set the description", e))?;
-        // Windows starts it again at once, every time it fails, however often.
-        service
-            .update_failure_actions(ServiceFailureActions {
-                reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(24 * 60 * 60)),
-                reboot_msg: None,
-                command: None,
-                actions: Some(
-                    (0..3).map(|_| ServiceAction { action_type: ServiceActionType::Restart, delay: Duration::ZERO }).collect(),
-                ),
-            })
-            .map_err(|e| describe("cannot set the failure actions", e))?;
-        // Also when it ends with a failure exit code instead of being killed.
-        service
-            .set_failure_actions_on_non_crash_failures(true)
-            .map_err(|e| describe("cannot set the failure flag", e))?;
-        // Last: after this, an administrator can no longer change the service. The handle held
-        // here keeps the rights it was opened with.
-        let output = Command::new("sc.exe")
-            .args(["sdset", NAME, SDDL])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .map_err(|e| format!("cannot run sc.exe: {e}"))?;
-        if !output.status.success() {
-            return Err(format!("cannot lock the service down: {}", String::from_utf8_lossy(&output.stdout).trim()));
-        }
-        for key in SAFE_BOOT {
-            let output = Command::new("reg.exe")
-                .args(["add", key, "/ve", "/d", "Service", "/f"])
-                .creation_flags(CREATE_NO_WINDOW)
-                .output()
-                .map_err(|e| format!("cannot run reg.exe: {e}"))?;
-            if !output.status.success() {
-                return Err(format!("cannot add {key}: {}", String::from_utf8_lossy(&output.stderr).trim()));
-            }
-        }
-    }
-    match service.start::<OsString>(&[]) {
-        Err(e) if !is_os_error(&e, ERROR_SERVICE_ALREADY_RUNNING) => Err(format!("cannot start the service: {e}")),
-        _ => Ok(()),
-    }
-}
-
-/// Whether the service is registered.
-pub fn exists() -> bool {
-    manager(ServiceManagerAccess::CONNECT).is_ok_and(|m| m.open_service(NAME, ServiceAccess::QUERY_STATUS).is_ok())
-}
-
-/// Starts the service, if it is registered and not running. Administrators and interactive users
-/// may. Says whether it was started just now (`false`: it was running already).
-pub fn start_registered() -> Result<bool, String> {
-    let service = manager(ServiceManagerAccess::CONNECT)?
-        .open_service(NAME, ServiceAccess::START)
-        .map_err(|e| format!("cannot open the service: {e}"))?;
-    match service.start::<OsString>(&[]) {
-        Ok(()) => Ok(true),
-        Err(e) if is_os_error(&e, ERROR_SERVICE_ALREADY_RUNNING) => Ok(false),
-        Err(e) => Err(format!("cannot start the service: {e}")),
-    }
-}
-
-/// Waits until the service has ended or is gone, so the installer can replace or delete the exe.
-pub fn wait_stopped(timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        let stopped = manager(ServiceManagerAccess::CONNECT)
-            .ok()
-            .and_then(|m| m.open_service(NAME, ServiceAccess::QUERY_STATUS).ok())
-            .map_or(true, |service| service.query_status().map_or(false, |s| s.current_state == ServiceState::Stopped));
-        if stopped {
-            return true;
-        }
-        thread::sleep(Duration::from_millis(250));
-    }
-    false
-}
-
-/// Run by the service itself, as SYSTEM, on an uninstall: deletes the service, its safe-mode
-/// keys and everything it saved.
-fn remove_registration() {
-    match manager(ServiceManagerAccess::CONNECT).and_then(|m| {
-        m.open_service(NAME, ServiceAccess::DELETE).map_err(|e| format!("cannot open the service: {e}"))
-    }) {
-        Ok(service) => {
-            if let Err(e) = service.delete() {
-                note("service", &format!("cannot delete the service: {e}"));
-            }
-        }
-        Err(e) => note("service", &e),
-    }
-    for key in SAFE_BOOT {
-        let _ = Command::new("reg.exe").args(["delete", key, "/f"]).creation_flags(CREATE_NO_WINDOW).output();
-    }
-    if let Some(dir) = state::dir() {
-        // The log is open on and off; whatever cannot go now goes with the folder's next removal.
-        let _ = fs::remove_dir_all(dir);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::state::Store;
+    use std::fs;
 
     fn context(name: &str) -> Context {
         let dir = std::env::temp_dir().join(format!("service-{}-{name}", std::process::id()));
@@ -2454,70 +2688,208 @@ mod tests {
         assert!(matches!(handle(&context, 0, right).0, Response::Failed(why) if why.starts_with("Too many")));
         assert!(context.blocklist.filters().is_some());
         // Once the wait is over, it works.
-        context.lockout.lock().unwrap().until = None;
+        context.lockout.locked().until = None;
         let right = Request::Unlock { password: "test1234".into() };
         assert_eq!(handle(&context, 0, right).0, Response::Done);
         assert!(context.blocklist.filters().is_none());
     }
+}
+```
 
-    /// Runs the real pipe server in this process and talks to it like the app and the installer
-    /// do. Needs no service installed, but no service may be running either (it would hold the
-    /// pipe): `cargo test -- --ignored the_pipe`. Takes about 15 seconds.
-    #[test]
-    #[ignore]
-    fn the_pipe_answers_like_the_app_expects() {
-        use crate::{client, proto};
-        use std::io::Write;
+**`registration.rs`: installing, locking down and removing the service** (the installer runs these as an administrator, except `remove`, which the service runs on itself).
 
-        let dir = std::env::temp_dir().join(format!("service-pipe-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        state::use_dir(dir);
-        let quit = start_engine(false).unwrap();
+- **The SDDL** gives SYSTEM everything (it needs delete to remove itself on uninstall), administrators **and interactive users** query/enumerate/**start**/read-the-list only, and service accounts query only. Administrators keep *start* on purpose: the installer has to be able to start the service again after an update. Interactive users get *start* because the app, which runs as one, starts the service again when it is not running (`client::Remote::revive_service`, at most every 5 s). Starting is harmless: starting a running service does nothing, and a stopped one only goes back to blocking. Nobody but SYSTEM gets stop, pause, change-config, delete, write-DACL or write-owner. **Never widen what interactive users may do beyond start**: the app runs as the user, so anything the app may do, the user may do. `sc sdset` is the **last** step of the install: after it, an administrator can no longer change the service (the handle the installer already holds keeps its rights).
+- **Failure actions** are "restart immediately", three times over, and the last one repeats forever. `set_failure_actions_on_non_crash_failures(true)` makes that apply also when the process ends with a failure *exit code*, not just when it is killed. A clean exit code 0 is **not** restarted: the installer relies on that.
+- **Safe mode**: the installer creates `SafeBoot\Minimal\SiteBlocker` and `SafeBoot\Network\SiteBlocker` registry keys so Windows starts the service in safe mode as well.
 
-        // This server runs in the user's session, not in session 0: the app refuses to talk to it.
-        std::env::remove_var("SITEBLOCKER_DEV");
-        let refused = client::call(&Request::Status).unwrap_err();
-        assert!(refused.contains("not by the service"), "{refused}");
-        // The test lets the app talk to it anyway, which only a test build allows (`pipe::verify_server`).
-        std::env::set_var("SITEBLOCKER_DEV", "1");
+```rust
+//! The service's registration with Windows: installing it (locked down, restarting itself if it
+//! fails, started in safe mode), starting it, and removing it. The installer runs these as an
+//! administrator, except `remove`, which the service runs on itself.
 
-        // This engine looks after no app, so taking one in is always fine.
-        assert_eq!(client::call(&Request::Register), Ok(Response::Done));
-        let Ok(Response::Status(status)) = client::call(&Request::Status) else { panic!("no status") };
-        assert_eq!(status.remaining, None);
-        assert_eq!(client::call(&start_request("1h")), Ok(Response::Done));
-        let Ok(Response::Policy(Some(policy))) = client::call(&Request::Policy) else { panic!("no policy") };
-        assert_eq!(policy.filters, vec!["a.com"]);
-        assert!(matches!(client::call(&Request::Stop), Ok(Response::Failed(_))));
-        assert!(matches!(client::call(&Request::PrepareUninstall), Ok(Response::Refused(_))));
+use std::ffi::OsString;
+use std::fs;
+use std::os::windows::process::CommandExt;
+use std::path::Path;
+use std::process::Command;
+use std::thread;
+use std::time::{Duration, Instant};
 
-        // A length far beyond the limit gets an error back, not an allocation.
-        let mut pipe = crate::pipe::connect().unwrap();
-        pipe.write_all(&u32::MAX.to_le_bytes()).unwrap();
-        assert!(matches!(proto::read_message::<Response>(&mut pipe), Ok(Response::Failed(_))));
-        drop(pipe);
+use windows_service::service::{
+    ServiceAccess, ServiceAction, ServiceActionType, ServiceErrorControl, ServiceFailureActions, ServiceFailureResetPeriod,
+    ServiceInfo, ServiceStartType, ServiceState, ServiceType,
+};
+use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
-        // Several requests at once, as the app's ticks and the UI's polls make.
-        let threads: Vec<_> = (0..6)
-            .map(|_| std::thread::spawn(|| assert!(matches!(client::call(&Request::Status), Ok(Response::Status(_))))))
-            .collect();
-        for thread in threads {
-            thread.join().unwrap();
+use crate::state;
+use crate::watchdog::note;
+
+/// The service's name, exactly as it appears in the services list.
+pub const NAME: &str = "SiteBlocker";
+
+/// Who may do what with the service. SYSTEM: everything (it deletes itself on uninstall).
+/// Administrators and interactive users: query, enumerate, read the list and start, but not stop,
+/// pause, change, delete or rewrite it. Interactive users may start it because the app (which
+/// runs as one) starts it again when it is not running (`client::Remote::revive_service`);
+/// starting a running service does nothing, and a stopped one only goes back to blocking.
+/// Service accounts: query only.
+const SDDL: &str = "D:(A;;CCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCLCSWRPLOCRRC;;;BA)(A;;CCLCSWRPLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)";
+
+/// The service is started in safe mode too, when these keys exist.
+const SAFE_BOOT: [&str; 2] = [
+    r"HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Minimal\SiteBlocker",
+    r"HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Network\SiteBlocker",
+];
+
+/// `CREATE_NO_WINDOW`: the tools below are console programs, which would flash a window.
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+const ERROR_SERVICE_EXISTS: i32 = 1073;
+const ERROR_SERVICE_ALREADY_RUNNING: i32 = 1056;
+
+fn manager(access: ServiceManagerAccess) -> Result<ServiceManager, String> {
+    ServiceManager::local_computer(None::<&str>, access).map_err(|e| format!("cannot reach the service manager: {e}"))
+}
+
+fn is_os_error(error: &windows_service::Error, code: i32) -> bool {
+    matches!(error, windows_service::Error::Winapi(e) if e.raw_os_error() == Some(code))
+}
+
+/// Registers the service for `exe`, locks it down, and starts it. Needs an administrator. If
+/// the service is already there (an update), it is only started again: its settings stay, and
+/// could not be changed by an administrator anyway.
+pub fn install(exe: &Path) -> Result<(), String> {
+    let manager = manager(ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE)?;
+    let info = ServiceInfo {
+        name: NAME.into(),
+        display_name: "Site Blocker".into(),
+        service_type: ServiceType::OWN_PROCESS,
+        start_type: ServiceStartType::AutoStart,
+        error_control: ServiceErrorControl::Normal,
+        executable_path: exe.to_path_buf(),
+        launch_arguments: vec!["--service".into()],
+        dependencies: vec![],
+        // No account: LocalSystem.
+        account_name: None,
+        account_password: None,
+    };
+    let access = ServiceAccess::CHANGE_CONFIG | ServiceAccess::START | ServiceAccess::QUERY_STATUS;
+    let (service, created) = match manager.create_service(&info, access) {
+        Ok(service) => (service, true),
+        Err(e) if is_os_error(&e, ERROR_SERVICE_EXISTS) => {
+            let service = manager
+                .open_service(NAME, ServiceAccess::START | ServiceAccess::QUERY_STATUS)
+                .map_err(|e| format!("the service exists but cannot be opened: {e}"))?;
+            (service, false)
         }
-
-        // A client that connects and says nothing is cut off, and does not hold the service up.
-        let mut silent = crate::pipe::connect().unwrap();
-        assert!(matches!(client::call(&Request::Status), Ok(Response::Status(_))));
-        std::thread::sleep(Duration::from_secs(13));
-        // What it gets is a refusal, or a closed pipe; never an answer to a request it did not make.
-        assert!(matches!(proto::read_message::<Response>(&mut silent), Ok(Response::Failed(_)) | Err(_)));
-
-        // The password ends the block; then the installer may update, and the service says so.
-        let unlock = Request::Unlock { password: "test1234".into() };
-        assert_eq!(client::call(&unlock), Ok(Response::Done));
-        assert_eq!(client::call(&Request::PrepareUpdate), Ok(Response::Done));
-        assert!(matches!(quit.recv_timeout(Duration::from_secs(5)), Ok(Shutdown::Update)));
+        Err(e) => return Err(format!("cannot create the service: {e}")),
+    };
+    if created {
+        let describe = |what: &str, e: windows_service::Error| format!("{what}: {e}");
+        service
+            .set_description("Blocks distracting sites while a block is running. Started with Windows and restarted if it fails.")
+            .map_err(|e| describe("cannot set the description", e))?;
+        // Windows starts it again at once, every time it fails, however often.
+        service
+            .update_failure_actions(ServiceFailureActions {
+                reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(24 * 60 * 60)),
+                reboot_msg: None,
+                command: None,
+                actions: Some(
+                    (0..3).map(|_| ServiceAction { action_type: ServiceActionType::Restart, delay: Duration::ZERO }).collect(),
+                ),
+            })
+            .map_err(|e| describe("cannot set the failure actions", e))?;
+        // Also when it ends with a failure exit code instead of being killed.
+        service
+            .set_failure_actions_on_non_crash_failures(true)
+            .map_err(|e| describe("cannot set the failure flag", e))?;
+        // Last: after this, an administrator can no longer change the service. The handle held
+        // here keeps the rights it was opened with.
+        let output = Command::new("sc.exe")
+            .args(["sdset", NAME, SDDL])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|e| format!("cannot run sc.exe: {e}"))?;
+        if !output.status.success() {
+            return Err(format!("cannot lock the service down: {}", String::from_utf8_lossy(&output.stdout).trim()));
+        }
+        for key in SAFE_BOOT {
+            let output = Command::new("reg.exe")
+                .args(["add", key, "/ve", "/d", "Service", "/f"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
+                .map_err(|e| format!("cannot run reg.exe: {e}"))?;
+            if !output.status.success() {
+                return Err(format!("cannot add {key}: {}", String::from_utf8_lossy(&output.stderr).trim()));
+            }
+        }
     }
+    match service.start::<OsString>(&[]) {
+        Err(e) if !is_os_error(&e, ERROR_SERVICE_ALREADY_RUNNING) => Err(format!("cannot start the service: {e}")),
+        _ => Ok(()),
+    }
+}
+
+/// Whether the service is registered.
+pub fn exists() -> bool {
+    manager(ServiceManagerAccess::CONNECT).is_ok_and(|m| m.open_service(NAME, ServiceAccess::QUERY_STATUS).is_ok())
+}
+
+/// Starts the service, if it is registered and not running. Administrators and interactive users
+/// may. Says whether it was started just now (`false`: it was running already).
+pub fn start_registered() -> Result<bool, String> {
+    let service = manager(ServiceManagerAccess::CONNECT)?
+        .open_service(NAME, ServiceAccess::START)
+        .map_err(|e| format!("cannot open the service: {e}"))?;
+    match service.start::<OsString>(&[]) {
+        Ok(()) => Ok(true),
+        Err(e) if is_os_error(&e, ERROR_SERVICE_ALREADY_RUNNING) => Ok(false),
+        Err(e) => Err(format!("cannot start the service: {e}")),
+    }
+}
+
+/// Waits until the service has ended or is gone, so the installer can replace or delete the exe.
+pub fn wait_stopped(timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        let stopped = manager(ServiceManagerAccess::CONNECT)
+            .ok()
+            .and_then(|m| m.open_service(NAME, ServiceAccess::QUERY_STATUS).ok())
+            .is_none_or(|service| service.query_status().is_ok_and(|s| s.current_state == ServiceState::Stopped));
+        if stopped {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    false
+}
+
+/// Run by the service itself, as SYSTEM, on an uninstall: deletes the service, its safe-mode
+/// keys and everything it saved.
+pub fn remove() {
+    match manager(ServiceManagerAccess::CONNECT).and_then(|m| {
+        m.open_service(NAME, ServiceAccess::DELETE).map_err(|e| format!("cannot open the service: {e}"))
+    }) {
+        Ok(service) => {
+            if let Err(e) = service.delete() {
+                note("service", &format!("cannot delete the service: {e}"));
+            }
+        }
+        Err(e) => note("service", &e),
+    }
+    for key in SAFE_BOOT {
+        let _ = Command::new("reg.exe").args(["delete", key, "/f"]).creation_flags(CREATE_NO_WINDOW).output();
+    }
+    if let Some(dir) = state::dir() {
+        // The log is open on and off; whatever cannot go now goes with the folder's next removal.
+        let _ = fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
 
     #[test]
     fn the_access_lists_say_what_they_should() {
@@ -2605,6 +2977,7 @@ use windows_sys::Win32::System::Threading::{
 
 use crate::block::Blocklist;
 use crate::state;
+use crate::sync::{spawn_critical, LockExt};
 
 /// Cap, in seconds, on how long the app is left alone after failing to start, so a broken build
 /// cannot turn into a process being started over and over.
@@ -2702,7 +3075,7 @@ impl AppSlot {
 
     /// The service started this process itself.
     fn launched(&self, process: Process) {
-        *self.current.lock().unwrap() = Some(Adopted { process, since: Instant::now(), heard: None });
+        *self.current.locked() = Some(Adopted { process, since: Instant::now(), heard: None });
     }
 
     /// The app asks to be taken in when it starts. Refused if another app is running, or if it is
@@ -2711,7 +3084,7 @@ impl AppSlot {
         if !self.supervised {
             return Ok(());
         }
-        adopt(&mut self.current.lock().unwrap(), pid)
+        adopt(&mut self.current.locked(), pid)
     }
 
     /// The app asked for its policy, which it does every second from the thread that closes tabs.
@@ -2719,7 +3092,7 @@ impl AppSlot {
     pub fn heard(&self, pid: u32) {
         if self.supervised {
             // A refusal here is not an error: it only means this caller is not the app.
-            let _ = adopt(&mut self.current.lock().unwrap(), pid);
+            let _ = adopt(&mut self.current.locked(), pid);
         }
     }
 
@@ -2727,7 +3100,7 @@ impl AppSlot {
     /// one that has stopped asking. `resumed` is set when the machine seems to have slept, which
     /// is no fault of the app's. Returns whether there is no app now.
     pub fn supervise(&self, block_active: bool, resumed: bool) -> bool {
-        let mut current = self.current.lock().unwrap();
+        let mut current = self.current.locked();
         if let Some(app) = current.as_mut() {
             let now = Instant::now();
             if app.process.exited() {
@@ -2748,7 +3121,7 @@ impl AppSlot {
     /// A slot holding `process` as if taken in at `since` and last heard at `heard`.
     #[cfg(test)]
     fn set_for_test(&self, process: Process, since: Instant, heard: Option<Instant>) {
-        *self.current.lock().unwrap() = Some(Adopted { process, since, heard });
+        *self.current.locked() = Some(Adopted { process, since, heard });
     }
 }
 
@@ -2806,7 +3179,7 @@ fn session_of(pid: u32) -> u32 {
 
 /// The service's half: starts the app when it is wanted and not there, and looks after it.
 pub fn spawn_supervisor(blocklist: Blocklist, slot: Arc<AppSlot>) {
-    thread::spawn(move || {
+    spawn_critical("supervisor", move || {
         // How many starts in a row have not led to a running app, which slows the starting down.
         let mut missed = 0u32;
         let mut not_before = Instant::now();
@@ -2944,8 +3317,20 @@ pub fn note(who: &str, message: &str) {
     let Some(dir) = dir else { return };
     // The folder only exists once something has been written to it.
     let _ = fs::create_dir_all(&dir);
-    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(dir.join(file)) {
+    let path = dir.join(file);
+    start_over_if_big(&path, LOG_LIMIT);
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) {
         let _ = writeln!(file, "{} {who}: {message}", timestamp());
+    }
+}
+
+/// A log that grows past this is moved to `<name>.old`, replacing the one before, and started again:
+/// the last half megabyte or so of history is kept, and the files never take over the disk.
+const LOG_LIMIT: u64 = 512 * 1024;
+
+fn start_over_if_big(path: &std::path::Path, limit: u64) {
+    if fs::metadata(path).is_ok_and(|meta| meta.len() > limit) {
+        let _ = fs::rename(path, path.with_extension("log.old"));
     }
 }
 
@@ -2991,6 +3376,29 @@ pub fn wide(name: &str) -> Vec<u16> {
 mod tests {
     use super::*;
     use std::process::{Child, Command, Stdio};
+
+    #[test]
+    fn a_log_that_got_big_is_moved_aside_and_started_again() {
+        let dir = std::env::temp_dir().join(format!("watchdog-{}-log", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("service.log");
+
+        fs::write(&log, "x".repeat(100)).unwrap();
+        start_over_if_big(&log, 1000);
+        assert_eq!(fs::metadata(&log).unwrap().len(), 100, "a small log stays");
+
+        fs::write(&log, "x".repeat(2000)).unwrap();
+        start_over_if_big(&log, 1000);
+        assert!(!log.exists(), "the big one is moved aside");
+        assert_eq!(fs::metadata(dir.join("service.log.old")).unwrap().len(), 2000);
+
+        // The next big one replaces the old one rather than piling up.
+        fs::write(&log, "y".repeat(3000)).unwrap();
+        start_over_if_big(&log, 1000);
+        assert_eq!(fs::metadata(dir.join("service.log.old")).unwrap().len(), 3000);
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn names_are_null_terminated() {
@@ -3132,7 +3540,7 @@ use std::time::Duration;
 
 use crate::proto::{Request, Response};
 use crate::watchdog::note;
-use crate::{client, service};
+use crate::{client, registration};
 
 /// Exit codes the installer hooks act on.
 pub const OK: i32 = 0;
@@ -3142,9 +3550,9 @@ pub const REFUSED: i32 = 2;
 /// Registers the service and starts it. The service starts the app for whoever is logged on.
 pub fn install() -> i32 {
     let Ok(exe) = std::env::current_exe() else { return FAILED };
-    match service::install(&exe) {
+    match registration::install(&exe) {
         Ok(()) => {
-            note("install", &format!("registered the {} service for {}", service::NAME, exe.display()));
+            note("install", &format!("registered the {} service for {}", registration::NAME, exe.display()));
             OK
         }
         Err(e) => {
@@ -3166,13 +3574,13 @@ pub fn prepare_update() -> i32 {
 
 fn ask(what: &str, request: Request) -> i32 {
     // Nothing to ask: never installed, or already removed.
-    if !service::exists() {
+    if !registration::exists() {
         return OK;
     }
     let mut answer = client::call(&request);
     if answer.is_err() {
         // Not running (an update that did not finish, say). Administrators may start it.
-        let _ = service::start_registered();
+        let _ = registration::start_registered();
         for _ in 0..10 {
             thread::sleep(Duration::from_secs(1));
             answer = client::call(&request);
@@ -3184,7 +3592,7 @@ fn ask(what: &str, request: Request) -> i32 {
     match answer {
         Ok(Response::Done) => {
             // The exe is in use until the service has ended.
-            if service::wait_stopped(Duration::from_secs(30)) {
+            if registration::wait_stopped(Duration::from_secs(30)) {
                 OK
             } else {
                 note(what, "the service did not end in time");
@@ -3216,13 +3624,17 @@ mod block;
 mod client;
 mod clock;
 mod filters;
+mod handler;
 mod pipe;
 mod programs;
 mod proto;
+mod registration;
 mod service;
 mod setup;
 mod state;
+mod sync;
 mod tab_closer;
+mod ui;
 mod unlock;
 mod watchdog;
 
@@ -3232,7 +3644,7 @@ use proto::{Request, Response};
 use state::Enforcers;
 use tauri::{
     tray::{MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, State, WindowEvent,
+    AppHandle, RunEvent, State, WindowEvent,
 };
 
 /// Starts blocking with the given filter lines, allowed-site lines, program lines and enforcers, for `duration` (`5s`, `10m`, `3h`,
@@ -3317,12 +3729,13 @@ fn main() {
 
     tauri::Builder::default()
         .manage(remote)
-        .invoke_handler(tauri::generate_handler![start_block, stop_block, block_status, force_exit])
-        // The window's X hides to the tray; only the unlock password quits.
+        .manage(ui::Ui::new())
+        .invoke_handler(tauri::generate_handler![start_block, stop_block, block_status, force_exit, ui::window_ready])
+        // The window's X hides it (it is destroyed after a while, `ui.rs`); only the unlock password quits.
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                let _ = window.hide();
+                ui::dismiss(window);
             }
         })
         .setup(|app| {
@@ -3330,18 +3743,27 @@ fn main() {
                 .icon(app.default_window_icon().unwrap().clone())
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click { button_state: MouseButtonState::Up, .. } = event {
-                        if let Some(window) = tray.app_handle().get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
+                        ui::show_in_background(tray.app_handle().clone());
                     }
                 })
                 .build(app)?;
+            ui::spawn_reaper(app.handle().clone());
+            #[cfg(debug_assertions)]
+            ui::debug_aids(app.handle());
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            // With no window the app has nothing to show but must not end: an exit that nobody asked
+            // for (the last window going away) is refused, while the unlock password's is allowed.
+            if let RunEvent::ExitRequested { api, code, .. } = event {
+                if code.is_none() {
+                    api.prevent_exit();
+                }
+            }
+        });
 }
 ```
 
@@ -3467,6 +3889,24 @@ fn main() {
        duration.addEventListener("input", () => { error = ""; refresh(); });
        for (const c of checks) {
          c.addEventListener("change", () => {
+@@ -258,8 +290,15 @@
+         });
+       }
+ 
+-      refresh();
+-      setInterval(refresh, 1000);
++      // The window is made when it is asked for and shown once this page has drawn (`ui::window_ready`);
++      // its X only hides it. While it is hidden nothing is looked at, so nothing is asked of the service.
++      let visible = true;
++      window.__TAURI__.event.listen("visibility", (event) => {
++        visible = event.payload;
++        if (visible) refresh();
++      });
++      setInterval(() => { if (visible && !document.hidden) refresh(); }, 1000);
++      refresh().finally(() => invoke("window_ready"));
+     </script>
+   </body>
+ </html>
 ```
 
 `tauri.conf.json`: the installer must run as administrator and install into `C:\Program Files`, **not** a folder the user can write to. If the user could replace the exe the service runs from, they could run anything as SYSTEM, which would defeat the whole thing.
@@ -3474,16 +3914,27 @@ fn main() {
 ```diff
 --- a/src-tauri/tauri.conf.json
 +++ b/src-tauri/tauri.conf.json
-@@ -14,7 +14,7 @@
-         "label": "main",
-         "title": "Site Blocker",
-         "width": 340,
+@@ -9,18 +9,7 @@
+   },
+   "app": {
+     "withGlobalTauri": true,
+-    "windows": [
+-      {
+-        "label": "main",
+-        "title": "Site Blocker",
+-        "width": 340,
 -        "height": 560,
-+        "height": 850,
-         "visible": false,
-         "resizable": false,
-         "transparent": true,
-@@ -32,7 +32,7 @@
+-        "visible": false,
+-        "resizable": false,
+-        "transparent": true,
+-        "windowEffects": { "effects": ["mica"] }
+-      }
+-    ],
++    "windows": [],
+     "security": {
+       "csp": null
+     }
+@@ -32,7 +21,7 @@
      "shortDescription": "Blocks distracting sites in Chromium browsers and Obsidian",
      "windows": {
        "nsis": {
@@ -3777,13 +4228,205 @@ Under the block list there is a second, shorter list: sites that are **always al
 - **UI**: a textarea under the block list ("Always allowed"; all three lists are 5 lines tall), shown again for a running block, locked while a block runs.
 - Not covered by the allowed list: programs (`programs.rs` has its own list and its own protected list) and the Obsidian enforcer.
 
+### 6.6 Speed, weight and the window
+
+Measured on a release build of this branch (341 running programs, 2 browser windows):
+
+| | Before | After |
+|---|---|---|
+| Tab sweep, per second while a site block runs | 93 to 105 ms (up to 413 ms with 3 windows) | **4 to 10 ms** |
+| Process scans per second (Obsidian + programs) | 2 x 6 ms | 1 x 6 ms |
+| The app with its window closed, idle | 372 MB across 7 processes (6 WebView2) | **20 MB, 1 process** |
+| Opening the window after it was destroyed | n/a | about half a second |
+| Pipe round trip, the app's per-second request | 0.1 ms | 0.1 ms |
+| Password check (PBKDF2) | 68 ms | 68 ms |
+
+**The window** (`ui.rs`): the web view behind it is almost all of the app's memory, and the blocking never needs it. So the app starts in the tray **with no window** (`"windows": []` in `tauri.conf.json`). A click on the tray icon makes the window (from a thread of its own, because making a window inside the event handler that asked for it can deadlock); it is **shown once the page has drawn** (the page calls `window_ready`), so there is no blank window. The X only **hides** it (it reopens at once); after **5 minutes hidden** it is destroyed and the memory goes back. `RunEvent::ExitRequested` without an exit code is refused, so that the last window going away does not end the app, while the unlock password's `app.exit(0)` is allowed. The page learns of hiding and showing through a `visibility` event and stops polling the service while hidden.
+
+**Trying it**: debug builds have aids, `SITEBLOCKER_SHOW=1` (open the window at start), `SITEBLOCKER_REOPEN_AFTER_SECS=n` (open it again after n seconds, like another tray click) and `SITEBLOCKER_UI_TIMEOUT_SECS=n` (a shorter keep time). With the last two set to a few seconds you can watch the web view processes appear, disappear and come back in Task Manager. This was checked with the real app: no web view at start; window visible, hidden by the X with the web view kept, destroyed after the timeout, recreated and visible within two seconds.
+
+```rust
+//! The window: made when it is asked for, hidden (not closed) when it is dismissed so that it
+//! comes back at once, and destroyed once it has stayed hidden for a while.
+//!
+//! The web view behind the window costs about 300 MB and half a dozen extra processes, and the
+//! app is only looked at now and then; the blocking never needs the window. So the app starts in
+//! the tray with no window at all, and gives the memory back after a quiet spell. A window that is
+//! looked at in bursts (check, start a block, look again a minute later) reopens instantly; the
+//! first opening after a long pause takes about half a second.
+
+use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use tauri::window::{Effect, EffectsBuilder};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Window};
+
+use crate::sync::{spawn_critical, LockExt};
+use crate::watchdog::note;
+
+const LABEL: &str = "main";
+const WIDTH: f64 = 340.0;
+const HEIGHT: f64 = 850.0;
+
+/// How long a dismissed window is kept before it is destroyed.
+const KEEP_HIDDEN: Duration = Duration::from_secs(5 * 60);
+
+/// Whether, and since when, the window is hidden.
+pub struct Ui {
+    hidden_since: Mutex<Option<Instant>>,
+    keep_hidden: Duration,
+}
+
+impl Ui {
+    pub fn new() -> Ui {
+        // Debug builds can shorten the wait, to try the destroying and reopening.
+        #[cfg(debug_assertions)]
+        let keep_hidden = env_seconds("SITEBLOCKER_UI_TIMEOUT_SECS").unwrap_or(KEEP_HIDDEN);
+        #[cfg(not(debug_assertions))]
+        let keep_hidden = KEEP_HIDDEN;
+        Ui { hidden_since: Mutex::new(None), keep_hidden }
+    }
+
+    fn hidden(&self, now: Instant) {
+        *self.hidden_since.locked() = Some(now);
+    }
+
+    fn shown(&self) {
+        *self.hidden_since.locked() = None;
+    }
+
+    /// Whether the window has been hidden long enough to be destroyed.
+    fn expired(&self, now: Instant) -> bool {
+        self.hidden_since.locked().is_some_and(|since| now.saturating_duration_since(since) >= self.keep_hidden)
+    }
+}
+
+/// Opens the window: shows the one there is, or makes a new one. A new one is shown by the page
+/// itself, once it has drawn (`window_ready`), so there is no blank window in between.
+pub fn show(app: &AppHandle) {
+    match app.get_webview_window(LABEL) {
+        Some(window) => reveal(&app.state::<Ui>(), &window),
+        None => {
+            if let Err(e) = create(app) {
+                note("app", &format!("cannot open the window: {e}"));
+            }
+        }
+    }
+}
+
+/// `show`, from a thread of its own: making a window from inside the event handler that asked for
+/// it (a click on the tray icon) can deadlock.
+pub fn show_in_background(app: AppHandle) {
+    thread::spawn(move || show(&app));
+}
+
+fn create(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+    WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("index.html".into()))
+        .title("Site Blocker")
+        .inner_size(WIDTH, HEIGHT)
+        .resizable(false)
+        .transparent(true)
+        .effects(EffectsBuilder::new().effect(Effect::Mica).build())
+        .visible(false)
+        .build()
+}
+
+fn reveal(ui: &Ui, window: &WebviewWindow) {
+    ui.shown();
+    let _ = window.show();
+    let _ = window.set_focus();
+    // Tells the page to look at the service again (it stops while it is hidden).
+    let _ = window.emit("visibility", true);
+}
+
+/// Called by the page once it has drawn for the first time.
+#[tauri::command]
+pub fn window_ready(window: WebviewWindow, ui: State<Ui>) {
+    reveal(&ui, &window);
+}
+
+/// The window's X: hides it, and starts the clock after which it is destroyed.
+pub fn dismiss(window: &Window) {
+    let _ = window.hide();
+    let _ = window.emit("visibility", false);
+    window.app_handle().state::<Ui>().hidden(Instant::now());
+}
+
+/// Destroys the window once it has been hidden long enough.
+pub fn spawn_reaper(app: AppHandle) {
+    let ui = app.state::<Ui>();
+    let every = (ui.keep_hidden / 4).clamp(Duration::from_secs(1), Duration::from_secs(10));
+    spawn_critical("window reaper", move || loop {
+        thread::sleep(every);
+        let ui = app.state::<Ui>();
+        if ui.expired(Instant::now()) {
+            if let Some(window) = app.get_webview_window(LABEL) {
+                let _ = window.destroy();
+            }
+            ui.shown();
+        }
+    });
+}
+
+#[cfg(debug_assertions)]
+fn env_seconds(name: &str) -> Option<Duration> {
+    std::env::var(name).ok()?.parse().ok().map(Duration::from_secs)
+}
+
+/// Development aids, debug builds only. `SITEBLOCKER_SHOW=1` opens the window at start (otherwise
+/// click the tray icon), `SITEBLOCKER_REOPEN_AFTER_SECS=n` opens it again n seconds later, as another
+/// click on the tray icon would, and `SITEBLOCKER_UI_TIMEOUT_SECS=n` shortens how long a hidden
+/// window is kept.
+#[cfg(debug_assertions)]
+pub fn debug_aids(app: &AppHandle) {
+    if std::env::var_os("SITEBLOCKER_SHOW").is_some() {
+        show_in_background(app.clone());
+    }
+    if let Some(after) = env_seconds("SITEBLOCKER_REOPEN_AFTER_SECS") {
+        let app = app.clone();
+        thread::spawn(move || {
+            thread::sleep(after);
+            show(&app);
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_hidden_window_is_destroyed_only_after_its_time() {
+        let ui = Ui { hidden_since: Mutex::new(None), keep_hidden: Duration::from_secs(300) };
+        let start = Instant::now();
+        // Never hidden (or shown): nothing to destroy.
+        assert!(!ui.expired(start + Duration::from_secs(1000)));
+
+        ui.hidden(start);
+        assert!(!ui.expired(start + Duration::from_secs(299)), "reopening within the time is instant");
+        assert!(ui.expired(start + Duration::from_secs(300)));
+        assert!(ui.expired(start + Duration::from_secs(3000)));
+
+        // Opened again: the clock is gone, and starts over the next time it is dismissed.
+        ui.shown();
+        assert!(!ui.expired(start + Duration::from_secs(3000)));
+        ui.hidden(start + Duration::from_secs(3000));
+        assert!(!ui.expired(start + Duration::from_secs(3100)));
+        assert!(ui.expired(start + Duration::from_secs(3300)));
+    }
+}
+```
+
 ## 7. Update `CLAUDE.md`
 
 The project notes describe the old design and are used by every future session, so update them in the same change. Replace these parts (wording is a suggestion; keep the style of the file):
 
 **File list**: remove `task.rs`; add:
 
-- `src-tauri/src/service.rs` – the SYSTEM service: owns the block, answers the app over the pipe, installs / removes itself
+- `src-tauri/src/service.rs` - the running SYSTEM service (service manager, start-up, data folder); `handler.rs` - what it does with each request (same code over the pipe and, in debug builds, inside the app); `registration.rs` - installing, locking down and removing it
+- `src-tauri/src/sync.rs` - `locked()` (locks that survive a crash) and `spawn_critical` (a crash in a long-lived thread ends the process, so Windows restarts it)
+- `src-tauri/src/ui.rs` - the window: made on demand, hidden by the X, destroyed after 5 minutes hidden (the web view is almost all of the memory)
 - `src-tauri/src/filters.rs` – site lists: plain address prefixes plus `*`, used for the block list and for the allowed list (which wins over it); only web pages are ever matched, never the browser's own pages
 - `src-tauri/src/programs.rs` – the programs to close: exe names with `*`, a protected list that is never closed
 - `src-tauri/src/pipe.rs`, `proto.rs`, `client.rs` – the named pipe `\\.\pipe\SiteBlocker`: server, messages, and the app's side (keeps the last policy in memory)
@@ -3815,6 +4458,7 @@ The project notes describe the old design and are used by every future session, 
 - The block is kept in `%LOCALAPPDATA%\SiteBlocker-dev`, apart from a real install's files. A timed block is therefore still there the next time you start the app; delete that folder to forget it.
 - **Release builds do not contain any of this.** It is compiled in only with `debug_assertions` (`service::embedded`, `Remote::local`), and `cargo check --release` is warning-free. Keep it that way: never make a release build able to be its own service.
 - Unlocking quits the app, which ends `tauri dev`, as before.
+- **There is no window until you click the tray icon** (or set `SITEBLOCKER_SHOW=1`, section 6.6). The page itself is baked in at build time: a change to `src/index.html` alone does not relaunch `tauri dev`; touch `src-tauri/src/main.rs` to force it.
 
 To talk to a real, installed service from a debug build (in a virtual machine), set `SITEBLOCKER_USE_SERVICE=1` before `npm run dev`. The app then uses the pipe like a release build does, including the session-0 check on who serves it. There is no separate "console service" to run: the pipe itself is covered by the ignored test `the_pipe_answers_like_the_app_expects` (`cargo test -- --ignored the_pipe`, with no service installed), which serves from the test's own process and is the only place the session-0 check can be skipped (`cfg!(test)` in `pipe::verify_server`).
 
@@ -3855,6 +4499,7 @@ rmdir /s /q "%ProgramData%\SiteBlocker"
 - **Who restarts the service**: Windows (failure actions, at once) after a crash or kill, and the app (start only, every 5 s) if the service is not running. A service that ended with exit code 0 (an update or uninstall request) is not restarted by Windows; the app or the installer starts it again. While it is down the app keeps enforcing the last policy it got (in memory), but an app that is restarted meanwhile has none.
 - **The access list is set once, when the service is created.** An update only starts the existing service, and administrators cannot change the list, so an install made before the interactive-users start right keeps the old list. Uninstall and install again (in the VM) to pick it up.
 - **The service restarts the app while any block runs, timed or not**, and once after each logon. With no block it leaves the app alone, so quitting it with the unlock password sticks until the next logon.
+- **Browser updates can break the tab closing.** It relies on UI Automation details of the browsers: the window class `Chrome_WidgetWin_1`, the address bar class `OmniboxViewViews`, the page container `MultiContentsView`, and the tab classes (`Tab` in Chrome and Brave, `EdgeTab` in Edge). Edge's tab class was found to differ only by testing with a real window. After a major browser update, run the manual check (`a_real_browser_tab_is_closed`, section 9.2).
 - **Offline time** works as before (`clock.rs`), but now the clock lives in the service.
 - **Code signing.** The service runs the exe with SYSTEM rights, so a signed build is worth having; unsigned, SmartScreen and antivirus tools may complain at install. Not part of this change.
 
@@ -3864,7 +4509,7 @@ rmdir /s /q "%ProgramData%\SiteBlocker"
 
 ```powershell
 cd src-tauri
-cargo test                               # 64 tests: block, clock, filters, programs, state, unlock, proto, client, service, watchdog, tab_closer
+cargo test                               # 67 tests: block, clock, filters, programs, state, unlock, proto, client, service, watchdog, tab_closer
 cargo test -- --ignored the_pipe --nocapture   # starts the real pipe server in the test process, ~15 s; no service may be running
 ```
 
@@ -3909,6 +4554,10 @@ Build with `npm run build` (installer in `src-tauri\target\release\bundle\nsis\`
 | 30 | Block list `youtube.com`, allowed `youtube.com/watch*` | the YouTube front page and shorts close, a watch page stays |
 | 31 | Allowed list filled, block list empty, only the tab options ticked | refused (nothing to make exceptions to) |
 | 32 | Open a Google redirect page (a result link that goes through `google.com/url?q=https://...`) with a block entry for the target site | the redirect page itself is not closed because of the target in its query |
+| 33 | Open an Edge window on a blocked site (block entry `example.com`, `msedge --new-window https://example.com`) | the tab is closed within a second or two (this was broken before: Edge's tabs are `EdgeTab`). Chrome and Brave too |
+| 34 | Start the app and look at Task Manager > Details | only `SiteBlocker.exe`, about 20 MB, and no `msedgewebview2.exe` of its own; click the tray icon: the window opens in about half a second and the web view processes appear |
+| 35 | Close the window with the X, wait 5 minutes | the `msedgewebview2.exe` processes are gone; clicking the tray icon makes the window again; closing and reopening within 5 minutes is instant |
+| 36 | During a site block, watch `SiteBlocker.exe` CPU in Task Manager | a few percent of one core at most (it was about 10% with two browser windows) |
 
 If test 1 fails: read `%ProgramData%\SiteBlocker\service.log` (administrators can read it) and the installer's error message; `%LOCALAPPDATA%\SiteBlocker\app.log` has the `--install` output.
 
@@ -3916,7 +4565,7 @@ If test 1 fails: read `%ProgramData%\SiteBlocker\service.log` (administrators ca
 
 If you get stuck or unsure, these are the places to ask for a review before merging, in this order:
 
-1. `service::install`: the SDDL and the failure actions. A wrong SDDL can lock out the installer itself.
+1. `registration::install`: the SDDL and the failure actions. A wrong SDDL can lock out the installer itself.
 2. `watchdog::launch_app`: it hands out the user's token. It must never start the app as SYSTEM.
 3. `pipe.rs`: the access list and the checks. A hole here lets a standard user talk to a SYSTEM process.
 4. The installer hooks: this was the one part checked only by reading the generated script, not by running it.

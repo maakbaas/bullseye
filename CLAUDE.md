@@ -1,80 +1,55 @@
 # Site Blocker (Tauri tray app, Windows only)
 
-Blocks sites listed in the UI: closes matching Chromium-browser tabs and closes Obsidian when it shows web content.
+Blocks sites listed in the UI (closes matching Chromium-browser tabs), closes programs by exe name, and closes Obsidian when it shows web content. The block is held by a **SYSTEM Windows service**; the tray app does the closing. `detailed-instructions.md` is the long design guide with the reasoning, measurements and a test table; this file is the short version.
 
-- `src/index.html` – the whole frontend (no bundler), Fluent styling, Mica via `tauri.conf.json`
-- `src-tauri/src/main.rs` – tray (every start is hidden in the tray; click opens the window), X hides to tray, `start_block` / `stop_block` / `block_status` / `force_exit` commands, and the two entry modes
-- `src-tauri/src/block.rs` – the running block; timed blocks (`5s`/`10m`/`3h`/`1d`) are enforced here, not in the UI
+- `src/index.html` – the whole frontend (no bundler), Fluent styling, Mica; three lists (block list, always-allowed sites, programs) of 5 lines each, no page scroll
+- `src-tauri/src/main.rs` – entry modes (`--service`, `--install`, `--uninstall`, `--prepare-update`, otherwise the app), tray, and the `start_block` / `stop_block` / `block_status` / `force_exit` commands, which only forward to the service
+- `src-tauri/src/ui.rs` – the window: none at startup, made on a tray click (shown once the page has drawn), its X only hides it, destroyed after 5 minutes hidden (the web view is almost all of the app's memory)
+- `src-tauri/src/service.rs` – the running SYSTEM service (service manager, start-up, data folder lock-down); `handler.rs` – what it does with each request (the same code over the pipe and, in debug builds, inside the app); `registration.rs` – installing, locking down (SDDL), starting and removing it
+- `src-tauri/src/pipe.rs`, `proto.rs`, `client.rs` – the named pipe `\\.\pipe\SiteBlocker`: server, messages, and the app's side (keeps the last policy in memory; `Remote::local` is the in-process variant)
+- `src-tauri/src/block.rs` – the running block (lists, end time, enforcers); timed blocks (`5s`/`10m`/`3h`/`1d`) are enforced here, never in the UI
 - `src-tauri/src/clock.rs` – internet time (SNTP) that timed blocks are measured against, so moving the Windows clock does nothing
 - `src-tauri/src/unlock.rs` – the unlock password, kept only as a salted PBKDF2-SHA256 hash
-- `src-tauri/src/filters.rs` – blocked-site entries: plain address prefixes plus `*` (user rejected full uBlock syntax as too complex)
-- `src-tauri/src/tab_closer.rs` – 1-second worker thread doing the blocking, as three enforcers (`state::Enforcers`, checkboxes in the UI, fixed while a block runs): with the block list, Chromium tabs and Chromium split view (a window showing two pages); without it, Obsidian's web viewer
-- `src-tauri/src/state.rs` – the block on disk (`%LOCALAPPDATA%\SiteBlocker\state.json`), so it survives a restart
-- `src-tauri/src/watchdog.rs` – the launcher process and the app/launcher pair
-- `src-tauri/src/task.rs` – the `SiteBlocker` scheduled task that runs the entry point at logon
-- `src-tauri/src/setup.rs` + `src-tauri/windows/hooks.nsh` – `--install` / `--uninstall`, run by the NSIS installer
+- `src-tauri/src/filters.rs` – site lists: plain address prefixes plus `*` (user rejected full uBlock syntax as too complex). Used for the block list and the always-allowed list, which **wins**. Only web pages are matched, never the browser's own pages, so a lone `*` blocks every site and leaves the browser usable
+- `src-tauri/src/programs.rs` – programs to close: exe names with `*`, `.exe` added when missing, and a protected list (Windows' own, this app, WebView2) that is never closed and refuses entries that would match it
+- `src-tauri/src/tab_closer.rs` – 1-second worker in the app doing the closing, as enforcers (`state::Enforcers`, checkboxes in the UI, fixed while a block runs): with the site list, Chromium tabs and split view; with the program list, programs (asked to close, ended after 3 s); without a list, Obsidian's web viewer
+- `src-tauri/src/state.rs` – the block on disk (`%ProgramData%\SiteBlocker\state.json`, SYSTEM-owned) and the `Enforcers` table (one place to add an enforcer)
+- `src-tauri/src/watchdog.rs` – the service's watch over the app (`AppSlot`) and the log writer
+- `src-tauri/src/sync.rs` – `locked()` (locks that survive a crash) and `spawn_critical` (a crash in a long-lived thread ends the process, so Windows restarts it)
+- `src-tauri/src/setup.rs` + `src-tauri/windows/hooks.nsh` – `--install` / `--uninstall` / `--prepare-update`, run by the NSIS installer
 
-## Surviving a restart, a kill, and a reboot
+## How the pieces keep each other alive
 
-One command does everything: `SiteBlocker.exe --launch` (`tray-app.exe` in dev builds). It starts the app, then watches over it
-and starts it again within ~0.5 s of it ending for as long as a timed block is saved on disk.
-The app in turn starts a new launcher within ~1 s whenever none is running during a timed
-block, and the login task runs `--launch` at every logon, so the pair comes back after a reboot.
+The `SiteBlocker` service runs as SYSTEM, starts at boot, and holds the block, internet time and the unlock hash. The tray app (user session) asks it every second what to enforce, does the closing, and keeps no state; it keeps enforcing the last answer if the service is briefly unreachable.
 
-- End the app in Task Manager during a timed block: the launcher brings it back and the block
-  continues.
-- End the launcher: the app brings it back. (The task's *restart on failure* does not help
-  here: it only covers the task failing to start, not exit codes.)
-- End both, then log off and on: the login task starts the pair again.
-- Restart Windows mid-block: the block is read back from `state.json` and resumes, with the time
-  it had left.
+- The service does not accept a stop request, and its access list (`registration.rs`) gives only SYSTEM stop / change / delete. If it fails by itself, Windows restarts it at once (failure actions).
+- The service starts the app at every logon and, **while any block runs**, starts it again within ~1 s of it ending. Which process is "the app" is the service's decision: the one it launched, or the installed exe in the console session that registered; never a matter of the process name. An app that has not asked for its policy for 5 s (20 s after starting) during a block is ended and started again, which covers a suspended app. After a sleep the app gets a fresh start instead.
+- If the service is not running, the app asks Windows to start it (interactive users may *start* it, nothing more).
+- Reboot mid-block: the service reads `state.json` back and resumes with the time left.
 
-Roles are held through named mutexes (`Local\SiteBlocker-app`, `Local\SiteBlocker-launcher`), so
-a second copy exits instead of doubling up.
-
-**"Unlock"** in the UI (`force_exit`, inline password field + button at the bottom of the window; password `test1234`, stored only as a hash in `unlock.rs`, which says how to change it)
-disables the login task, clears the saved block and ends every process, so nothing restarts by
-itself. It disables the task rather than deleting it: starting the exe again (plain, or
-`--launch`) re-enables it as the app starts (`watchdog::restore_task`), so everything is back to
-how it was before. The task is registered without elevation, so the app can always do this.
+**"Unlock"** in the UI (`force_exit`, password `test1234`, stored only as a hash in `unlock.rs`, which says how to change it) is checked by the service, rate-limited after 3 wrong guesses. It clears the block and the app quits; the service keeps running idle and starts the app again at the next logon. It is the only way to end a timed block early.
 
 ### Deliberately not hidden
 
-Per the user's decision: nothing here is obscured or anti-tamper. The task is named
-`SiteBlocker` and appears in Task Scheduler; both processes run under the app's own name in
-Task Manager; the app is listed under Settings > Apps and uninstalls from there;
-`%LOCALAPPDATA%\SiteBlocker\launcher.log` records what the launcher did. The mechanism is
-friction, not secrecy.
+Per the user's decision: nothing here is obscured. The service is named `SiteBlocker` in the services list, the app runs under its own name in Task Manager, it is listed under Settings > Apps, and `%ProgramData%\SiteBlocker\service.log` (administrators can read it) and `%LOCALAPPDATA%\SiteBlocker\app.log` say what happened. The mechanism is friction, not secrecy.
 
-**The honest ceiling** (do not claim otherwise in the UI): an administrator can kill both
-processes at once, delete `state.json`, disable or delete the task, or boot into safe mode.
-The deadline is in NTP time; offline, time only advances while the app runs (from `seen` in
-`state.json`), so time with the PC off counts once internet time is back. Spoofing NTP (hosts
-file, firewall redirect) needs admin. The password hash is in the binary, so a short password can
-be brute-forced offline.
+**The honest ceiling** (do not claim otherwise in the UI): an administrator who knows how can run a shell as SYSTEM (for example PsExec `-s`), take ownership of the service object or its data folder and rewrite them, delete the service from the Windows recovery environment, or edit the registry offline. The app is a process of the user it protects against, so someone who can inject code into it can keep it asking for its policy while it enforces nothing. The deadline is in NTP time; offline, time only advances while the service runs (from `seen` in `state.json`). Spoofing NTP needs admin. The password hash is in the binary, so a short password can be brute-forced offline. What changed from the old per-user design is the effort: "End task" no longer works.
 
 ### Install / remove
 
-`npm run build` makes a per-user NSIS installer (`src-tauri\target\release\bundle\nsis\`), no
-admin needed; the MSI target is off, since it always installs machine-wide. The installer's hooks
-(`windows/hooks.nsh`) run the app with `--install` (register the task for this user,
-`LeastPrivilege`, from XML via `schtasks /Create /XML`, then start the pair) and `--uninstall`
-(remove the task, the saved block, `%LOCALAPPDATA%\SiteBlocker` and the processes). Per the
-user's decision, uninstall is **refused during a timed block** (exit code 2, judged by internet
-time), so it is not a way around the block. Updates (`/UPDATE`) skip the uninstall hook.
+`npm run build` makes a **per-machine** NSIS installer (`src-tauri\target\release\bundle\nsis\`), which needs admin and installs to `C:\Program Files\Site Blocker` (never a user-writable folder: the exe runs as SYSTEM). The hooks (`windows/hooks.nsh`) run the app with `--prepare-update` (before replacing files; refused during any block), `--install` (create the service, lock it down, safe-mode keys, start it) and `--uninstall` (the service removes itself, its data and the app). Uninstall is **refused during a timed block** (exit code 2, internet time). If a service is registered but does not answer, the uninstall also stops (exit code 1, nothing removed); with no service registered it carries on. The installer cannot stop the service itself, so it asks over the pipe. `.github/workflows/build.yml` builds the installer as an artifact for every push.
 
-Mutex check: the app holds its mutex on its own thread, so another process's zero-timeout wait
-*times out* while the app runs (`watchdog::is_held`). A test that claims and checks on the same
-thread proves nothing, since a thread may take a mutex it already owns.
+Recovery when your own test locks you out (commands in `detailed-instructions.md`, section 8.2): test installs in a VM; a SYSTEM shell can `sc delete SiteBlocker` and end the process.
 
 ## Dev workflow
 
-- The window starts hidden (`visible: false`); click the tray icon to see it, also in dev.
+- `npm run dev` needs no service: in a debug build the app runs the service's logic inside itself (`service::embedded`), with its files in `%LOCALAPPDATA%\SiteBlocker-dev`. Kill it at will. `SITEBLOCKER_USE_SERVICE=1` talks to a real installed service instead. Release builds contain none of this (`debug_assertions`); `cargo check --release` must stay warning-free.
+- There is **no window until you click the tray icon**. Debug aids: `SITEBLOCKER_SHOW=1` (open at start), `SITEBLOCKER_REOPEN_AFTER_SECS=n`, `SITEBLOCKER_UI_TIMEOUT_SECS=n` (shorter keep time).
 - Run `npm run dev` as a background task; it rebuilds and relaunches on changes in `src-tauri/`. Changes in `src/` are not picked up automatically – `touch src-tauri/src/main.rs` to force a relaunch.
 - Unlocking with the password quits the app, which also ends `tauri dev`; restart it afterwards.
 - Dev log lines contain ANSI colour codes (`Running\e[0m \`target\...`), so patterns like `'Running \`'` never match. Wait for a relaunch by matching `tray-app.exe`, and check the real log text before writing any wait loop.
-- Edit JS/HTML containing escapes (`\n`, regexes) with the Write/Edit tools, not heredocs or Python string replacement – escapes got mangled into literal newlines twice. Syntax-check the page script with `node --check` after edits.
-- `cargo test` (in `src-tauri/`) covers URL matching.
+- Edit JS/HTML containing escapes (`\n`, regexes) with the Write/Edit tools, not heredocs or Python string replacement – escapes got mangled into literal newlines several times. Syntax-check the page script with `node --check` after edits.
+- `cargo test` (in `src-tauri/`) runs 67 tests. Ignored on purpose: the network clock, printing a new unlock hash, `the_pipe_answers_like_the_app_expects` (`-- --ignored the_pipe`; no service may be installed, it takes the pipe name) and `a_real_browser_tab_is_closed` (needs a Chromium browser window open on example.com). Also run `cargo clippy --all-targets` (clean) and `cargo check --release`.
 
 ## User constraints
 
@@ -82,9 +57,13 @@ thread proves nothing, since a thread may take a mutex it already owns.
 - No browser extensions, no Obsidian plugins, no launch flags for Chrome/Obsidian; everything must live in the Tauri app.
 - Never switch tabs visibly to inspect them.
 - Reading browser profile data (Chrome `Sessions/`) and enabling Obsidian's Node inspector (`process._debugProcess`) were blocked by the permission classifier; don't retry without the user's explicit OK.
+- Never push to a remote unless asked in that message.
 
 ## Findings (don't re-investigate)
 
-- Chromium browsers via UI Automation: every tab's title and Close button are visible, but only the visible pages' URLs. Each visible page's root `Document` has its URL as Value; documents are grandchildren of the `MultiContentsView` pane (two of them in split view, where the address bar only shows one). Split-view tabs are both selected and named "<title> - Left view" / "- Right view". The address bar (class `OmniboxViewViews`) is the fallback. Background tabs have no URL anywhere in UIA. Tabs are class `Tab`; windows are class `Chrome_WidgetWin_1` (shared with Electron apps, which have no omnibox).
+- Chromium browsers via UI Automation: every tab's title and Close button are visible, but only the visible pages' URLs. Each visible page's root `Document` has its URL as Value; documents are grandchildren of the `MultiContentsView` pane (two of them in split view, where the address bar only shows one). Split-view tabs are both selected and named "<title> - Left view" / "- Right view". The address bar (class `OmniboxViewViews`) is the fallback. Background tabs have no URL anywhere in UIA. **Tabs are class `Tab` in Chrome/Brave and `EdgeTab` in Edge** (Edge was silently never closing tabs before this was found); windows are class `Chrome_WidgetWin_1` (shared with Electron apps, which have no omnibox).
+- **Never search for browser windows with a UI Automation `find_all` on the root element**: it cost 92 ms per pass. A plain `EnumWindows` + class name costs 0.3 ms; then use UI Automation only on the windows found. Creating UI Automation conditions is free, so caching them gains nothing.
+- A standard user cannot open a SYSTEM process, not even with `PROCESS_QUERY_LIMITED_INFORMATION`, so the app cannot check who serves the pipe by looking at the process; it asks the pipe for the server's session instead (session 0 = a service). `WTSQueryUserToken` from the service gives the user's limited token, which is what the app should run with.
+- A WebView2 app's browser process is shared by every instance using the same user-data folder, so measuring a new instance's processes needs `WEBVIEW2_USER_DATA_FOLDER` set to a fresh folder.
 - Obsidian (Electron) exposes no accessibility tree: UIA, MSAA, Chromium's screen-reader honeypot and `SPI_SETSCREENREADER` all failed. Its window title is stale (shows the web viewer's first page).
 - Obsidian web viewer content runs in renderers with `--type=renderer --enable-sandbox`; its own UI renderer has `--no-sandbox`. Killing the sandboxed renderer greys the view, but Obsidian then quits cleanly on the next navigation – so the app closes Obsidian via UIA WindowPattern instead.
