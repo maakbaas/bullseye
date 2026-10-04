@@ -267,9 +267,10 @@ fn start(blocklist: &Blocklist, filters: Vec<String>, duration: &str, enforcers:
     if !enforcers.any() {
         return Err("Choose at least one enforcer".into());
     }
-    // Only the enforcers that go by the list need one; Obsidian's does not.
-    if filters.is_empty() && enforcers.use_block_list() {
-        return Err("Enter at least one site to block".into());
+    // An enforcer that goes by the list has nothing to do with an empty one, while the others
+    // (Obsidian's) do not need it. What matters is that something can run.
+    if !enforcers.can_run(!filters.is_empty()) {
+        return Err("Enter at least one site to block, or turn on an enforcer that does not use the list".into());
     }
     blocklist.start(filters, duration, enforcers)
 }
@@ -457,9 +458,11 @@ mod tests {
     #[test]
     fn requests_are_checked_again_by_the_service() {
         let context = context("checked");
-        // Nothing to block, nothing chosen, a bad duration, and an address that cannot match.
+        // An empty list with only enforcers that go by it, nothing chosen, a bad duration, and an
+        // address that cannot match.
+        let only_the_list = Enforcers { chromium_tabs: true, chromium_split_view: true, obsidian_web_viewer: false };
         let bad = [
-            Request::Start { filters: vec![], duration: "1h".into(), enforcers: Enforcers::default() },
+            Request::Start { filters: vec![], duration: "1h".into(), enforcers: only_the_list },
             Request::Start {
                 filters: vec!["a.com".into()],
                 duration: "1h".into(),
@@ -472,6 +475,22 @@ mod tests {
             assert!(matches!(handle(&context, request).0, Response::Failed(_)));
         }
         assert!(context.blocklist.filters().is_none());
+    }
+
+    #[test]
+    fn an_empty_list_starts_a_block_when_an_enforcer_without_the_list_is_on() {
+        let first = context("empty-list");
+        let obsidian_only = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: true };
+        let request = |enforcers| Request::Start { filters: vec![], duration: "1h".into(), enforcers };
+        assert_eq!(handle(&first, request(obsidian_only)).0, Response::Done);
+        // The block keeps what it was started with: no entries, and Obsidian's enforcer only.
+        let Response::Policy(Some(policy)) = handle(&first, Request::Policy).0 else { panic!("no policy") };
+        assert!(policy.filters.is_empty());
+        assert_eq!(policy.enforcers, obsidian_only);
+
+        // With all enforcers on (the default), an empty list is fine too: Obsidian's can run.
+        let other = context("empty-list-default");
+        assert_eq!(handle(&other, request(Enforcers::default())).0, Response::Done);
     }
 
     #[test]

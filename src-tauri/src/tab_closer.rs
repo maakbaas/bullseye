@@ -36,7 +36,8 @@ pub fn spawn(remote: Remote) {
         loop {
             let start = Instant::now();
             if let Some((filters, enforcers)) = remote.active() {
-                if enforcers.use_block_list() {
+                // With no entries there is nothing for these to match, so skip the UI Automation work.
+                if enforcers.use_block_list() && !filters.is_empty() {
                     if let Err(e) = closer.tick(&filters, enforcers) {
                         eprintln!("tab_closer: {e}");
                     }

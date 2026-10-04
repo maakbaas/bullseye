@@ -44,13 +44,31 @@ pub struct Enforcers {
 }
 
 impl Enforcers {
-    /// Whether any enforcer goes by the block list, which then needs at least one entry.
-    pub fn use_block_list(&self) -> bool {
-        self.chromium_tabs || self.chromium_split_view
+    /// Every enforcer as (turned on, goes by the block list). **The one place to list a new
+    /// enforcer**: add its field above and a line here; what may start and what runs follow from it.
+    fn all(&self) -> [(bool, bool); 3] {
+        [
+            (self.chromium_tabs, true),
+            (self.chromium_split_view, true),
+            (self.obsidian_web_viewer, false),
+        ]
     }
 
+    /// Whether any enforcer is turned on.
     pub fn any(&self) -> bool {
-        self.use_block_list() || self.obsidian_web_viewer
+        self.all().iter().any(|&(on, _)| on)
+    }
+
+    /// Whether any enforcer that is turned on goes by the block list.
+    pub fn use_block_list(&self) -> bool {
+        self.all().iter().any(|&(on, uses_list)| on && uses_list)
+    }
+
+    /// Whether a block with these enforcers has anything to do, given whether the block list has
+    /// an entry: an enforcer that goes by the list has nothing to do with an empty one, the others
+    /// do not need it. A block that cannot do anything is not worth starting.
+    pub fn can_run(&self, has_entries: bool) -> bool {
+        self.all().iter().any(|&(on, uses_list)| on && (!uses_list || has_entries))
     }
 }
 
@@ -234,6 +252,27 @@ mod tests {
         fs::write(store.path(), r#"{"filters":["a.com"],"until":1800000000}"#).unwrap();
         assert_eq!(store.load(), Some(Saved { filters: vec!["a.com".into()], until: Some(1_800_000_000), seen: None, enforcers: Enforcers::default() }));
         store.clear();
+    }
+
+    #[test]
+    fn what_can_run_depends_on_the_enforcers_and_the_list() {
+        let only = |tabs, split, obsidian| Enforcers { chromium_tabs: tabs, chromium_split_view: split, obsidian_web_viewer: obsidian };
+        // With entries, any enforcer that is on can run.
+        assert!(only(true, false, false).can_run(true));
+        assert!(only(false, true, false).can_run(true));
+        assert!(only(false, false, true).can_run(true));
+        // Without, only one that does not go by the list can: Obsidian, also next to ones that do.
+        assert!(only(false, false, true).can_run(false));
+        assert!(only(true, true, true).can_run(false));
+        assert!(Enforcers::default().can_run(false));
+        // Not the ones that go by the list alone, and not nothing at all.
+        assert!(!only(true, false, false).can_run(false));
+        assert!(!only(true, true, false).can_run(false));
+        assert!(!only(false, false, false).can_run(true));
+        assert!(!only(false, false, false).can_run(false));
+        // The checks the tab closer and the start use agree with it.
+        assert!(only(true, false, false).use_block_list() && !only(false, false, true).use_block_list());
+        assert!(only(false, false, true).any() && !only(false, false, false).any());
     }
 
     #[test]

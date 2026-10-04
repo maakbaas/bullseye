@@ -1,6 +1,6 @@
 # Moving the watchdog to a SYSTEM service: implementation guide for this repo
 
-This guide is for implementing the SYSTEM-service design in *this* repo (`blocker`, Tauri tray app, Windows only). It is written against the actual code in `src-tauri/src/`. All the Rust below was compiled and the unit tests run in a scratch copy of the repo (`cargo check --tests`, no warnings; `cargo test`: 38 passed). One extra integration test (`the_pipe_answers_like_the_app_expects`, run with `--ignored`) started the real pipe server and talked to it like the app does: it passed. Section 9 lists what could **not** be tested without installing a real service, so you must test those parts yourself.
+This guide is for implementing the SYSTEM-service design in *this* repo (`blocker`, Tauri tray app, Windows only). It is written against the actual code in `src-tauri/src/`. All the Rust below was compiled and the unit tests run in a scratch copy of the repo (`cargo check --tests`, no warnings; `cargo test`: 40 passed). One extra integration test (`the_pipe_answers_like_the_app_expects`, run with `--ignored`) started the real pipe server and talked to it like the app does: it passed. Section 9 lists what could **not** be tested without installing a real service, so you must test those parts yourself.
 
 **Read sections 1 and 8 before you touch any code.** Section 8 is about how to get out if your own test setup locks you in.
 
@@ -677,6 +677,8 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
 
 ### 5.2 `state.rs`
 
+`Enforcers` also gets `can_run(has_entries)`: a block may start when at least one enforcer that is turned on can do something, which means it does not go by the block list, or the list has an entry. So an empty list is fine as long as e.g. the Obsidian enforcer is on, and refused when only list-based enforcers are on. **To add an enforcer: add its field and one line in `Enforcers::all()`**; the checks in `service::start` and the tab closer follow from that table, and the frontend already builds its checkboxes from `data-enforcer` attributes.
+
 `dir()` is now the service's folder (`%ProgramData%\SiteBlocker`). The app's own log goes in `user_dir()`. `use_dir` lets `--service-console` (development) use another folder, so you do not need admin rights to develop.
 
 ```diff
@@ -690,7 +692,43 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
  use std::time::{Duration, SystemTime, UNIX_EPOCH};
  
  use serde::{Deserialize, Serialize};
-@@ -129,15 +130,32 @@
+@@ -43,13 +44,31 @@
+ }
+ 
+ impl Enforcers {
+-    /// Whether any enforcer goes by the block list, which then needs at least one entry.
+-    pub fn use_block_list(&self) -> bool {
+-        self.chromium_tabs || self.chromium_split_view
++    /// Every enforcer as (turned on, goes by the block list). **The one place to list a new
++    /// enforcer**: add its field above and a line here; what may start and what runs follow from it.
++    fn all(&self) -> [(bool, bool); 3] {
++        [
++            (self.chromium_tabs, true),
++            (self.chromium_split_view, true),
++            (self.obsidian_web_viewer, false),
++        ]
+     }
+ 
++    /// Whether any enforcer is turned on.
+     pub fn any(&self) -> bool {
+-        self.use_block_list() || self.obsidian_web_viewer
++        self.all().iter().any(|&(on, _)| on)
++    }
++
++    /// Whether any enforcer that is turned on goes by the block list.
++    pub fn use_block_list(&self) -> bool {
++        self.all().iter().any(|&(on, uses_list)| on && uses_list)
++    }
++
++    /// Whether a block with these enforcers has anything to do, given whether the block list has
++    /// an entry: an enforcer that goes by the list has nothing to do with an empty one, the others
++    /// do not need it. A block that cannot do anything is not worth starting.
++    pub fn can_run(&self, has_entries: bool) -> bool {
++        self.all().iter().any(|&(on, uses_list)| on && (!uses_list || has_entries))
+     }
+ }
+ 
+@@ -129,15 +148,32 @@
      }
  }
  
@@ -727,11 +765,39 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
  pub fn store() -> Option<Store> {
      Some(Store::new(dir()?.join("state.json")))
  }
+@@ -219,6 +255,27 @@
+     }
+ 
+     #[test]
++    fn what_can_run_depends_on_the_enforcers_and_the_list() {
++        let only = |tabs, split, obsidian| Enforcers { chromium_tabs: tabs, chromium_split_view: split, obsidian_web_viewer: obsidian };
++        // With entries, any enforcer that is on can run.
++        assert!(only(true, false, false).can_run(true));
++        assert!(only(false, true, false).can_run(true));
++        assert!(only(false, false, true).can_run(true));
++        // Without, only one that does not go by the list can: Obsidian, also next to ones that do.
++        assert!(only(false, false, true).can_run(false));
++        assert!(only(true, true, true).can_run(false));
++        assert!(Enforcers::default().can_run(false));
++        // Not the ones that go by the list alone, and not nothing at all.
++        assert!(!only(true, false, false).can_run(false));
++        assert!(!only(true, true, false).can_run(false));
++        assert!(!only(false, false, false).can_run(true));
++        assert!(!only(false, false, false).can_run(false));
++        // The checks the tab closer and the start use agree with it.
++        assert!(only(true, false, false).use_block_list() && !only(false, false, true).use_block_list());
++        assert!(only(false, false, true).any() && !only(false, false, false).any());
++    }
++
++    #[test]
+     fn wall_clock_round_trips() {
+         let time = from_unix(1_700_000_000);
+         assert_eq!(to_unix(time), Some(1_700_000_000));
 ```
 
 ### 5.3 `tab_closer.rs`
 
-Only the source of the policy changes; none of the UI Automation code does.
+Only the source of the policy changes (plus one skipped call when the list has no entries); none of the UI Automation code does.
 
 ```diff
 --- a/src-tauri/src/tab_closer.rs
@@ -754,15 +820,18 @@ Only the source of the policy changes; none of the UI Automation code does.
      thread::spawn(move || {
          let automation = match UIAutomation::new() {
              Ok(a) => a,
-@@ -35,7 +35,7 @@
+@@ -35,8 +35,9 @@
          let mut closer = Closer { automation, windows: HashMap::new(), system: System::new() };
          loop {
              let start = Instant::now();
 -            if let Some((filters, enforcers)) = blocklist.active() {
+-                if enforcers.use_block_list() {
 +            if let Some((filters, enforcers)) = remote.active() {
-                 if enforcers.use_block_list() {
++                // With no entries there is nothing for these to match, so skip the UI Automation work.
++                if enforcers.use_block_list() && !filters.is_empty() {
                      if let Err(e) = closer.tick(&filters, enforcers) {
                          eprintln!("tab_closer: {e}");
+                     }
 ```
 
 ## 6. The service, and the files that change around it
@@ -1051,9 +1120,10 @@ fn start(blocklist: &Blocklist, filters: Vec<String>, duration: &str, enforcers:
     if !enforcers.any() {
         return Err("Choose at least one enforcer".into());
     }
-    // Only the enforcers that go by the list need one; Obsidian's does not.
-    if filters.is_empty() && enforcers.use_block_list() {
-        return Err("Enter at least one site to block".into());
+    // An enforcer that goes by the list has nothing to do with an empty one, while the others
+    // (Obsidian's) do not need it. What matters is that something can run.
+    if !enforcers.can_run(!filters.is_empty()) {
+        return Err("Enter at least one site to block, or turn on an enforcer that does not use the list".into());
     }
     blocklist.start(filters, duration, enforcers)
 }
@@ -1241,9 +1311,11 @@ mod tests {
     #[test]
     fn requests_are_checked_again_by_the_service() {
         let context = context("checked");
-        // Nothing to block, nothing chosen, a bad duration, and an address that cannot match.
+        // An empty list with only enforcers that go by it, nothing chosen, a bad duration, and an
+        // address that cannot match.
+        let only_the_list = Enforcers { chromium_tabs: true, chromium_split_view: true, obsidian_web_viewer: false };
         let bad = [
-            Request::Start { filters: vec![], duration: "1h".into(), enforcers: Enforcers::default() },
+            Request::Start { filters: vec![], duration: "1h".into(), enforcers: only_the_list },
             Request::Start {
                 filters: vec!["a.com".into()],
                 duration: "1h".into(),
@@ -1256,6 +1328,22 @@ mod tests {
             assert!(matches!(handle(&context, request).0, Response::Failed(_)));
         }
         assert!(context.blocklist.filters().is_none());
+    }
+
+    #[test]
+    fn an_empty_list_starts_a_block_when_an_enforcer_without_the_list_is_on() {
+        let first = context("empty-list");
+        let obsidian_only = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: true };
+        let request = |enforcers| Request::Start { filters: vec![], duration: "1h".into(), enforcers };
+        assert_eq!(handle(&first, request(obsidian_only)).0, Response::Done);
+        // The block keeps what it was started with: no entries, and Obsidian's enforcer only.
+        let Response::Policy(Some(policy)) = handle(&first, Request::Policy).0 else { panic!("no policy") };
+        assert!(policy.filters.is_empty());
+        assert_eq!(policy.enforcers, obsidian_only);
+
+        // With all enforcers on (the default), an empty list is fine too: Obsidian's can run.
+        let other = context("empty-list-default");
+        assert_eq!(handle(&other, request(Enforcers::default())).0, Response::Done);
     }
 
     #[test]
@@ -2160,7 +2248,7 @@ rmdir /s /q "%ProgramData%\SiteBlocker"
 
 ```powershell
 cd src-tauri
-cargo test                               # 38 tests: block, clock, filters, state, unlock, proto, client, service, watchdog
+cargo test                               # 40 tests: block, clock, filters, state, unlock, proto, client, service, watchdog
 cargo test -- --ignored the_pipe --nocapture   # starts the real pipe server in the test process, ~15 s; no service may be running
 ```
 
