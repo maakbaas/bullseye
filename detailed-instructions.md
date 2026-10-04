@@ -3364,14 +3364,7 @@ fn main() {
          resize: none;
          padding: 6px 10px;
          font: inherit;
-@@ -70,13 +71,13 @@
-         border-radius: 4px;
-         outline: none;
-       }
-+      h2 .hint { font-weight: 400; color: var(--text-secondary); }
-       textarea::placeholder { color: var(--text-secondary); }
-       textarea:focus { background: var(--input-focus); border-bottom: 2px solid var(--accent); padding-bottom: 5px; }
-       textarea:disabled { color: var(--text-disabled); background: var(--control-disabled); border-color: var(--control-stroke); }
+@@ -76,7 +77,6 @@
        textarea:disabled::placeholder { color: var(--text-disabled); }
        /* The enforcers, grouped by whether they go by the block list. */
        section { display: flex; flex-direction: column; gap: 8px; }
@@ -3379,7 +3372,7 @@ fn main() {
        h2 { margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; }
        label.check { display: flex; align-items: center; gap: 8px; }
        label.check:has(input:disabled) { color: var(--text-disabled); }
-@@ -132,7 +133,7 @@
+@@ -132,7 +132,7 @@
        input:disabled { color: var(--text-disabled); background: var(--control-disabled); border-color: var(--control-stroke); }
        /* A status bar along the bottom edge: full width, past the body's side and bottom padding. */
        #status {
@@ -3388,14 +3381,14 @@ fn main() {
          padding: 4px 16px 8px;
          min-height: 16px;
          font-family: "Cascadia Mono", Consolas, monospace;
-@@ -150,10 +151,17 @@
+@@ -150,10 +150,17 @@
    <body>
      <section class="list">
        <h2>Block list</h2>
 -      <textarea id="sites" placeholder="One site per line, e.g. youtube.com" aria-label="Block list" autofocus></textarea>
 +      <textarea id="sites" rows="5" placeholder="One site per line, e.g. youtube.com" aria-label="Block list" autofocus></textarea>
-+      <h2>Always allowed <span class="hint">(one site per line)</span></h2>
-+      <textarea id="allowed" rows="5" placeholder="e.g. google.com" aria-label="Always allowed sites"></textarea>
++      <h2>Always allowed</h2>
++      <textarea id="allowed" rows="5" placeholder="One site per line, e.g. google.com" aria-label="Always allowed sites"></textarea>
        <label class="check"><input type="checkbox" data-enforcer="chromium_tabs" checked />Close blocked tabs in Chrome, Edge, Brave</label>
        <label class="check"><input type="checkbox" data-enforcer="chromium_split_view" checked />Close blocked pages in split view</label>
      </section>
@@ -3407,7 +3400,7 @@ fn main() {
      <section>
        <h2>Without block list</h2>
        <label class="check"><input type="checkbox" data-enforcer="obsidian_web_viewer" checked />Close Obsidian when it shows web pages</label>
-@@ -170,6 +178,8 @@
+@@ -170,6 +177,8 @@
      <script>
        const { invoke } = window.__TAURI__.core;
        const sites = document.getElementById("sites");
@@ -3416,7 +3409,7 @@ fn main() {
        const duration = document.getElementById("duration");
        const toggle = document.getElementById("toggle");
        const status = document.getElementById("status");
-@@ -200,13 +210,26 @@
+@@ -200,13 +209,26 @@
  
        // The backend owns the block (timed blocks end there); the UI mirrors it every second.
        async function refresh() {
@@ -3444,7 +3437,7 @@ fn main() {
          // Fixed while a block runs, so turning one off is not a way around it.
          for (const c of checks) {
            if (running) c.checked = running[c.dataset.enforcer];
-@@ -231,10 +254,18 @@
+@@ -231,10 +253,18 @@
        }
  
        toggle.addEventListener("click", async () => {
@@ -3465,7 +3458,7 @@ fn main() {
        });
  
        // Enter in the field submits too.
-@@ -249,6 +280,8 @@
+@@ -249,6 +279,8 @@
        });
        password.addEventListener("input", () => { error = ""; force.disabled = !password.value; refresh(); });
        sites.addEventListener("input", () => { error = ""; refresh(); });

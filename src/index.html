@@ -71,7 +71,6 @@
         border-radius: 4px;
         outline: none;
       }
-      h2 .hint { font-weight: 400; color: var(--text-secondary); }
       textarea::placeholder { color: var(--text-secondary); }
       textarea:focus { background: var(--input-focus); border-bottom: 2px solid var(--accent); padding-bottom: 5px; }
       textarea:disabled { color: var(--text-disabled); background: var(--control-disabled); border-color: var(--control-stroke); }
@@ -152,8 +151,8 @@
     <section class="list">
       <h2>Block list</h2>
       <textarea id="sites" rows="5" placeholder="One site per line, e.g. youtube.com" aria-label="Block list" autofocus></textarea>
-      <h2>Always allowed <span class="hint">(one site per line)</span></h2>
-      <textarea id="allowed" rows="5" placeholder="e.g. google.com" aria-label="Always allowed sites"></textarea>
+      <h2>Always allowed</h2>
+      <textarea id="allowed" rows="5" placeholder="One site per line, e.g. google.com" aria-label="Always allowed sites"></textarea>
       <label class="check"><input type="checkbox" data-enforcer="chromium_tabs" checked />Close blocked tabs in Chrome, Edge, Brave</label>
       <label class="check"><input type="checkbox" data-enforcer="chromium_split_view" checked />Close blocked pages in split view</label>
     </section>
