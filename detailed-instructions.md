@@ -3368,7 +3368,7 @@ fn main() {
          border-radius: 4px;
          outline: none;
        }
-+      h2.sub { font-weight: 400; color: var(--text-secondary); }
++      h2 .hint { font-weight: 400; color: var(--text-secondary); }
        textarea::placeholder { color: var(--text-secondary); }
        textarea:focus { background: var(--input-focus); border-bottom: 2px solid var(--accent); padding-bottom: 5px; }
        textarea:disabled { color: var(--text-disabled); background: var(--control-disabled); border-color: var(--control-stroke); }
@@ -3379,20 +3379,29 @@ fn main() {
        h2 { margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; }
        label.check { display: flex; align-items: center; gap: 8px; }
        label.check:has(input:disabled) { color: var(--text-disabled); }
+@@ -132,7 +133,7 @@
+       input:disabled { color: var(--text-disabled); background: var(--control-disabled); border-color: var(--control-stroke); }
+       /* A status bar along the bottom edge: full width, past the body's side and bottom padding. */
+       #status {
+-        margin: 0 -16px;
++        margin: auto -16px 0;
+         padding: 4px 16px 8px;
+         min-height: 16px;
+         font-family: "Cascadia Mono", Consolas, monospace;
 @@ -150,10 +151,17 @@
    <body>
      <section class="list">
        <h2>Block list</h2>
 -      <textarea id="sites" placeholder="One site per line, e.g. youtube.com" aria-label="Block list" autofocus></textarea>
-+      <textarea id="sites" rows="5" placeholder="One site per line, e.g. youtube.com, or * for every site" aria-label="Block list" autofocus></textarea>
-+      <h2 class="sub">Always allowed</h2>
-+      <textarea id="allowed" rows="5" placeholder="e.g. google.com or *.wikipedia.org" aria-label="Always allowed sites"></textarea>
++      <textarea id="sites" rows="5" placeholder="One site per line, e.g. youtube.com" aria-label="Block list" autofocus></textarea>
++      <h2>Always allowed <span class="hint">(one site per line)</span></h2>
++      <textarea id="allowed" rows="5" placeholder="e.g. google.com" aria-label="Always allowed sites"></textarea>
        <label class="check"><input type="checkbox" data-enforcer="chromium_tabs" checked />Close blocked tabs in Chrome, Edge, Brave</label>
        <label class="check"><input type="checkbox" data-enforcer="chromium_split_view" checked />Close blocked pages in split view</label>
      </section>
 +    <section class="list">
 +      <h2>Programs</h2>
-+      <textarea id="programs" rows="5" placeholder="One program per line, e.g. steam.exe or epic*" aria-label="Programs to close"></textarea>
++      <textarea id="programs" rows="5" placeholder="One program per line, e.g. steam.exe" aria-label="Programs to close"></textarea>
 +      <label class="check"><input type="checkbox" data-enforcer="exe_names" checked />Close these programs</label>
 +    </section>
      <section>
@@ -3477,7 +3486,7 @@ fn main() {
          "title": "Site Blocker",
          "width": 340,
 -        "height": 560,
-+        "height": 870,
++        "height": 850,
          "visible": false,
          "resizable": false,
          "transparent": true,
