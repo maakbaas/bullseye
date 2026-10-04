@@ -2,7 +2,7 @@
 //!
 //! The service (`service.rs`) runs as SYSTEM in session 0, which has no desktop, so it cannot
 //! close browser tabs itself. The app does that, in the logged-on user's session, and the service
-//! keeps it there: it starts the app at every logon, and while a timed block runs it starts the
+//! keeps it there: it starts the app at every logon, and while a block runs it starts the
 //! app again within about a second of it ending. Ending the app does not end the block, and
 //! ending the service is up to Windows (`service::install` sets it to restart on failure and
 //! takes the right to stop it away from everyone but SYSTEM).
@@ -43,7 +43,7 @@ const MAX_BACKOFF: u32 = 10;
 /// Session-scoped mutex name. `Local\` keeps it out of other sessions and needs no privilege.
 const APP_MUTEX: &str = r"Local\SiteBlocker-app";
 
-/// Set at logon (and when the service starts): the app is wanted even without a timed block.
+/// Set at logon (and when the service starts): the app is wanted even without a block.
 /// Cleared once the app is seen running, so quitting it with the unlock password sticks.
 pub static LAUNCH_APP: AtomicBool = AtomicBool::new(true);
 
@@ -62,8 +62,8 @@ pub fn claim_app() -> bool {
     claim(APP_MUTEX)
 }
 
-/// The service's half: keeps the app running in the logged-on user's session while a timed block
-/// is running, and starts it when `LAUNCH_APP` is set.
+/// The service's half: keeps the app running in the logged-on user's session while a block is
+/// running (timed or not), and starts it when `LAUNCH_APP` is set.
 pub fn spawn_supervisor(blocklist: Blocklist) {
     thread::spawn(move || {
         let mut system = System::new();
@@ -73,7 +73,7 @@ pub fn spawn_supervisor(blocklist: Blocklist) {
         let mut last_error = String::new();
         loop {
             thread::sleep(Duration::from_secs(1));
-            if blocklist.status().remaining.is_none() && !LAUNCH_APP.load(Ordering::SeqCst) {
+            if !wanted(&blocklist) {
                 missed = 0;
                 continue;
             }
@@ -102,6 +102,12 @@ pub fn spawn_supervisor(blocklist: Blocklist) {
             not_before = Instant::now() + Duration::from_secs(u64::from(missed.min(MAX_BACKOFF)));
         }
     });
+}
+
+/// Whether the app should be running: while any block runs, and until the app has been seen after a
+/// logon. With no block the app is left alone, so quitting it with the unlock password sticks.
+fn wanted(blocklist: &Blocklist) -> bool {
+    blocklist.filters().is_some() || LAUNCH_APP.load(Ordering::SeqCst)
 }
 
 /// Whether the app is running in the session of whoever is at the screen. It is the same
@@ -308,6 +314,30 @@ mod tests {
         }
         assert_eq!(civil(1_700_000_000 / 86400), (2023, 11, 14));
         assert_eq!(timestamp().len(), 19);
+    }
+
+    #[test]
+    fn the_app_is_wanted_while_any_block_runs() {
+        use crate::filters::FilterList;
+        use crate::state::{Enforcers, Store};
+        LAUNCH_APP.store(false, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("watchdog-{}-wanted", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let blocklist = Blocklist::with_store(Store::new(dir.join("state.json")));
+        assert!(!wanted(&blocklist));
+        // An untimed block as well as a timed one: ending the app must not end the blocking.
+        blocklist.start(FilterList::parse(&["a.com"]).unwrap(), None, Enforcers::default()).unwrap();
+        assert!(wanted(&blocklist));
+        blocklist.stop().unwrap();
+        assert!(!wanted(&blocklist));
+        let hour = Some(Duration::from_secs(3600));
+        blocklist.start(FilterList::parse(&["a.com"]).unwrap(), hour, Enforcers::default()).unwrap();
+        assert!(wanted(&blocklist));
+        // Right after a logon the app is wanted even with no block.
+        blocklist.reset();
+        assert!(!wanted(&blocklist));
+        LAUNCH_APP.store(true, Ordering::SeqCst);
+        assert!(wanted(&blocklist));
     }
 
     #[test]

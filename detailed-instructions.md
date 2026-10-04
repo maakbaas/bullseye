@@ -1,6 +1,6 @@
 # Moving the watchdog to a SYSTEM service: implementation guide for this repo
 
-This guide is for implementing the SYSTEM-service design in *this* repo (`blocker`, Tauri tray app, Windows only). It is written against the actual code in `src-tauri/src/`. All the Rust below was compiled and the unit tests run in a scratch copy of the repo (`cargo check --tests`, no warnings; `cargo test`: 37 passed). One extra integration test (`the_pipe_answers_like_the_app_expects`, run with `--ignored`) started the real pipe server and talked to it like the app does: it passed. Section 9 lists what could **not** be tested without installing a real service, so you must test those parts yourself.
+This guide is for implementing the SYSTEM-service design in *this* repo (`blocker`, Tauri tray app, Windows only). It is written against the actual code in `src-tauri/src/`. All the Rust below was compiled and the unit tests run in a scratch copy of the repo (`cargo check --tests`, no warnings; `cargo test`: 38 passed). One extra integration test (`the_pipe_answers_like_the_app_expects`, run with `--ignored`) started the real pipe server and talked to it like the app does: it passed. Section 9 lists what could **not** be tested without installing a real service, so you must test those parts yourself.
 
 **Read sections 1 and 8 before you touch any code.** Section 8 is about how to get out if your own test setup locks you in.
 
@@ -1399,14 +1399,14 @@ mod tests {
 
 **Delete `src-tauri/src/task.rs`.** Nothing refers to it any more.
 
-`watchdog.rs` is now mostly about the service looking after the app. The app finds itself with a mutex as before, but the service lives in another session, where that mutex is invisible (`Local\` is per session), so the service looks at processes instead: the same exe, started **without arguments**, in the **console session** (the one at the physical screen). `launch_app` starts the app as the logged-on user, not as SYSTEM: `WTSQueryUserToken` gets that user's token, `CreateEnvironmentBlock` their environment, `CreateProcessAsUserW` starts the process on `winsta0\default`. It runs only while a timed block exists, plus once after each logon (`LAUNCH_APP`). That is why quitting the app with the unlock password sticks: the block is gone, so nobody restarts it until the next logon.
+`watchdog.rs` is now mostly about the service looking after the app. The app finds itself with a mutex as before, but the service lives in another session, where that mutex is invisible (`Local\` is per session), so the service looks at processes instead: the same exe, started **without arguments**, in the **console session** (the one at the physical screen). `launch_app` starts the app as the logged-on user, not as SYSTEM: `WTSQueryUserToken` gets that user's token, `CreateEnvironmentBlock` their environment, `CreateProcessAsUserW` starts the process on `winsta0\default`. It runs while any block exists (timed or not), plus once after each logon (`LAUNCH_APP`). That is why quitting the app with the unlock password sticks: the block is gone, so nobody restarts it until the next logon.
 
 ```rust
 //! The service's watch over the app, and the little the app itself needs from this module.
 //!
 //! The service (`service.rs`) runs as SYSTEM in session 0, which has no desktop, so it cannot
 //! close browser tabs itself. The app does that, in the logged-on user's session, and the service
-//! keeps it there: it starts the app at every logon, and while a timed block runs it starts the
+//! keeps it there: it starts the app at every logon, and while a block runs it starts the
 //! app again within about a second of it ending. Ending the app does not end the block, and
 //! ending the service is up to Windows (`service::install` sets it to restart on failure and
 //! takes the right to stop it away from everyone but SYSTEM).
@@ -1447,7 +1447,7 @@ const MAX_BACKOFF: u32 = 10;
 /// Session-scoped mutex name. `Local\` keeps it out of other sessions and needs no privilege.
 const APP_MUTEX: &str = r"Local\SiteBlocker-app";
 
-/// Set at logon (and when the service starts): the app is wanted even without a timed block.
+/// Set at logon (and when the service starts): the app is wanted even without a block.
 /// Cleared once the app is seen running, so quitting it with the unlock password sticks.
 pub static LAUNCH_APP: AtomicBool = AtomicBool::new(true);
 
@@ -1466,8 +1466,8 @@ pub fn claim_app() -> bool {
     claim(APP_MUTEX)
 }
 
-/// The service's half: keeps the app running in the logged-on user's session while a timed block
-/// is running, and starts it when `LAUNCH_APP` is set.
+/// The service's half: keeps the app running in the logged-on user's session while a block is
+/// running (timed or not), and starts it when `LAUNCH_APP` is set.
 pub fn spawn_supervisor(blocklist: Blocklist) {
     thread::spawn(move || {
         let mut system = System::new();
@@ -1477,7 +1477,7 @@ pub fn spawn_supervisor(blocklist: Blocklist) {
         let mut last_error = String::new();
         loop {
             thread::sleep(Duration::from_secs(1));
-            if blocklist.status().remaining.is_none() && !LAUNCH_APP.load(Ordering::SeqCst) {
+            if !wanted(&blocklist) {
                 missed = 0;
                 continue;
             }
@@ -1506,6 +1506,12 @@ pub fn spawn_supervisor(blocklist: Blocklist) {
             not_before = Instant::now() + Duration::from_secs(u64::from(missed.min(MAX_BACKOFF)));
         }
     });
+}
+
+/// Whether the app should be running: while any block runs, and until the app has been seen after a
+/// logon. With no block the app is left alone, so quitting it with the unlock password sticks.
+fn wanted(blocklist: &Blocklist) -> bool {
+    blocklist.filters().is_some() || LAUNCH_APP.load(Ordering::SeqCst)
 }
 
 /// Whether the app is running in the session of whoever is at the screen. It is the same
@@ -1712,6 +1718,30 @@ mod tests {
         }
         assert_eq!(civil(1_700_000_000 / 86400), (2023, 11, 14));
         assert_eq!(timestamp().len(), 19);
+    }
+
+    #[test]
+    fn the_app_is_wanted_while_any_block_runs() {
+        use crate::filters::FilterList;
+        use crate::state::{Enforcers, Store};
+        LAUNCH_APP.store(false, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("watchdog-{}-wanted", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let blocklist = Blocklist::with_store(Store::new(dir.join("state.json")));
+        assert!(!wanted(&blocklist));
+        // An untimed block as well as a timed one: ending the app must not end the blocking.
+        blocklist.start(FilterList::parse(&["a.com"]).unwrap(), None, Enforcers::default()).unwrap();
+        assert!(wanted(&blocklist));
+        blocklist.stop().unwrap();
+        assert!(!wanted(&blocklist));
+        let hour = Some(Duration::from_secs(3600));
+        blocklist.start(FilterList::parse(&["a.com"]).unwrap(), hour, Enforcers::default()).unwrap();
+        assert!(wanted(&blocklist));
+        // Right after a logon the app is wanted even with no block.
+        blocklist.reset();
+        assert!(!wanted(&blocklist));
+        LAUNCH_APP.store(true, Ordering::SeqCst);
+        assert!(wanted(&blocklist));
     }
 
     #[test]
@@ -2054,12 +2084,12 @@ The project notes describe the old design and are used by every future session, 
 
 - `src-tauri/src/service.rs` – the SYSTEM service: owns the block, answers the app over the pipe, installs / removes itself
 - `src-tauri/src/pipe.rs`, `proto.rs`, `client.rs` – the named pipe `\\.\pipe\SiteBlocker`: server, messages, and the app's side (keeps the last policy in memory)
-- `src-tauri/src/watchdog.rs` – the service's watch over the app (starts it as the logged-on user, at logon and during timed blocks) and the app's single-instance mutex
+- `src-tauri/src/watchdog.rs` – the service's watch over the app (starts it as the logged-on user, at logon and while a block runs) and the app's single-instance mutex
 
 **Replace "Surviving a restart, a kill, and a reboot" with:**
 
 > The `SiteBlocker` Windows service runs as SYSTEM and starts at boot. It holds the block (`%ProgramData%\SiteBlocker\state.json`, SYSTEM-owned), internet time and the unlock hash. The tray app (user session) asks it every second what to enforce and does the tab closing; it holds no state, and keeps enforcing the last answer if the service is briefly unreachable.
-> - End the app in Task Manager during a timed block: the service starts it again within about a second.
+> - End the app in Task Manager while a block (timed or not) is running: the service starts it again within about a second.
 > - End the service: Windows refuses ("Access denied") for administrators; if it fails by itself, Windows restarts it at once (failure actions).
 > - Reboot mid-block: the service reads `state.json` and resumes with the time left.
 > - The service starts the app at every logon, also without a block. "Unlock" clears the block and quits the app; the service keeps running idle and starts the app again at the next logon.
@@ -2128,7 +2158,7 @@ rmdir /s /q "%ProgramData%\SiteBlocker"
 - **Which token the app gets.** `WTSQueryUserToken` normally returns the user's *limited* (non-elevated) token, like the old scheduled task (`LeastPrivilege`). Check once (section 9.2) that the app is not elevated.
 - **Who restarts the service**: Windows (failure actions, at once) after a crash or kill, and the app (start only, every 5 s) if the service is not running. A service that ended with exit code 0 (an update or uninstall request) is not restarted by Windows; the app or the installer starts it again. While it is down the app keeps enforcing the last policy it got (in memory), but an app that is restarted meanwhile has none.
 - **The access list is set once, when the service is created.** An update only starts the existing service, and administrators cannot change the list, so an install made before the interactive-users start right keeps the old list. Uninstall and install again (in the VM) to pick it up.
-- **The service does not restart the app for an untimed block** (only for a timed one, and once after each logon); if the app is ended during an untimed block, nothing is blocked until it is started again.
+- **The service restarts the app while any block runs, timed or not**, and once after each logon. With no block it leaves the app alone, so quitting it with the unlock password sticks until the next logon.
 - **Offline time** works as before (`clock.rs`), but now the clock lives in the service.
 - **Code signing.** The service runs the exe with SYSTEM rights, so a signed build is worth having; unsigned, SmartScreen and antivirus tools may complain at install. Not part of this change.
 
@@ -2138,7 +2168,7 @@ rmdir /s /q "%ProgramData%\SiteBlocker"
 
 ```powershell
 cd src-tauri
-cargo test                               # 37 tests: block, clock, filters, state, unlock, proto, client, service, watchdog
+cargo test                               # 38 tests: block, clock, filters, state, unlock, proto, client, service, watchdog
 cargo test -- --ignored the_pipe --nocapture   # starts the real pipe server in the test process, ~15 s; no service may be running
 ```
 
@@ -2156,6 +2186,7 @@ Build with `npm run build` (installer in `src-tauri\target\release\bundle\nsis\`
 | 4 | As admin: `sc stop SiteBlocker`, and "End task" on the service in Task Manager | both fail |
 | 5 | `icacls "%ProgramData%\SiteBlocker"` and try to edit `state.json` as admin | SYSTEM full, Administrators read only; editing fails |
 | 6 | Start a `10m` block, then end the *app* in Task Manager | it returns within about a second, block continues |
+| 6b | Same with an *untimed* block (empty duration) | it returns within about a second too; after "Stop block" it no longer does |
 | 7 | Log off and on during the block | app returns, block continues with the remaining time |
 | 8 | Reboot during the block | block resumes after boot |
 | 9 | Boot into safe mode with networking during the block | service runs (check `sc query SiteBlocker`) |
