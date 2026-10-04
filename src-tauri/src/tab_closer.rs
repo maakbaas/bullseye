@@ -19,6 +19,8 @@ use crate::client::Remote;
 use crate::block::Active;
 use crate::programs::ProgramList;
 use crate::state::{Enforcers, Uses};
+use crate::sync::spawn_critical;
+use crate::watchdog::note;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use uiautomation::patterns::{UIInvokePattern, UIValuePattern, UIWindowPattern};
 use uiautomation::types::{ControlType, TreeScope, UIProperty};
@@ -33,10 +35,14 @@ const RECHECK: Duration = Duration::from_secs(10);
 const KILL_AFTER: Duration = Duration::from_secs(3);
 
 pub fn spawn(remote: Remote) {
-    thread::spawn(move || {
+    spawn_critical("tab closer", move || {
         let automation = match UIAutomation::new() {
             Ok(a) => a,
-            Err(e) => return eprintln!("tab_closer: UI Automation unavailable: {e}"),
+            // Without it nothing is enforced, so say so loudly: the process ends and is started again.
+            Err(e) => {
+                note("app", &format!("UI Automation is unavailable: {e}"));
+                std::process::exit(1);
+            }
         };
         let mut closer = Closer { automation, windows: HashMap::new(), system: System::new(), asked: HashMap::new() };
         loop {

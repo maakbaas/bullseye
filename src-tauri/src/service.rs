@@ -41,6 +41,7 @@ use crate::filters::FilterList;
 use crate::programs::ProgramList;
 use crate::proto::{Policy, Request, Response};
 use crate::state::{self, Enforcers};
+use crate::sync::{spawn_critical, LockExt};
 use crate::watchdog::{self, note, AppSlot};
 use crate::{clock, pipe, unlock};
 
@@ -195,7 +196,7 @@ fn start_blocklist() -> Blocklist {
     let blocklist = Blocklist::new();
     blocklist.restore();
     let ticking = blocklist.clone();
-    thread::spawn(move || loop {
+    spawn_critical("ticker", move || loop {
         ticking.active();
         thread::sleep(Duration::from_secs(1));
     });
@@ -330,7 +331,7 @@ fn start(
 /// refused for longer each time. The lock is held while the hash is computed, so guesses cannot
 /// be made in parallel either.
 fn unlock(context: &Context, password: &str) -> Result<(), String> {
-    let mut lockout = context.lockout.lock().unwrap();
+    let mut lockout = context.lockout.locked();
     if let Some(left) = lockout.until.and_then(|until| until.checked_duration_since(Instant::now())) {
         return Err(format!("Too many wrong passwords; wait {}s", left.as_secs() + 1));
     }
@@ -459,7 +460,7 @@ pub fn wait_stopped(timeout: Duration) -> bool {
         let stopped = manager(ServiceManagerAccess::CONNECT)
             .ok()
             .and_then(|m| m.open_service(NAME, ServiceAccess::QUERY_STATUS).ok())
-            .map_or(true, |service| service.query_status().map_or(false, |s| s.current_state == ServiceState::Stopped));
+            .is_none_or(|service| service.query_status().is_ok_and(|s| s.current_state == ServiceState::Stopped));
         if stopped {
             return true;
         }
@@ -687,7 +688,7 @@ mod tests {
         assert!(matches!(handle(&context, 0, right).0, Response::Failed(why) if why.starts_with("Too many")));
         assert!(context.blocklist.filters().is_some());
         // Once the wait is over, it works.
-        context.lockout.lock().unwrap().until = None;
+        context.lockout.locked().until = None;
         let right = Request::Unlock { password: "test1234".into() };
         assert_eq!(handle(&context, 0, right).0, Response::Done);
         assert!(context.blocklist.filters().is_none());

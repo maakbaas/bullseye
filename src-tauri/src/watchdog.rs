@@ -49,6 +49,7 @@ use windows_sys::Win32::System::Threading::{
 
 use crate::block::Blocklist;
 use crate::state;
+use crate::sync::{spawn_critical, LockExt};
 
 /// Cap, in seconds, on how long the app is left alone after failing to start, so a broken build
 /// cannot turn into a process being started over and over.
@@ -146,7 +147,7 @@ impl AppSlot {
 
     /// The service started this process itself.
     fn launched(&self, process: Process) {
-        *self.current.lock().unwrap() = Some(Adopted { process, since: Instant::now(), heard: None });
+        *self.current.locked() = Some(Adopted { process, since: Instant::now(), heard: None });
     }
 
     /// The app asks to be taken in when it starts. Refused if another app is running, or if it is
@@ -155,7 +156,7 @@ impl AppSlot {
         if !self.supervised {
             return Ok(());
         }
-        adopt(&mut self.current.lock().unwrap(), pid)
+        adopt(&mut self.current.locked(), pid)
     }
 
     /// The app asked for its policy, which it does every second from the thread that closes tabs.
@@ -163,7 +164,7 @@ impl AppSlot {
     pub fn heard(&self, pid: u32) {
         if self.supervised {
             // A refusal here is not an error: it only means this caller is not the app.
-            let _ = adopt(&mut self.current.lock().unwrap(), pid);
+            let _ = adopt(&mut self.current.locked(), pid);
         }
     }
 
@@ -171,7 +172,7 @@ impl AppSlot {
     /// one that has stopped asking. `resumed` is set when the machine seems to have slept, which
     /// is no fault of the app's. Returns whether there is no app now.
     pub fn supervise(&self, block_active: bool, resumed: bool) -> bool {
-        let mut current = self.current.lock().unwrap();
+        let mut current = self.current.locked();
         if let Some(app) = current.as_mut() {
             let now = Instant::now();
             if app.process.exited() {
@@ -192,7 +193,7 @@ impl AppSlot {
     /// A slot holding `process` as if taken in at `since` and last heard at `heard`.
     #[cfg(test)]
     fn set_for_test(&self, process: Process, since: Instant, heard: Option<Instant>) {
-        *self.current.lock().unwrap() = Some(Adopted { process, since, heard });
+        *self.current.locked() = Some(Adopted { process, since, heard });
     }
 }
 
@@ -250,7 +251,7 @@ fn session_of(pid: u32) -> u32 {
 
 /// The service's half: starts the app when it is wanted and not there, and looks after it.
 pub fn spawn_supervisor(blocklist: Blocklist, slot: Arc<AppSlot>) {
-    thread::spawn(move || {
+    spawn_critical("supervisor", move || {
         // How many starts in a row have not led to a running app, which slows the starting down.
         let mut missed = 0u32;
         let mut not_before = Instant::now();
@@ -388,8 +389,20 @@ pub fn note(who: &str, message: &str) {
     let Some(dir) = dir else { return };
     // The folder only exists once something has been written to it.
     let _ = fs::create_dir_all(&dir);
-    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(dir.join(file)) {
+    let path = dir.join(file);
+    start_over_if_big(&path, LOG_LIMIT);
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) {
         let _ = writeln!(file, "{} {who}: {message}", timestamp());
+    }
+}
+
+/// A log that grows past this is moved to `<name>.old`, replacing the one before, and started again:
+/// the last half megabyte or so of history is kept, and the files never take over the disk.
+const LOG_LIMIT: u64 = 512 * 1024;
+
+fn start_over_if_big(path: &std::path::Path, limit: u64) {
+    if fs::metadata(path).is_ok_and(|meta| meta.len() > limit) {
+        let _ = fs::rename(path, path.with_extension("log.old"));
     }
 }
 
@@ -435,6 +448,29 @@ pub fn wide(name: &str) -> Vec<u16> {
 mod tests {
     use super::*;
     use std::process::{Child, Command, Stdio};
+
+    #[test]
+    fn a_log_that_got_big_is_moved_aside_and_started_again() {
+        let dir = std::env::temp_dir().join(format!("watchdog-{}-log", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("service.log");
+
+        fs::write(&log, "x".repeat(100)).unwrap();
+        start_over_if_big(&log, 1000);
+        assert_eq!(fs::metadata(&log).unwrap().len(), 100, "a small log stays");
+
+        fs::write(&log, "x".repeat(2000)).unwrap();
+        start_over_if_big(&log, 1000);
+        assert!(!log.exists(), "the big one is moved aside");
+        assert_eq!(fs::metadata(dir.join("service.log.old")).unwrap().len(), 2000);
+
+        // The next big one replaces the old one rather than piling up.
+        fs::write(&log, "y".repeat(3000)).unwrap();
+        start_over_if_big(&log, 1000);
+        assert_eq!(fs::metadata(dir.join("service.log.old")).unwrap().len(), 3000);
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn names_are_null_terminated() {

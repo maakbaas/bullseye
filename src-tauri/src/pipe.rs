@@ -28,6 +28,7 @@ use windows_sys::Win32::System::Pipes::{
 };
 
 use crate::proto::{self, Request, Response, PIPE};
+use crate::sync::{spawn_critical, LockExt};
 use crate::watchdog::{note, wide};
 
 /// SYSTEM: everything. Interactive users: read and write, which is all a client needs.
@@ -56,17 +57,17 @@ pub fn serve<A: Send + 'static>(
 ) -> Result<(), String> {
     let first = create_instance(true)?;
     let handler = Arc::new(handler);
-    thread::spawn(reaper);
+    spawn_critical("pipe reaper", reaper);
     // Raw handles are not `Send`; the accept loop below owns this one from here on.
     let first = first as usize;
-    thread::spawn(move || {
+    spawn_critical("pipe", move || {
         // The instance a client can connect to right now.
         let mut listening = first as HANDLE;
         loop {
             // SAFETY: `listening` is a pipe instance made by `create_instance`. A client that
             // connected before this call is reported as an error, but is a success.
             let connected = unsafe { ConnectNamedPipe(listening, null_mut()) != 0 || GetLastError() == ERROR_PIPE_CONNECTED };
-            let full = LIVE.lock().unwrap().len() >= MAX_CLIENTS;
+            let full = LIVE.locked().len() >= MAX_CLIENTS;
             // The next instance exists before this one is handed off. A client that arrives in
             // between is told the pipe is busy and tries again (`connect`).
             let next = match create_instance(false) {
@@ -98,7 +99,7 @@ pub fn serve<A: Send + 'static>(
 
 fn serve_one<A>(mut pipe: File, handler: &dyn Fn(u32, Request) -> (Response, Option<A>), after: Sender<A>) {
     let key = pipe.as_raw_handle() as usize;
-    LIVE.lock().unwrap().push((key, Instant::now() + DEADLINE));
+    LIVE.locked().push((key, Instant::now() + DEADLINE));
 
     // Who is on the other end, as Windows knows it. 0 if that cannot be told.
     let mut client = 0u32;
@@ -116,7 +117,7 @@ fn serve_one<A>(mut pipe: File, handler: &dyn Fn(u32, Request) -> (Response, Opt
     // it. This read returns once the client has closed its end, which it does when it has read.
     let _ = pipe.read(&mut [0u8; 1]);
 
-    LIVE.lock().unwrap().retain(|&(handle, _)| handle != key);
+    LIVE.locked().retain(|&(handle, _)| handle != key);
     drop(pipe);
     if let Some(then) = then {
         let _ = after.send(then);
@@ -128,7 +129,7 @@ fn reaper() {
     loop {
         thread::sleep(Duration::from_secs(1));
         let now = Instant::now();
-        for &(handle, deadline) in LIVE.lock().unwrap().iter() {
+        for &(handle, deadline) in LIVE.locked().iter() {
             if deadline <= now {
                 // SAFETY: the handle is still open: its connection removes itself from `LIVE`
                 // under the same lock before closing it.

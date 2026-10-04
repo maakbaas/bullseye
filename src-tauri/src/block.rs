@@ -16,6 +16,7 @@ use crate::clock::{self, Clock};
 use crate::filters::FilterList;
 use crate::programs::ProgramList;
 use crate::state::{self, Enforcers, Store, Uses};
+use crate::sync::LockExt;
 
 /// How often a running timed block writes down the time it has reached (`Saved::seen`).
 const CHECKPOINT: Duration = Duration::from_secs(60);
@@ -117,7 +118,7 @@ impl Blocklist {
     /// Starts a block, unless one is running: checked here rather than only in the UI, so a
     /// timed block cannot be swapped for a shorter or untimed one.
     pub fn start(&self, lists: Lists, duration: Option<Duration>, enforcers: Enforcers) -> Result<(), String> {
-        let mut block = self.block.lock().unwrap();
+        let mut block = self.block.locked();
         if block.as_ref().is_some_and(|b| b.until.is_none_or(|u| self.clock.now() < u)) {
             return Err("A block is already running".into());
         }
@@ -139,7 +140,7 @@ impl Blocklist {
 
     /// Stops the block unless it is timed and still running; then returns the seconds left.
     pub fn stop(&self) -> Result<(), u64> {
-        let mut block = self.block.lock().unwrap();
+        let mut block = self.block.locked();
         if let Some(left) = block.as_ref().and_then(|b| remaining(b, self.clock.now())) {
             return Err(left);
         }
@@ -172,7 +173,7 @@ impl Blocklist {
             return;
         }
         let enforcers = saved.enforcers;
-        *self.block.lock().unwrap() = Some(Block {
+        *self.block.locked() = Some(Block {
             filters: Arc::new(filters),
             allowed: Arc::new(allowed),
             programs: Arc::new(programs),
@@ -189,7 +190,7 @@ impl Blocklist {
 
     /// What is to be enforced, ending a timed block whose time is up.
     pub fn active(&self) -> Option<Active> {
-        let mut block = self.block.lock().unwrap();
+        let mut block = self.block.locked();
         if block.as_ref().is_some_and(|b| b.until.is_some_and(|u| self.clock.now() >= u)) {
             // A timed block ends by itself and leaves nothing behind to resume.
             *block = None;
@@ -212,7 +213,7 @@ impl Blocklist {
 
     pub fn status(&self) -> Status {
         let blocking = self.filters().is_some();
-        let block = self.block.lock().unwrap();
+        let block = self.block.locked();
         Status {
             blocking,
             remaining: block.as_ref().and_then(|b| remaining(b, self.clock.now())),
@@ -239,7 +240,7 @@ impl Blocklist {
     /// Ends the block whatever its time, and forgets it. Only for the unlock password
     /// (`service::unlock`): everything else goes through `stop`, which keeps a timed block.
     pub fn reset(&self) {
-        *self.block.lock().unwrap() = None;
+        *self.block.locked() = None;
         self.clear_saved();
     }
 

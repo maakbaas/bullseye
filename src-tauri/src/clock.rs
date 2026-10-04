@@ -18,6 +18,8 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::sync::LockExt;
+
 /// Asked in turn until one answers. Several operators, so one being down or blocked is not enough.
 const SERVERS: [&str; 4] = ["time.cloudflare.com:123", "time.google.com:123", "pool.ntp.org:123", "time.windows.com:123"];
 
@@ -60,25 +62,25 @@ static CLOCK: Clock = Clock { anchor: Mutex::new(None) };
 
 impl Clock {
     pub fn now(&self) -> SystemTime {
-        match *self.anchor.lock().unwrap() {
+        match *self.anchor.locked() {
             Some(anchor) => UNIX_EPOCH + anchor.now(),
             None => SystemTime::now(),
         }
     }
 
     pub fn synced(&self) -> bool {
-        self.anchor.lock().unwrap().is_some_and(|a| a.synced)
+        self.anchor.locked().is_some_and(|a| a.synced)
     }
 
     /// Internet time, as just read from a server.
     fn set(&self, unix: Duration, at: Instant) {
-        *self.anchor.lock().unwrap() = Some(Anchor { unix, at, synced: true });
+        *self.anchor.locked() = Some(Anchor { unix, at, synced: true });
     }
 
     /// Until internet time is in, the time is at least `unix_secs`: a time the running block
     /// was seen at. Ignored once it is in.
     pub fn at_least(&self, unix_secs: u64) {
-        let mut anchor = self.anchor.lock().unwrap();
+        let mut anchor = self.anchor.locked();
         let floor = Duration::from_secs(unix_secs);
         match *anchor {
             Some(a) if a.synced || a.now() >= floor => {}
@@ -99,7 +101,7 @@ pub fn sync() -> bool {
 
 /// Keeps the clock on internet time, in the background.
 pub fn spawn_sync() {
-    thread::spawn(|| loop {
+    crate::sync::spawn_critical("clock", || loop {
         thread::sleep(if sync() { RESYNC } else { RETRY });
     });
 }
@@ -140,7 +142,7 @@ fn parse(reply: &[u8]) -> Result<Duration, String> {
     let seconds = u64::from(u32::from_be_bytes(reply[40..44].try_into().unwrap()));
     let fraction = u64::from(u32::from_be_bytes(reply[44..48].try_into().unwrap()));
     let unix = seconds.checked_sub(NTP_TO_UNIX).filter(|&s| s >= EARLIEST).ok_or("implausible time")?;
-    Ok(Duration::from_secs(unix) + Duration::from_nanos(fraction * 1_000_000_000 >> 32))
+    Ok(Duration::from_secs(unix) + Duration::from_nanos((fraction * 1_000_000_000) >> 32))
 }
 
 #[cfg(test)]

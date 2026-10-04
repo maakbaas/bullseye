@@ -19,6 +19,7 @@ use crate::pipe;
 use crate::programs::ProgramList;
 use crate::proto::{self, Policy, Request, Response};
 use crate::service;
+use crate::sync::LockExt;
 use crate::watchdog::note;
 
 /// The service's logic called directly, in place of the pipe (`service::local_handler`).
@@ -105,7 +106,7 @@ impl Remote {
                 self.revive_service();
             }
         }
-        self.cache.lock().unwrap().as_ref().map(|c| c.active.clone())
+        self.cache.locked().as_ref().map(|c| c.active.clone())
     }
 
     /// Asks Windows to start the service if it is registered but not running (it only stays down
@@ -117,7 +118,7 @@ impl Remote {
         if self.is_local() {
             return;
         }
-        let mut last = self.last_start.lock().unwrap();
+        let mut last = self.last_start.locked();
         if last.is_some_and(|at| at.elapsed() < START_EVERY) {
             return;
         }
@@ -135,7 +136,7 @@ impl Remote {
 
     /// Takes in what the service said; the list is only parsed again when it changed.
     fn apply(&self, policy: Option<Policy>) {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.locked();
         let Some(policy) = policy else {
             *cache = None;
             return;
@@ -174,7 +175,7 @@ mod tests {
     }
 
     fn current(remote: &Remote) -> Option<Active> {
-        remote.cache.lock().unwrap().as_ref().map(|c| c.active.clone())
+        remote.cache.locked().as_ref().map(|c| c.active.clone())
     }
 
     #[test]

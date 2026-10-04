@@ -10,6 +10,7 @@ mod proto;
 mod service;
 mod setup;
 mod state;
+mod sync;
 mod tab_closer;
 mod unlock;
 mod watchdog;
