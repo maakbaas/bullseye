@@ -38,7 +38,7 @@ use crate::block::{parse_duration, Blocklist};
 use crate::filters::FilterList;
 use crate::proto::{Policy, Request, Response};
 use crate::state::{self, Enforcers};
-use crate::watchdog::{self, note};
+use crate::watchdog::{self, note, AppSlot};
 use crate::{clock, pipe, unlock};
 
 /// The service's name, exactly as it appears in the services list.
@@ -76,6 +76,8 @@ pub enum Shutdown {
 struct Context {
     blocklist: Blocklist,
     lockout: Mutex<Lockout>,
+    /// Which process is the app (`watchdog.rs`).
+    slot: Arc<AppSlot>,
 }
 
 /// Wrong unlock passwords in a row, and until when the next guess is refused.
@@ -197,12 +199,14 @@ fn start_engine(console: bool) -> Result<mpsc::Receiver<Shutdown>, String> {
             thread::sleep(Duration::from_secs(1));
         });
     }
+    // In development there is no app to look after: it is whatever `npm run dev` runs.
+    let slot = Arc::new(AppSlot::new(!console));
     if !console {
-        watchdog::spawn_supervisor(blocklist.clone());
+        watchdog::spawn_supervisor(blocklist.clone(), slot.clone());
     }
     let (quit, quit_rx) = mpsc::channel();
-    let context = Arc::new(Context { blocklist, lockout: Mutex::default() });
-    pipe::serve(move |request| handle(&context, request), quit)?;
+    let context = Arc::new(Context { blocklist, lockout: Mutex::default(), slot });
+    pipe::serve(move |caller, request| handle(&context, caller, request), quit)?;
     Ok(quit_rx)
 }
 
@@ -230,9 +234,10 @@ fn lock_down_data_dir() {
 // ---------------------------------------------------------------------------------------------
 // Answering the app and the installer
 
-/// Answers one request, and says whether the service should end afterwards. Everything in the
-/// request is checked here again: it comes from any local user's program, not necessarily ours.
-fn handle(context: &Context, request: Request) -> (Response, Option<Shutdown>) {
+/// Answers one request from the process `caller`, and says whether the service should end
+/// afterwards. Everything in the request is checked here again: it comes from any local user's
+/// program, not necessarily ours.
+fn handle(context: &Context, caller: u32, request: Request) -> (Response, Option<Shutdown>) {
     let blocklist = &context.blocklist;
     let done = |result: Result<(), String>| match result {
         Ok(()) => Response::Done,
@@ -240,7 +245,15 @@ fn handle(context: &Context, request: Request) -> (Response, Option<Shutdown>) {
     };
     match request {
         Request::Status => (Response::Status(blocklist.status()), None),
+        // The app asks to be taken in; anyone else is refused, and the app then ends itself.
+        Request::Register => match context.slot.register(caller) {
+            Ok(()) => (Response::Done, None),
+            Err(why) => (Response::Refused(why), None),
+        },
         Request::Policy => {
+            // This request comes from the thread that closes tabs: hearing it is how the service
+            // knows that is going on. It counts only from the process taken in as the app.
+            context.slot.heard(caller);
             let policy = blocklist.active().map(|(filters, enforcers)| Policy { filters: filters.entries(), enforcers });
             (Response::Policy(policy), None)
         }
@@ -448,7 +461,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("service-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let blocklist = Blocklist::with_store(Store::new(dir.join("state.json")));
-        Context { blocklist, lockout: Mutex::default() }
+        Context { blocklist, lockout: Mutex::default(), slot: Arc::new(AppSlot::new(false)) }
     }
 
     fn start_request(duration: &str) -> Request {
@@ -472,7 +485,7 @@ mod tests {
             Request::Start { filters: vec!["has space.com".into()], duration: "1h".into(), enforcers: Enforcers::default() },
         ];
         for request in bad {
-            assert!(matches!(handle(&context, request).0, Response::Failed(_)));
+            assert!(matches!(handle(&context, 0, request).0, Response::Failed(_)));
         }
         assert!(context.blocklist.filters().is_none());
     }
@@ -482,66 +495,93 @@ mod tests {
         let first = context("empty-list");
         let obsidian_only = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: true };
         let request = |enforcers| Request::Start { filters: vec![], duration: "1h".into(), enforcers };
-        assert_eq!(handle(&first, request(obsidian_only)).0, Response::Done);
+        assert_eq!(handle(&first, 0, request(obsidian_only)).0, Response::Done);
         // The block keeps what it was started with: no entries, and Obsidian's enforcer only.
-        let Response::Policy(Some(policy)) = handle(&first, Request::Policy).0 else { panic!("no policy") };
+        let Response::Policy(Some(policy)) = handle(&first, 0, Request::Policy).0 else { panic!("no policy") };
         assert!(policy.filters.is_empty());
         assert_eq!(policy.enforcers, obsidian_only);
 
         // With all enforcers on (the default), an empty list is fine too: Obsidian's can run.
         let other = context("empty-list-default");
-        assert_eq!(handle(&other, request(Enforcers::default())).0, Response::Done);
+        assert_eq!(handle(&other, 0, request(Enforcers::default())).0, Response::Done);
+    }
+
+    #[test]
+    fn only_the_installed_app_is_taken_in_as_the_app() {
+        use std::process::{Command, Stdio};
+        let mut context = context("register");
+        context.slot = Arc::new(AppSlot::new(true));
+        // A process that is not the installed exe, whatever it calls itself.
+        let mut stranger = Command::new("ping.exe").args(["-n", "30", "127.0.0.1"]).stdout(Stdio::null()).spawn().unwrap();
+
+        let (response, _) = handle(&context, stranger.id(), Request::Register);
+        assert!(matches!(response, Response::Refused(why) if why.contains("not the installed")));
+        assert!(matches!(handle(&context, 0, Request::Register).0, Response::Refused(_)));
+        // It may ask for the policy all the same; that is just information, and counts for nothing.
+        assert_eq!(handle(&context, stranger.id(), Request::Policy).0, Response::Policy(None));
+        assert!(context.slot.supervise(true, false), "no app should have been taken in");
+
+        // This test process is the installed exe as far as the service can tell. Only if it runs
+        // in the console session is it taken in; elsewhere an app just runs unwatched.
+        let (response, _) = handle(&context, std::process::id(), Request::Register);
+        assert_eq!(response, Response::Done);
+        // A second app is refused while the first one is there.
+        let (response, _) = handle(&context, stranger.id(), Request::Register);
+        assert!(matches!(response, Response::Refused(_)));
+
+        let _ = stranger.kill();
+        let _ = stranger.wait();
     }
 
     #[test]
     fn a_timed_block_cannot_be_shortened_stopped_or_uninstalled() {
         let context = context("timed");
-        assert_eq!(handle(&context, start_request("1h")).0, Response::Done);
+        assert_eq!(handle(&context, 0, start_request("1h")).0, Response::Done);
         // Not replaced by a shorter or an untimed one, not stopped.
-        assert!(matches!(handle(&context, start_request("1s")).0, Response::Failed(_)));
-        assert!(matches!(handle(&context, start_request("")).0, Response::Failed(_)));
-        assert!(matches!(handle(&context, Request::Stop).0, Response::Failed(_)));
+        assert!(matches!(handle(&context, 0, start_request("1s")).0, Response::Failed(_)));
+        assert!(matches!(handle(&context, 0, start_request("")).0, Response::Failed(_)));
+        assert!(matches!(handle(&context, 0, Request::Stop).0, Response::Failed(_)));
         // Neither uninstalling nor updating gets through, and the service keeps running.
-        let (response, shutdown) = handle(&context, Request::PrepareUninstall);
+        let (response, shutdown) = handle(&context, 0, Request::PrepareUninstall);
         assert!(matches!(response, Response::Refused(_)) && shutdown.is_none());
-        let (response, shutdown) = handle(&context, Request::PrepareUpdate);
+        let (response, shutdown) = handle(&context, 0, Request::PrepareUpdate);
         assert!(matches!(response, Response::Refused(_)) && shutdown.is_none());
         // The policy is what the app enforces.
-        let Response::Policy(Some(policy)) = handle(&context, Request::Policy).0 else { panic!("no policy") };
+        let Response::Policy(Some(policy)) = handle(&context, 0, Request::Policy).0 else { panic!("no policy") };
         assert_eq!(policy.filters, vec!["a.com"]);
     }
 
     #[test]
     fn without_a_block_the_installer_gets_through() {
         let context = context("idle");
-        let (response, shutdown) = handle(&context, Request::PrepareUninstall);
+        let (response, shutdown) = handle(&context, 0, Request::PrepareUninstall);
         assert_eq!(response, Response::Done);
         assert!(matches!(shutdown, Some(Shutdown::Remove)));
-        let (response, shutdown) = handle(&context, Request::PrepareUpdate);
+        let (response, shutdown) = handle(&context, 0, Request::PrepareUpdate);
         assert_eq!(response, Response::Done);
         assert!(matches!(shutdown, Some(Shutdown::Update)));
         // An untimed block does not stop an uninstall, but does stop an update.
-        assert_eq!(handle(&context, start_request("")).0, Response::Done);
-        assert!(matches!(handle(&context, Request::PrepareUninstall).1, Some(Shutdown::Remove)));
-        assert!(matches!(handle(&context, Request::PrepareUpdate).0, Response::Refused(_)));
+        assert_eq!(handle(&context, 0, start_request("")).0, Response::Done);
+        assert!(matches!(handle(&context, 0, Request::PrepareUninstall).1, Some(Shutdown::Remove)));
+        assert!(matches!(handle(&context, 0, Request::PrepareUpdate).0, Response::Refused(_)));
     }
 
     #[test]
     fn the_password_ends_a_timed_block_and_wrong_ones_are_slowed_down() {
         let context = context("unlock");
-        assert_eq!(handle(&context, start_request("1h")).0, Response::Done);
+        assert_eq!(handle(&context, 0, start_request("1h")).0, Response::Done);
         for _ in 0..3 {
             let wrong = Request::Unlock { password: "nope".into() };
-            assert_eq!(handle(&context, wrong).0, Response::Failed("Wrong password".into()));
+            assert_eq!(handle(&context, 0, wrong).0, Response::Failed("Wrong password".into()));
         }
         // After the third, even the right password waits.
         let right = Request::Unlock { password: "test1234".into() };
-        assert!(matches!(handle(&context, right).0, Response::Failed(why) if why.starts_with("Too many")));
+        assert!(matches!(handle(&context, 0, right).0, Response::Failed(why) if why.starts_with("Too many")));
         assert!(context.blocklist.filters().is_some());
         // Once the wait is over, it works.
         context.lockout.lock().unwrap().until = None;
         let right = Request::Unlock { password: "test1234".into() };
-        assert_eq!(handle(&context, right).0, Response::Done);
+        assert_eq!(handle(&context, 0, right).0, Response::Done);
         assert!(context.blocklist.filters().is_none());
     }
 
@@ -566,6 +606,8 @@ mod tests {
         // Development mode, as `--service-console` is used with `npm run dev`, skips that check.
         std::env::set_var("SITEBLOCKER_DEV", "1");
 
+        // The console service looks after no app, so taking one in is always fine.
+        assert_eq!(client::call(&Request::Register), Ok(Response::Done));
         let Ok(Response::Status(status)) = client::call(&Request::Status) else { panic!("no status") };
         assert_eq!(status.remaining, None);
         assert_eq!(client::call(&start_request("1h")), Ok(Response::Done));

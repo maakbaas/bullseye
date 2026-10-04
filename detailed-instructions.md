@@ -1,6 +1,6 @@
 # Moving the watchdog to a SYSTEM service: implementation guide for this repo
 
-This guide is for implementing the SYSTEM-service design in *this* repo (`blocker`, Tauri tray app, Windows only). It is written against the actual code in `src-tauri/src/`. All the Rust below was compiled and the unit tests run in a scratch copy of the repo (`cargo check --tests`, no warnings; `cargo test`: 40 passed). One extra integration test (`the_pipe_answers_like_the_app_expects`, run with `--ignored`) started the real pipe server and talked to it like the app does: it passed. Section 9 lists what could **not** be tested without installing a real service, so you must test those parts yourself.
+This guide is for implementing the SYSTEM-service design in *this* repo (`blocker`, Tauri tray app, Windows only). It is written against the actual code in `src-tauri/src/`. All the Rust below was compiled and the unit tests run in a scratch copy of the repo (`cargo check --tests`, no warnings; `cargo test`: 44 passed). One extra integration test (`the_pipe_answers_like_the_app_expects`, run with `--ignored`) started the real pipe server and talked to it like the app does: it passed. The service was also seen working on one real install (its logs showed it launching the app in the user's session and refusing an uninstall during a timed block). Section 9 lists what could **not** be tested without installing a real service, so you must test those parts yourself.
 
 **Read sections 1 and 8 before you touch any code.** Section 8 is about how to get out if your own test setup locks you in.
 
@@ -27,7 +27,7 @@ How the old pieces map to the new ones:
 | Old | New |
 |---|---|
 | `task.rs` (logon task) | **Deleted.** Windows starts the service at boot; the service starts the app at logon. |
-| `watchdog.rs` launcher + app mutex dance | Rewritten: the service finds the app with a process scan and restarts it (`CreateProcessAsUserW`). Only the app's single-instance mutex stays. |
+| `watchdog.rs` launcher + app mutex dance | Rewritten: the service keeps a handle to the one process it takes for the app (one it started with `CreateProcessAsUserW`, or the installed exe registering itself), restarts it, and ends it if it stops asking for its policy. The single-instance mutex is gone. |
 | `state.json` in `%LOCALAPPDATA%` | Moved to `%ProgramData%\SiteBlocker`, owned by SYSTEM, administrators read-only. |
 | `Blocklist`, `clock.rs`, `unlock.rs` in the app | Run in the service. **`block.rs`, `clock.rs`, `unlock.rs`, `filters.rs`, `tab_closer.rs` are almost untouched** (see the diffs). |
 | Tauri commands did the work | They forward to the service over the pipe (`client.rs`). |
@@ -132,8 +132,12 @@ const MAX_MESSAGE: usize = 64 * 1024;
 pub enum Request {
     /// What the UI shows: time left, entries, enforcers.
     Status,
-    /// What the app enforces: asked every second.
+    /// What the app enforces: asked every second, from the thread that closes tabs, which is how
+    /// the service knows the closing is going on (`watchdog::AppSlot`).
     Policy,
+    /// The app, when it starts: asks the service to take it in as the app. Refused if another app
+    /// is running or this is not the installed exe, and then the app ends itself.
+    Register,
     Start { filters: Vec<String>, duration: String, enforcers: Enforcers },
     Stop,
     Unlock { password: String },
@@ -272,8 +276,8 @@ use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
 use windows_sys::Win32::System::IO::CancelIoEx;
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeServerSessionId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
-    PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, GetNamedPipeServerSessionId, PIPE_READMODE_BYTE,
+    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 
 use crate::proto::{self, Request, Response, PIPE};
@@ -296,10 +300,11 @@ static LIVE: Mutex<Vec<(usize, Instant)>> = Mutex::new(Vec::new());
 /// Starts serving. The first pipe instance is made here, before this returns, so that a pipe
 /// name already taken by something else fails the service start rather than going unnoticed.
 ///
-/// `handler` answers a request and may ask for something afterwards (`A`, sent on `after` once
+/// `handler` answers a request, given the process id of whoever sent it (which the pipe knows and
+/// the sender cannot lie about), and may ask for something afterwards (`A`, sent on `after` once
 /// the answer has been delivered).
 pub fn serve<A: Send + 'static>(
-    handler: impl Fn(Request) -> (Response, Option<A>) + Send + Sync + 'static,
+    handler: impl Fn(u32, Request) -> (Response, Option<A>) + Send + Sync + 'static,
     after: Sender<A>,
 ) -> Result<(), String> {
     let first = create_instance(true)?;
@@ -344,13 +349,18 @@ pub fn serve<A: Send + 'static>(
     Ok(())
 }
 
-fn serve_one<A>(mut pipe: File, handler: &dyn Fn(Request) -> (Response, Option<A>), after: Sender<A>) {
+fn serve_one<A>(mut pipe: File, handler: &dyn Fn(u32, Request) -> (Response, Option<A>), after: Sender<A>) {
     let key = pipe.as_raw_handle() as usize;
     LIVE.lock().unwrap().push((key, Instant::now() + DEADLINE));
 
+    // Who is on the other end, as Windows knows it. 0 if that cannot be told.
+    let mut client = 0u32;
+    // SAFETY: the handle is a connected pipe and `client` a valid place to write to.
+    unsafe { GetNamedPipeClientProcessId(pipe.as_raw_handle() as HANDLE, &mut client) };
+
     let (response, then) = match proto::read_message::<Request>(&mut pipe) {
         // A panic while answering must end this connection, not the service.
-        Ok(request) => catch_unwind(AssertUnwindSafe(|| handler(request)))
+        Ok(request) => catch_unwind(AssertUnwindSafe(|| handler(client, request)))
             .unwrap_or_else(|_| (Response::Failed("internal error".into()), None)),
         Err(e) => (Response::Failed(format!("bad request: {e}")), None),
     };
@@ -891,7 +901,7 @@ use crate::block::{parse_duration, Blocklist};
 use crate::filters::FilterList;
 use crate::proto::{Policy, Request, Response};
 use crate::state::{self, Enforcers};
-use crate::watchdog::{self, note};
+use crate::watchdog::{self, note, AppSlot};
 use crate::{clock, pipe, unlock};
 
 /// The service's name, exactly as it appears in the services list.
@@ -929,6 +939,8 @@ pub enum Shutdown {
 struct Context {
     blocklist: Blocklist,
     lockout: Mutex<Lockout>,
+    /// Which process is the app (`watchdog.rs`).
+    slot: Arc<AppSlot>,
 }
 
 /// Wrong unlock passwords in a row, and until when the next guess is refused.
@@ -1050,12 +1062,14 @@ fn start_engine(console: bool) -> Result<mpsc::Receiver<Shutdown>, String> {
             thread::sleep(Duration::from_secs(1));
         });
     }
+    // In development there is no app to look after: it is whatever `npm run dev` runs.
+    let slot = Arc::new(AppSlot::new(!console));
     if !console {
-        watchdog::spawn_supervisor(blocklist.clone());
+        watchdog::spawn_supervisor(blocklist.clone(), slot.clone());
     }
     let (quit, quit_rx) = mpsc::channel();
-    let context = Arc::new(Context { blocklist, lockout: Mutex::default() });
-    pipe::serve(move |request| handle(&context, request), quit)?;
+    let context = Arc::new(Context { blocklist, lockout: Mutex::default(), slot });
+    pipe::serve(move |caller, request| handle(&context, caller, request), quit)?;
     Ok(quit_rx)
 }
 
@@ -1083,9 +1097,10 @@ fn lock_down_data_dir() {
 // ---------------------------------------------------------------------------------------------
 // Answering the app and the installer
 
-/// Answers one request, and says whether the service should end afterwards. Everything in the
-/// request is checked here again: it comes from any local user's program, not necessarily ours.
-fn handle(context: &Context, request: Request) -> (Response, Option<Shutdown>) {
+/// Answers one request from the process `caller`, and says whether the service should end
+/// afterwards. Everything in the request is checked here again: it comes from any local user's
+/// program, not necessarily ours.
+fn handle(context: &Context, caller: u32, request: Request) -> (Response, Option<Shutdown>) {
     let blocklist = &context.blocklist;
     let done = |result: Result<(), String>| match result {
         Ok(()) => Response::Done,
@@ -1093,7 +1108,15 @@ fn handle(context: &Context, request: Request) -> (Response, Option<Shutdown>) {
     };
     match request {
         Request::Status => (Response::Status(blocklist.status()), None),
+        // The app asks to be taken in; anyone else is refused, and the app then ends itself.
+        Request::Register => match context.slot.register(caller) {
+            Ok(()) => (Response::Done, None),
+            Err(why) => (Response::Refused(why), None),
+        },
         Request::Policy => {
+            // This request comes from the thread that closes tabs: hearing it is how the service
+            // knows that is going on. It counts only from the process taken in as the app.
+            context.slot.heard(caller);
             let policy = blocklist.active().map(|(filters, enforcers)| Policy { filters: filters.entries(), enforcers });
             (Response::Policy(policy), None)
         }
@@ -1301,7 +1324,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("service-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let blocklist = Blocklist::with_store(Store::new(dir.join("state.json")));
-        Context { blocklist, lockout: Mutex::default() }
+        Context { blocklist, lockout: Mutex::default(), slot: Arc::new(AppSlot::new(false)) }
     }
 
     fn start_request(duration: &str) -> Request {
@@ -1325,7 +1348,7 @@ mod tests {
             Request::Start { filters: vec!["has space.com".into()], duration: "1h".into(), enforcers: Enforcers::default() },
         ];
         for request in bad {
-            assert!(matches!(handle(&context, request).0, Response::Failed(_)));
+            assert!(matches!(handle(&context, 0, request).0, Response::Failed(_)));
         }
         assert!(context.blocklist.filters().is_none());
     }
@@ -1335,66 +1358,93 @@ mod tests {
         let first = context("empty-list");
         let obsidian_only = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: true };
         let request = |enforcers| Request::Start { filters: vec![], duration: "1h".into(), enforcers };
-        assert_eq!(handle(&first, request(obsidian_only)).0, Response::Done);
+        assert_eq!(handle(&first, 0, request(obsidian_only)).0, Response::Done);
         // The block keeps what it was started with: no entries, and Obsidian's enforcer only.
-        let Response::Policy(Some(policy)) = handle(&first, Request::Policy).0 else { panic!("no policy") };
+        let Response::Policy(Some(policy)) = handle(&first, 0, Request::Policy).0 else { panic!("no policy") };
         assert!(policy.filters.is_empty());
         assert_eq!(policy.enforcers, obsidian_only);
 
         // With all enforcers on (the default), an empty list is fine too: Obsidian's can run.
         let other = context("empty-list-default");
-        assert_eq!(handle(&other, request(Enforcers::default())).0, Response::Done);
+        assert_eq!(handle(&other, 0, request(Enforcers::default())).0, Response::Done);
+    }
+
+    #[test]
+    fn only_the_installed_app_is_taken_in_as_the_app() {
+        use std::process::{Command, Stdio};
+        let mut context = context("register");
+        context.slot = Arc::new(AppSlot::new(true));
+        // A process that is not the installed exe, whatever it calls itself.
+        let mut stranger = Command::new("ping.exe").args(["-n", "30", "127.0.0.1"]).stdout(Stdio::null()).spawn().unwrap();
+
+        let (response, _) = handle(&context, stranger.id(), Request::Register);
+        assert!(matches!(response, Response::Refused(why) if why.contains("not the installed")));
+        assert!(matches!(handle(&context, 0, Request::Register).0, Response::Refused(_)));
+        // It may ask for the policy all the same; that is just information, and counts for nothing.
+        assert_eq!(handle(&context, stranger.id(), Request::Policy).0, Response::Policy(None));
+        assert!(context.slot.supervise(true, false), "no app should have been taken in");
+
+        // This test process is the installed exe as far as the service can tell. Only if it runs
+        // in the console session is it taken in; elsewhere an app just runs unwatched.
+        let (response, _) = handle(&context, std::process::id(), Request::Register);
+        assert_eq!(response, Response::Done);
+        // A second app is refused while the first one is there.
+        let (response, _) = handle(&context, stranger.id(), Request::Register);
+        assert!(matches!(response, Response::Refused(_)));
+
+        let _ = stranger.kill();
+        let _ = stranger.wait();
     }
 
     #[test]
     fn a_timed_block_cannot_be_shortened_stopped_or_uninstalled() {
         let context = context("timed");
-        assert_eq!(handle(&context, start_request("1h")).0, Response::Done);
+        assert_eq!(handle(&context, 0, start_request("1h")).0, Response::Done);
         // Not replaced by a shorter or an untimed one, not stopped.
-        assert!(matches!(handle(&context, start_request("1s")).0, Response::Failed(_)));
-        assert!(matches!(handle(&context, start_request("")).0, Response::Failed(_)));
-        assert!(matches!(handle(&context, Request::Stop).0, Response::Failed(_)));
+        assert!(matches!(handle(&context, 0, start_request("1s")).0, Response::Failed(_)));
+        assert!(matches!(handle(&context, 0, start_request("")).0, Response::Failed(_)));
+        assert!(matches!(handle(&context, 0, Request::Stop).0, Response::Failed(_)));
         // Neither uninstalling nor updating gets through, and the service keeps running.
-        let (response, shutdown) = handle(&context, Request::PrepareUninstall);
+        let (response, shutdown) = handle(&context, 0, Request::PrepareUninstall);
         assert!(matches!(response, Response::Refused(_)) && shutdown.is_none());
-        let (response, shutdown) = handle(&context, Request::PrepareUpdate);
+        let (response, shutdown) = handle(&context, 0, Request::PrepareUpdate);
         assert!(matches!(response, Response::Refused(_)) && shutdown.is_none());
         // The policy is what the app enforces.
-        let Response::Policy(Some(policy)) = handle(&context, Request::Policy).0 else { panic!("no policy") };
+        let Response::Policy(Some(policy)) = handle(&context, 0, Request::Policy).0 else { panic!("no policy") };
         assert_eq!(policy.filters, vec!["a.com"]);
     }
 
     #[test]
     fn without_a_block_the_installer_gets_through() {
         let context = context("idle");
-        let (response, shutdown) = handle(&context, Request::PrepareUninstall);
+        let (response, shutdown) = handle(&context, 0, Request::PrepareUninstall);
         assert_eq!(response, Response::Done);
         assert!(matches!(shutdown, Some(Shutdown::Remove)));
-        let (response, shutdown) = handle(&context, Request::PrepareUpdate);
+        let (response, shutdown) = handle(&context, 0, Request::PrepareUpdate);
         assert_eq!(response, Response::Done);
         assert!(matches!(shutdown, Some(Shutdown::Update)));
         // An untimed block does not stop an uninstall, but does stop an update.
-        assert_eq!(handle(&context, start_request("")).0, Response::Done);
-        assert!(matches!(handle(&context, Request::PrepareUninstall).1, Some(Shutdown::Remove)));
-        assert!(matches!(handle(&context, Request::PrepareUpdate).0, Response::Refused(_)));
+        assert_eq!(handle(&context, 0, start_request("")).0, Response::Done);
+        assert!(matches!(handle(&context, 0, Request::PrepareUninstall).1, Some(Shutdown::Remove)));
+        assert!(matches!(handle(&context, 0, Request::PrepareUpdate).0, Response::Refused(_)));
     }
 
     #[test]
     fn the_password_ends_a_timed_block_and_wrong_ones_are_slowed_down() {
         let context = context("unlock");
-        assert_eq!(handle(&context, start_request("1h")).0, Response::Done);
+        assert_eq!(handle(&context, 0, start_request("1h")).0, Response::Done);
         for _ in 0..3 {
             let wrong = Request::Unlock { password: "nope".into() };
-            assert_eq!(handle(&context, wrong).0, Response::Failed("Wrong password".into()));
+            assert_eq!(handle(&context, 0, wrong).0, Response::Failed("Wrong password".into()));
         }
         // After the third, even the right password waits.
         let right = Request::Unlock { password: "test1234".into() };
-        assert!(matches!(handle(&context, right).0, Response::Failed(why) if why.starts_with("Too many")));
+        assert!(matches!(handle(&context, 0, right).0, Response::Failed(why) if why.starts_with("Too many")));
         assert!(context.blocklist.filters().is_some());
         // Once the wait is over, it works.
         context.lockout.lock().unwrap().until = None;
         let right = Request::Unlock { password: "test1234".into() };
-        assert_eq!(handle(&context, right).0, Response::Done);
+        assert_eq!(handle(&context, 0, right).0, Response::Done);
         assert!(context.blocklist.filters().is_none());
     }
 
@@ -1419,6 +1469,8 @@ mod tests {
         // Development mode, as `--service-console` is used with `npm run dev`, skips that check.
         std::env::set_var("SITEBLOCKER_DEV", "1");
 
+        // The console service looks after no app, so taking one in is always fine.
+        assert_eq!(client::call(&Request::Register), Ok(Response::Done));
         let Ok(Response::Status(status)) = client::call(&Request::Status) else { panic!("no status") };
         assert_eq!(status.remaining, None);
         assert_eq!(client::call(&start_request("1h")), Ok(Response::Done));
@@ -1478,42 +1530,65 @@ mod tests {
 
 **Delete `src-tauri/src/task.rs`.** Nothing refers to it any more.
 
-`watchdog.rs` is now mostly about the service looking after the app. The app finds itself with a mutex as before, but the service lives in another session, where that mutex is invisible (`Local\` is per session), so the service looks at processes instead: the same exe, started **without arguments**, in the **console session** (the one at the physical screen). `launch_app` starts the app as the logged-on user, not as SYSTEM: `WTSQueryUserToken` gets that user's token, `CreateEnvironmentBlock` their environment, `CreateProcessAsUserW` starts the process on `winsta0\default`. It runs while any block exists (timed or not), plus once after each logon (`LAUNCH_APP`). That is why quitting the app with the unlock password sticks: the block is gone, so nobody restarts it until the next logon.
+`watchdog.rs` is now about the service looking after the app, and **which process counts as the app is the service's decision, never a matter of its name**. The service keeps a handle to exactly one process in an `AppSlot`: either one it started itself (`launch_app`), or one that asked to be taken in. Taking in (`AppSlot::register`, used by `Request::Register` and by the first `Policy` request) happens only if the process runs **the installed exe** (the service, as SYSTEM, can open any process and read its image path), in the **console session** (the one at the physical screen), and no other app is taken in. The service learns who is asking from the pipe itself (`GetNamedPipeClientProcessId`), so the caller cannot lie about it. Consequences:
+
+- A copy of the exe under another name, or a look-alike, is never the app: it is refused, and the service starts the real one anyway.
+- Holding the process handle means the service sees the app end at once, and the process id cannot be reused by something else meanwhile.
+- A second copy of the real app, started by hand, is refused (`Register`) and ends itself. This replaces the old per-session mutex, which a user could simply hold with any program to keep the real app from starting.
+- **The app has to keep asking for its policy.** That request comes from the same thread that closes the tabs (`tab_closer.rs` calls `remote.active()` at the top of each pass). While a block runs, an app that has not asked for 5 seconds (20 seconds for a freshly started one: Tauri and WebView2 take a while) is ended and started again. That covers a suspended app, and a closing thread that hangs or is suspended. A pause of the service's own loop of 3 seconds or more is taken to be the machine having slept, and gives the app a fresh start instead of ending it.
+
+`launch_app` starts the app as the logged-on user, not as SYSTEM: `WTSQueryUserToken` gets that user's token, `CreateEnvironmentBlock` their environment, `CreateProcessAsUserW` starts the process on `winsta0\default`. It runs while any block exists (timed or not), plus once after each logon (`LAUNCH_APP`). That is why quitting the app with the unlock password sticks: the block is gone, so nobody restarts it until the next logon.
+
+**What this still does not stop:** the app is a process of the very user it protects against. Someone who can inject code into it, or run the real exe under a debugger, can keep it asking for its policy while it enforces nothing. The heartbeat shows that the closing loop is running, not that tabs are being closed. That takes effort and skill rather than a renamed copy of Notepad, which is the level of friction this project aims for.
 
 ```rust
-//! The service's watch over the app, and the little the app itself needs from this module.
+//! The service's watch over the app.
 //!
 //! The service (`service.rs`) runs as SYSTEM in session 0, which has no desktop, so it cannot
 //! close browser tabs itself. The app does that, in the logged-on user's session, and the service
-//! keeps it there: it starts the app at every logon, and while a block runs it starts the
-//! app again within about a second of it ending. Ending the app does not end the block, and
-//! ending the service is up to Windows (`service::install` sets it to restart on failure and
-//! takes the right to stop it away from everyone but SYSTEM).
+//! keeps it there: it starts the app at every logon and, while a block runs, starts it again
+//! within about a second of it ending. With no block the app is left alone, so quitting it with
+//! the unlock password sticks.
+//!
+//! **Which process is "the app" is the service's decision, not a matter of its name.** The service
+//! keeps a handle to one process, the app (`AppSlot`):
+//! - one it started itself (`launch_app`), or
+//! - one that asked to be taken in (`Request::Register`, or its first policy request), and only
+//!   if it runs the installed exe, in the console session, with no other app taken in. The
+//!   service learns who is asking from the pipe itself, and as SYSTEM it can look at any process.
+//!
+//! A copy of the exe under another name, or a look-alike, is therefore not the app: it is never
+//! taken in, so the service starts the real one anyway. And the app has to keep asking for its
+//! policy: that request comes from the same thread that closes the tabs (`tab_closer.rs`), so an
+//! app that was suspended, or whose closing thread hangs or is suspended, stops asking, and the
+//! service ends it and starts a new one (`AppSlot::supervise`).
+//!
+//! What this does not stop: the app is still a process of the user it protects against. Someone
+//! who can inject code into it can keep it asking while it enforces nothing.
 //!
 //! Nothing here is hidden or protected beyond that, on purpose: the service is named
 //! `SiteBlocker` in the services list, the app runs under its own name in Task Manager, and
 //! uninstalling the app (Settings > Apps) removes the service. The mechanism is here to add
 //! friction at a weak moment, not to be unknowable.
-//!
-//! The app claims `Local\SiteBlocker-app`, so a second copy of it exits instead of doubling up.
-//! That mutex is per session and the service is in another one, which is why the service finds
-//! the app by looking at processes instead.
 
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, WAIT_TIMEOUT};
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
 use windows_sys::Win32::System::RemoteDesktop::{ProcessIdToSessionId, WTSGetActiveConsoleSessionId, WTSQueryUserToken};
 use windows_sys::Win32::System::Threading::{
-    CreateMutexW, CreateProcessAsUserW, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, STARTUPINFOW,
+    CreateProcessAsUserW, OpenProcess, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
+    CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    PROCESS_TERMINATE, STARTUPINFOW,
 };
 
 use crate::block::Blocklist;
@@ -1523,11 +1598,19 @@ use crate::state;
 /// cannot turn into a process being started over and over.
 const MAX_BACKOFF: u32 = 10;
 
-/// Session-scoped mutex name. `Local\` keeps it out of other sessions and needs no privilege.
-const APP_MUTEX: &str = r"Local\SiteBlocker-app";
+/// An app that has asked for its policy before must ask again within this time, while a block
+/// runs, or it is ended and started again.
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// A freshly started app has this long to ask for the first time (Tauri and WebView2 start up).
+const STARTUP_GRACE: Duration = Duration::from_secs(20);
+
+/// A pause of the service's own loop this long or longer is taken to be the machine having slept,
+/// not the app having stalled.
+const RESUME_GAP: Duration = Duration::from_secs(3);
 
 /// Set at logon (and when the service starts): the app is wanted even without a block.
-/// Cleared once the app is seen running, so quitting it with the unlock password sticks.
+/// Cleared once an app is there, so quitting it with the unlock password sticks.
 pub static LAUNCH_APP: AtomicBool = AtomicBool::new(true);
 
 /// Whether this process is the service, which only decides where `note` writes.
@@ -1537,30 +1620,198 @@ pub fn in_service() {
     IN_SERVICE.store(true, Ordering::Relaxed);
 }
 
-/// Whether this process is the one app instance, claiming the app's mutex if it is free.
-///
-/// A second copy (started by the service, or by launching the executable again) leaves the
-/// running one to do the work rather than closing tabs twice over.
-pub fn claim_app() -> bool {
-    claim(APP_MUTEX)
+// ---------------------------------------------------------------------------------------------
+// The service's hold on the app
+
+/// A handle to a process, held by the service. Holding it means the process id cannot be given to
+/// another process while the service still takes it for the app.
+pub struct Process {
+    handle: usize,
+    pub pid: u32,
 }
 
-/// The service's half: keeps the app running in the logged-on user's session while a block is
-/// running (timed or not), and starts it when `LAUNCH_APP` is set.
-pub fn spawn_supervisor(blocklist: Blocklist) {
+impl Process {
+    /// Opens a process by id. The service is SYSTEM and may open any.
+    pub fn open(pid: u32) -> Option<Process> {
+        // SAFETY: plain call; the handle is closed in `drop`.
+        let handle = unsafe {
+            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid)
+        };
+        (!handle.is_null()).then_some(Process { handle: handle as usize, pid })
+    }
+
+    pub fn exited(&self) -> bool {
+        // SAFETY: the handle is ours and still open.
+        unsafe { WaitForSingleObject(self.handle as HANDLE, 0) != WAIT_TIMEOUT }
+    }
+
+    pub fn terminate(&self) {
+        // SAFETY: the handle is ours and still open.
+        unsafe { TerminateProcess(self.handle as HANDLE, 1) };
+    }
+
+    /// The path of the exe it runs.
+    fn image_path(&self) -> Option<String> {
+        let mut buffer = [0u16; 1024];
+        let mut length = buffer.len() as u32;
+        // SAFETY: the buffer is as long as `length` says.
+        let ok = unsafe { QueryFullProcessImageNameW(self.handle as HANDLE, 0, buffer.as_mut_ptr(), &mut length) };
+        (ok != 0).then(|| String::from_utf16_lossy(&buffer[..length as usize]))
+    }
+}
+
+impl Drop for Process {
+    fn drop(&mut self) {
+        // SAFETY: the handle is ours and is not used again.
+        unsafe { CloseHandle(self.handle as HANDLE) };
+    }
+}
+
+/// The one app the service looks after.
+pub struct AppSlot {
+    /// False in development (`--service-console`), where there is nothing to look after: the app
+    /// is whatever `npm run dev` runs.
+    supervised: bool,
+    current: Mutex<Option<Adopted>>,
+}
+
+struct Adopted {
+    process: Process,
+    /// When the service took it in.
+    since: Instant,
+    /// When it last asked for its policy; `None` until it has.
+    heard: Option<Instant>,
+}
+
+impl AppSlot {
+    pub fn new(supervised: bool) -> AppSlot {
+        AppSlot { supervised, current: Mutex::new(None) }
+    }
+
+    /// The service started this process itself.
+    fn launched(&self, process: Process) {
+        *self.current.lock().unwrap() = Some(Adopted { process, since: Instant::now(), heard: None });
+    }
+
+    /// The app asks to be taken in when it starts. Refused if another app is running, or if it is
+    /// not the installed exe: the app then ends itself.
+    pub fn register(&self, pid: u32) -> Result<(), String> {
+        if !self.supervised {
+            return Ok(());
+        }
+        adopt(&mut self.current.lock().unwrap(), pid)
+    }
+
+    /// The app asked for its policy, which it does every second from the thread that closes tabs.
+    /// This is what shows the closing is going on. From anyone but the app, it counts for nothing.
+    pub fn heard(&self, pid: u32) {
+        if self.supervised {
+            // A refusal here is not an error: it only means this caller is not the app.
+            let _ = adopt(&mut self.current.lock().unwrap(), pid);
+        }
+    }
+
+    /// Looks after the app once a second: forgets one that has ended and, while a block runs, ends
+    /// one that has stopped asking. `resumed` is set when the machine seems to have slept, which
+    /// is no fault of the app's. Returns whether there is no app now.
+    pub fn supervise(&self, block_active: bool, resumed: bool) -> bool {
+        let mut current = self.current.lock().unwrap();
+        if let Some(app) = current.as_mut() {
+            let now = Instant::now();
+            if app.process.exited() {
+                note("service", "the app has ended");
+                *current = None;
+            } else if resumed {
+                app.since = now;
+                app.heard = app.heard.map(|_| now);
+            } else if block_active && is_stale(app.since, app.heard, now) {
+                note("service", "the app stopped asking for its policy; ending it");
+                app.process.terminate();
+                *current = None;
+            }
+        }
+        current.is_none()
+    }
+
+    /// A slot holding `process` as if taken in at `since` and last heard at `heard`.
+    #[cfg(test)]
+    fn set_for_test(&self, process: Process, since: Instant, heard: Option<Instant>) {
+        *self.current.lock().unwrap() = Some(Adopted { process, since, heard });
+    }
+}
+
+/// Takes the process `pid` in as the app, or says why not. Already being the app is fine and
+/// counts as having been heard.
+fn adopt(current: &mut Option<Adopted>, pid: u32) -> Result<(), String> {
+    if current.as_ref().is_some_and(|app| app.process.exited()) {
+        *current = None;
+    }
+    match current {
+        Some(app) if app.process.pid == pid => {
+            app.heard = Some(Instant::now());
+            return Ok(());
+        }
+        Some(_) => return Err("Site Blocker is already running".into()),
+        None => {}
+    }
+    let process = Process::open(pid).ok_or("cannot look at the process that asked")?;
+    // The name does not matter, the file does: it has to be the installed exe, which a standard
+    // user cannot write to or replace.
+    let installed = exe().ok_or("the service does not know its own exe")?;
+    let same = process.image_path().is_some_and(|theirs| theirs.eq_ignore_ascii_case(&installed.to_string_lossy()));
+    if !same {
+        return Err("not the installed Site Blocker".into());
+    }
+    // Only the session at the screen is looked after; an app elsewhere just runs.
+    if session_of(pid) != console_session() {
+        return Ok(());
+    }
+    let now = Instant::now();
+    *current = Some(Adopted { process, since: now, heard: Some(now) });
+    Ok(())
+}
+
+/// Whether an app taken in at `since` and last heard at `heard` has stayed quiet for too long.
+fn is_stale(since: Instant, heard: Option<Instant>, now: Instant) -> bool {
+    let (from, limit) = match heard {
+        Some(heard) => (heard, HEARTBEAT_TIMEOUT),
+        None => (since, STARTUP_GRACE),
+    };
+    now.saturating_duration_since(from) > limit
+}
+
+fn console_session() -> u32 {
+    // SAFETY: plain query with no arguments.
+    unsafe { WTSGetActiveConsoleSessionId() }
+}
+
+fn session_of(pid: u32) -> u32 {
+    let mut session = u32::MAX;
+    // SAFETY: `session` is a valid place to write to.
+    unsafe { ProcessIdToSessionId(pid, &mut session) };
+    session
+}
+
+/// The service's half: starts the app when it is wanted and not there, and looks after it.
+pub fn spawn_supervisor(blocklist: Blocklist, slot: Arc<AppSlot>) {
     thread::spawn(move || {
-        let mut system = System::new();
         // How many starts in a row have not led to a running app, which slows the starting down.
         let mut missed = 0u32;
         let mut not_before = Instant::now();
         let mut last_error = String::new();
+        let mut last_round = Instant::now();
         loop {
             thread::sleep(Duration::from_secs(1));
-            if !wanted(&blocklist) {
+            let resumed = last_round.elapsed() >= RESUME_GAP;
+            last_round = Instant::now();
+
+            let block_active = blocklist.filters().is_some();
+            let no_app = slot.supervise(block_active, resumed);
+            if !block_active && !LAUNCH_APP.load(Ordering::SeqCst) {
                 missed = 0;
                 continue;
             }
-            if app_is_running(&mut system) {
+            if !no_app {
                 LAUNCH_APP.store(false, Ordering::SeqCst);
                 missed = 0;
                 continue;
@@ -1569,7 +1820,8 @@ pub fn spawn_supervisor(blocklist: Blocklist) {
                 continue;
             }
             match launch_app() {
-                Ok(()) => {
+                Ok(process) => {
+                    slot.launched(process);
                     LAUNCH_APP.store(false, Ordering::SeqCst);
                     last_error.clear();
                     note("service", "started the app");
@@ -1587,45 +1839,15 @@ pub fn spawn_supervisor(blocklist: Blocklist) {
     });
 }
 
-/// Whether the app should be running: while any block runs, and until the app has been seen after a
-/// logon. With no block the app is left alone, so quitting it with the unlock password sticks.
-fn wanted(blocklist: &Blocklist) -> bool {
-    blocklist.filters().is_some() || LAUNCH_APP.load(Ordering::SeqCst)
-}
-
-/// Whether the app is running in the session of whoever is at the screen. It is the same
-/// executable without arguments: the service, the installer's calls and the like all have some.
-fn app_is_running(system: &mut System) -> bool {
-    let Some(exe) = exe() else { return false };
-    let name = file_name(&exe);
-    // SAFETY: plain query with no arguments.
-    let console = unsafe { WTSGetActiveConsoleSessionId() };
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        ProcessRefreshKind::nothing().with_cmd(UpdateKind::OnlyIfNotSet).with_exe(UpdateKind::OnlyIfNotSet),
-    );
-    system.processes().iter().any(|(pid, process)| {
-        let same = process.exe().is_some_and(|other| file_name(other) == name) && process.cmd().len() <= 1;
-        if !same || pid.as_u32() == std::process::id() {
-            return false;
-        }
-        let mut session = 0u32;
-        // SAFETY: `session` is a valid place to write to.
-        let ok = unsafe { ProcessIdToSessionId(pid.as_u32(), &mut session) };
-        ok != 0 && session == console
-    })
-}
-
 /// Starts the app on the desktop of whoever is at the screen, as that user and not as SYSTEM:
 /// closing their browser tabs goes through UI Automation, which needs their desktop, and the
 /// app has no business being SYSTEM.
-fn launch_app() -> Result<(), String> {
+fn launch_app() -> Result<Process, String> {
     let exe = exe().ok_or("no executable to start")?;
     let mut command = wide(&format!("\"{}\"", exe.display()));
     let mut desktop = wide(r"winsta0\default");
     // SAFETY: every pointer passed is valid for the call; the token, the environment block and
-    // the two process handles are released again whatever happens.
+    // the thread handle are released again whatever happens, and the process handle is handed on.
     unsafe {
         let session = WTSGetActiveConsoleSessionId();
         if session == u32::MAX {
@@ -1665,9 +1887,8 @@ fn launch_app() -> Result<(), String> {
             return Err(format!("CreateProcessAsUserW failed (error {error})"));
         }
         CloseHandle(process.hThread);
-        CloseHandle(process.hProcess);
+        Ok(Process { handle: process.hProcess as usize, pid: process.dwProcessId })
     }
-    Ok(())
 }
 
 /// Ends the app, when the service goes away for an update or an uninstall. Every other process
@@ -1691,25 +1912,6 @@ pub fn kill_apps() {
     }
 }
 
-/// Claims a mutex for this process, returning false when another process already holds it.
-fn claim(role: &str) -> bool {
-    let name = wide(role);
-    // SAFETY: a null security descriptor and a null-terminated name are both valid here. The
-    // handle is deliberately never closed: it must stay open for as long as this process runs,
-    // which is what keeps the role claimed, so not closing it is the point.
-    unsafe {
-        let handle = CreateMutexW(null(), 1, name.as_ptr());
-        // Read before anything else can overwrite the thread's last error.
-        let taken = GetLastError() == ERROR_ALREADY_EXISTS;
-        if handle.is_null() {
-            // Nothing to hold the mutex with, so do not risk running a second copy.
-            note("app", &format!("cannot claim {role}"));
-            return false;
-        }
-        !taken
-    }
-}
-
 /// This executable, for starting and recognising the app.
 fn exe() -> Option<PathBuf> {
     std::env::current_exe().ok()
@@ -1722,6 +1924,10 @@ fn exe() -> Option<PathBuf> {
 /// user can see what they actually did.
 pub fn note(who: &str, message: &str) {
     eprintln!("{who}: {message}");
+    // The tests must not write into the log of a real install on the machine they run on.
+    if cfg!(test) {
+        return;
+    }
     let (dir, file) = if IN_SERVICE.load(Ordering::Relaxed) { (state::dir(), "service.log") } else { (state::user_dir(), "app.log") };
     let Some(dir) = dir else { return };
     // The folder only exists once something has been written to it.
@@ -1772,11 +1978,11 @@ pub fn wide(name: &str) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::{Child, Command, Stdio};
 
     #[test]
     fn names_are_null_terminated() {
         assert_eq!(wide("ab"), vec![b'a' as u16, b'b' as u16, 0]);
-        assert_eq!(*wide(APP_MUTEX).last().unwrap(), 0);
     }
 
     #[test]
@@ -1799,34 +2005,101 @@ mod tests {
         assert_eq!(timestamp().len(), 19);
     }
 
-    #[test]
-    fn the_app_is_wanted_while_any_block_runs() {
-        use crate::filters::FilterList;
-        use crate::state::{Enforcers, Store};
-        LAUNCH_APP.store(false, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("watchdog-{}-wanted", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        let blocklist = Blocklist::with_store(Store::new(dir.join("state.json")));
-        assert!(!wanted(&blocklist));
-        // An untimed block as well as a timed one: ending the app must not end the blocking.
-        blocklist.start(FilterList::parse(&["a.com"]).unwrap(), None, Enforcers::default()).unwrap();
-        assert!(wanted(&blocklist));
-        blocklist.stop().unwrap();
-        assert!(!wanted(&blocklist));
-        let hour = Some(Duration::from_secs(3600));
-        blocklist.start(FilterList::parse(&["a.com"]).unwrap(), hour, Enforcers::default()).unwrap();
-        assert!(wanted(&blocklist));
-        // Right after a logon the app is wanted even with no block.
-        blocklist.reset();
-        assert!(!wanted(&blocklist));
-        LAUNCH_APP.store(true, Ordering::SeqCst);
-        assert!(wanted(&blocklist));
+    /// A process that lives for a while and is not this exe.
+    fn sleeper() -> Child {
+        Command::new("ping.exe").args(["-n", "60", "127.0.0.1"]).stdout(Stdio::null()).spawn().unwrap()
+    }
+
+    fn wait_until_exited(process: &Process) -> bool {
+        (0..50).any(|_| {
+            thread::sleep(Duration::from_millis(100));
+            process.exited()
+        })
     }
 
     #[test]
-    fn claiming_a_role_twice_fails() {
-        assert!(claim("Local\\SiteBlocker-test-role"));
-        assert!(!claim("Local\\SiteBlocker-test-role"));
+    fn a_held_process_shows_when_it_ends() {
+        let mut child = sleeper();
+        let process = Process::open(child.id()).unwrap();
+        assert!(!process.exited());
+        process.terminate();
+        assert!(wait_until_exited(&process));
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn staying_quiet_is_judged_by_what_was_heard_last() {
+        let now = Instant::now();
+        let ago = |seconds| now - Duration::from_secs(seconds);
+        // Never heard: the start-up allowance applies. Heard: the short one.
+        assert!(!is_stale(ago(10), None, now));
+        assert!(is_stale(ago(30), None, now));
+        assert!(!is_stale(ago(60), Some(ago(2)), now));
+        assert!(is_stale(ago(60), Some(ago(8)), now));
+    }
+
+    #[test]
+    fn a_slot_that_is_not_supervised_takes_everyone() {
+        let slot = AppSlot::new(false);
+        assert_eq!(slot.register(0), Ok(()));
+        slot.heard(0);
+    }
+
+    #[test]
+    fn only_the_installed_exe_is_the_app_and_only_one_at_a_time() {
+        let me = std::process::id();
+        if session_of(me) != console_session() {
+            return eprintln!("skipping: this test does not run in the console session");
+        }
+        let mut child = sleeper();
+
+        // Not the installed exe, whatever it is called: refused, and nothing is taken in.
+        let slot = AppSlot::new(true);
+        assert_eq!(slot.register(child.id()), Err("not the installed Site Blocker".into()));
+        slot.heard(child.id());
+        assert!(slot.supervise(true, false), "nothing should have been taken in");
+
+        // The installed exe (this test is it) is taken in, and then no other one is.
+        assert_eq!(slot.register(me), Ok(()));
+        assert!(!slot.supervise(true, false));
+        assert_eq!(slot.register(me), Ok(()));
+        assert_eq!(slot.register(child.id()), Err("Site Blocker is already running".into()));
+
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn an_app_that_stops_asking_is_ended_but_not_by_a_sleep_or_without_a_block() {
+        let now = Instant::now();
+        let ago = |seconds| now - Duration::from_secs(seconds);
+        let quiet = |slot: &AppSlot, child: &Child| {
+            slot.set_for_test(Process::open(child.id()).unwrap(), ago(60), Some(ago(30)));
+        };
+        let (mut stale, mut slept, mut idle) = (sleeper(), sleeper(), sleeper());
+        let slot = AppSlot::new(true);
+
+        // Quiet for 30 seconds while a block runs: ended, and the slot is empty for a new one.
+        quiet(&slot, &stale);
+        let held = Process::open(stale.id()).unwrap();
+        assert!(slot.supervise(true, false));
+        assert!(wait_until_exited(&held));
+
+        // The same after the machine slept: the app is given a fresh start instead.
+        quiet(&slot, &slept);
+        assert!(!slot.supervise(true, true));
+        assert!(!Process::open(slept.id()).unwrap().exited());
+        assert!(!slot.supervise(true, false), "the grace after a sleep should still be running");
+
+        // And with no block there is nothing to enforce, so nothing to end it for.
+        quiet(&slot, &idle);
+        assert!(!slot.supervise(false, false));
+        assert!(!Process::open(idle.id()).unwrap().exited());
+
+        for child in [&mut stale, &mut slept, &mut idle] {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 ```
@@ -1942,7 +2215,7 @@ mod watchdog;
 
 use block::Status;
 use client::Remote;
-use proto::Request;
+use proto::{Request, Response};
 use state::Enforcers;
 use tauri::{
     tray::{MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -2000,9 +2273,11 @@ fn main() {
         std::process::exit(setup::prepare_update());
     }
 
-    // One app instance only. A second copy (started by the service, or by launching the
-    // executable again) leaves the running one to do the work.
-    if !watchdog::claim_app() {
+    // Ask the service to take this process in as the app. It refuses if another app is running
+    // (a second copy leaves the running one to do the work) or if this is not the installed exe.
+    // If the service cannot be reached, go on: it takes the app in on its first policy request.
+    if let Ok(Response::Refused(why)) = client::call(&Request::Register) {
+        watchdog::note("app", &format!("not starting: {why}"));
         return;
     }
 
@@ -2163,12 +2438,13 @@ The project notes describe the old design and are used by every future session, 
 
 - `src-tauri/src/service.rs` – the SYSTEM service: owns the block, answers the app over the pipe, installs / removes itself
 - `src-tauri/src/pipe.rs`, `proto.rs`, `client.rs` – the named pipe `\\.\pipe\SiteBlocker`: server, messages, and the app's side (keeps the last policy in memory)
-- `src-tauri/src/watchdog.rs` – the service's watch over the app (starts it as the logged-on user, at logon and while a block runs) and the app's single-instance mutex
+- `src-tauri/src/watchdog.rs` – the service's watch over the app (starts it as the logged-on user, at logon and while a block runs; decides which process is the app and ends one that stops asking for its policy)
 
 **Replace "Surviving a restart, a kill, and a reboot" with:**
 
 > The `SiteBlocker` Windows service runs as SYSTEM and starts at boot. It holds the block (`%ProgramData%\SiteBlocker\state.json`, SYSTEM-owned), internet time and the unlock hash. The tray app (user session) asks it every second what to enforce and does the tab closing; it holds no state, and keeps enforcing the last answer if the service is briefly unreachable.
-> - End the app in Task Manager while a block (timed or not) is running: the service starts it again within about a second.
+> - End the app in Task Manager while a block (timed or not) is running: the service starts it again within about a second. Suspend it, or stop its closing loop, and it is ended and started again within about 5 seconds.
+> - The service, not the process name, decides which process is the app: the installed exe, in the console session, that it started or that registered itself. A copy under another name is not the app.
 > - End the service: Windows refuses ("Access denied") for administrators; if it fails by itself, Windows restarts it at once (failure actions).
 > - Reboot mid-block: the service reads `state.json` and resumes with the time left.
 > - The service starts the app at every logon, also without a block. "Unlock" clears the block and quits the app; the service keeps running idle and starts the app again at the next logon.
@@ -2248,7 +2524,7 @@ rmdir /s /q "%ProgramData%\SiteBlocker"
 
 ```powershell
 cd src-tauri
-cargo test                               # 40 tests: block, clock, filters, state, unlock, proto, client, service, watchdog
+cargo test                               # 44 tests: block, clock, filters, state, unlock, proto, client, service, watchdog
 cargo test -- --ignored the_pipe --nocapture   # starts the real pipe server in the test process, ~15 s; no service may be running
 ```
 
@@ -2281,6 +2557,10 @@ Build with `npm run build` (installer in `src-tauri\target\release\bundle\nsis\`
 | 18 | Uninstall while the service is registered but not answering (in the VM, suspend the service process with a SYSTEM shell tool first) | the uninstall stops with "did not respond, so nothing was removed" (exit code 1); no files are deleted |
 | 19 | Uninstall after the service was deleted by hand (`sc delete`, via the recovery steps) | carries on and removes the files (no service registered is exit code 0) |
 | 20 | The app starts a stopped service. In a SYSTEM shell turn the restart off (`sc failure SiteBlocker reset= 0 actions= ""`), then `taskkill /f /im SiteBlocker.exe` the service while the app runs | within about 5 s the app log says "the service was not running; started it" and the service runs again. **Put the restart back afterwards**: `sc failure SiteBlocker reset= 86400 actions= restart/0/restart/0/restart/0` |
+| 21 | Copy `SiteBlocker.exe` to another folder under another name and run it during a block, then end the real app in Task Manager | the service still starts the real app within about a second (the copy was never taken in) |
+| 22 | During a block, suspend the real app (Process Explorer, or `pssuspend` from Sysinternals) | within about 5 to 6 seconds `service.log` says "the app stopped asking for its policy; ending it", and a new app starts |
+| 23 | Start `SiteBlocker.exe` by hand while the app runs | the second one exits at once; `app.log` says "not starting: Site Blocker is already running" |
+| 24 | During a block, put the machine to sleep for a minute and wake it | the app is not ended because of the sleep (no "stopped asking" line in `service.log`) |
 
 If test 1 fails: read `%ProgramData%\SiteBlocker\service.log` (administrators can read it) and the installer's error message; `%LOCALAPPDATA%\SiteBlocker\app.log` has the `--install` output.
 

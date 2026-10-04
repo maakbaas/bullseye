@@ -23,8 +23,8 @@ use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
 use windows_sys::Win32::System::IO::CancelIoEx;
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeServerSessionId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
-    PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, GetNamedPipeServerSessionId, PIPE_READMODE_BYTE,
+    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 
 use crate::proto::{self, Request, Response, PIPE};
@@ -47,10 +47,11 @@ static LIVE: Mutex<Vec<(usize, Instant)>> = Mutex::new(Vec::new());
 /// Starts serving. The first pipe instance is made here, before this returns, so that a pipe
 /// name already taken by something else fails the service start rather than going unnoticed.
 ///
-/// `handler` answers a request and may ask for something afterwards (`A`, sent on `after` once
+/// `handler` answers a request, given the process id of whoever sent it (which the pipe knows and
+/// the sender cannot lie about), and may ask for something afterwards (`A`, sent on `after` once
 /// the answer has been delivered).
 pub fn serve<A: Send + 'static>(
-    handler: impl Fn(Request) -> (Response, Option<A>) + Send + Sync + 'static,
+    handler: impl Fn(u32, Request) -> (Response, Option<A>) + Send + Sync + 'static,
     after: Sender<A>,
 ) -> Result<(), String> {
     let first = create_instance(true)?;
@@ -95,13 +96,18 @@ pub fn serve<A: Send + 'static>(
     Ok(())
 }
 
-fn serve_one<A>(mut pipe: File, handler: &dyn Fn(Request) -> (Response, Option<A>), after: Sender<A>) {
+fn serve_one<A>(mut pipe: File, handler: &dyn Fn(u32, Request) -> (Response, Option<A>), after: Sender<A>) {
     let key = pipe.as_raw_handle() as usize;
     LIVE.lock().unwrap().push((key, Instant::now() + DEADLINE));
 
+    // Who is on the other end, as Windows knows it. 0 if that cannot be told.
+    let mut client = 0u32;
+    // SAFETY: the handle is a connected pipe and `client` a valid place to write to.
+    unsafe { GetNamedPipeClientProcessId(pipe.as_raw_handle() as HANDLE, &mut client) };
+
     let (response, then) = match proto::read_message::<Request>(&mut pipe) {
         // A panic while answering must end this connection, not the service.
-        Ok(request) => catch_unwind(AssertUnwindSafe(|| handler(request)))
+        Ok(request) => catch_unwind(AssertUnwindSafe(|| handler(client, request)))
             .unwrap_or_else(|_| (Response::Failed("internal error".into()), None)),
         Err(e) => (Response::Failed(format!("bad request: {e}")), None),
     };

@@ -15,7 +15,7 @@ mod watchdog;
 
 use block::Status;
 use client::Remote;
-use proto::Request;
+use proto::{Request, Response};
 use state::Enforcers;
 use tauri::{
     tray::{MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -73,9 +73,11 @@ fn main() {
         std::process::exit(setup::prepare_update());
     }
 
-    // One app instance only. A second copy (started by the service, or by launching the
-    // executable again) leaves the running one to do the work.
-    if !watchdog::claim_app() {
+    // Ask the service to take this process in as the app. It refuses if another app is running
+    // (a second copy leaves the running one to do the work) or if this is not the installed exe.
+    // If the service cannot be reached, go on: it takes the app in on its first policy request.
+    if let Ok(Response::Refused(why)) = client::call(&Request::Register) {
+        watchdog::note("app", &format!("not starting: {why}"));
         return;
     }
 

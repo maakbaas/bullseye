@@ -23,8 +23,12 @@ const MAX_MESSAGE: usize = 64 * 1024;
 pub enum Request {
     /// What the UI shows: time left, entries, enforcers.
     Status,
-    /// What the app enforces: asked every second.
+    /// What the app enforces: asked every second, from the thread that closes tabs, which is how
+    /// the service knows the closing is going on (`watchdog::AppSlot`).
     Policy,
+    /// The app, when it starts: asks the service to take it in as the app. Refused if another app
+    /// is running or this is not the installed exe, and then the app ends itself.
+    Register,
     Start { filters: Vec<String>, duration: String, enforcers: Enforcers },
     Stop,
     Unlock { password: String },
