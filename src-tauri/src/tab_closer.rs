@@ -23,10 +23,12 @@ use crate::sync::spawn_critical;
 use crate::watchdog::note;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use uiautomation::patterns::{UIInvokePattern, UIValuePattern, UIWindowPattern};
-use uiautomation::types::{ControlType, TreeScope, UIProperty};
+use uiautomation::types::{ControlType, Handle, TreeScope, UIProperty};
 use uiautomation::{UIAutomation, UIElement};
 use windows_sys::Win32::Foundation::{HWND, LPARAM};
-use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, PostMessageW, WM_CLOSE};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetClassNameW, GetWindowThreadProcessId, IsWindowVisible, PostMessageW, WM_CLOSE,
+};
 
 const INTERVAL: Duration = Duration::from_secs(1);
 const RECHECK: Duration = Duration::from_secs(10);
@@ -55,10 +57,15 @@ pub fn spawn(remote: Remote) {
                         eprintln!("tab_closer: {e}");
                     }
                 }
+                // Obsidian and the programs both look at the running programs: one scan serves both.
+                let programs = enforcers.uses(Uses::Programs) && !active.programs.is_empty();
+                if enforcers.obsidian_web_viewer || programs {
+                    closer.scan_processes(enforcers.obsidian_web_viewer);
+                }
                 if enforcers.obsidian_web_viewer {
                     closer.close_obsidian_with_web_content();
                 }
-                if enforcers.uses(Uses::Programs) && !active.programs.is_empty() {
+                if programs {
                     closer.close_programs(&active.programs);
                 }
             }
@@ -69,8 +76,8 @@ pub fn spawn(remote: Remote) {
 
 struct Closer {
     automation: UIAutomation,
-    /// Window runtime id -> its cached UI elements, so they are not searched for every second.
-    windows: HashMap<Vec<i32>, Window>,
+    /// Window handle -> its cached UI elements, so they are not searched for every second.
+    windows: HashMap<isize, Window>,
     system: System,
     /// Programs that were asked to close, by process id and when, so the ones that do not are ended.
     asked: HashMap<u32, Instant>,
@@ -84,6 +91,8 @@ enum Window {
 
 #[derive(Clone)]
 struct Browser {
+    /// The browser window itself.
+    window: UIElement,
     omnibox: UIElement,
     /// Parent of the visible pages (`MultiContentsView`); holds two pages in split view.
     contents: Option<UIElement>,
@@ -97,19 +106,16 @@ struct Page {
 
 impl Closer {
     fn tick(&mut self, active: &Active, enforcers: Enforcers) -> uiautomation::Result<()> {
-        // Window class shared by all Chromium-based browsers (and Electron apps, which have
-        // no address bar and are skipped in `browser`).
-        let cond = self.automation.create_property_condition(UIProperty::ClassName, "Chrome_WidgetWin_1".into(), None)?;
-        let windows = self.automation.get_root_element()?.find_all(TreeScope::Children, &cond)?;
-
-        let mut seen = Vec::new();
-        for window in windows {
-            let Ok(id) = window.get_runtime_id() else { continue };
-            seen.push(id.clone());
-            let Some(browser) = self.browser(&window, &id) else { continue };
+        // The browser windows are found by a plain window enumeration, which takes a fraction of a
+        // millisecond. Asking UI Automation to search the desktop for them took about 90.
+        let handles = browser_windows();
+        let mut seen = Vec::with_capacity(handles.len());
+        for handle in handles {
+            seen.push(handle);
+            let Some(browser) = self.browser(handle) else { continue };
             let Ok(pages) = self.pages(&browser) else {
                 // Cached elements went stale; look them up again next tick.
-                self.windows.remove(&id);
+                self.windows.remove(&handle);
                 continue;
             };
             // Two pages at once is a split view; one is an ordinary tab.
@@ -118,25 +124,31 @@ impl Closer {
                 continue;
             }
             if let Some(page) = pages.iter().find(|p| active.blocks_site(&p.url)) {
-                match close_tab(&self.automation, &window, &page.title) {
+                match close_tab(&self.automation, &browser.window, &page.title) {
                     Ok(()) => eprintln!("tab_closer: closed {}", page.url),
                     Err(e) => eprintln!("tab_closer: failed to close {}: {e}", page.url),
                 }
             }
         }
-        self.windows.retain(|id, _| seen.contains(id));
+        self.windows.retain(|handle, _| seen.contains(handle));
         Ok(())
+    }
+
+    /// Looks at the running programs, once, for the checks below (`close_obsidian_with_web_content`,
+    /// `close_programs`). Command lines are only fetched when Obsidian's check needs them.
+    fn scan_processes(&mut self, command_lines: bool) {
+        let kind = if command_lines {
+            ProcessRefreshKind::nothing().with_cmd(UpdateKind::OnlyIfNotSet)
+        } else {
+            ProcessRefreshKind::nothing()
+        };
+        self.system.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
     }
 
     /// Closes Obsidian (like clicking its X) when it hosts web content. Obsidian's own UI runs in
     /// an unsandboxed renderer (it needs Node); web viewer pages run in sandboxed ones. Ending
     /// those renderers instead makes Obsidian quit on the next navigation, so close it cleanly.
     fn close_obsidian_with_web_content(&mut self) {
-        self.system.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            true,
-            ProcessRefreshKind::nothing().with_cmd(UpdateKind::OnlyIfNotSet),
-        );
         let obsidian = |p: &&sysinfo::Process| p.name().eq_ignore_ascii_case("obsidian.exe");
         let has = |p: &sysinfo::Process, flag: &str| p.cmd().iter().any(|a| a.to_string_lossy() == flag);
         let processes = self.system.processes();
@@ -174,7 +186,6 @@ impl Closer {
     /// the ones still running `KILL_AFTER` later (or that have no window to ask). Programs Windows
     /// needs are never touched (`ProgramList::is_blocked`), nor is this app.
     fn close_programs(&mut self, programs: &ProgramList) {
-        self.system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
         let me = std::process::id();
         let mut running = Vec::new();
         for (pid, process) in self.system.processes() {
@@ -201,22 +212,28 @@ impl Closer {
     }
 
     /// The window's cached browser elements, or None if it is not a browser window.
-    fn browser(&mut self, window: &UIElement, id: &Vec<i32>) -> Option<Browser> {
-        match self.windows.get(id) {
+    fn browser(&mut self, handle: isize) -> Option<Browser> {
+        match self.windows.get(&handle) {
             Some(Window::Browser(b)) => return Some(b.clone()),
             Some(Window::Other(since)) if since.elapsed() < RECHECK => return None,
             _ => {}
         }
+        let Ok(window) = self.automation.element_from_handle(Handle::from(handle)) else {
+            // Gone already, or not ours to look at.
+            self.windows.insert(handle, Window::Other(Instant::now()));
+            return None;
+        };
         let find = |class: &str| {
             let cond = self.automation.create_property_condition(UIProperty::ClassName, class.into(), None).ok()?;
             window.find_first(TreeScope::Descendants, &cond).ok()
         };
         let Some(omnibox) = find("OmniboxViewViews") else {
-            self.windows.insert(id.clone(), Window::Other(Instant::now()));
+            self.windows.insert(handle, Window::Other(Instant::now()));
             return None;
         };
-        let browser = Browser { omnibox, contents: find("MultiContentsView") };
-        self.windows.insert(id.clone(), Window::Browser(browser.clone()));
+        let contents = find("MultiContentsView");
+        let browser = Browser { window, omnibox, contents };
+        self.windows.insert(handle, Window::Browser(browser.clone()));
         Some(browser)
     }
 
@@ -244,6 +261,26 @@ impl Closer {
     }
 }
 
+/// The visible top-level windows of the class all Chromium-based browsers share (Electron apps
+/// have it too; they have no address bar and are skipped in `Closer::browser`). Visible ones only,
+/// which is what UI Automation lists as the desktop's children too.
+fn browser_windows() -> Vec<isize> {
+    unsafe extern "system" fn each(window: HWND, found: LPARAM) -> i32 {
+        let mut name = [0u16; 32];
+        // SAFETY: the buffer is as long as the length says; `window` is one Windows just handed over.
+        let (length, visible) = unsafe { (GetClassNameW(window, name.as_mut_ptr(), 32), IsWindowVisible(window) != 0) };
+        if visible && length > 0 && String::from_utf16_lossy(&name[..length as usize]) == "Chrome_WidgetWin_1" {
+            // SAFETY: `found` is the vector below, which outlives the enumeration.
+            unsafe { (*(found as *mut Vec<isize>)).push(window as isize) };
+        }
+        1
+    }
+    let mut found: Vec<isize> = Vec::new();
+    // SAFETY: the callback is the function above, and `found` outlives the call.
+    unsafe { EnumWindows(Some(each), &mut found as *mut Vec<isize> as LPARAM) };
+    found
+}
+
 /// Posts a close request to every top-level window of the process, as the X button does. The
 /// program may ask to save first, or not close at all; that is what `KILL_AFTER` is for.
 fn ask_to_close(pid: u32) {
@@ -262,12 +299,21 @@ fn ask_to_close(pid: u32) {
     unsafe { EnumWindows(Some(each), pid as LPARAM) };
 }
 
+/// Window classes of a browser's tab strip entries: Chrome and Brave call them `Tab`, Edge calls
+/// them `EdgeTab`. The class is what tells a browser tab from a tab-like widget inside a web page
+/// (an ARIA tablist), whose close button must never be pressed.
+const TAB_CLASSES: [&str; 2] = ["Tab", "EdgeTab"];
+
 /// Presses the Close button of the selected tab showing `title`. In split view both tabs are
 /// selected and named "<title> - Left view" / "<title> - Right view", so the title picks one;
 /// with a single selected tab (or no title) the first selected tab is closed.
 fn close_tab(a: &UIAutomation, window: &UIElement, title: &str) -> uiautomation::Result<()> {
+    let is_a_tab_class = a.create_or_condition(
+        a.create_property_condition(UIProperty::ClassName, TAB_CLASSES[0].into(), None)?,
+        a.create_property_condition(UIProperty::ClassName, TAB_CLASSES[1].into(), None)?,
+    )?;
     let cond = a.create_and_condition(
-        a.create_property_condition(UIProperty::ClassName, "Tab".into(), None)?,
+        is_a_tab_class,
         a.create_and_condition(
             a.create_property_condition(UIProperty::ControlType, (ControlType::TabItem as i32).into(), None)?,
             a.create_property_condition(UIProperty::SelectionItemIsSelected, true.into(), None)?,
@@ -299,6 +345,12 @@ mod tests {
         Command::new(path).args(["-n", "60", "127.0.0.1"]).stdout(Stdio::null()).spawn().unwrap()
     }
 
+    /// What the loop does for the programs: one scan, then the check.
+    fn pass(closer: &mut Closer, programs: &ProgramList) {
+        closer.scan_processes(false);
+        closer.close_programs(programs);
+    }
+
     #[test]
     fn a_listed_program_is_asked_to_close_then_ended_and_others_are_left_alone() {
         let Ok(automation) = UIAutomation::new() else { return eprintln!("skipping: no UI Automation here") };
@@ -307,14 +359,14 @@ mod tests {
         let programs = ProgramList::parse(&["siteblocker-test-l*"]).unwrap();
 
         // The first pass asks. This program has no window to ask, so it carries on for now.
-        closer.close_programs(&programs);
+        pass(&mut closer, &programs);
         assert!(closer.asked.contains_key(&listed.id()));
         assert!(!closer.asked.contains_key(&other.id()));
         assert!(listed.try_wait().unwrap().is_none());
 
         // Once it has had its time, the next pass ends it.
         thread::sleep(KILL_AFTER + Duration::from_millis(500));
-        closer.close_programs(&programs);
+        pass(&mut closer, &programs);
         let ended = (0..50).any(|_| {
             thread::sleep(Duration::from_millis(100));
             listed.try_wait().unwrap().is_some()
@@ -322,10 +374,53 @@ mod tests {
         assert!(ended, "the listed program should have been ended");
 
         // A program that has gone is forgotten, and the one that was not listed never touched.
-        closer.close_programs(&programs);
+        pass(&mut closer, &programs);
         assert!(closer.asked.is_empty());
         assert!(other.try_wait().unwrap().is_none());
         let _ = other.kill();
         let _ = other.wait();
     }
+
+    /// A manual check against a real browser: have a Chromium browser window open on
+    /// `https://example.com` (`msedge --new-window https://example.com`), then
+    /// `cargo test -- --ignored a_real_browser_tab_is_closed --nocapture`. The tab must be closed by the
+    /// sweep, which also prints how long a pass takes. (Needs a window that shows that page itself: a
+    /// browser extension that replaces the page would hide it.)
+    #[test]
+    #[ignore]
+    fn a_real_browser_tab_is_closed() {
+        use crate::filters::FilterList;
+        let automation = UIAutomation::new().unwrap();
+        let mut closer = Closer { automation, windows: HashMap::new(), system: System::new(), asked: HashMap::new() };
+        let active = |entry: &str| crate::block::Active {
+            filters: std::sync::Arc::new(FilterList::parse(&[entry]).unwrap()),
+            allowed: std::sync::Arc::new(FilterList::default()),
+            programs: std::sync::Arc::new(ProgramList::default()),
+            enforcers: Enforcers::default(),
+        };
+        println!("chromium-class visible windows: {}", browser_windows().len());
+        let quiet = active("real-check-nothing.invalid");
+        let _ = closer.tick(&quiet, Enforcers::default());
+        let runs = 20;
+        let start = Instant::now();
+        for _ in 0..runs {
+            closer.tick(&quiet, Enforcers::default()).unwrap();
+        }
+        println!("tick, nothing to close: {:.2} ms per pass", start.elapsed().as_secs_f64() * 1000.0 / runs as f64);
+        let browsers = closer.windows.values().filter(|w| matches!(w, Window::Browser(_))).count();
+        println!("browser windows recognised: {browsers}");
+        assert!(browsers >= 1, "open a Chromium browser window first");
+
+        let block = active("example.com");
+        let before = browser_windows().len();
+        let start = Instant::now();
+        let closed = (0..60).any(|_| {
+            let _ = closer.tick(&block, Enforcers::default());
+            thread::sleep(Duration::from_millis(250));
+            browser_windows().len() < before
+        });
+        println!("blocked tab closed: {closed} (after {:?})", start.elapsed());
+        assert!(closed, "the tab on example.com should have been closed");
+    }
+
 }
