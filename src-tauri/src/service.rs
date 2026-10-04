@@ -35,6 +35,8 @@ use windows_service::service_dispatcher;
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
 use crate::block::{parse_duration, Blocklist, Lists};
+#[cfg(any(debug_assertions, test))]
+use crate::client::Local;
 use crate::filters::FilterList;
 use crate::programs::ProgramList;
 use crate::proto::{Policy, Request, Response};
@@ -158,9 +160,7 @@ fn run_service() -> Result<(), String> {
 /// launching (the app runs from `npm run dev`), and an installer request just ends it.
 pub fn run_console() {
     watchdog::in_service();
-    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        state::use_dir(Path::new(&local).join("SiteBlocker-dev"));
-    }
+    use_dev_dir();
     match start_engine(true) {
         Ok(quit) => {
             eprintln!("service: running in the console; data in {:?}", state::dir());
@@ -187,19 +187,7 @@ fn start_engine(console: bool) -> Result<mpsc::Receiver<Shutdown>, String> {
     if !console {
         lock_down_data_dir();
     }
-    clock::spawn_sync();
-    let blocklist = Blocklist::new();
-    // Pick up a block that was running when the service or Windows last stopped.
-    blocklist.restore();
-    {
-        // Ends a timed block whose time is up, and keeps the time on disk moving for a restart
-        // while offline (`Saved::seen`), even when no app is asking.
-        let blocklist = blocklist.clone();
-        thread::spawn(move || loop {
-            blocklist.active();
-            thread::sleep(Duration::from_secs(1));
-        });
-    }
+    let blocklist = start_blocklist();
     // In development there is no app to look after: it is whatever `npm run dev` runs.
     let slot = Arc::new(AppSlot::new(!console));
     if !console {
@@ -209,6 +197,49 @@ fn start_engine(console: bool) -> Result<mpsc::Receiver<Shutdown>, String> {
     let context = Arc::new(Context { blocklist, lockout: Mutex::default(), slot });
     pipe::serve(move |caller, request| handle(&context, caller, request), quit)?;
     Ok(quit_rx)
+}
+
+/// The running block, as the service has it: internet time on, a block left behind by an earlier
+/// run picked up again (so a restart does not end it), and a thread that ends a timed block whose
+/// time is up and keeps the time on disk moving for a restart while offline (`Saved::seen`), even
+/// when no app is asking.
+fn start_blocklist() -> Blocklist {
+    clock::spawn_sync();
+    let blocklist = Blocklist::new();
+    blocklist.restore();
+    let ticking = blocklist.clone();
+    thread::spawn(move || loop {
+        ticking.active();
+        thread::sleep(Duration::from_secs(1));
+    });
+    blocklist
+}
+
+/// The service's logic without a service: every request answered in this process, for
+/// `Remote::local`. Nobody can talk to it but the app that holds it, and nothing looks after the
+/// app (`AppSlot::new(false)`).
+#[cfg(any(debug_assertions, test))]
+pub fn local_handler(blocklist: Blocklist) -> Local {
+    let context = Context { blocklist, lockout: Mutex::default(), slot: Arc::new(AppSlot::new(false)) };
+    Arc::new(move |request| handle(&context, 0, request).0)
+}
+
+/// For `npm run dev`: the service inside the app, with no service installed, no pipe and no
+/// administrator rights. **Debug builds only**, and not used with `SITEBLOCKER_USE_SERVICE` set.
+/// Ending the app ends the enforcing, which is fine while developing. The block is kept in
+/// `%LOCALAPPDATA%\SiteBlocker-dev`, as with `--service-console`, so a timed block is still there
+/// the next time; delete that folder to forget it.
+#[cfg(debug_assertions)]
+pub fn embedded() -> Local {
+    use_dev_dir();
+    local_handler(start_blocklist())
+}
+
+/// Development keeps its files apart from a real install's: `%LOCALAPPDATA%\SiteBlocker-dev`.
+fn use_dev_dir() {
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        state::use_dir(Path::new(&local).join("SiteBlocker-dev"));
+    }
 }
 
 /// Makes the data folder SYSTEM's: owned by SYSTEM, full control for SYSTEM, read-only for

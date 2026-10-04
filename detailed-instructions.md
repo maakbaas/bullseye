@@ -1,6 +1,6 @@
 # Moving the watchdog to a SYSTEM service: implementation guide for this repo
 
-This guide is for implementing the SYSTEM-service design in *this* repo (`blocker`, Tauri tray app, Windows only). It is written against the actual code in `src-tauri/src/`. All the Rust below was compiled and the unit tests run in a scratch copy of the repo (`cargo check --tests`, no warnings; `cargo test`: 63 passed). One extra integration test (`the_pipe_answers_like_the_app_expects`, run with `--ignored`) started the real pipe server and talked to it like the app does: it passed. The service was also seen working on one real install (its logs showed it launching the app in the user's session and refusing an uninstall during a timed block). Section 9 lists what could **not** be tested without installing a real service, so you must test those parts yourself.
+This guide is for implementing the SYSTEM-service design in *this* repo (`blocker`, Tauri tray app, Windows only). It is written against the actual code in `src-tauri/src/`. All the Rust below was compiled and the unit tests run in a scratch copy of the repo (`cargo check --tests`, no warnings; `cargo test`: 64 passed). One extra integration test (`the_pipe_answers_like_the_app_expects`, run with `--ignored`) started the real pipe server and talked to it like the app does: it passed. The service was also seen working on one real install (its logs showed it launching the app in the user's session and refusing an uninstall during a timed block). Section 9 lists what could **not** be tested without installing a real service, so you must test those parts yourself.
 
 **Read sections 1 and 8 before you touch any code.** Section 8 is about how to get out if your own test setup locks you in.
 
@@ -512,6 +512,10 @@ fn verify_server(pipe: &File) -> Result<(), String> {
 //! has the same shape as `Blocklist::active` did, so the closing code did not have to change.
 //! If the service cannot be reached (it is restarting, or being updated), the last answer keeps
 //! being enforced: a gap in the service must not open the block.
+//!
+//! In a debug build (`npm run dev`) the service's logic can run inside the app instead
+//! (`Remote::local`): no service, no pipe, no installer, and nothing that has to stay alive. Release
+//! builds do not contain that.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -524,6 +528,9 @@ use crate::programs::ProgramList;
 use crate::proto::{self, Policy, Request, Response};
 use crate::service;
 use crate::watchdog::note;
+
+/// The service's logic called directly, in place of the pipe (`service::local_handler`).
+pub type Local = Arc<dyn Fn(Request) -> Response + Send + Sync>;
 
 /// One request and its answer.
 pub fn call(request: &Request) -> Result<Response, String> {
@@ -540,6 +547,8 @@ pub struct Remote {
     failing: Arc<AtomicBool>,
     /// When the service was last asked to start, so that is not tried every second.
     last_start: Arc<Mutex<Option<Instant>>>,
+    /// Set in development: the service's logic, in this process.
+    local: Option<Local>,
 }
 
 /// The least time between two attempts to start the service.
@@ -555,9 +564,28 @@ impl Remote {
         Remote::default()
     }
 
+    /// A remote that is its own service: for `npm run dev`, and for tests.
+    #[cfg(any(debug_assertions, test))]
+    pub fn local(handler: Local) -> Remote {
+        Remote { local: Some(handler), ..Remote::default() }
+    }
+
+    /// Whether this is its own service, so there is nobody to register with or to start.
+    pub fn is_local(&self) -> bool {
+        self.local.is_some()
+    }
+
+    /// One request, to the service over the pipe or to the local one.
+    fn send(&self, request: Request) -> Result<Response, String> {
+        match &self.local {
+            Some(local) => Ok(local(request)),
+            None => call(&request),
+        }
+    }
+
     /// A command that answers yes or no.
     pub fn command(&self, request: Request) -> Result<(), String> {
-        match call(&request)? {
+        match self.send(request)? {
             Response::Done => Ok(()),
             Response::Failed(why) | Response::Refused(why) => Err(why),
             other => Err(format!("unexpected answer: {other:?}")),
@@ -565,7 +593,7 @@ impl Remote {
     }
 
     pub fn status(&self) -> Result<Status, String> {
-        match call(&Request::Status)? {
+        match self.send(Request::Status)? {
             Response::Status(status) => Ok(status),
             Response::Failed(why) => Err(why),
             other => Err(format!("unexpected answer: {other:?}")),
@@ -574,7 +602,7 @@ impl Remote {
 
     /// What to enforce right now, if anything.
     pub fn active(&self) -> Option<Active> {
-        match call(&Request::Policy) {
+        match self.send(Request::Policy) {
             Ok(Response::Policy(policy)) => {
                 self.failing.store(false, Ordering::Relaxed);
                 self.apply(policy);
@@ -594,6 +622,9 @@ impl Remote {
     /// (`service::SDDL`). A service that is not registered at all, as in development, just fails
     /// quietly.
     fn revive_service(&self) {
+        if self.is_local() {
+            return;
+        }
         let mut last = self.last_start.lock().unwrap();
         if last.is_some_and(|at| at.elapsed() < START_EVERY) {
             return;
@@ -685,6 +716,34 @@ mod tests {
         let wrong = Policy { filters: vec![], allowed: vec![], programs: vec!["*".into()], enforcers: Enforcers::default() };
         remote.apply(Some(wrong));
         assert!(current(&remote).unwrap().programs.is_blocked("steamwebhelper.exe"));
+    }
+
+    #[test]
+    fn a_local_remote_is_a_service_of_its_own_without_a_pipe() {
+        use crate::block::Blocklist;
+        use crate::state::Store;
+        let dir = std::env::temp_dir().join(format!("client-{}-local", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let remote = Remote::local(service::local_handler(Blocklist::with_store(Store::new(dir.join("state.json")))));
+        assert!(remote.is_local());
+        assert!(remote.active().is_none());
+
+        let start = Request::Start {
+            filters: vec!["a.com".into()],
+            allowed: vec![],
+            programs: vec![],
+            duration: "1h".into(),
+            enforcers: Enforcers::default(),
+        };
+        remote.command(start).unwrap();
+        assert!(remote.active().unwrap().blocks_site("https://a.com/x"));
+        assert!(remote.status().unwrap().remaining.is_some());
+        // The same rules as with the real service: a timed block cannot be stopped early, the
+        // password ends it.
+        assert!(remote.command(Request::Stop).is_err());
+        assert!(remote.command(Request::Unlock { password: "wrong".into() }).is_err());
+        remote.command(Request::Unlock { password: "test1234".into() }).unwrap();
+        assert!(remote.active().is_none());
     }
 }
 ```
@@ -1743,6 +1802,8 @@ use windows_service::service_dispatcher;
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
 use crate::block::{parse_duration, Blocklist, Lists};
+#[cfg(any(debug_assertions, test))]
+use crate::client::Local;
 use crate::filters::FilterList;
 use crate::programs::ProgramList;
 use crate::proto::{Policy, Request, Response};
@@ -1866,9 +1927,7 @@ fn run_service() -> Result<(), String> {
 /// launching (the app runs from `npm run dev`), and an installer request just ends it.
 pub fn run_console() {
     watchdog::in_service();
-    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        state::use_dir(Path::new(&local).join("SiteBlocker-dev"));
-    }
+    use_dev_dir();
     match start_engine(true) {
         Ok(quit) => {
             eprintln!("service: running in the console; data in {:?}", state::dir());
@@ -1895,19 +1954,7 @@ fn start_engine(console: bool) -> Result<mpsc::Receiver<Shutdown>, String> {
     if !console {
         lock_down_data_dir();
     }
-    clock::spawn_sync();
-    let blocklist = Blocklist::new();
-    // Pick up a block that was running when the service or Windows last stopped.
-    blocklist.restore();
-    {
-        // Ends a timed block whose time is up, and keeps the time on disk moving for a restart
-        // while offline (`Saved::seen`), even when no app is asking.
-        let blocklist = blocklist.clone();
-        thread::spawn(move || loop {
-            blocklist.active();
-            thread::sleep(Duration::from_secs(1));
-        });
-    }
+    let blocklist = start_blocklist();
     // In development there is no app to look after: it is whatever `npm run dev` runs.
     let slot = Arc::new(AppSlot::new(!console));
     if !console {
@@ -1917,6 +1964,49 @@ fn start_engine(console: bool) -> Result<mpsc::Receiver<Shutdown>, String> {
     let context = Arc::new(Context { blocklist, lockout: Mutex::default(), slot });
     pipe::serve(move |caller, request| handle(&context, caller, request), quit)?;
     Ok(quit_rx)
+}
+
+/// The running block, as the service has it: internet time on, a block left behind by an earlier
+/// run picked up again (so a restart does not end it), and a thread that ends a timed block whose
+/// time is up and keeps the time on disk moving for a restart while offline (`Saved::seen`), even
+/// when no app is asking.
+fn start_blocklist() -> Blocklist {
+    clock::spawn_sync();
+    let blocklist = Blocklist::new();
+    blocklist.restore();
+    let ticking = blocklist.clone();
+    thread::spawn(move || loop {
+        ticking.active();
+        thread::sleep(Duration::from_secs(1));
+    });
+    blocklist
+}
+
+/// The service's logic without a service: every request answered in this process, for
+/// `Remote::local`. Nobody can talk to it but the app that holds it, and nothing looks after the
+/// app (`AppSlot::new(false)`).
+#[cfg(any(debug_assertions, test))]
+pub fn local_handler(blocklist: Blocklist) -> Local {
+    let context = Context { blocklist, lockout: Mutex::default(), slot: Arc::new(AppSlot::new(false)) };
+    Arc::new(move |request| handle(&context, 0, request).0)
+}
+
+/// For `npm run dev`: the service inside the app, with no service installed, no pipe and no
+/// administrator rights. **Debug builds only**, and not used with `SITEBLOCKER_USE_SERVICE` set.
+/// Ending the app ends the enforcing, which is fine while developing. The block is kept in
+/// `%LOCALAPPDATA%\SiteBlocker-dev`, as with `--service-console`, so a timed block is still there
+/// the next time; delete that folder to forget it.
+#[cfg(debug_assertions)]
+pub fn embedded() -> Local {
+    use_dev_dir();
+    local_handler(start_blocklist())
+}
+
+/// Development keeps its files apart from a real install's: `%LOCALAPPDATA%\SiteBlocker-dev`.
+fn use_dev_dir() {
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        state::use_dir(Path::new(&local).join("SiteBlocker-dev"));
+    }
 }
 
 /// Makes the data folder SYSTEM's: owned by SYSTEM, full control for SYSTEM, read-only for
@@ -3194,6 +3284,18 @@ fn force_exit(password: String, app: AppHandle, remote: State<Remote>) -> Result
     Ok(())
 }
 
+/// Who the app talks to. Normally the service, over its pipe. In a debug build (`npm run dev`) the
+/// service's logic runs inside the app instead, so development needs no installed service; set
+/// `SITEBLOCKER_USE_SERVICE` to talk to a real one (or a `--service-console`) anyway. A release
+/// build has no such code.
+fn remote_for_this_run() -> Remote {
+    #[cfg(debug_assertions)]
+    if std::env::var_os("SITEBLOCKER_USE_SERVICE").is_none() {
+        return Remote::local(service::embedded());
+    }
+    Remote::new()
+}
+
 fn main() {
     // The service itself, started by Windows (`service.rs`).
     if std::env::args_os().any(|arg| arg == "--service") {
@@ -3215,15 +3317,19 @@ fn main() {
         std::process::exit(setup::prepare_update());
     }
 
+    let remote = remote_for_this_run();
+
     // Ask the service to take this process in as the app. It refuses if another app is running
     // (a second copy leaves the running one to do the work) or if this is not the installed exe.
     // If the service cannot be reached, go on: it takes the app in on its first policy request.
-    if let Ok(Response::Refused(why)) = client::call(&Request::Register) {
-        watchdog::note("app", &format!("not starting: {why}"));
-        return;
+    // (A local service has nobody to register with.)
+    if !remote.is_local() {
+        if let Ok(Response::Refused(why)) = client::call(&Request::Register) {
+            watchdog::note("app", &format!("not starting: {why}"));
+            return;
+        }
     }
 
-    let remote = Remote::new();
     tab_closer::spawn(remote.clone());
 
     tauri::Builder::default()
@@ -3700,7 +3806,15 @@ The project notes describe the old design and are used by every future session, 
 
 ### 8.1 Developing without installing a service
 
-You do not need admin rights or a real service to develop. In a terminal, from `src-tauri`:
+**`npm run dev` works on its own.** In a debug build the app runs the service's logic inside itself (`main::remote_for_this_run` gives it `Remote::local(service::embedded())`): no installed service, no pipe, no administrator rights, and nothing that has to stay alive. Kill the app whenever you like; it is only enforcing for as long as it runs.
+
+- The same rules apply as with the real service: the same `handle` function answers every request, so a timed block cannot be stopped early, the unlock password ends it, and starting is validated the same way. Only the transport differs (`Remote::send`).
+- What is *not* there: the SYSTEM service itself, the watchdog that restarts the app (and the heartbeat, `AppSlot`), the locked-down data folder, the pipe and its access list. Test those with a real install (section 9.2) or with the console service below.
+- The block is kept in `%LOCALAPPDATA%\SiteBlocker-dev`, apart from a real install's files. A timed block is therefore still there the next time you start the app; delete that folder to forget it.
+- **Release builds do not contain any of this.** It is compiled in only with `debug_assertions` (`service::embedded`, `Remote::local`), and `cargo check --release` is warning-free. Keep it that way: never make a release build able to be its own service.
+- Unlocking quits the app, which ends `tauri dev`, as before.
+
+To test the real pipe path in development anyway (the service's own loop, the pipe and `verify_server`), run the console service in a terminal, from `src-tauri`:
 
 ```powershell
 cargo build
@@ -3714,10 +3828,11 @@ and in a second terminal, from the repo root:
 
 ```powershell
 $env:SITEBLOCKER_DEV = "1"
+$env:SITEBLOCKER_USE_SERVICE = "1"   # talk to the pipe instead of running the service inside the app
 npm run dev
 ```
 
-The console service uses `%LOCALAPPDATA%\SiteBlocker-dev` for its files and does not launch the app. After changing service code, rebuild and re-copy the exe, then restart the console service. Unlocking quits the app, which ends `tauri dev`, as before.
+The console service uses the same `SiteBlocker-dev` folder and does not launch the app. After changing service code, rebuild and re-copy the exe, then restart the console service.
 
 ### 8.2 Recovery: when your own test locks you out (read this before testing on a real PC)
 
@@ -3765,7 +3880,7 @@ rmdir /s /q "%ProgramData%\SiteBlocker"
 
 ```powershell
 cd src-tauri
-cargo test                               # 63 tests: block, clock, filters, programs, state, unlock, proto, client, service, watchdog, tab_closer
+cargo test                               # 64 tests: block, clock, filters, programs, state, unlock, proto, client, service, watchdog, tab_closer
 cargo test -- --ignored the_pipe --nocapture   # starts the real pipe server in the test process, ~15 s; no service may be running
 ```
 

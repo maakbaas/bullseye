@@ -60,6 +60,18 @@ fn force_exit(password: String, app: AppHandle, remote: State<Remote>) -> Result
     Ok(())
 }
 
+/// Who the app talks to. Normally the service, over its pipe. In a debug build (`npm run dev`) the
+/// service's logic runs inside the app instead, so development needs no installed service; set
+/// `SITEBLOCKER_USE_SERVICE` to talk to a real one (or a `--service-console`) anyway. A release
+/// build has no such code.
+fn remote_for_this_run() -> Remote {
+    #[cfg(debug_assertions)]
+    if std::env::var_os("SITEBLOCKER_USE_SERVICE").is_none() {
+        return Remote::local(service::embedded());
+    }
+    Remote::new()
+}
+
 fn main() {
     // The service itself, started by Windows (`service.rs`).
     if std::env::args_os().any(|arg| arg == "--service") {
@@ -81,15 +93,19 @@ fn main() {
         std::process::exit(setup::prepare_update());
     }
 
+    let remote = remote_for_this_run();
+
     // Ask the service to take this process in as the app. It refuses if another app is running
     // (a second copy leaves the running one to do the work) or if this is not the installed exe.
     // If the service cannot be reached, go on: it takes the app in on its first policy request.
-    if let Ok(Response::Refused(why)) = client::call(&Request::Register) {
-        watchdog::note("app", &format!("not starting: {why}"));
-        return;
+    // (A local service has nobody to register with.)
+    if !remote.is_local() {
+        if let Ok(Response::Refused(why)) = client::call(&Request::Register) {
+            watchdog::note("app", &format!("not starting: {why}"));
+            return;
+        }
     }
 
-    let remote = Remote::new();
     tab_closer::spawn(remote.clone());
 
     tauri::Builder::default()

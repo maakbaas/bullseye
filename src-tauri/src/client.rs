@@ -4,6 +4,10 @@
 //! has the same shape as `Blocklist::active` did, so the closing code did not have to change.
 //! If the service cannot be reached (it is restarting, or being updated), the last answer keeps
 //! being enforced: a gap in the service must not open the block.
+//!
+//! In a debug build (`npm run dev`) the service's logic can run inside the app instead
+//! (`Remote::local`): no service, no pipe, no installer, and nothing that has to stay alive. Release
+//! builds do not contain that.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -16,6 +20,9 @@ use crate::programs::ProgramList;
 use crate::proto::{self, Policy, Request, Response};
 use crate::service;
 use crate::watchdog::note;
+
+/// The service's logic called directly, in place of the pipe (`service::local_handler`).
+pub type Local = Arc<dyn Fn(Request) -> Response + Send + Sync>;
 
 /// One request and its answer.
 pub fn call(request: &Request) -> Result<Response, String> {
@@ -32,6 +39,8 @@ pub struct Remote {
     failing: Arc<AtomicBool>,
     /// When the service was last asked to start, so that is not tried every second.
     last_start: Arc<Mutex<Option<Instant>>>,
+    /// Set in development: the service's logic, in this process.
+    local: Option<Local>,
 }
 
 /// The least time between two attempts to start the service.
@@ -47,9 +56,28 @@ impl Remote {
         Remote::default()
     }
 
+    /// A remote that is its own service: for `npm run dev`, and for tests.
+    #[cfg(any(debug_assertions, test))]
+    pub fn local(handler: Local) -> Remote {
+        Remote { local: Some(handler), ..Remote::default() }
+    }
+
+    /// Whether this is its own service, so there is nobody to register with or to start.
+    pub fn is_local(&self) -> bool {
+        self.local.is_some()
+    }
+
+    /// One request, to the service over the pipe or to the local one.
+    fn send(&self, request: Request) -> Result<Response, String> {
+        match &self.local {
+            Some(local) => Ok(local(request)),
+            None => call(&request),
+        }
+    }
+
     /// A command that answers yes or no.
     pub fn command(&self, request: Request) -> Result<(), String> {
-        match call(&request)? {
+        match self.send(request)? {
             Response::Done => Ok(()),
             Response::Failed(why) | Response::Refused(why) => Err(why),
             other => Err(format!("unexpected answer: {other:?}")),
@@ -57,7 +85,7 @@ impl Remote {
     }
 
     pub fn status(&self) -> Result<Status, String> {
-        match call(&Request::Status)? {
+        match self.send(Request::Status)? {
             Response::Status(status) => Ok(status),
             Response::Failed(why) => Err(why),
             other => Err(format!("unexpected answer: {other:?}")),
@@ -66,7 +94,7 @@ impl Remote {
 
     /// What to enforce right now, if anything.
     pub fn active(&self) -> Option<Active> {
-        match call(&Request::Policy) {
+        match self.send(Request::Policy) {
             Ok(Response::Policy(policy)) => {
                 self.failing.store(false, Ordering::Relaxed);
                 self.apply(policy);
@@ -86,6 +114,9 @@ impl Remote {
     /// (`service::SDDL`). A service that is not registered at all, as in development, just fails
     /// quietly.
     fn revive_service(&self) {
+        if self.is_local() {
+            return;
+        }
         let mut last = self.last_start.lock().unwrap();
         if last.is_some_and(|at| at.elapsed() < START_EVERY) {
             return;
@@ -177,5 +208,33 @@ mod tests {
         let wrong = Policy { filters: vec![], allowed: vec![], programs: vec!["*".into()], enforcers: Enforcers::default() };
         remote.apply(Some(wrong));
         assert!(current(&remote).unwrap().programs.is_blocked("steamwebhelper.exe"));
+    }
+
+    #[test]
+    fn a_local_remote_is_a_service_of_its_own_without_a_pipe() {
+        use crate::block::Blocklist;
+        use crate::state::Store;
+        let dir = std::env::temp_dir().join(format!("client-{}-local", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let remote = Remote::local(service::local_handler(Blocklist::with_store(Store::new(dir.join("state.json")))));
+        assert!(remote.is_local());
+        assert!(remote.active().is_none());
+
+        let start = Request::Start {
+            filters: vec!["a.com".into()],
+            allowed: vec![],
+            programs: vec![],
+            duration: "1h".into(),
+            enforcers: Enforcers::default(),
+        };
+        remote.command(start).unwrap();
+        assert!(remote.active().unwrap().blocks_site("https://a.com/x"));
+        assert!(remote.status().unwrap().remaining.is_some());
+        // The same rules as with the real service: a timed block cannot be stopped early, the
+        // password ends it.
+        assert!(remote.command(Request::Stop).is_err());
+        assert!(remote.command(Request::Unlock { password: "wrong".into() }).is_err());
+        remote.command(Request::Unlock { password: "test1234".into() }).unwrap();
+        assert!(remote.active().is_none());
     }
 }
