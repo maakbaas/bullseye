@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crate::proto::{Request, Response};
 use crate::watchdog::note;
-use crate::{client, service};
+use crate::{client, registration};
 
 /// Exit codes the installer hooks act on.
 pub const OK: i32 = 0;
@@ -21,9 +21,9 @@ pub const REFUSED: i32 = 2;
 /// Registers the service and starts it. The service starts the app for whoever is logged on.
 pub fn install() -> i32 {
     let Ok(exe) = std::env::current_exe() else { return FAILED };
-    match service::install(&exe) {
+    match registration::install(&exe) {
         Ok(()) => {
-            note("install", &format!("registered the {} service for {}", service::NAME, exe.display()));
+            note("install", &format!("registered the {} service for {}", registration::NAME, exe.display()));
             OK
         }
         Err(e) => {
@@ -45,13 +45,13 @@ pub fn prepare_update() -> i32 {
 
 fn ask(what: &str, request: Request) -> i32 {
     // Nothing to ask: never installed, or already removed.
-    if !service::exists() {
+    if !registration::exists() {
         return OK;
     }
     let mut answer = client::call(&request);
     if answer.is_err() {
         // Not running (an update that did not finish, say). Administrators may start it.
-        let _ = service::start_registered();
+        let _ = registration::start_registered();
         for _ in 0..10 {
             thread::sleep(Duration::from_secs(1));
             answer = client::call(&request);
@@ -63,7 +63,7 @@ fn ask(what: &str, request: Request) -> i32 {
     match answer {
         Ok(Response::Done) => {
             // The exe is in use until the service has ended.
-            if service::wait_stopped(Duration::from_secs(30)) {
+            if registration::wait_stopped(Duration::from_secs(30)) {
                 OK
             } else {
                 note(what, "the service did not end in time");

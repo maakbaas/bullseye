@@ -18,7 +18,7 @@ use crate::filters::FilterList;
 use crate::pipe;
 use crate::programs::ProgramList;
 use crate::proto::{self, Policy, Request, Response};
-use crate::service;
+use crate::registration;
 use crate::sync::LockExt;
 use crate::watchdog::note;
 
@@ -112,7 +112,7 @@ impl Remote {
     /// Asks Windows to start the service if it is registered but not running (it only stays down
     /// if something ended it with exit code 0, or an update did not finish). Starting is the only
     /// thing the app may do to the service: the access list gives interactive users no more
-    /// (`service::SDDL`). A service that is not registered at all, as in development, just fails
+    /// (`registration::SDDL`). A service that is not registered at all, as in development, just fails
     /// quietly.
     fn revive_service(&self) {
         if self.is_local() {
@@ -123,7 +123,7 @@ impl Remote {
             return;
         }
         *last = Some(Instant::now());
-        if let Ok(true) = service::start_registered() {
+        if let Ok(true) = registration::start_registered() {
             note("app", "the service was not running; started it");
         }
     }
@@ -163,6 +163,7 @@ impl Remote {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::service;
     use crate::state::Enforcers;
 
     fn policy(filters: &[&str]) -> Policy {
