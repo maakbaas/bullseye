@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use crate::block::Active;
 use crate::client::Remote;
 use crate::sync::spawn_critical;
+use crate::wake;
 use crate::watchdog::note;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use uiautomation::patterns::{UIInvokePattern, UIValuePattern, UIWindowPattern};
@@ -30,6 +31,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 const INTERVAL: Duration = Duration::from_secs(1);
+/// The least time between two passes, when events ask for one sooner.
+const MIN_GAP: Duration = Duration::from_millis(100);
 const RECHECK: Duration = Duration::from_secs(10);
 
 /// How long a program is given to close when asked to, before it is ended.
@@ -45,7 +48,8 @@ pub fn spawn(remote: Remote) {
                 std::process::exit(1);
             }
         };
-        let mut closer = Closer { automation, windows: HashMap::new(), system: System::new(), asked: HashMap::new() };
+        let mut closer =
+            Closer { automation, windows: HashMap::new(), system: System::new(), asked: HashMap::new(), woken: wake::Woken::Second };
         loop {
             let start = Instant::now();
             if let Some(active) = remote.active() {
@@ -68,7 +72,10 @@ pub fn spawn(remote: Remote) {
                     closer.close_programs(&active);
                 }
             }
-            thread::sleep(INTERVAL.saturating_sub(start.elapsed()));
+            // Until the next second, or sooner when something worth a look happened (`wake.rs`);
+            // a burst of those is one pass, after a short pause.
+            thread::sleep(MIN_GAP.saturating_sub(start.elapsed()));
+            closer.woken = wake::wait(INTERVAL.saturating_sub(start.elapsed()));
         }
     });
 }
@@ -80,6 +87,8 @@ struct Closer {
     system: System,
     /// Programs that were asked to close, by process id and when, so the ones that do not are ended.
     asked: HashMap<u32, Instant>,
+    /// What started this pass, for the log (`wake::Woken`).
+    woken: wake::Woken,
 }
 
 enum Window {
@@ -121,7 +130,7 @@ impl Closer {
             let split_view = pages.len() > 1;
             if let Some(page) = pages.iter().find(|p| active.blocks_page(&p.url, split_view)) {
                 match close_tab(&self.automation, &browser.window, &page.title) {
-                    Ok(()) => eprintln!("tab_closer: closed {}", page.url),
+                    Ok(()) => note("app", &format!("closed {} ({})", page.url, self.woken.describe())),
                     Err(e) => eprintln!("tab_closer: failed to close {}: {e}", page.url),
                 }
             }
@@ -161,7 +170,7 @@ impl Closer {
                 if main_pids.contains(&window.get_process_id()?) {
                     if let Ok(pattern) = window.get_pattern::<UIWindowPattern>() {
                         pattern.close()?;
-                        eprintln!("tab_closer: closed Obsidian (web content open)");
+                        note("app", &format!("closed Obsidian, which showed web content ({})", self.woken.describe()));
                     }
                 }
             }
@@ -188,7 +197,7 @@ impl Closer {
                 None => {
                     ask_to_close(pid);
                     self.asked.insert(pid, Instant::now());
-                    eprintln!("tab_closer: asked {} ({pid}) to close", process.name().to_string_lossy());
+                    note("app", &format!("asked {} ({pid}) to close ({})", process.name().to_string_lossy(), self.woken.describe()));
                 }
                 Some(since) if since.elapsed() >= KILL_AFTER => {
                     let ended = process.kill();
@@ -361,7 +370,8 @@ mod tests {
     #[test]
     fn a_listed_program_is_asked_to_close_then_ended_and_others_are_left_alone() {
         let Ok(automation) = UIAutomation::new() else { return eprintln!("skipping: no UI Automation here") };
-        let mut closer = Closer { automation, windows: HashMap::new(), system: System::new(), asked: HashMap::new() };
+        let mut closer =
+            Closer { automation, windows: HashMap::new(), system: System::new(), asked: HashMap::new(), woken: wake::Woken::Second };
         let (mut listed, mut other) = (copy_of_ping("bullseye-test-listed"), copy_of_ping("bullseye-test-other"));
         let programs = active(&[], &["bullseye-test-l*"]);
 
@@ -397,7 +407,8 @@ mod tests {
     #[ignore]
     fn a_real_browser_tab_is_closed() {
         let automation = UIAutomation::new().unwrap();
-        let mut closer = Closer { automation, windows: HashMap::new(), system: System::new(), asked: HashMap::new() };
+        let mut closer =
+            Closer { automation, windows: HashMap::new(), system: System::new(), asked: HashMap::new(), woken: wake::Woken::Second };
         let active = |entry: &str| active(&[entry], &[]);
         println!("chromium-class visible windows: {}", browser_windows().len());
         let quiet = active("real-check-nothing.invalid");

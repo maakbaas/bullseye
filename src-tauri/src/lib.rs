@@ -26,6 +26,7 @@ mod sync;
 mod tab_closer;
 mod ui;
 mod unlock;
+mod wake;
 mod watchdog;
 
 use client::Remote;
@@ -220,6 +221,7 @@ pub fn run() {
     }
 
     tab_closer::spawn(remote.clone());
+    wake::spawn_hook();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

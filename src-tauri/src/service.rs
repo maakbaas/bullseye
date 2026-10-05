@@ -44,7 +44,7 @@ use crate::registration::{self, CREATE_NO_WINDOW, NAME};
 use crate::state;
 use crate::sync::spawn_critical;
 use crate::watchdog::{self, note, AppSlot};
-use crate::{clock, pipe};
+use crate::{clock, pipe, wake};
 
 define_windows_service!(ffi_service_main, service_main);
 
@@ -130,6 +130,7 @@ fn start_engine(for_real: bool) -> Result<mpsc::Receiver<Shutdown>, String> {
     let slot = Arc::new(AppSlot::new(for_real));
     if for_real {
         watchdog::spawn_supervisor(blocklist.clone(), slot.clone());
+        wake::spawn_process_watch(blocklist.clone());
     }
     let (quit, quit_rx) = mpsc::channel();
     let context = Arc::new(Context::new(blocklist, Definitions::new(), slot));

@@ -40,7 +40,7 @@ tauri-plugin-dialog = "2"
 uiautomation = "0.25.1"
 # the service (src/service.rs); install, failure actions, session notifications
 windows-service = "0.8"
-# named mutexes, the named pipe, starting the app in the user's session (see src/watchdog.rs, src/pipe.rs)
+# named mutexes, the named pipe, starting the app in the user's session, window events (see src/watchdog.rs, src/pipe.rs, src/wake.rs)
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
@@ -54,8 +54,11 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_RemoteDesktop",
     "Win32_System_Threading",
     "Win32_System_Time",
+    "Win32_UI_Accessibility",
     "Win32_UI_WindowsAndMessaging",
 ] }
+# the service hears programs start (src/wake.rs), to close blocked ones without waiting for the next pass
+wmi = { version = "0.18", default-features = false }
 
 [profile.dev]
 incremental = false       # don't accumulate a multi-GB incremental cache
