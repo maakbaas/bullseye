@@ -55,15 +55,21 @@
       /* The tiles are columns of the page's grid itself (this wrapper only keeps them together), so
          they line up with the header above them. */
       #blocks { display: contents; }
-      .block-tile.cds--css-grid-column { margin-bottom: var(--cds-spacing-07); }
-      .block-tile.cds--css-grid-column { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
+      /* One block per row, full width. On wider windows its actions move to the right of the row. */
+      .block-tile.cds--css-grid-column { display: flex; flex-direction: column; gap: var(--cds-spacing-05); margin-bottom: var(--cds-spacing-05); }
+      .block-tile .body { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
+      .block-tile .info { display: flex; flex-direction: column; align-items: flex-start; gap: var(--cds-spacing-05); }
       .block-tile .top { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--cds-spacing-03); }
       /* The size of the overflow menu's button it stands in for. */
       .block-tile .lock { display: flex; align-items: center; justify-content: center; flex: none; inline-size: var(--cds-spacing-08); block-size: var(--cds-spacing-08); fill: var(--cds-icon-secondary); }
       .block-tile h2 { overflow-wrap: anywhere; padding-top: var(--cds-spacing-02); }
-      .block-tile .summary { display: flex; flex-direction: column; gap: var(--cds-spacing-02); color: var(--cds-text-secondary); flex: 1; }
+      .block-tile .summary { display: flex; flex-direction: column; gap: var(--cds-spacing-02); color: var(--cds-text-secondary); }
       .block-tile .actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--cds-spacing-04); }
       .block-tile .actions .note { color: var(--cds-text-secondary); }
+      @media (min-width: 42rem) { /* Carbon's md breakpoint */
+        .block-tile .body { flex-direction: row; align-items: flex-end; justify-content: space-between; }
+        .block-tile .actions { flex-direction: column; align-items: flex-end; flex: none; }
+      }
       .empty { display: flex; flex-direction: column; align-items: flex-start; gap: var(--cds-spacing-05); }
 
       /* The editor: sections stacked, lists side by side where there is room. */
@@ -378,11 +384,9 @@
         const note = el("span", { class: "note cds--type-helper-text-01" });
         const tile = el(
           "cds-tile",
-          { class: "block-tile cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-4 cds--lg:col-span-8 cds--xlg:col-span-4" },
+          { class: "block-tile cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16" },
           el("div", { class: "top" }, el("div", {}, name), menu, lock),
-          el("div", {}, tag),
-          summary,
-          el("div", { class: "actions" }, toggle, note),
+          el("div", { class: "body" }, el("div", { class: "info" }, tag, summary), el("div", { class: "actions" }, toggle, note)),
         );
         // On the items themselves: Carbon moves the open menu out of the tile.
         for (const item of menu.querySelectorAll("[data-action]")) {
