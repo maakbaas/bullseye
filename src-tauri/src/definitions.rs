@@ -319,6 +319,10 @@ impl Definitions {
             library.schedule(id).ok_or("No such schedule")?;
             refuse_if_used(library, id, "schedule")?;
             library.schedules.retain(|s| s.id != id);
+            // A block may have kept it as the schedule of a lock it no longer has: forgotten too.
+            for block in &mut library.blocks {
+                block.kept_locks.retain(|lock| lock.schedule() != Some(id));
+            }
             Ok(())
         })
     }
@@ -456,10 +460,15 @@ pub mod tests {
         assert!(definitions.delete_schedule("s").is_err());
         // A schedule used by a lock is in use too.
         assert!(definitions.delete_schedule("s2").is_err());
+        // Kept by a lock the block no longer has, it is not in use: it can be deleted, and the
+        // block forgets it.
+        definitions.save_block(Definition { schedule: Some("s".into()), lock: Lock::None, ..block("b", &["l"]) }).unwrap();
+        assert_eq!(definitions.library().block("b").unwrap().kept_locks, vec![Lock::Scheduled { schedule: "s2".into() }]);
+        definitions.delete_schedule("s2").unwrap();
+        assert!(definitions.library().block("b").unwrap().kept_locks.is_empty());
         definitions.delete_block("b").unwrap();
         definitions.delete_list("l").unwrap();
         definitions.delete_schedule("s").unwrap();
-        definitions.delete_schedule("s2").unwrap();
         assert!(definitions.delete_list("l").is_err(), "gone already");
     }
 

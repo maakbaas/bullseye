@@ -370,9 +370,10 @@
           form: (block) => {
             const select = el("cds-select", { "label-text": t("locks.scheduled.field"), "helper-text": t("locks.scheduled.helper") });
             select.append(...overview.schedules.map((s) => el("cds-select-item", { value: s.id, label: s.name }, s.name)));
-            // The block's own schedule first: then it is locked exactly while it is active.
-            const chosen = settingsOf(block, "scheduled").schedule || block.schedule;
-            select.value = overview.schedules.some((s) => s.id === chosen) ? chosen : (overview.schedules[0] || {}).id || "";
+            // The one it had, else the block's own schedule, else the first there is.
+            const exists = (id) => overview.schedules.some((s) => s.id === id);
+            const chosen = [settingsOf(block, "scheduled").schedule, block.schedule].find(exists);
+            select.value = chosen || (overview.schedules[0] || {}).id || "";
             return { fields: [select], read: async () => (invalid(select, select.value ? null : t("locks.scheduled.missing")) ? null : { method: "scheduled", schedule: select.value }) };
           },
           describe: (lock) => {
