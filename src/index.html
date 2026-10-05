@@ -1139,7 +1139,10 @@
         };
       }
 
-      const forms = {}; // per kind, built when first needed
+      // The form of the kind being edited, built anew each time the editor opens. A reused one would
+      // put Carbon's text areas back into the page after they had been taken out of it, and Carbon
+      // then no longer measures an empty one, whose helper text stays squeezed to zero width.
+      const forms = {};
       let editing = null; // { kind, item (as opened), isNew }
 
       function openEditor(kind, id) {
@@ -1150,7 +1153,7 @@
           return;
         }
         editing = { kind, item: structuredClone(item), isNew: !id };
-        const form = (forms[kind] = forms[kind] || kindOf.form());
+        const form = (forms[kind] = kindOf.form());
         $("form").replaceChildren(...form.nodes);
         form.fill(editing.item);
         $("editor-section").textContent = kindOf.title;
