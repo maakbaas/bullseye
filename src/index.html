@@ -32,6 +32,8 @@
       }
       /* Until the components are defined, show nothing rather than unstyled markup. */
       body:not(.ready) { visibility: hidden; }
+      /* The app icon before the name in the header, at Carbon's 20 px icon size. */
+      .logo { inline-size: 1.25rem; block-size: 1.25rem; vertical-align: middle; margin-inline-end: var(--cds-spacing-03); }
       /* Room for the header above. Every view fills the width up to Carbon's lg breakpoint (66rem)
          and is centred beyond it, so the margins grow evenly instead of jumping. */
       main { padding: calc(3rem + var(--cds-spacing-07)) 0 var(--cds-spacing-09); max-inline-size: 66rem; margin-inline: auto; }
@@ -95,7 +97,7 @@
          the menu button opens them in a side nav, which is not shown at all on wide windows. -->
     <cds-header aria-label="Site Blocker">
       <cds-header-menu-button button-label-active="Close menu" button-label-inactive="Open menu"></cds-header-menu-button>
-      <cds-header-name href="#/" prefix="">Site Blocker</cds-header-name>
+      <cds-header-name href="#/" prefix=""><img class="logo" src="app-icon.svg" alt="" />Site Blocker</cds-header-name>
       <cds-header-nav menu-bar-label="Site Blocker">
         <cds-header-nav-item href="#/" data-page="blocks">Blocks</cds-header-nav-item>
         <cds-header-nav-item href="#/settings" data-page="settings">Settings</cds-header-nav-item>
