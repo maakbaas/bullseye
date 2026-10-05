@@ -1,6 +1,6 @@
 // The page: which view the address shows (`route`), the tabs, Settings, and starting up.
 
-import { $, applyStrings, ask, invoke, notify, overview, quoted, refresh, t, whenRefreshed } from "./core.js";
+import { $, applyStrings, ask, invoke, joined, notify, overview, quoted, refresh, t, whenRefreshed } from "./core.js";
 import { KINDS } from "./kinds.js";
 import { renderTiles, tiles } from "./tiles.js";
 import { closeEditor, openEditor, renderEditorLock } from "./editor.js";
@@ -134,7 +134,7 @@ $("import").addEventListener("click", async () => {
         blocks: t("settings.importBlocks", { n: blocks }),
       }),
     ];
-    if (unlocked.length) body.push(t("settings.importUnlocked", { n: unlocked.length, names: unlocked.map(quoted).join(t("common.separator")) }));
+    if (unlocked.length) body.push(t("settings.importUnlocked", { n: unlocked.length, names: joined(unlocked.map(quoted)).join("") }));
     const sure = await ask({ heading: t("settings.importHeading"), body: body.join(" "), action: t("settings.importAction"), kind: "danger" });
     if (!sure) return;
     await invoke("import_settings", { path: opened.path });
@@ -230,10 +230,13 @@ const iconsOnly = () => {
 };
 iconsOnly();
 narrow.addEventListener("change", iconsOnly);
-$("pages").addEventListener("cds-tabs-selected", (event) => {
-  const page = event.detail.item.value;
+const openPage = (page) => {
   if (location.hash !== PAGES[page]) location.hash = PAGES[page];
-});
+};
+$("pages").addEventListener("cds-tabs-selected", (event) => openPage(event.detail.item.value));
+// An editor counts as its page's tab, which is already selected there, so choosing it again selects
+// nothing: a click still goes to the page.
+for (const tab of tabs) tab.addEventListener("click", () => openPage(tab.getAttribute("value")));
 $("delete").append(carbonIcon("trash-can", "icon"));
 
 // No browser menu on right-click (Back, Refresh, …: WebView2's own, which make no sense in an

@@ -139,6 +139,14 @@ impl Condition {
 }
 
 impl Library {
+    /// Block lists, conditions and blocks each by name, a to z regardless of case (the order every
+    /// client shows them in).
+    fn sort(&mut self) {
+        self.lists.sort_by_cached_key(|l| l.name.to_lowercase());
+        self.conditions.sort_by_cached_key(|c| c.name.to_lowercase());
+        self.blocks.sort_by_cached_key(|b| b.name.to_lowercase());
+    }
+
     /// As a client may see it: password locks without their hashes (`Lock::redacted`).
     pub fn redacted(mut self) -> Library {
         for block in &mut self.blocks {
@@ -307,6 +315,7 @@ impl Definitions {
         let mut library = self.library.locked();
         let mut new = library.clone();
         change(&mut new)?;
+        new.sort();
         self.write(&new)?;
         *library = new;
         Ok(())
@@ -350,6 +359,7 @@ impl Definitions {
 
     pub fn save_list(&self, mut list: BlockList) -> Result<(), String> {
         list.name = list.name.trim().to_string();
+        list.entries.sort();
         list.check()?;
         self.change(|library| {
             let id = list.id.clone();
@@ -561,7 +571,10 @@ pub fn read_settings(path: &std::path::Path) -> Result<Library, String> {
 fn load(path: &PathBuf) -> Option<Library> {
     let bytes = fs::read(path).ok()?;
     match serde_json::from_slice(&bytes) {
-        Ok(library) => Some(library),
+        Ok(mut library) => {
+            Library::sort(&mut library);
+            Some(library)
+        }
         Err(e) => {
             eprintln!("definitions: cannot read {}: {e}", path.display());
             None
@@ -621,7 +634,7 @@ pub mod tests {
         definitions.save_list(block_list("social", &["reddit.com"])).unwrap();
 
         let again = Definitions::at(Some(path)).library();
-        assert_eq!(again.lists.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(), vec!["social", "games"]);
+        assert_eq!(again.lists.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(), vec!["games", "social"]);
         assert_eq!(again.list("social").unwrap().entries.filters, vec!["reddit.com"]);
         assert_eq!(again.block("w").unwrap().lists, vec!["social", "games"]);
         let resolved = again.resolve("w").unwrap();

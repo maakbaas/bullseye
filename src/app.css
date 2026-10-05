@@ -117,3 +117,8 @@ cds-header { border-block-start: 1px solid var(--cds-border-subtle); background-
 .app-picker .apps { max-block-size: 20rem; overflow-y: auto; background: var(--cds-field-01); padding: var(--cds-spacing-03) var(--cds-spacing-05); }
 /* The text of a text lock, shown above the input it has to be typed into (`askText`): as far from the sentence above as from the input below, which the dialog's fields gap sets. */
 .typed-text { white-space: pre-wrap; overflow-wrap: anywhere; padding: var(--cds-spacing-05); margin-block-start: var(--cds-spacing-06); background: var(--cds-layer-accent-01); border-inline-start: 3px solid var(--cds-border-strong-01); }
+
+/* An item's name in a sentence is a cds-link. Its template leaves a space after the text inside the
+   link, underlined; as a flex item (the host's own display, nothing inside it) that trailing space
+   is dropped, so "a, b and c" has its underlines under the names only. */
+cds-link[inline] { display: inline-flex; }

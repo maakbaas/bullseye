@@ -181,7 +181,14 @@ fn unlock_status(context: &Context) -> UnlockStatus {
 
 /// Sets how long unlocking takes, from text.
 fn set_unlock_delay(context: &Context, text: &str) -> Result<(), String> {
-    context.unlock.set_delay(unlock::parse_delay(text)?, context.blocklist.now())
+    let seconds = unlock::parse_delay(text)?;
+    let now = context.blocklist.now();
+    // With no block running there is nothing to get around, and nothing to unlock.
+    if context.blocklist.is_running() {
+        context.unlock.set_delay(seconds, now)
+    } else {
+        context.unlock.set_delay_idle(seconds, now)
+    }
 }
 
 /// Ends every block, once unlocking is ready: always with no delay, else when the countdown is
@@ -356,7 +363,7 @@ mod tests {
         assert_eq!(run(&context, definition("evening", &["b.com"])), Response::Done);
         assert_eq!(save(&context, definition("idle", &["c.com"])), Response::Done);
         let overview = overview(&context);
-        assert_eq!(overview.blocks.iter().map(|b| b.id.as_str()).collect::<Vec<_>>(), vec!["work", "evening", "idle"]);
+        assert_eq!(overview.blocks.iter().map(|b| b.id.as_str()).collect::<Vec<_>>(), vec!["evening", "idle", "work"]);
         assert_eq!(overview.running.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["work", "evening"]);
         assert_eq!(policies(&context).len(), 2);
 
@@ -459,7 +466,7 @@ mod tests {
         // A real one starts, and is what the app is told to close.
         assert_eq!(run(&context, one(&["Steam*", "game"])), Response::Done);
         let policy = &policies(&context)[0];
-        assert_eq!(policy.entries.programs, vec!["steam*.exe", "game.exe"]);
+        assert_eq!(policy.entries.programs, vec!["game.exe", "steam*.exe"]);
         assert!(policy.entries.filters.is_empty());
         assert_eq!(policy.enforcers, programs_only);
     }
@@ -668,6 +675,21 @@ mod tests {
         assert_eq!(ask(Request::AskForUnlock), Response::Done);
         assert!(failed(ask(delay("1h"))) && failed(ask(Request::Unlock)));
         assert!(context.blocklist.is_running());
+    }
+
+    #[test]
+    fn with_nothing_running_the_delay_can_be_shortened_freely() {
+        let context = context("hatch-shorten-idle");
+        let ask = |request: Request| handle(&context, 0, request).0;
+        let delay = |text: &str| Request::SetUnlockDelay { delay: text.into() };
+        assert_eq!(ask(delay("1h")), Response::Done);
+        assert_eq!(ask(delay("10m")), Response::Done);
+        assert_eq!(ask(delay("0")), Response::Done);
+        assert_eq!(overview(&context).unlock.delay, 0);
+        // As soon as a block runs, the wait is binding again.
+        assert_eq!(ask(delay("1h")), Response::Done);
+        assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
+        assert!(failed(ask(delay("10m"))));
     }
 
     #[test]

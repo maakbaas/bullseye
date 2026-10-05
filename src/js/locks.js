@@ -1,7 +1,7 @@
 // The lock methods (`lock::Lock`), by `method`: their form in the dialog, the tile's line for a
 // block that is not running, and what starting a block with one asks first.
 
-import { durationText, el, invalid, invoke, localDate, overview, quoted, t, untilText } from "./core.js";
+import { durationText, el, invalid, invoke, localDate, overview, quoted, editHref, ref, t, tn, untilText } from "./core.js";
 
 // How a started block is kept from being stopped (`lock::Lock`), by `method`. Set on the
 // block's tile, next to Start. `confirm` says what starting it asks first (null: nothing).
@@ -110,7 +110,7 @@ const LOCKS = {
       const condition = overview.conditions.find((c) => c.id === lock.condition);
       if (!condition) return t("locks.condition.describeGone");
       if (condition.type === "flash_drive") return t("locks.condition.describeDrive", { drive: quoted(condition.drive) });
-      return t("locks.condition.describe", { condition: quoted(condition.name) });
+      return tn("locks.condition.describe", { condition: ref(condition.name, editHref("conditions", condition.id)) });
     },
     confirm: async (block) => {
       // Without its condition the service refuses the start, and says why.

@@ -1,17 +1,20 @@
 // A page of tiles, one per block, block list or condition: kept and updated in place, so an open menu
 // survives a refresh. A block's tile also has its lock and Start / Stop. Deleting is asked here.
 
-import { $, ask, el, invalid, invoke, listName, names, newId, notify, overview, quoted, reachable, refresh, runningOf, conditionOf, t, usersOf, weekText } from "./core.js";
+import { $, ask, el, invalid, invoke, joined, listName, newId, editHref, nodesOf, notify, overview, quoted, reachable, ref, refresh, runningOf, conditionOf, t, tn, usersOf, weekText } from "./core.js";
 import { LOCKS } from "./locks.js";
 import { ENFORCERS, LISTS, SECTIONS } from "./forms.js";
 import { KINDS } from "./kinds.js";
 import { detour } from "./detour.js";
 
 // A condition's line on a block's tile, with its name when the block's definition still has it.
-const ruleLine = (rule, name) =>
+const ruleLine = (rule, condition) =>
   rule.type === "flash_drive"
     ? ["plug-16", t("blocks.tile.activeDrive", { drive: quoted(rule.drive) })]
-    : ["calendar-16", t(name ? "blocks.tile.activeNamed" : "blocks.tile.active", { name })];
+    : ["calendar-16", condition ? tn("blocks.tile.activeNamed", { name: ref(condition.name, editHref("conditions", condition.id)) }) : t("blocks.tile.active")];
+
+// The blocks that use an item, as links.
+const usedBy = (users) => ({ text: tn("common.usedBy", { names: joined(users.map((b) => ref(b.name, editHref("blocks", b.id)))) }) });
 
 // What a tile says, per kind: lines of text.
 function summaryOf(kind, item) {
@@ -22,24 +25,25 @@ function summaryOf(kind, item) {
     for (const e of on.filter((e) => !SECTIONS.find((s) => s.enforcers.includes(e)).lists.length)) parts.push(e.short || e.label);
     if (!parts.length) parts.push(t("lists.nothing"));
     const users = usersOf(item.id);
-    parts.push(users.length ? t("common.usedBy", { names: names(users) }) : t("lists.notUsed"));
+    parts.push(users.length ? usedBy(users) : t("lists.notUsed"));
     return parts;
   }
   if (kind === "conditions") {
     const users = usersOf(item.id);
     const what = item.type === "flash_drive" ? t("conditions.activeDrive", { drive: quoted(item.drive) }) : t("conditions.active", { times: weekText(item.days) });
-    return [what, users.length ? t("common.usedBy", { names: names(users) }) : t("conditions.notUsed")];
+    return [what, users.length ? usedBy(users) : t("conditions.notUsed")];
   }
   // A block: what it runs with while it runs, else what it is defined as. Each line has an
   // icon in front: its block lists, its condition, its lock (open when it does not lock), and
   // for a running block when its condition turns it on or off.
   const running = runningOf(item.id);
-  const lists = running ? running.lists.map((l) => l.name) : item.lists.map(listName);
-  const parts = [["list-checked-16", lists.length ? lists.join(t("common.separator")) : t("blocks.tile.noLists")]];
+  // A running block's definition is fixed, so its block lists are the ones it was started with.
+  const lists = item.lists.map((id) => (overview.lists.some((l) => l.id === id) ? ref(listName(id), editHref("lists", id)) : listName(id)));
+  const parts = [["list-checked-16", lists.length ? joined(lists) : t("blocks.tile.noLists")]];
   const condition = conditionOf(item);
   const rule = running ? running.condition : condition;
   if (!rule) parts.push(["calendar-16", t("blocks.tile.always")]);
-  else parts.push(ruleLine(rule, condition && condition.name));
+  else parts.push(ruleLine(rule, condition));
   if (!running) {
     const lock = LOCKS[item.lock && item.lock.method];
     parts.push([item.lock && item.lock.method !== "none" ? "locked" : "unlocked", lock ? lock.describe(item.lock) : t("blocks.tile.unknownLock")]);
@@ -137,7 +141,11 @@ function renderTiles(kind) {
     if (parts.summary.dataset.text !== text) {
       parts.summary.dataset.text = text;
       parts.summary.replaceChildren(
-        ...summary.map((line) => (Array.isArray(line) ? el("span", { class: "line" }, carbonIcon(line[0]), el("span", {}, line[1])) : el("span", {}, line))),
+        ...summary.map((line) =>
+          Array.isArray(line)
+            ? el("span", { class: "line" }, carbonIcon(line[0]), el("span", {}, ...nodesOf(line[1])))
+            : el("span", {}, ...nodesOf(typeof line === "string" ? line : line.text)),
+        ),
       );
     }
     const held = kindOf.held(item);
@@ -338,7 +346,7 @@ async function fallout(id) {
   const sentences = { deleted: "deletesToo", without_it: "keepsOthers", always: "becomesAlways", unlocked: "losesLock" };
   return Object.entries(sentences)
     .filter(([field]) => effects[field].length)
-    .map(([field, key]) => t(`delete.${key}`, { names: effects[field].map(quoted).join(t("common.separator")) }));
+    .map(([field, key]) => t(`delete.${key}`, { names: joined(effects[field].map(quoted)).join("") }));
 }
 
 async function confirmDelete(kind, id) {

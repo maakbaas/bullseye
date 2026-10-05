@@ -42,10 +42,12 @@ window.STRINGS = {
     quoted: "“{name}”",
     // Between names in a list of them.
     separator: ", ",
+    // Before the last of a list: a, b and c.
+    and: " and ",
     serviceDown: "The Bullseye service does not answer",
     // A block list's or condition's tile while a running block uses it.
     inUse: "In use by a running block",
-    // {names}: the blocks that use it, quoted.
+    // {names}: the blocks that use it, as links.
     usedBy: "Used by {names}",
     // While a weekly schedule's description is being asked of the backend.
     weeklyStandIn: "a weekly schedule",

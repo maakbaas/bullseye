@@ -17,7 +17,26 @@ function t(path, values = {}) {
 }
 // A name inside a sentence, and several of them.
 const quoted = (name) => t("common.quoted", { name });
-const names = (blocks) => blocks.map((b) => quoted(b.name)).join(t("common.separator"));
+// Where an item is edited (the same pages as `KINDS[kind].editPath`).
+const editHref = (kind, id) => `${{ blocks: "#/edit/", lists: "#/lists/edit/", conditions: "#/conditions/edit/" }[kind]}${encodeURIComponent(id)}`;
+const names = (blocks) => joined(blocks.map((b) => quoted(b.name))).join("");
+
+// A text with items in it, as parts: strings and `{ link, href }` (an item by its name, to its
+// page). A placeholder's value may be a `ref` or a list of them; the rest is as `t`. Parts are
+// plain data, so a tile can tell whether its line changed; `nodesOf` makes the elements.
+const ref = (name, href) => ({ link: name, href });
+// a, b and c; a and b.
+const joined = (items) => items.flatMap((item, at) => (at ? [t(at === items.length - 1 ? "common.and" : "common.separator"), item] : [item]));
+function tn(path, values = {}) {
+  const found = [];
+  const marked = {};
+  for (const [key, value] of Object.entries(values)) {
+    marked[key] = value !== null && typeof value === "object" ? `\u0000${found.push(value) - 1}\u0000` : value;
+  }
+  const split = t(path, marked).split("\u0000");
+  return split.flatMap((part, at) => (at % 2 ? found[Number(part)] : part ? [part] : []));
+}
+const nodesOf = (parts) => [].concat(parts).map((p) => (typeof p === "string" ? p : el("cds-link", { href: p.href, inline: true }, p.link)));
 
 // The markup's texts: data-t sets an element's text, data-t-<attribute> an attribute.
 function applyStrings() {
@@ -159,4 +178,4 @@ $("confirm-action").addEventListener("click", async () => {
 });
 $("confirm").addEventListener("cds-modal-closed", () => answered(false));
 
-export { invoke, $, t, quoted, names, applyStrings, el, described, weekText, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, listName, usersOf, holdersOf, invalid, ask };
+export { invoke, $, t, tn, ref, joined, nodesOf, editHref, quoted, names, applyStrings, el, described, weekText, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, listName, usersOf, holdersOf, invalid, ask };

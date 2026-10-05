@@ -34,6 +34,13 @@ pub struct Entries {
 }
 
 impl Entries {
+    /// Every list in order, a to z regardless of case, as saving a block list leaves them.
+    pub fn sort(&mut self) {
+        for list in [&mut self.filters, &mut self.allowed, &mut self.programs, &mut self.store_apps, &mut self.titles] {
+            list.sort_by_cached_key(|entry| entry.to_lowercase());
+        }
+    }
+
     /// A list by its field name, for what works on any of them (the CLI's options).
     pub fn field(&mut self, key: &str) -> Option<&mut Vec<String>> {
         match key {

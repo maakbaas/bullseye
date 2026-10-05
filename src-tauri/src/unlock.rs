@@ -166,10 +166,20 @@ impl UnlockDelay {
     /// Sets the delay. A longer one is free, as it only makes unlocking harder; a shorter one needs
     /// unlocking to be ready (`remaining` is 0), or it would be a way around the delay.
     pub fn set_delay(&self, seconds: u64, now: SystemTime) -> Result<(), String> {
+        self.set(seconds, now, false)
+    }
+
+    /// As `set_delay`, for when nothing is running: there is nothing to unlock, and no way to ask
+    /// for unlocking either (the window has no button for it), so a shorter delay is free too.
+    pub fn set_delay_idle(&self, seconds: u64, now: SystemTime) -> Result<(), String> {
+        self.set(seconds, now, true)
+    }
+
+    fn set(&self, seconds: u64, now: SystemTime, idle: bool) -> Result<(), String> {
         if seconds > MAX_DELAY {
             return Err("Unlocking can take at most 24 hours".into());
         }
-        if seconds < self.delay() && self.remaining(now) != Some(0) {
+        if !idle && seconds < self.delay() && self.remaining(now) != Some(0) {
             return Err("A shorter delay needs unlocking to be ready: request unlock, and wait for the countdown".into());
         }
         let mut kept = self.kept.locked();

@@ -12,6 +12,7 @@ import '@carbon/web-components/es/components/tooltip/tooltip-content.js';
 import '@carbon/web-components/es/components/breadcrumb/breadcrumb.js';
 import '@carbon/web-components/es/components/breadcrumb/breadcrumb-item.js';
 import '@carbon/web-components/es/components/breadcrumb/breadcrumb-link.js';
+import '@carbon/web-components/es/components/link/link.js';
 import '@carbon/web-components/es/components/button/button.js';
 import '@carbon/web-components/es/components/button/button-set.js';
 // Edit, beside each block list in the block editor: an icon that names itself in a tooltip.
