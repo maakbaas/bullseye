@@ -32,8 +32,9 @@
       }
       /* Until the components are defined, show nothing rather than unstyled markup. */
       body:not(.ready) { visibility: hidden; }
-      /* Room for the header above. */
-      main { padding: calc(3rem + var(--cds-spacing-07)) 0 var(--cds-spacing-09); }
+      /* Room for the header above. Every view fills the width up to Carbon's lg breakpoint (66rem)
+         and is centred beyond it, so the margins grow evenly instead of jumping. */
+      main { padding: calc(3rem + var(--cds-spacing-07)) 0 var(--cds-spacing-09); max-inline-size: 66rem; margin-inline: auto; }
       [hidden] { display: none !important; }
 
       /* A page: its header (title, description, main action), then its content. */
@@ -129,7 +130,7 @@
 
       <!-- Making or changing a block. Built from the tables in the script (LISTS, SECTIONS, SCHEDULES). -->
       <div id="view-editor" class="cds--css-grid" hidden>
-        <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-12 cds--lg:col-start-3 cds--xlg:col-span-10 cds--xlg:col-start-4">
+        <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
           <!-- Where the editor sits: under the blocks (the side nav says which section). -->
           <cds-breadcrumb class="trail" no-trailing-slash>
             <cds-breadcrumb-item><cds-breadcrumb-link href="#/">Blocks</cds-breadcrumb-link></cds-breadcrumb-item>
@@ -166,7 +167,7 @@
 
       <!-- Settings: the unlock password, kept apart from the blocks. -->
       <div id="view-settings" class="cds--css-grid" hidden>
-        <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-12 cds--lg:col-start-3 cds--xlg:col-span-10 cds--xlg:col-start-4">
+        <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
           <div class="page-header">
             <h1 class="cds--type-productive-heading-05">Settings</h1>
           </div>
