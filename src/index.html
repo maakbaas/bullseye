@@ -67,7 +67,8 @@
       .form section { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
       .form section > p { color: var(--cds-text-secondary); margin-top: calc(-1 * var(--cds-spacing-03)); }
       .form section + section, #schedule { padding-top: var(--cds-spacing-07); border-top: 1px solid var(--cds-border-subtle-01); }
-      .lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: var(--cds-spacing-05); }
+      /* Top-aligned: a row stretched to the longer helper text would make one textarea taller. */
+      .lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); align-items: start; gap: var(--cds-spacing-05); }
       .lists:empty { display: none; }
       .form-actions { display: flex; flex-wrap: wrap; gap: var(--cds-spacing-05); justify-content: space-between; }
       .form-actions .end { display: flex; flex-wrap: wrap; gap: var(--cds-spacing-05); margin-left: auto; }
@@ -104,8 +105,7 @@
         <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16 cds--subgrid blocks" id="blocks"></div>
         <cds-tile class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16 empty" id="empty" hidden>
           <h2 class="cds--type-productive-heading-03">No blocks yet</h2>
-          <p class="cds--type-body-01">A block is a list of sites and programs to close, the ways to close them, and how long it runs.</p>
-          <cds-button id="first-block" kind="tertiary">Create a block</cds-button>
+          <p class="cds--type-body-01">A block is a list of sites and programs to close, the ways to close them, and how long it runs. Use New block to make one.</p>
         </cds-tile>
       </div>
 
@@ -155,7 +155,7 @@
             <div class="notices" id="settings-notices"></div>
             <div class="row">
               <cds-password-input id="password" label="Unlock password" autocomplete="off"></cds-password-input>
-              <cds-button id="unlock" kind="danger" disabled>Unlock</cds-button>
+              <cds-button id="unlock" kind="danger" size="md" disabled>Unlock</cds-button>
             </div>
           </div>
           <div class="setting">
@@ -627,7 +627,6 @@
       }
       window.addEventListener("hashchange", route);
       $("new-block").addEventListener("click", () => (location.hash = "#/new"));
-      $("first-block").addEventListener("click", () => (location.hash = "#/new"));
       $("open-settings").append(carbonIcon("settings", "icon"));
       $("open-settings").addEventListener("click", () => (location.hash = "#/settings"));
       $("new-block").append(carbonIcon("add", "icon"));
