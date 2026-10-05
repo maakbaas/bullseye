@@ -32,8 +32,8 @@
       }
       /* Until the components are defined, show nothing rather than unstyled markup. */
       body:not(.ready) { visibility: hidden; }
-      .header-global { display: flex; margin-left: auto; height: 100%; }
-      main { padding: calc(3rem + var(--cds-spacing-07)) 0 var(--cds-spacing-09); }
+      /* Room for the header above and the side nav's rail on the left. */
+      main { padding: calc(3rem + var(--cds-spacing-07)) 0 var(--cds-spacing-09) 3rem; }
       [hidden] { display: none !important; }
 
       /* A page: its header (title, description, main action), then its content. */
@@ -46,7 +46,6 @@
         margin-bottom: var(--cds-spacing-07);
       }
       .page-header p { margin-top: var(--cds-spacing-03); color: var(--cds-text-secondary); max-width: 40rem; }
-      .back { display: block; margin-bottom: var(--cds-spacing-03); }
       .notices:empty { display: none; }
       .notices { margin-bottom: var(--cds-spacing-05); }
       .notices cds-inline-notification { max-width: none; }
@@ -83,9 +82,13 @@
   <body>
     <cds-header aria-label="Site Blocker">
       <cds-header-name href="#/" prefix="">Site Blocker</cds-header-name>
-      <div class="header-global">
-        <cds-header-global-action id="open-settings" aria-label="Settings" tooltip-text="Settings" tooltip-alignment="right"></cds-header-global-action>
-      </div>
+      <!-- The app's pages: an icon rail that shows its labels on hover or focus. -->
+      <cds-side-nav aria-label="Pages" collapse-mode="rail">
+        <cds-side-nav-items>
+          <cds-side-nav-link href="#/" data-page="blocks">Blocks</cds-side-nav-link>
+          <cds-side-nav-link href="#/settings" data-page="settings">Settings</cds-side-nav-link>
+        </cds-side-nav-items>
+      </cds-side-nav>
     </cds-header>
 
     <main>
@@ -97,7 +100,7 @@
               <h1 class="cds--type-productive-heading-05">Blocks</h1>
               <p class="cds--type-body-01">Each block is its own set of sites, programs and rules. Start any of them; they run independently.</p>
             </div>
-            <cds-button id="new-block" kind="primary">New block</cds-button>
+            <cds-button id="new-block" kind="primary" size="md">New block</cds-button>
           </div>
           <div class="notices" id="blocks-notices"></div>
         </div>
@@ -111,7 +114,6 @@
       <!-- Making or changing a block. Built from the tables in the script (LISTS, SECTIONS, SCHEDULES). -->
       <div id="view-editor" class="cds--css-grid" hidden>
         <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-12 cds--lg:col-start-3 cds--xlg:col-span-10 cds--xlg:col-start-4">
-          <cds-breadcrumb class="back" no-trailing-slash><cds-breadcrumb-item><cds-breadcrumb-link href="#/">Blocks</cds-breadcrumb-link></cds-breadcrumb-item></cds-breadcrumb>
           <div class="page-header">
             <div>
               <h1 class="cds--type-productive-heading-05" id="editor-title">New block</h1>
@@ -131,10 +133,10 @@
               <div id="schedule-fields" class="lists"></div>
             </section>
             <div class="form-actions">
-              <cds-button id="delete" kind="danger--ghost" hidden>Delete</cds-button>
+              <cds-button id="delete" kind="danger--ghost" size="md" hidden>Delete</cds-button>
               <div class="end">
-                <cds-button kind="secondary" href="#/">Cancel</cds-button>
-                <cds-button id="save" kind="primary">Save</cds-button>
+                <cds-button kind="secondary" size="md" href="#/">Cancel</cds-button>
+                <cds-button id="save" kind="primary" size="md">Save</cds-button>
               </div>
             </div>
           </div>
@@ -144,7 +146,6 @@
       <!-- Settings: the unlock password, kept apart from the blocks. -->
       <div id="view-settings" class="cds--css-grid" hidden>
         <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-12 cds--lg:col-start-3 cds--xlg:col-span-10 cds--xlg:col-start-4">
-          <cds-breadcrumb class="back" no-trailing-slash><cds-breadcrumb-item><cds-breadcrumb-link href="#/">Blocks</cds-breadcrumb-link></cds-breadcrumb-item></cds-breadcrumb>
           <div class="page-header">
             <h1 class="cds--type-productive-heading-05">Settings</h1>
           </div>
@@ -353,7 +354,7 @@
         const name = el("h2", { class: "cds--type-productive-heading-03" });
         const tag = el("cds-tag", { size: "md" });
         const summary = el("div", { class: "summary cds--type-body-compact-01" });
-        const toggle = el("cds-button", { kind: "primary", size: "md" });
+        const toggle = el("cds-button", { kind: "primary", size: "sm" });
         const note = el("span", { class: "note cds--type-helper-text-01" });
         const tile = el(
           "cds-tile",
@@ -608,6 +609,8 @@
         const edit = hash.match(/^#\/edit\/(.+)$/);
         const view = hash === "#/new" || edit ? "editor" : hash === "#/settings" ? "settings" : "blocks";
         for (const name of ["blocks", "editor", "settings"]) $(`view-${name}`).hidden = name !== view;
+        // The editor belongs to the blocks.
+        for (const link of document.querySelectorAll("cds-side-nav-link")) link.active = link.dataset.page === (view === "settings" ? "settings" : "blocks");
         if (view === "editor") openEditor(edit ? decodeURIComponent(edit[1]) : null);
         else editing = null;
         if (view === "settings") {
@@ -619,8 +622,9 @@
       }
       window.addEventListener("hashchange", route);
       $("new-block").addEventListener("click", () => (location.hash = "#/new"));
-      $("open-settings").append(carbonIcon("settings", "icon"));
-      $("open-settings").addEventListener("click", () => (location.hash = "#/settings"));
+      for (const link of document.querySelectorAll("cds-side-nav-link")) {
+        link.append(carbonIcon(link.dataset.page === "settings" ? "settings" : "list-boxes", "title-icon"));
+      }
       $("new-block").append(carbonIcon("add", "icon"));
       $("delete").append(carbonIcon("trash-can", "icon"));
       buildEditor();
