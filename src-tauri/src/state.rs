@@ -26,7 +26,7 @@ pub struct Saved {
     /// Its block lists, each with its own enforcers.
     pub parts: Vec<SavedPart>,
     /// The latest time the block was known to be running at, so the clock cannot start from an
-    /// earlier one while offline (`clock::at_least`).
+    /// earlier one while offline (`clock::at_least`); milliseconds since the Unix epoch.
     pub seen: Option<u64>,
     /// How it is locked; a password lock only as its hash, never the password.
     pub lock: RunLock,
@@ -109,14 +109,15 @@ pub fn now() -> Option<Duration> {
     SystemTime::now().duration_since(UNIX_EPOCH).ok()
 }
 
-/// A wall-clock time as seconds since the Unix epoch, the form a deadline is stored in.
+/// A wall-clock time as milliseconds since the Unix epoch, the form times are stored in (whole
+/// seconds would end a lock up to a second early).
 pub fn to_unix(time: SystemTime) -> Option<u64> {
-    time.duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs())
+    time.duration_since(UNIX_EPOCH).ok().and_then(|d| u64::try_from(d.as_millis()).ok())
 }
 
-/// A wall-clock time read back from seconds since the Unix epoch.
-pub fn from_unix(seconds: u64) -> SystemTime {
-    UNIX_EPOCH + Duration::from_secs(seconds)
+/// A wall-clock time read back from milliseconds since the Unix epoch.
+pub fn from_unix(millis: u64) -> SystemTime {
+    UNIX_EPOCH + Duration::from_millis(millis)
 }
 
 /// The file: the running blocks.
@@ -243,12 +244,12 @@ mod tests {
     #[test]
     fn saved_block_comes_back() {
         let store = store("roundtrip");
-        let saved = timed(Some(now().unwrap().as_secs() + 600));
+        let saved = timed(Some(to_unix(SystemTime::now()).unwrap() + 600_000));
         store.save(std::slice::from_ref(&saved)).unwrap();
         assert_eq!(store.load(), vec![saved.clone()]);
         // Saving again replaces rather than appends.
         let mut shorter = saved.clone();
-        shorter.lock = RunLock::Ends { at: now().unwrap().as_secs() + 60 };
+        shorter.lock = RunLock::Ends { at: to_unix(SystemTime::now()).unwrap() + 60_000 };
         let other = Saved { id: "b".into(), ..timed(None) };
         store.save(&[shorter.clone(), other.clone()]).unwrap();
         assert_eq!(store.load(), vec![shorter, other]);
@@ -261,7 +262,7 @@ mod tests {
     #[test]
     fn leftovers_are_cleaned_up() {
         let store = store("leftovers");
-        store.save(&[timed(Some(now().unwrap().as_secs() + 600))]).unwrap();
+        store.save(&[timed(Some(to_unix(SystemTime::now()).unwrap() + 600_000))]).unwrap();
         // A power cut during the write, or a file edited by hand: unreadable, and must not
         // keep the app from starting.
         fs::write(store.path(), "{ not json").unwrap();
@@ -311,7 +312,7 @@ mod tests {
 
     #[test]
     fn wall_clock_round_trips() {
-        let time = from_unix(1_700_000_000);
-        assert_eq!(to_unix(time), Some(1_700_000_000));
+        let time = from_unix(1_700_000_000_123);
+        assert_eq!(to_unix(time), Some(1_700_000_000_123));
     }
 }

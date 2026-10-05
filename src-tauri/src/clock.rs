@@ -77,11 +77,11 @@ impl Clock {
         *self.anchor.locked() = Some(Anchor { unix, at, synced: true });
     }
 
-    /// Until internet time is in, the time is at least `unix_secs`: a time the running block
-    /// was seen at. Ignored once it is in.
-    pub fn at_least(&self, unix_secs: u64) {
+    /// Until internet time is in, the time is at least `time`: a time the running block was seen
+    /// at. Ignored once it is in.
+    pub fn at_least(&self, time: SystemTime) {
         let mut anchor = self.anchor.locked();
-        let floor = Duration::from_secs(unix_secs);
+        let floor = time.duration_since(UNIX_EPOCH).unwrap_or_default();
         match *anchor {
             Some(a) if a.synced || a.now() >= floor => {}
             _ => *anchor = Some(Anchor { unix: floor, at: Instant::now(), synced: false }),
@@ -174,11 +174,11 @@ mod tests {
         let clock = Clock::default();
         // Far ahead of the Windows clock, as though it had been set back.
         let floor = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 86_400;
-        clock.at_least(floor);
+        clock.at_least(UNIX_EPOCH + Duration::from_secs(floor));
         let now = clock.now().duration_since(UNIX_EPOCH).unwrap().as_secs();
         assert!((floor..floor + 2).contains(&now));
         // An older floor does not move it back.
-        clock.at_least(floor - 3600);
+        clock.at_least(UNIX_EPOCH + Duration::from_secs(floor - 3600));
         assert!(clock.now().duration_since(UNIX_EPOCH).unwrap().as_secs() >= floor);
         assert!(!clock.synced());
     }
@@ -188,7 +188,7 @@ mod tests {
         let clock = Clock::default();
         let real = Duration::from_secs(1_800_000_000);
         clock.set(real, Instant::now());
-        clock.at_least(1_900_000_000);
+        clock.at_least(UNIX_EPOCH + Duration::from_secs(1_900_000_000));
         assert!(clock.synced());
         assert_eq!(clock.now().duration_since(UNIX_EPOCH).unwrap().as_secs(), 1_800_000_000);
     }

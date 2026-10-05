@@ -174,7 +174,7 @@ pub enum StartLock {
 #[serde(tag = "method", rename_all = "snake_case")]
 pub enum RunLock {
     None,
-    /// Cannot be stopped, and ends at `at` (seconds since the Unix epoch, internet time), the block
+    /// Cannot be stopped, and ends at `at` (milliseconds since the Unix epoch, internet time), the block
     /// with it.
     Ends {
         at: u64,
@@ -428,7 +428,7 @@ impl Blocklist {
             // Until internet time is in, the clock carries on from where the blocks last were,
             // rather than from a Windows clock that may have been set forward meanwhile.
             if let Some(seen) = saved.seen {
-                self.clock.at_least(seen);
+                self.clock.at_least(state::from_unix(seen));
             }
         }
         for saved in saved {
@@ -908,11 +908,16 @@ mod tests {
     /// 2030-01-07 00:00:00 UTC, a Monday; the tests' time zone is UTC.
     const MONDAY: u64 = 1_893_974_400;
 
+    /// `MONDAY` plus `seconds`, as a time.
+    fn monday(seconds: u64) -> SystemTime {
+        state::from_unix((MONDAY + seconds) * 1000)
+    }
+
     #[test]
     fn outside_its_schedule_a_block_runs_and_stays_locked_but_enforces_nothing() {
         let list = blocklist("schedule");
         // Monday 16:00, office hours until 17:00, locked for two hours: the user's own example.
-        list.clock.at_least(MONDAY + 16 * 3600);
+        list.clock.at_least(monday(16 * 3600));
         let office = Week::parse("mon-fri 08:00-17:00").unwrap();
         list.start(
             "a",
@@ -933,7 +938,7 @@ mod tests {
 
         // 17:00: the schedule has it inactive, so nothing of it is enforced; it still runs and is
         // still locked.
-        list.clock.at_least(MONDAY + 17 * 3600);
+        list.clock.at_least(monday(17 * 3600));
         let active = list.active().unwrap();
         assert!(!active.blocks_page("https://a.com/", false) && active.blocks_page("https://b.com/", false));
         assert!(list.runs("a") && list.stop("a", false).is_err());
@@ -952,7 +957,7 @@ mod tests {
 
         // Just after 18:00 (the lock started a moment after 16:00): the lock is over, and with it
         // the block.
-        list.clock.at_least(MONDAY + 18 * 3600 + 30);
+        list.clock.at_least(monday(18 * 3600 + 30));
         assert!(!list.runs("a") && !list.is_running());
     }
 
@@ -960,7 +965,7 @@ mod tests {
     fn a_lock_schedule_locks_only_while_it_is_active() {
         let list = blocklist("lock-schedule");
         // Monday 16:00. Active all day, locked during office hours, until 17:00.
-        list.clock.at_least(MONDAY + 16 * 3600);
+        list.clock.at_least(monday(16 * 3600));
         let office = Week::parse("mon-fri 08:00-17:00").unwrap();
         let locks = || StartLock::Scheduled(office.clone().unwrap());
         list.start("a", "Work", vec![part(sites(&["a.com"]), Enforcers::default())], None, locks()).unwrap();
@@ -971,7 +976,7 @@ mod tests {
         assert!(a.lock_change.is_some_and(|left| (3590..=3600).contains(&left)), "{:?}", a.lock_change);
         assert!(list.locked().is_some(), "the service may not be uninstalled now");
         // 17:00: outside the lock schedule it can be stopped, and still blocks until it is.
-        list.clock.at_least(MONDAY + 17 * 3600 + 5);
+        list.clock.at_least(monday(17 * 3600 + 5));
         let a = running(&list, "a");
         assert!(!a.locked && a.enforcing && list.locked().is_none());
         // Locked again on Tuesday at 08:00.
@@ -980,10 +985,10 @@ mod tests {
         assert!(!list.is_running());
 
         // It survives a restart as it was.
-        list.clock.at_least(MONDAY + 7 * 86400 + 9 * 3600);
+        list.clock.at_least(monday(7 * 86400 + 9 * 3600));
         list.start("a", "Work", vec![part(sites(&["a.com"]), Enforcers::default())], None, locks()).unwrap();
         let resumed = reopened("lock-schedule");
-        resumed.clock.at_least(MONDAY + 7 * 86400 + 9 * 3600);
+        resumed.clock.at_least(monday(7 * 86400 + 9 * 3600));
         resumed.restore();
         assert!(resumed.stop("a", false).is_err() && running(&resumed, "a").lock_schedule == office);
     }
@@ -1038,14 +1043,14 @@ mod tests {
     fn an_until_lock_ends_at_its_local_time() {
         let list = blocklist("until");
         // Monday 16:00 UTC; the test zone is UTC, so 18:00 is two hours away.
-        list.clock.at_least(MONDAY + 16 * 3600);
+        list.clock.at_least(monday(16 * 3600));
         let at = |text: &str| StartLock::Until(DateTime::parse(text).unwrap());
         let why = list.start("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, at("2030-01-07 12:00")).unwrap_err();
         assert!(why.contains("has passed"), "{why}");
         list.start("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, at("2030-01-07 18:00")).unwrap();
         assert!(list.stop("a", false).is_err());
         assert!(running(&list, "a").remaining.is_some_and(|left| (7190..=7200).contains(&left)));
-        list.clock.at_least(MONDAY + 18 * 3600 + 1);
+        list.clock.at_least(monday(18 * 3600 + 1));
         assert!(!list.runs("a"));
     }
 
@@ -1070,7 +1075,7 @@ mod tests {
     #[test]
     fn a_resumed_block_keeps_its_schedule_and_time_zone() {
         let list = blocklist("schedule-resume");
-        list.clock.at_least(MONDAY + 12 * 3600);
+        list.clock.at_least(monday(12 * 3600));
         let weekend = Week::parse("weekends").unwrap();
         list.start("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], weekend.clone(), StartLock::None).unwrap();
         assert!(list.is_running() && list.active().is_none(), "Monday is not in the weekend");
@@ -1078,7 +1083,7 @@ mod tests {
         assert_eq!((saved.schedule, saved.zone.as_str()), (weekend.clone(), "fixed:+0"));
 
         let resumed = reopened("schedule-resume");
-        resumed.clock.at_least(MONDAY + 5 * 86400 + 3600);
+        resumed.clock.at_least(monday(5 * 86400 + 3600));
         resumed.restore();
         assert_eq!(running(&resumed, "a").schedule, weekend);
         assert!(resumed.active().is_some(), "Saturday is");
@@ -1107,7 +1112,12 @@ mod tests {
             schedule: None,
             zone: "fixed:+0".into(),
         };
-        store.save(&[saved("old", RunLock::Ends { at: state::now().unwrap().as_secs() - 3600 }), saved("new", RunLock::None)]).unwrap();
+        store
+            .save(&[
+                saved("old", RunLock::Ends { at: state::to_unix(SystemTime::now()).unwrap() - 3_600_000 }),
+                saved("new", RunLock::None),
+            ])
+            .unwrap();
 
         let resumed = reopened("expired");
         resumed.restore();
