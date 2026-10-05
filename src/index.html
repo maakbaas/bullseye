@@ -52,8 +52,10 @@
       .notices cds-inline-notification { max-width: none; }
 
       /* The blocks, as tiles in the Carbon grid. */
-      /* A column that is itself a grid: Carbon's col-span classes would make it a block. */
-      .blocks.cds--subgrid { display: grid; row-gap: var(--cds-spacing-07); }
+      /* The tiles are columns of the page's grid itself (this wrapper only keeps them together), so
+         they line up with the header above them. */
+      #blocks { display: contents; }
+      .block-tile.cds--css-grid-column { margin-bottom: var(--cds-spacing-07); }
       .block-tile.cds--css-grid-column { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
       .block-tile .top { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--cds-spacing-03); }
       /* The size of the overflow menu's button it stands in for. */
@@ -107,7 +109,7 @@
           </div>
           <div class="notices" id="blocks-notices"></div>
         </div>
-        <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16 cds--subgrid blocks" id="blocks"></div>
+        <div id="blocks"></div>
         <cds-tile class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16 empty" id="empty" hidden>
           <h2 class="cds--type-productive-heading-03">No blocks yet</h2>
           <p class="cds--type-body-01">A block is a list of sites and programs to close, the ways to close them, and how long it runs. Use New block to make one.</p>
@@ -376,7 +378,7 @@
         const note = el("span", { class: "note cds--type-helper-text-01" });
         const tile = el(
           "cds-tile",
-          { class: "block-tile cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-4 cds--lg:col-span-8 cds--max:col-span-4" },
+          { class: "block-tile cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-4 cds--lg:col-span-8 cds--xlg:col-span-4" },
           el("div", { class: "top" }, el("div", {}, name), menu, lock),
           el("div", {}, tag),
           summary,
