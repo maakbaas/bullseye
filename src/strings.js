@@ -101,7 +101,7 @@ window.STRINGS = {
     stop: "Stop",
     lockLabel: "Lock",
     // In a block's ⋮ menu: its lock's settings.
-    changeLock: "Change lock…",
+    lockSettings: "Lock settings",
     // The dialog with a lock's settings. {method}: the lock's name below (locks.*.label).
     lockHeading: "{method} lock for {name}",
     lockFailed: "Could not set the lock of {name}",
@@ -261,10 +261,8 @@ window.STRINGS = {
     // {times}: the schedule in words.
     active: "Active {times}",
     notUsed: "Not used by a block yet",
-    timesLabel: "Times",
-    timesPlaceholder: "e.g. Mon-Fri 08:00-17:00",
-    timesHelper: "Days and times, e.g. Mon-Fri 08:00-17:00; Sat 10:00-12:00. Or drag over the week below to mark times, or to clear them by starting on a marked one.",
-    timesMissing: "Type the days and times; a block that is always active needs no schedule",
+    // Above the week grid.
+    gridHelp: "Drag over the week to mark when blocks are active. Start on a marked time to clear it instead.",
     // The week grid's column heads, Monday first.
     days: { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" },
   },

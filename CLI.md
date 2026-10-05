@@ -47,7 +47,7 @@ A running block keeps what it was started with: while it runs, it cannot be chan
 | `bullseye-cli schedule new <name> <times>` | **New schedule**, then **Save** |
 | `bullseye-cli schedule edit <schedule> [--name <name>] [--times <times>]` | **Edit** a schedule, then **Save** |
 | `bullseye-cli schedule delete <schedule> [--yes]` | **Delete** a schedule |
-| `bullseye-cli schedule check <times>` | the Times field of the schedule editor |
+| `bullseye-cli schedule check <times>` | the schedule written out under the week grid in the schedule editor |
 | `bullseye-cli unlock [--password <pw>]` | **Unlock** in Settings (also closes the app) |
 | `bullseye-cli help` | |
 | `bullseye-cli version` | |
@@ -138,7 +138,7 @@ bullseye-cli unlock
 
 ### `schedule check`
 
-Checks times written as text and shows them per day, the way a schedule and the window's Times field read them:
+Checks times written as text and shows them per day, the way a schedule reads them, and as the window writes them out:
 
 ```
 > bullseye-cli schedule check "weekdays 8-12, 13-17; sat 10am-noon"

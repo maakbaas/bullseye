@@ -26,7 +26,7 @@ use crate::state::Enforcers;
 
 /// Each command the window can invoke, and the CLI commands that do the same. Empty: it is about
 /// the window itself.
-pub const GUI_COMMANDS: [(&str, &[&str]); 15] = [
+pub const GUI_COMMANDS: [(&str, &[&str]); 14] = [
     ("block_status", &["status", "show", "list show", "schedule show"]),
     ("save_block", &["new", "edit"]),
     ("delete_block", &["delete"]),
@@ -37,7 +37,6 @@ pub const GUI_COMMANDS: [(&str, &[&str]); 15] = [
     ("start_block", &["start"]),
     ("stop_block", &["stop"]),
     ("force_exit", &["unlock"]),
-    ("parse_schedule", &["schedule check"]),
     ("describe_schedule", &["schedule check"]),
     // A lock's length or end in words: what `show` and `start` say of a duration or until lock.
     ("describe_duration", &["show"]),

@@ -102,9 +102,13 @@
       /* As wide as the fields above it, whatever the window's width: the days share the room. */
       .week { display: grid; grid-template-columns: var(--cds-spacing-09) repeat(7, minmax(0, 1fr)); grid-auto-rows: var(--cds-spacing-03); inline-size: 100%; touch-action: none; user-select: none; }
       .week .day { align-self: center; text-align: center; color: var(--cds-text-secondary); }
-      .week .hour { color: var(--cds-text-secondary); }
+      /* An hour's label is centred on the line it names (see `weekEditor`). */
+      .week .hour { display: flex; align-items: center; color: var(--cds-text-secondary); }
       .week .cell { background: var(--cds-layer-01); border-inline-start: 1px solid var(--cds-border-subtle-01); cursor: pointer; }
       .week .cell.hour-start { border-block-start: 1px solid var(--cds-border-subtle-01); }
+      .week .cell.last { border-block-end: 1px solid var(--cds-border-subtle-01); }
+      .week-help, .week-summary { color: var(--cds-text-secondary); }
+      .week-summary.problem { color: var(--cds-text-error); }
       .week .cell.on { background: var(--cds-interactive); }
       .week.disabled .cell { cursor: default; }
       .week.disabled .cell.on { background: var(--cds-border-disabled); }
@@ -650,7 +654,7 @@
             { flipped: true },
             el("cds-overflow-menu-item", { "data-action": "edit" }, t("common.edit")),
             // A block's lock settings (a timer's length, …); the method is the tile's select.
-            kind === "blocks" ? el("cds-overflow-menu-item", { "data-action": "lock" }, t("blocks.changeLock")) : null,
+            kind === "blocks" ? el("cds-overflow-menu-item", { "data-action": "lock" }, t("blocks.lockSettings")) : null,
             el("cds-overflow-menu-item", { "data-action": "delete", danger: true }, t("common.delete")),
           ),
         );
@@ -1065,28 +1069,30 @@
       const SLOT = 30; // minutes per cell
 
       function weekEditor() {
-        const text = el("cds-text-input", {
-          label: t("schedules.timesLabel"),
-          placeholder: t("schedules.timesPlaceholder"),
-          "helper-text": t("schedules.timesHelper"),
-        });
+        // How to use it above, and what is marked, written out by the backend, below.
+        const help = el("p", { class: "cds--type-body-01 week-help" }, t("schedules.gridHelp"));
         const grid = el("div", { class: "week", "aria-hidden": "true" });
+        const summary = el("p", { class: "cds--type-body-01 week-summary" });
         const cells = DAY_NAMES.map(() => []);
         let days = DAY_NAMES.map(() => []);
         let disabled = false;
         let problem = null;
-        let typing = 0;
 
         const place = (node, column, row, rows) => {
           node.style.gridColumn = String(column);
           node.style.gridRow = `${row} / span ${rows}`;
           grid.append(node);
         };
+        // Rows: the day names take the first three, then a row per half hour from row 4. An hour's
+        // label spans the two rows above its line and the two below, and is centred on that line:
+        // 00:00 on the top edge of the grid, 24:00 on its bottom edge.
+        const SLOTS = (24 * 60) / SLOT;
         DAY_NAMES.forEach((name, day) => place(el("div", { class: "day cds--type-label-01" }, name), day + 2, 1, 3));
-        for (let slot = 0; slot < (24 * 60) / SLOT; slot++) {
-          if (slot % 4 === 0) place(el("div", { class: "hour cds--type-label-01" }, `${String(slot / 2).padStart(2, "0")}:00`), 1, slot + 4, 4);
+        for (let hour = 0; hour <= 24; hour += 2) place(el("div", { class: "hour cds--type-label-01" }, `${String(hour).padStart(2, "0")}:00`), 1, hour * 2 + 2, 4);
+        for (let slot = 0; slot < SLOTS; slot++) {
           DAY_NAMES.forEach((_, day) => {
-            const cell = el("div", { class: slot % 2 === 0 ? "cell hour-start" : "cell", "data-day": day, "data-slot": slot });
+            const edges = [slot % 2 === 0 ? "hour-start" : "", slot === SLOTS - 1 ? "last" : ""].join(" ");
+            const cell = el("div", { class: `cell ${edges}`.trim(), "data-day": day, "data-slot": slot });
             cells[day].push(cell);
             place(cell, day + 2, slot + 4, 1);
           });
@@ -1103,42 +1109,22 @@
           grid.classList.toggle("disabled", disabled);
         }
 
-        function wrong(why) {
-          problem = why;
-          text.invalid = !!why;
-          if (why) text.setAttribute("invalid-text", why);
-        }
-
-        // The week as text, from the backend, so it reads exactly as the CLI writes it.
+        // The week written out by the backend, as the CLI and the block tiles say it; or why it
+        // cannot be saved (nothing marked).
         async function describe() {
           try {
-            text.value = await invoke("describe_schedule", { week: { days } });
-            wrong(null);
+            summary.textContent = t("schedules.active", { times: await invoke("describe_schedule", { week: { days } }) });
+            problem = null;
           } catch (e) {
-            wrong(String(e));
+            problem = String(e);
+            summary.textContent = problem;
           }
+          summary.classList.toggle("problem", !!problem);
         }
-
-        async function parseText() {
-          typing = 0;
-          try {
-            const parsed = await invoke("parse_schedule", { text: text.value });
-            if (!parsed) return wrong(t("schedules.timesMissing"));
-            days = parsed.days;
-            wrong(null);
-            draw();
-          } catch (e) {
-            wrong(String(e));
-          }
-        }
-        text.addEventListener("input", () => {
-          clearTimeout(typing);
-          typing = setTimeout(parseText, 400);
-        });
 
         // Dragging from one cell to another marks the rectangle between them (those days, those
         // times), or clears it when the drag starts on a marked cell. Only the days it covers are
-        // rewritten, so a typed schedule keeps its exact minutes on the others.
+        // rewritten, so a schedule made in the CLI keeps its exact minutes on the others.
         let painting = null;
         const cellAt = (event) => {
           const node = document.elementFromPoint(event.clientX, event.clientY);
@@ -1191,7 +1177,7 @@
         grid.addEventListener("pointercancel", finish);
 
         return {
-          nodes: [text, grid],
+          nodes: [help, grid, summary],
           read: () => ({ days: days.map((spans) => spans.map((span) => [...span])) }),
           fill: (values) => {
             days = values.days.map((spans) => spans.map((span) => [...span]));
@@ -1202,15 +1188,9 @@
           disable: (off) => {
             if (off === disabled) return;
             disabled = off;
-            text.disabled = off;
             draw();
           },
-          settle: async () => {
-            if (typing) {
-              clearTimeout(typing);
-              await parseText();
-            }
-          },
+          settle: async () => {},
           error: () => problem,
         };
       }
@@ -1360,6 +1340,13 @@
         action.addEventListener("click", () => (location.hash = PAGES[action.dataset.page]));
       }
       $("delete").append(carbonIcon("trash-can", "icon"));
+
+      // No browser menu on right-click (Back, Refresh, …: WebView2's own, which make no sense in an
+      // app), except in a text field, where it cuts, copies and pastes.
+      document.addEventListener("contextmenu", (event) => {
+        const typing = event.composedPath().some((node) => node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement);
+        if (!typing) event.preventDefault();
+      });
 
       // The window is made when it is asked for and shown once this page has drawn (`ui::window_ready`);
       // its X only hides it. While it is hidden nothing is looked at, so nothing is asked of the service.

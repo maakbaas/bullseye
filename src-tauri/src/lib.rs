@@ -94,12 +94,6 @@ fn stop_block(id: String, password: Option<String>, remote: State<Remote>) -> Re
     remote.command(Request::Stop { id, password })
 }
 
-/// A weekly schedule written as text (`schedule.rs`), for the schedule editor; `None` is always
-/// active. Needs no service: it only reads the text.
-#[tauri::command]
-fn parse_schedule(text: String) -> Result<Option<Week>, String> {
-    Week::parse(&text)
-}
 
 /// A weekly schedule as text, after checking it, for the schedule editor and the block's summary.
 #[tauri::command]
@@ -189,7 +183,6 @@ pub fn run() {
             start_block,
             stop_block,
             force_exit,
-            parse_schedule,
             describe_schedule,
             describe_duration,
             describe_until,
