@@ -75,7 +75,6 @@
 
       /* Settings. */
       .setting { display: flex; flex-direction: column; gap: var(--cds-spacing-05); max-width: 32rem; }
-      .setting + .setting { margin-top: var(--cds-spacing-09); }
       .setting p { color: var(--cds-text-secondary); }
       .setting .row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--cds-spacing-05); }
       .setting .row cds-password-input { flex: 1 1 14rem; }
@@ -111,7 +110,7 @@
 
       <!-- Making or changing a block. Built from the tables in the script (LISTS, SECTIONS, SCHEDULES). -->
       <div id="view-editor" class="cds--css-grid" hidden>
-        <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-12 cds--xlg:col-span-10">
+        <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-12 cds--lg:col-start-3 cds--xlg:col-span-10 cds--xlg:col-start-4">
           <cds-breadcrumb class="back" no-trailing-slash><cds-breadcrumb-item><cds-breadcrumb-link href="#/">Blocks</cds-breadcrumb-link></cds-breadcrumb-item></cds-breadcrumb>
           <div class="page-header">
             <div>
@@ -144,7 +143,7 @@
 
       <!-- Settings: the unlock password, kept apart from the blocks. -->
       <div id="view-settings" class="cds--css-grid" hidden>
-        <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-12 cds--xlg:col-span-10">
+        <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-12 cds--lg:col-start-3 cds--xlg:col-span-10 cds--xlg:col-start-4">
           <cds-breadcrumb class="back" no-trailing-slash><cds-breadcrumb-item><cds-breadcrumb-link href="#/">Blocks</cds-breadcrumb-link></cds-breadcrumb-item></cds-breadcrumb>
           <div class="page-header">
             <h1 class="cds--type-productive-heading-05">Settings</h1>
@@ -157,10 +156,6 @@
               <cds-password-input id="password" label="Unlock password" autocomplete="off"></cds-password-input>
               <cds-button id="unlock" kind="danger" size="md" disabled>Unlock</cds-button>
             </div>
-          </div>
-          <div class="setting">
-            <h2 class="cds--type-productive-heading-03">Time</h2>
-            <p class="cds--type-body-01" id="clock">Timed blocks are measured in internet time, so changing the Windows clock does not shorten them.</p>
           </div>
         </div>
       </div>
@@ -320,9 +315,6 @@
       function render() {
         renderBlocks();
         renderEditorLock();
-        $("clock").textContent = overview.clock_synced
-          ? "Timed blocks are measured in internet time, so changing the Windows clock does not shorten them. Internet time is in."
-          : "Timed blocks are measured in internet time, so changing the Windows clock does not shorten them. Waiting for internet time: until it is in, time with the service not running does not count.";
       }
 
       // ---- The blocks page. Tiles are kept and updated in place, so an open menu survives a refresh.
