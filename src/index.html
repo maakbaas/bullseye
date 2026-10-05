@@ -32,8 +32,8 @@
       }
       /* Until the components are defined, show nothing rather than unstyled markup. */
       body:not(.ready) { visibility: hidden; }
-      /* Room for the header above and the side nav's rail on the left. */
-      main { padding: calc(3rem + var(--cds-spacing-07)) 0 var(--cds-spacing-09) 3rem; }
+      /* Room for the header above. */
+      main { padding: calc(3rem + var(--cds-spacing-07)) 0 var(--cds-spacing-09); }
       [hidden] { display: none !important; }
 
       /* A page: its header (title, description, main action), then its content. */
@@ -56,7 +56,7 @@
          they line up with the header above them. */
       #blocks { display: contents; }
       /* One block per row, full width. On wider windows its actions move to the right of the row. */
-      .block-tile.cds--css-grid-column { display: flex; flex-direction: column; gap: var(--cds-spacing-05); margin-bottom: var(--cds-spacing-05); }
+      .block-tile.cds--css-grid-column { display: flex; flex-direction: column; gap: var(--cds-spacing-03); margin-bottom: var(--cds-spacing-05); }
       .block-tile .body { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
       .block-tile .info { display: flex; flex-direction: column; align-items: flex-start; gap: var(--cds-spacing-05); }
       .block-tile .top { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--cds-spacing-03); }
@@ -65,10 +65,9 @@
       .block-tile h2 { overflow-wrap: anywhere; padding-top: var(--cds-spacing-02); }
       .block-tile .summary { display: flex; flex-direction: column; gap: var(--cds-spacing-02); color: var(--cds-text-secondary); }
       .block-tile .actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--cds-spacing-04); }
-      .block-tile .actions .note { color: var(--cds-text-secondary); }
       @media (min-width: 42rem) { /* Carbon's md breakpoint */
         .block-tile .body { flex-direction: row; align-items: flex-end; justify-content: space-between; }
-        .block-tile .actions { flex-direction: column; align-items: flex-end; flex: none; }
+        .block-tile .actions { flex: none; }
       }
       .empty { display: flex; flex-direction: column; align-items: flex-start; gap: var(--cds-spacing-05); }
 
@@ -91,10 +90,16 @@
     </style>
   </head>
   <body>
+    <!-- Carbon's responsive UI shell: from 1056 px the pages are links in the header; below that
+         the menu button opens them in a side nav, which is not shown at all on wide windows. -->
     <cds-header aria-label="Site Blocker">
+      <cds-header-menu-button button-label-active="Close menu" button-label-inactive="Open menu"></cds-header-menu-button>
       <cds-header-name href="#/" prefix="">Site Blocker</cds-header-name>
-      <!-- The app's pages: an icon rail that shows its labels on hover or focus. -->
-      <cds-side-nav aria-label="Pages" collapse-mode="rail">
+      <cds-header-nav menu-bar-label="Site Blocker">
+        <cds-header-nav-item href="#/" data-page="blocks">Blocks</cds-header-nav-item>
+        <cds-header-nav-item href="#/settings" data-page="settings">Settings</cds-header-nav-item>
+      </cds-header-nav>
+      <cds-side-nav id="side-nav" aria-label="Pages" collapse-mode="responsive" is-not-persistent>
         <cds-side-nav-items>
           <cds-side-nav-link href="#/" data-page="blocks">Blocks</cds-side-nav-link>
           <cds-side-nav-link href="#/settings" data-page="settings">Settings</cds-side-nav-link>
@@ -381,12 +386,11 @@
         const tag = el("cds-tag", { size: "md" });
         const summary = el("div", { class: "summary cds--type-body-compact-01" });
         const toggle = el("cds-button", { kind: "primary", size: "sm" });
-        const note = el("span", { class: "note cds--type-helper-text-01" });
         const tile = el(
           "cds-tile",
           { class: "block-tile cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16" },
           el("div", { class: "top" }, el("div", {}, name), menu, lock),
-          el("div", { class: "body" }, el("div", { class: "info" }, tag, summary), el("div", { class: "actions" }, toggle, note)),
+          el("div", { class: "body" }, el("div", { class: "info" }, tag, summary), el("div", { class: "actions" }, toggle)),
         );
         // On the items themselves: Carbon moves the open menu out of the tile.
         for (const item of menu.querySelectorAll("[data-action]")) {
@@ -396,7 +400,7 @@
           });
         }
         toggle.addEventListener("click", () => startOrStop(id));
-        const parts = { tile, name, tag, summary, toggle, note, menu, lock };
+        const parts = { tile, name, tag, summary, toggle, menu, lock };
         tiles.set(id, parts);
         return parts;
       }
@@ -438,7 +442,6 @@
             parts.toggle.replaceChildren(running ? "Stop" : "Start", carbonIcon(running ? "stop" : "play", "icon"));
           }
           parts.toggle.disabled = busy || timed || !reachable;
-          parts.note.textContent = timed ? "A timed block cannot be stopped early" : "";
           // A block left from an older version has no definition to edit, but always runs.
           parts.menu.hidden = !!running || !defined;
           parts.lock.hidden = !parts.menu.hidden;
@@ -669,7 +672,11 @@
         const view = hash === "#/new" || edit ? "editor" : hash === "#/settings" ? "settings" : "blocks";
         for (const name of ["blocks", "editor", "settings"]) $(`view-${name}`).hidden = name !== view;
         // The editor belongs to the blocks.
-        for (const link of document.querySelectorAll("cds-side-nav-link")) link.active = link.dataset.page === (view === "settings" ? "settings" : "blocks");
+        const page = view === "settings" ? "settings" : "blocks";
+        for (const link of document.querySelectorAll("cds-side-nav-link")) link.active = link.dataset.page === page;
+        for (const link of document.querySelectorAll("cds-header-nav-item")) link.isActive = link.dataset.page === page;
+        // A page was chosen: the side nav (narrow windows) has done its job.
+        $("side-nav").expanded = false;
         if (view === "editor") openEditor(edit ? decodeURIComponent(edit[1]) : null);
         else editing = null;
         if (view === "settings") {

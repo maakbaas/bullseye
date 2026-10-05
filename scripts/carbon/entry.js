@@ -3,6 +3,9 @@
 // page starts using must be added here, and the vendor files rebuilt (`npm run vendor`).
 import '@carbon/web-components/es/components/ui-shell/header.js';
 import '@carbon/web-components/es/components/ui-shell/header-name.js';
+import '@carbon/web-components/es/components/ui-shell/header-menu-button.js';
+import '@carbon/web-components/es/components/ui-shell/header-nav.js';
+import '@carbon/web-components/es/components/ui-shell/header-nav-item.js';
 import '@carbon/web-components/es/components/ui-shell/side-nav.js';
 import '@carbon/web-components/es/components/ui-shell/side-nav-items.js';
 import '@carbon/web-components/es/components/ui-shell/side-nav-link.js';
