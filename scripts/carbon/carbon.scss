@@ -14,6 +14,8 @@
 @use '@carbon/styles/scss/spacing';
 @use '@carbon/styles/scss/type';
 @use '@carbon/styles/scss/breakpoint';
+// The UI shell's light-DOM classes, e.g. `cds--header__global` for the header's action group.
+@use '@carbon/styles/scss/components/ui-shell';
 
 @include type.type-classes();
 
