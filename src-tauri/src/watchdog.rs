@@ -42,9 +42,8 @@ use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
 use windows_sys::Win32::System::RemoteDesktop::{ProcessIdToSessionId, WTSGetActiveConsoleSessionId, WTSQueryUserToken};
 use windows_sys::Win32::System::Threading::{
-    CreateProcessAsUserW, OpenProcess, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
-    CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-    PROCESS_TERMINATE, STARTUPINFOW,
+    CreateProcessAsUserW, OpenProcess, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject, CREATE_UNICODE_ENVIRONMENT,
+    PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, STARTUPINFOW,
 };
 
 use crate::block::Blocklist;
@@ -91,9 +90,7 @@ impl Process {
     /// Opens a process by id. The service is SYSTEM and may open any.
     pub fn open(pid: u32) -> Option<Process> {
         // SAFETY: plain call; the handle is closed in `drop`.
-        let handle = unsafe {
-            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid)
-        };
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid) };
         (!handle.is_null()).then_some(Process { handle: handle as usize, pid })
     }
 
@@ -422,8 +419,7 @@ fn civil(days: u64) -> (u64, u64, u64) {
     let z = days as i64 + 719_468;
     let era = z.div_euclid(146_097);
     let day_of_era = z.rem_euclid(146_097);
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     // March-based month number, so the leap day is the last day of the year.
     let month_from_march = (5 * day_of_year + 2) / 153;

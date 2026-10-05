@@ -295,7 +295,13 @@ mod tests {
         for day in 0..5 {
             expected.days[day] = vec![Span(480, 1020)];
         }
-        for same in ["mon-fri 08:00-17:00", "Weekdays 8-17", "monday-friday 8am-5pm", "mon,tue,wed,thu,fri 08:00 - 17:00", "mon-wed 8-12, 12:00-17:00; thu-fri 8-17"] {
+        for same in [
+            "mon-fri 08:00-17:00",
+            "Weekdays 8-17",
+            "monday-friday 8am-5pm",
+            "mon,tue,wed,thu,fri 08:00 - 17:00",
+            "mon-wed 8-12, 12:00-17:00; thu-fri 8-17",
+        ] {
             assert_eq!(Week::parse(same), Ok(Some(expected.clone())), "{same}");
         }
         // No days is every day, no times is the whole day.
@@ -315,7 +321,9 @@ mod tests {
 
     #[test]
     fn texts_that_are_not() {
-        for bad in ["someday 8-17", "mon 8-", "mon 25:00-26:00", "mon 8:5-9", "mon 9-9", "mon 24:00-02:00", "mon 13pm-14pm", "mon 8 17", "m 8-9"] {
+        for bad in
+            ["someday 8-17", "mon 8-", "mon 25:00-26:00", "mon 8:5-9", "mon 9-9", "mon 24:00-02:00", "mon 13pm-14pm", "mon 8 17", "m 8-9"]
+        {
             assert!(Week::parse(bad).is_err(), "{bad}");
         }
     }

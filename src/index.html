@@ -910,17 +910,14 @@
       });
       $("confirm").addEventListener("cds-modal-closed", () => answered(false));
 
-      // What deleting a block list or schedule does to the blocks that use it, as the service
-      // does it (`Library::fallout`): one sentence per kind of change.
-      function fallout(id) {
-        const named = (keep) => names(overview.blocks.filter(keep));
-        const sentences = [
-          ["deletesToo", (b) => b.lists.length > 0 && b.lists.every((l) => l === id)],
-          ["keepsOthers", (b) => b.lists.includes(id) && b.lists.some((l) => l !== id)],
-          ["becomesAlways", (b) => b.schedule === id],
-          ["losesLock", (b) => b.lock && b.lock.schedule === id],
-        ];
-        return sentences.map(([key, keep]) => [key, named(keep)]).filter(([, who]) => who).map(([key, who]) => t(`delete.${key}`, { names: who }));
+      // What deleting a block list or schedule does to the blocks that use it, in sentences: the
+      // service's rule (`deletion_fallout`, `Library::fallout`), worded by strings.js.
+      async function fallout(id) {
+        const effects = await invoke("deletion_fallout", { blocks: overview.blocks, id });
+        const sentences = { deleted: "deletesToo", without_it: "keepsOthers", always: "becomesAlways", unlocked: "losesLock" };
+        return Object.entries(sentences)
+          .filter(([field]) => effects[field].length)
+          .map(([field, key]) => t(`delete.${key}`, { names: effects[field].map(quoted).join(t("common.separator")) }));
       }
 
       async function confirmDelete(kind, id) {
@@ -929,7 +926,7 @@
         if (!item) return;
         const sure = await ask({
           heading: t("delete.heading", { name: quoted(item.name), noun: kindOf.noun }),
-          body: [t("delete.body", { name: quoted(item.name), noun: kindOf.noun }), ...fallout(id)].join(" "),
+          body: [t("delete.body", { name: quoted(item.name), noun: kindOf.noun }), ...(kind === "blocks" ? [] : await fallout(id))].join(" "),
           action: t("common.delete"),
           kind: "danger",
         });

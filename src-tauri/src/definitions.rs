@@ -114,7 +114,8 @@ impl BlockList {
     /// The lists, read and checked. Also refuses programs Windows needs (`programs.rs`).
     pub fn lists(&self) -> Result<Lists, String> {
         let sites = FilterList::parse(&self.filters).map_err(|_| format!("{}: invalid block list syntax", self.name))?;
-        let allowed = FilterList::parse(&self.allowed).map_err(|_| format!("{}: invalid syntax in the list of allowed sites", self.name))?;
+        let allowed =
+            FilterList::parse(&self.allowed).map_err(|_| format!("{}: invalid syntax in the list of allowed sites", self.name))?;
         let programs = ProgramList::parse(&self.programs).map_err(|why| format!("{}: {why}", self.name))?;
         Ok(Lists { sites, allowed, programs })
     }
@@ -177,7 +178,8 @@ impl Library {
         if block.lists.is_empty() {
             return Err(format!("{}: choose at least one block list", block.name));
         }
-        let lists = block.lists.iter().map(|l| self.list(l).cloned().ok_or("A block list of this block is gone")).collect::<Result<Vec<_>, _>>()?;
+        let lists =
+            block.lists.iter().map(|l| self.list(l).cloned().ok_or("A block list of this block is gone")).collect::<Result<Vec<_>, _>>()?;
         let week = block.schedule.as_deref().map(|s| self.week_of(s)).transpose()?;
         let lock_week = block.lock.schedule().map(|s| self.week_of(s)).transpose()?;
         Ok(Resolved { block, lists, week, lock_week })
@@ -266,7 +268,10 @@ impl Definitions {
                     Some(new) => Some(unlock::new_hash(&new)?),
                     // A hash from a client is not taken: only one this service made, the block's
                     // own or the one kept from when it last had a password lock.
-                    None => old.as_ref().and_then(|old| old.lock.password_hash().or_else(|| old.kept_locks.iter().find_map(Lock::password_hash))).map(str::to_string),
+                    None => old
+                        .as_ref()
+                        .and_then(|old| old.lock.password_hash().or_else(|| old.kept_locks.iter().find_map(Lock::password_hash)))
+                        .map(str::to_string),
                 };
                 if hash.is_none() {
                     return Err("Set a password for the password lock".into());
@@ -359,8 +364,10 @@ impl Definitions {
 }
 
 /// A block list or schedule that blocks use cannot be deleted; the message says which blocks.
-/// What deleting a block list or schedule does to the blocks that use it, by their names.
-#[derive(Default, Debug, PartialEq)]
+/// What deleting a block list or schedule does to the blocks that use it, by their names: what
+/// the service does (`Definitions::delete_list`, `delete_schedule`), and what the window and the
+/// CLI say before it.
+#[derive(Serialize, Default, Debug, PartialEq)]
 pub struct Fallout {
     /// Blocks that had only this block list: deleted with it.
     pub deleted: Vec<String>,
@@ -415,7 +422,14 @@ pub mod tests {
 
     /// A block of these lists, always active and not locked.
     pub fn block(id: &str, lists: &[&str]) -> Definition {
-        Definition { id: id.into(), name: format!("Block {id}"), lists: lists.iter().map(|l| l.to_string()).collect(), schedule: None, lock: Lock::None, kept_locks: Vec::new() }
+        Definition {
+            id: id.into(),
+            name: format!("Block {id}"),
+            lists: lists.iter().map(|l| l.to_string()).collect(),
+            schedule: None,
+            lock: Lock::None,
+            kept_locks: Vec::new(),
+        }
     }
 
     pub fn weekly(id: &str, text: &str) -> NamedSchedule {
@@ -492,11 +506,20 @@ pub mod tests {
         definitions.save_schedule(weekly("s2", "weekdays")).unwrap();
         // "a" has only l; "b" has l and l2, schedule s and lock schedule s2.
         definitions.save_block(block("a", &["l"])).unwrap();
-        definitions.save_block(Definition { schedule: Some("s".into()), lock: Lock::Scheduled { schedule: "s2".into() }, ..block("b", &["l", "l2"]) }).unwrap();
+        definitions
+            .save_block(Definition {
+                schedule: Some("s".into()),
+                lock: Lock::Scheduled { schedule: "s2".into() },
+                ..block("b", &["l", "l2"])
+            })
+            .unwrap();
         let library = definitions.library();
         let fallout = library.fallout("l");
         assert_eq!((fallout.deleted, fallout.without_it), (vec!["Block a".to_string()], vec!["Block b".to_string()]));
-        assert_eq!((library.fallout("s").always, library.fallout("s2").unlocked), (vec!["Block b".to_string()], vec!["Block b".to_string()]));
+        assert_eq!(
+            (library.fallout("s").always, library.fallout("s2").unlocked),
+            (vec!["Block b".to_string()], vec!["Block b".to_string()])
+        );
         assert_eq!(library.fallout("nothing"), Fallout::default());
 
         // The block list: "a" goes with it, "b" keeps l2.
@@ -568,7 +591,8 @@ pub mod tests {
         let hash = definitions.library().block("b").unwrap().lock.password_hash().unwrap().to_string();
         assert!(unlock::check_hash("secret", &hash));
         // The current method is not kept twice; a client's kept locks are ignored.
-        let sent = Definition { kept_locks: vec![Lock::Duration { duration: "1d".into() }], ..with(Lock::Duration { duration: "10m".into() }) };
+        let sent =
+            Definition { kept_locks: vec![Lock::Duration { duration: "1d".into() }], ..with(Lock::Duration { duration: "10m".into() }) };
         definitions.save_block(sent).unwrap();
         let kept = definitions.library().block("b").unwrap().kept_locks.clone();
         assert_eq!(kept.len(), 1);

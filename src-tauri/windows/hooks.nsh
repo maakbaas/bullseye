@@ -26,7 +26,7 @@
     ; The service is registered but did not answer or did not end. Stopping here, rather than
     ; deleting files under a service that may still be running, avoids a half-removed install.
     ; (No service at all is exit code 0, so that case goes on.)
-    MessageBox MB_ICONSTOP "Bullseye's service did not respond, so nothing was removed.$\n$\nSee C:\ProgramData\bullseye\service.log, or use the recovery steps in detailed-instructions.md." /SD IDOK
+    MessageBox MB_ICONSTOP "Bullseye's service did not respond, so nothing was removed.$\n$\nSee C:\ProgramData\bullseye\service.log, or use the recovery steps in the Bullseye source (CLAUDE.md)." /SD IDOK
     SetErrorLevel 1
     Quit
   ${EndIf}

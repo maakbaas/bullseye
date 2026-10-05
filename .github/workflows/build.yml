@@ -39,6 +39,11 @@ jobs:
 
       - run: npm ci
 
+      # The code's formatting (src-tauri/rustfmt.toml), the quickest check first.
+      - name: Format
+        working-directory: src-tauri
+        run: cargo fmt --check
+
       # The unit tests, before spending time on the installer.
       - name: Test
         working-directory: src-tauri

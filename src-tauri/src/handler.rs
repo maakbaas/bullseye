@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::block::{Blocklist, Locks, Part};
+use crate::block::{Blocklist, Part, StartLock};
 use crate::definitions::Definitions;
 use crate::lock::Lock;
 use crate::proto::{Overview, Policy, Request, Response};
@@ -124,15 +124,13 @@ fn start(context: &Context, id: &str) -> Result<(), String> {
     let _editing = context.editing.locked();
     let resolved = context.definitions.library().resolve(id)?;
     let lock = &resolved.block.lock;
-    let locks = Locks {
-        duration: lock.duration()?,
-        until: lock.until()?,
-        schedule: resolved.lock_week,
-        until_restart: *lock == Lock::UntilRestart,
-        password: match lock {
-            Lock::Password { .. } => Some(lock.password_hash().ok_or("Set a password for the password lock")?.to_string()),
-            _ => None,
-        },
+    let lock = match lock {
+        Lock::None => StartLock::None,
+        Lock::Duration { .. } => StartLock::For(lock.duration()?.ok_or("No duration for the lock")?),
+        Lock::Until { .. } => StartLock::Until(lock.until()?.ok_or("No end for the lock")?),
+        Lock::Scheduled { .. } => StartLock::Scheduled(resolved.lock_week.clone().ok_or("No schedule for the lock")?),
+        Lock::UntilRestart => StartLock::UntilRestart,
+        Lock::Password { .. } => StartLock::Password(lock.password_hash().ok_or("Set a password for the password lock")?.to_string()),
     };
     let parts = resolved
         .lists
@@ -144,7 +142,7 @@ fn start(context: &Context, id: &str) -> Result<(), String> {
     if !parts.iter().any(Part::can_run) {
         return Err("Nothing to block: add a site or program to its block lists, or turn on an enforcer that needs no list".into());
     }
-    context.blocklist.start(id, &resolved.block.name, parts, resolved.week, locks)
+    context.blocklist.start(id, &resolved.block.name, parts, resolved.week, lock)
 }
 
 /// Ends every block for the unlock password. The app stays: it has nothing to enforce then.
@@ -445,7 +443,10 @@ mod tests {
         let context = context("until");
         // A time that is not one is refused when saved; one that has passed when started.
         assert!(failed(save(&context, definition("a", &["a.com"]).lock(Lock::Until { until: "tomorrow".into() }))));
-        let Response::Failed(why) = run(&context, definition("a", &["a.com"]).lock(Lock::Until { until: "2001-01-01 00:00".into() })) else { panic!("started") };
+        let Response::Failed(why) = run(&context, definition("a", &["a.com"]).lock(Lock::Until { until: "2001-01-01 00:00".into() }))
+        else {
+            panic!("started")
+        };
         assert!(why.contains("has passed"), "{why}");
         // A time ahead locks like a duration.
         assert_eq!(run(&context, definition("a", &["a.com"]).lock(Lock::Until { until: "2999-01-01 00:00".into() })), Response::Done);
@@ -521,7 +522,9 @@ mod tests {
         assert!(why.contains("2 hours"), "{why}");
         // A weekly schedule with no time in it is never active: not even saved.
         let never = NamedSchedule { id: "n".into(), name: "N".into(), week: crate::schedule::Week::default() };
-        assert!(matches!(handle(&context, 0, Request::SaveSchedule { schedule: never }).0, Response::Failed(why) if why.contains("never be active")));
+        assert!(
+            matches!(handle(&context, 0, Request::SaveSchedule { schedule: never }).0, Response::Failed(why) if why.contains("never be active"))
+        );
     }
 
     #[test]

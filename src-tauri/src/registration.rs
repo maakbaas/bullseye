@@ -11,8 +11,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use windows_service::service::{
-    ServiceAccess, ServiceAction, ServiceActionType, ServiceErrorControl, ServiceFailureActions, ServiceFailureResetPeriod,
-    ServiceInfo, ServiceStartType, ServiceState, ServiceType,
+    ServiceAccess, ServiceAction, ServiceActionType, ServiceErrorControl, ServiceFailureActions, ServiceFailureResetPeriod, ServiceInfo,
+    ServiceStartType, ServiceState, ServiceType,
 };
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
@@ -78,15 +78,11 @@ pub fn install(exe: &Path) -> Result<(), String> {
             reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(24 * 60 * 60)),
             reboot_msg: None,
             command: None,
-            actions: Some(
-                (0..3).map(|_| ServiceAction { action_type: ServiceActionType::Restart, delay: Duration::ZERO }).collect(),
-            ),
+            actions: Some((0..3).map(|_| ServiceAction { action_type: ServiceActionType::Restart, delay: Duration::ZERO }).collect()),
         })
         .map_err(|e| describe("cannot set the failure actions", e))?;
     // Also when it ends with a failure exit code instead of being killed.
-    service
-        .set_failure_actions_on_non_crash_failures(true)
-        .map_err(|e| describe("cannot set the failure flag", e))?;
+    service.set_failure_actions_on_non_crash_failures(true).map_err(|e| describe("cannot set the failure flag", e))?;
     // Last: after this, an administrator can no longer change the service. The handle held
     // here keeps the rights it was opened with.
     let output = Command::new("sc.exe")
@@ -147,9 +143,9 @@ pub fn wait_stopped(timeout: Duration) -> bool {
 /// Run by the service itself, as SYSTEM, on an uninstall: deletes the service, its safe-mode
 /// keys and everything it saved.
 pub fn remove() {
-    match manager(ServiceManagerAccess::CONNECT).and_then(|m| {
-        m.open_service(NAME, ServiceAccess::DELETE).map_err(|e| format!("cannot open the service: {e}"))
-    }) {
+    match manager(ServiceManagerAccess::CONNECT)
+        .and_then(|m| m.open_service(NAME, ServiceAccess::DELETE).map_err(|e| format!("cannot open the service: {e}")))
+    {
         Ok(service) => {
             if let Err(e) = service.delete() {
                 note("service", &format!("cannot delete the service: {e}"));

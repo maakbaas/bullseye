@@ -6,7 +6,8 @@
 use std::fmt;
 
 const DAYS: [&str; 7] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const MONTHS: [&str; 12] =
+    ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DateTime {
@@ -29,7 +30,10 @@ impl DateTime {
         let [year, month, day] = date.as_slice() else { return Err(wrong()) };
         let [hour, minute] = time.as_slice() else { return Err(wrong()) };
         let number = |part: &str, digits: std::ops::RangeInclusive<usize>| {
-            (digits.contains(&part.len()) && part.bytes().all(|b| b.is_ascii_digit())).then(|| part.parse::<i32>().ok()).flatten().ok_or_else(wrong)
+            (digits.contains(&part.len()) && part.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| part.parse::<i32>().ok())
+                .flatten()
+                .ok_or_else(wrong)
         };
         let at = DateTime {
             year: number(year, 4..=4)?,
@@ -105,7 +109,18 @@ mod tests {
 
     #[test]
     fn what_is_not_a_date_and_time() {
-        for text in ["", "tomorrow", "2026-10-06", "18:00", "2026-13-01 10:00", "2027-02-29 10:00", "2026-10-06 24:00", "2026-10-06 18:60", "26-10-06 18:00", "2026-10-06 18:0"] {
+        for text in [
+            "",
+            "tomorrow",
+            "2026-10-06",
+            "18:00",
+            "2026-13-01 10:00",
+            "2027-02-29 10:00",
+            "2026-10-06 24:00",
+            "2026-10-06 18:60",
+            "26-10-06 18:00",
+            "2026-10-06 18:0",
+        ] {
             assert!(DateTime::parse(text).is_err(), "{text}");
         }
     }

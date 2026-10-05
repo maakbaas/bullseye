@@ -26,7 +26,7 @@ use crate::state::Enforcers;
 
 /// Each command the window can invoke, and the CLI commands that do the same. Empty: it is about
 /// the window itself.
-pub const GUI_COMMANDS: [(&str, &[&str]); 14] = [
+pub const GUI_COMMANDS: [(&str, &[&str]); 15] = [
     ("block_status", &["status", "show", "list show", "schedule show"]),
     ("save_block", &["new", "edit"]),
     ("delete_block", &["delete"]),
@@ -41,6 +41,8 @@ pub const GUI_COMMANDS: [(&str, &[&str]); 14] = [
     // A lock's length or end in words: what `show` and `start` say of a duration or until lock.
     ("describe_duration", &["show"]),
     ("describe_until", &["show", "start"]),
+    // What the question before a deletion says.
+    ("deletion_fallout", &["list delete", "schedule delete"]),
     ("window_ready", &[]),
 ];
 
@@ -215,7 +217,9 @@ fn parse(args: &[String]) -> Result<Command, String> {
     // `list` and `schedule` take a second word.
     let (command, rest) = match (command.as_str(), rest.split_first()) {
         ("list" | "schedule", Some((verb, rest))) => (format!("{command} {verb}"), rest),
-        ("list" | "schedule", None) => return Err(format!("`{command}` needs show, new, edit, delete{}", if command == "schedule" { " or check" } else { "" })),
+        ("list" | "schedule", None) => {
+            return Err(format!("`{command}` needs show, new, edit, delete{}", if command == "schedule" { " or check" } else { "" }))
+        }
         _ => (command.clone(), rest),
     };
     let mut options = Options::new(rest);
@@ -252,7 +256,9 @@ fn parse(args: &[String]) -> Result<Command, String> {
             times: options.value("--times")?,
         },
         "schedule delete" => Command::ScheduleDelete { schedule: named(&mut options, "schedule")?, yes: options.flag("--yes") },
-        "schedule check" => Command::ScheduleCheck { times: options.positional().ok_or("Give the times to check, e.g. \"Mon-Fri 08:00-17:00\"")? },
+        "schedule check" => {
+            Command::ScheduleCheck { times: options.positional().ok_or("Give the times to check, e.g. \"Mon-Fri 08:00-17:00\"")? }
+        }
         "unlock" => Command::Unlock { password: options.value("--password")? },
         other => return Err(format!("Unknown command \"{other}\"")),
     };
@@ -274,7 +280,11 @@ fn parse_lock(options: &mut Options) -> Result<Option<Lock>, String> {
     let lock = match given.len() {
         0 => return Ok(None),
         1 => given.remove(0),
-        _ => return Err("Give one of --lock-duration, --lock-until, --lock-until-restart, --lock-schedule, --lock-password and --no-lock".into()),
+        _ => {
+            return Err(
+                "Give one of --lock-duration, --lock-until, --lock-until-restart, --lock-schedule, --lock-password and --no-lock".into()
+            )
+        }
     };
     // The service checks it again; this is for a clear message before anything is sent.
     lock.check()?;
@@ -503,7 +513,14 @@ fn execute(command: Command) -> Result<(), Failure> {
             }
         }
         Command::ListNew { name, changes } => {
-            let mut list = BlockList { id: new_id(), name, filters: Vec::new(), allowed: Vec::new(), programs: Vec::new(), enforcers: Enforcers::default() };
+            let mut list = BlockList {
+                id: new_id(),
+                name,
+                filters: Vec::new(),
+                allowed: Vec::new(),
+                programs: Vec::new(),
+                enforcers: Enforcers::default(),
+            };
             changes.apply(&mut list);
             let name = list.name.clone();
             send(Request::SaveList { list })?;
@@ -554,7 +571,10 @@ fn execute(command: Command) -> Result<(), Failure> {
         Command::ScheduleDelete { schedule, yes } => {
             let overview = overview()?;
             let schedule = find(&overview.schedules, &schedule, "schedule", |s| (&s.id, &s.name))?;
-            if !confirm(&format!("Delete the schedule \"{}\"?{} This cannot be undone.", schedule.name, fallout(&overview, &schedule.id)), yes)? {
+            if !confirm(
+                &format!("Delete the schedule \"{}\"?{} This cannot be undone.", schedule.name, fallout(&overview, &schedule.id)),
+                yes,
+            )? {
                 return Err(failed("Not deleted."));
             }
             send(Request::DeleteSchedule { id: schedule.id.clone() })?;
@@ -591,7 +611,10 @@ fn apply_block_changes(overview: &Overview, block: &mut Definition, changes: Blo
         block.name = name;
     }
     if let Some(lists) = changes.lists {
-        block.lists = lists.iter().map(|l| find(&overview.lists, l, "block list", |l| (&l.id, &l.name)).map(|l| l.id.clone())).collect::<Result<_, _>>()?;
+        block.lists = lists
+            .iter()
+            .map(|l| find(&overview.lists, l, "block list", |l| (&l.id, &l.name)).map(|l| l.id.clone()))
+            .collect::<Result<_, _>>()?;
     }
     if let Some(schedule) = changes.schedule {
         block.schedule = match schedule {
@@ -608,7 +631,9 @@ fn apply_block_changes(overview: &Overview, block: &mut Definition, changes: Blo
 /// A lock with its lock schedule, given by name or id, as the schedule's id.
 fn find_lock_schedule(overview: &Overview, lock: Lock) -> Result<Lock, Failure> {
     match lock {
-        Lock::Scheduled { schedule } => Ok(Lock::Scheduled { schedule: find(&overview.schedules, &schedule, "schedule", |s| (&s.id, &s.name))?.id.clone() }),
+        Lock::Scheduled { schedule } => {
+            Ok(Lock::Scheduled { schedule: find(&overview.schedules, &schedule, "schedule", |s| (&s.id, &s.name))?.id.clone() })
+        }
         other => Ok(other),
     }
 }
@@ -626,7 +651,9 @@ fn lock_warning(overview: &Overview, block: &Definition) -> Option<String> {
             // It will not start; the service says why.
             Err(_) => None,
         },
-        Lock::UntilRestart => Some("It cannot be stopped, changed or deleted until Windows restarts (a shut down with Fast Startup is not a restart).".into()),
+        Lock::UntilRestart => {
+            Some("It cannot be stopped, changed or deleted until Windows restarts (a shut down with Fast Startup is not a restart).".into())
+        }
         Lock::Scheduled { schedule } => {
             let schedule = overview.schedules.iter().find(|n| &n.id == schedule)?;
             Some(format!("It cannot be stopped while its lock schedule \"{}\" is active ({}).", schedule.name, schedule.week.describe()))
@@ -757,7 +784,11 @@ fn table(rows: &[(String, String)]) -> String {
 fn users(overview: &Overview, id: &str) -> String {
     let library = Library { blocks: overview.blocks.clone(), ..Library::default() };
     let names: Vec<&str> = library.users_of(id).iter().map(|b| b.name.as_str()).collect();
-    if names.is_empty() { "(no block)".into() } else { names.join(", ") }
+    if names.is_empty() {
+        "(no block)".into()
+    } else {
+        names.join(", ")
+    }
 }
 
 /// What deleting a block list or schedule does to the blocks that use it, in sentences each with a
@@ -784,7 +815,8 @@ fn fallout(overview: &Overview, id: &str) -> String {
 fn describe_overview(overview: &Overview) -> String {
     let blocks: Vec<(String, String)> =
         overview.blocks.iter().map(|b| (b.name.clone(), state(overview.running.iter().find(|r| r.id == b.id)))).collect();
-    let lists: Vec<(String, String)> = overview.lists.iter().map(|l| (l.name.clone(), format!("used by {}", users(overview, &l.id)))).collect();
+    let lists: Vec<(String, String)> =
+        overview.lists.iter().map(|l| (l.name.clone(), format!("used by {}", users(overview, &l.id)))).collect();
     let schedules: Vec<(String, String)> = overview.schedules.iter().map(|s| (s.name.clone(), s.week.describe())).collect();
     let mut text = String::new();
     for (title, rows, empty) in [
@@ -802,7 +834,11 @@ fn describe_overview(overview: &Overview) -> String {
 }
 
 fn entries(entries: &[String]) -> String {
-    if entries.is_empty() { "(none)".to_string() } else { entries.join(", ") }
+    if entries.is_empty() {
+        "(none)".to_string()
+    } else {
+        entries.join(", ")
+    }
 }
 
 fn enforcers_on(enforcers: Enforcers) -> Vec<String> {
@@ -955,7 +991,10 @@ mod tests {
         assert_eq!(list.filters, vec!["youtube.com", "reddit.com"]);
         assert_eq!(list.allowed, vec!["youtube.com/watch*"]);
         assert_eq!(list.programs, vec!["steam"]);
-        assert_eq!(list.enforcers, Enforcers { chromium_tabs: true, chromium_split_view: false, obsidian_web_viewer: false, exe_names: true });
+        assert_eq!(
+            list.enforcers,
+            Enforcers { chromium_tabs: true, chromium_split_view: false, obsidian_web_viewer: false, exe_names: true }
+        );
     }
 
     #[test]
@@ -965,10 +1004,15 @@ mod tests {
         assert_eq!(name, "Evening");
         let mut b = block("x", &[]);
         assert!(apply_block_changes(&library(), &mut b, changes).is_ok());
-        assert_eq!((b.lists, b.schedule, b.lock), (vec!["l1".to_string(), "l1".to_string()], Some("s1".to_string()), Lock::Duration { duration: "2h 30m".into() }));
+        assert_eq!(
+            (b.lists, b.schedule, b.lock),
+            (vec!["l1".to_string(), "l1".to_string()], Some("s1".to_string()), Lock::Duration { duration: "2h 30m".into() })
+        );
 
         // `always`, and a list that does not exist.
-        let Ok(Command::Edit { changes, .. }) = parse(&args(&["edit", "Work", "--schedule", "always", "--no-lock"])) else { panic!("not edit") };
+        let Ok(Command::Edit { changes, .. }) = parse(&args(&["edit", "Work", "--schedule", "always", "--no-lock"])) else {
+            panic!("not edit")
+        };
         let mut b = library().blocks[0].clone();
         assert!(apply_block_changes(&library(), &mut b, changes).is_ok());
         assert_eq!((b.schedule, b.lock), (None, Lock::None));
@@ -987,7 +1031,10 @@ mod tests {
             parse(&args(&["start", "Work", "--lock-until", "2026-10-06 18:00"])),
             Ok(Command::Start { block: "Work".into(), lock: Some(Lock::Until { until: "2026-10-06 18:00".into() }), yes: false })
         );
-        assert_eq!(parse(&args(&["start", "Work", "--lock-until-restart"])), Ok(Command::Start { block: "Work".into(), lock: Some(Lock::UntilRestart), yes: false }));
+        assert_eq!(
+            parse(&args(&["start", "Work", "--lock-until-restart"])),
+            Ok(Command::Start { block: "Work".into(), lock: Some(Lock::UntilRestart), yes: false })
+        );
         assert!(parse(&args(&["start", "Work", "--lock-until", "tomorrow"])).is_err());
         assert!(parse(&args(&["start", "Work", "--lock-until-restart", "--no-lock"])).is_err());
         // What starting asks, per lock.
@@ -1061,16 +1108,26 @@ mod tests {
         assert_eq!(parse(&args(&["show", "Work", "--json"])), Ok(Command::Show { block: "Work".into(), json: true }));
         assert_eq!(parse(&args(&["delete", "Work", "--yes"])), Ok(Command::Delete { block: "Work".into(), yes: true }));
         assert_eq!(parse(&args(&["stop", "Work"])), Ok(Command::Stop { block: "Work".into(), password: None }));
-        assert_eq!(parse(&args(&["stop", "Work", "--password", "pw"])), Ok(Command::Stop { block: "Work".into(), password: Some("pw".into()) }));
+        assert_eq!(
+            parse(&args(&["stop", "Work", "--password", "pw"])),
+            Ok(Command::Stop { block: "Work".into(), password: Some("pw".into()) })
+        );
         assert_eq!(
             parse(&args(&["start", "Work", "--lock-password", "partner"])),
-            Ok(Command::Start { block: "Work".into(), lock: Some(Lock::Password { password: Some("partner".into()), hash: None }), yes: false })
+            Ok(Command::Start {
+                block: "Work".into(),
+                lock: Some(Lock::Password { password: Some("partner".into()), hash: None }),
+                yes: false
+            })
         );
         assert!(parse(&args(&["start", "Work", "--lock-password", "pw", "--no-lock"])).is_err());
         assert_eq!(parse(&args(&["list", "show", "Social"])), Ok(Command::ListShow { list: "Social".into(), json: false }));
         assert_eq!(parse(&args(&["list", "delete", "Social", "--yes"])), Ok(Command::ListDelete { list: "Social".into(), yes: true }));
         assert_eq!(parse(&args(&["schedule", "show", "Work hours"])), Ok(Command::ScheduleShow { schedule: "Work hours".into() }));
-        assert_eq!(parse(&args(&["schedule", "delete", "Work hours"])), Ok(Command::ScheduleDelete { schedule: "Work hours".into(), yes: false }));
+        assert_eq!(
+            parse(&args(&["schedule", "delete", "Work hours"])),
+            Ok(Command::ScheduleDelete { schedule: "Work hours".into(), yes: false })
+        );
         assert_eq!(parse(&args(&["schedule", "check", "weekdays 9-5pm"])), Ok(Command::ScheduleCheck { times: "weekdays 9-5pm".into() }));
         assert_eq!(parse(&args(&["unlock", "--password", "pw"])), Ok(Command::Unlock { password: Some("pw".into()) }));
     }
@@ -1085,7 +1142,11 @@ mod tests {
 
     #[test]
     fn things_are_found_by_id_or_name() {
-        let lists = vec![block_list("a1", &[]), BlockList { name: "Games".into(), ..block_list("b2", &[]) }, BlockList { name: "games".into(), ..block_list("c3", &[]) }];
+        let lists = vec![
+            block_list("a1", &[]),
+            BlockList { name: "Games".into(), ..block_list("b2", &[]) },
+            BlockList { name: "games".into(), ..block_list("c3", &[]) },
+        ];
         fn key(l: &BlockList) -> (&String, &String) {
             (&l.id, &l.name)
         }
@@ -1104,7 +1165,13 @@ mod tests {
         overview.running.push(Running {
             id: "b1".into(),
             name: "Work".into(),
-            lists: vec![RunningList { name: "Social".into(), filters: vec!["youtube.com".into()], allowed: vec![], programs: vec![], enforcers: Enforcers::default() }],
+            lists: vec![RunningList {
+                name: "Social".into(),
+                filters: vec!["youtube.com".into()],
+                allowed: vec![],
+                programs: vec![],
+                enforcers: Enforcers::default(),
+            }],
             remaining: None,
             lock_schedule: Week::parse("mon-fri 8-17").unwrap(),
             until_restart: false,
@@ -1120,7 +1187,10 @@ mod tests {
         });
         overview.clock_synced = false;
         let text = describe_overview(&overview);
-        assert!(text.contains("  Work  Running · inactive by its schedule, active in 1 hour · can be stopped, locked again in 1 hour"), "{text}");
+        assert!(
+            text.contains("  Work  Running · inactive by its schedule, active in 1 hour · can be stopped, locked again in 1 hour"),
+            "{text}"
+        );
         assert!(text.contains("Block lists:\n  Social  used by Work"), "{text}");
         assert!(text.contains("Schedules:\n  Work hours  Mon-Fri 08:00-17:00"), "{text}");
         assert!(text.contains("Waiting for internet time"), "{text}");
@@ -1128,7 +1198,10 @@ mod tests {
         let block = describe_block(&overview, &overview.blocks[0], overview.running.first());
         assert!(block.contains("Block lists: Social") && block.contains("Schedule:    Work hours (Mon-Fri 08:00-17:00)"), "{block}");
         assert!(block.contains("Lock:        scheduled: cannot be stopped while \"Work hours\" is active"), "{block}");
-        assert_eq!(find_lock_schedule(&overview, Lock::Scheduled { schedule: "work HOURS".into() }).ok(), Some(Lock::Scheduled { schedule: "s1".into() }));
+        assert_eq!(
+            find_lock_schedule(&overview, Lock::Scheduled { schedule: "work HOURS".into() }).ok(),
+            Some(Lock::Scheduled { schedule: "s1".into() })
+        );
         let list = describe_list(&overview, &overview.lists[0]);
         assert!(list.contains("Block list:     youtube.com") && list.contains("Used by:        Work"), "{list}");
     }

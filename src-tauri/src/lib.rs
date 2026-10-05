@@ -29,7 +29,7 @@ mod unlock;
 mod watchdog;
 
 use client::Remote;
-use definitions::{BlockList, Definition, NamedSchedule};
+use definitions::{BlockList, Definition, Fallout, Library, NamedSchedule};
 use proto::{Overview, Request, Response};
 use schedule::Week;
 use tauri::{
@@ -94,7 +94,6 @@ fn stop_block(id: String, password: Option<String>, remote: State<Remote>) -> Re
     remote.command(Request::Stop { id, password })
 }
 
-
 /// A weekly schedule as text, after checking it, for the schedule editor and the block's summary.
 #[tauri::command]
 fn describe_schedule(week: Week) -> Result<String, String> {
@@ -116,6 +115,13 @@ fn describe_duration(text: String) -> Result<String, String> {
 #[tauri::command]
 fn describe_until(text: String) -> Result<localtime::Until, String> {
     localtime::until(&text)
+}
+
+/// What deleting the block list or schedule `id` does to `blocks` (the window's copy of them),
+/// for the question before it: the service's own rule, so what is asked is what happens.
+#[tauri::command]
+fn deletion_fallout(blocks: Vec<Definition>, id: String) -> Fallout {
+    Library { blocks, ..Library::default() }.fallout(&id)
 }
 
 /// Ends every running block, locked or not, if the unlock password is right. The app stays open,
@@ -185,6 +191,7 @@ pub fn run() {
             describe_schedule,
             describe_duration,
             describe_until,
+            deletion_fallout,
             ui::window_ready
         ])
         // The window's X hides it (it is destroyed after a while, `ui.rs`); the app keeps running.

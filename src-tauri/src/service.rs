@@ -36,9 +36,9 @@ use windows_service::service_control_handler::{self, ServiceControlHandlerResult
 use windows_service::service_dispatcher;
 
 use crate::block::Blocklist;
-use crate::definitions::Definitions;
 #[cfg(any(debug_assertions, test))]
 use crate::client::Local;
+use crate::definitions::Definitions;
 use crate::handler::{handle, Context, Shutdown};
 use crate::registration::{self, CREATE_NO_WINDOW, NAME};
 use crate::state;
@@ -190,10 +190,9 @@ fn lock_down_data_dir() {
     if let Err(e) = fs::create_dir_all(&dir) {
         return note("service", &format!("cannot create {}: {e}", dir.display()));
     }
-    for args in [
-        vec!["/setowner", "*S-1-5-18"],
-        vec!["/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "/grant:r", "*S-1-5-32-544:(OI)(CI)RX"],
-    ] {
+    for args in
+        [vec!["/setowner", "*S-1-5-18"], vec!["/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "/grant:r", "*S-1-5-32-544:(OI)(CI)RX"]]
+    {
         match Command::new("icacls.exe").arg(&dir).args(&args).creation_flags(CREATE_NO_WINDOW).output() {
             Ok(output) if output.status.success() => {}
             Ok(output) => note("service", &format!("icacls {args:?}: {}", String::from_utf8_lossy(&output.stdout).trim())),
@@ -252,9 +251,8 @@ mod tests {
         drop(pipe);
 
         // Several requests at once, as the app's ticks and the UI's polls make.
-        let threads: Vec<_> = (0..6)
-            .map(|_| std::thread::spawn(|| assert!(matches!(client::call(&Request::Status), Ok(Response::Status(_))))))
-            .collect();
+        let threads: Vec<_> =
+            (0..6).map(|_| std::thread::spawn(|| assert!(matches!(client::call(&Request::Status), Ok(Response::Status(_)))))).collect();
         for thread in threads {
             thread.join().unwrap();
         }

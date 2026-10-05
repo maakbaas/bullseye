@@ -11,8 +11,8 @@ use std::sync::OnceLock;
 
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
 use windows_sys::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegQueryValueExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_BINARY,
-    REG_CREATED_NEW_KEY, REG_OPTION_VOLATILE,
+    RegCloseKey, RegCreateKeyExW, RegQueryValueExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE,
+    REG_BINARY, REG_CREATED_NEW_KEY, REG_OPTION_VOLATILE,
 };
 
 const KEY: &str = r"SOFTWARE\bullseye-boot";
@@ -34,7 +34,17 @@ fn read_or_make(root: HKEY) -> Option<String> {
     let mut disposition = 0;
     // SAFETY: the strings are null-terminated and the out pointers are valid.
     let made = unsafe {
-        RegCreateKeyExW(root, wide(KEY).as_ptr(), 0, std::ptr::null(), REG_OPTION_VOLATILE, KEY_READ | KEY_WRITE, std::ptr::null(), &mut key, &mut disposition)
+        RegCreateKeyExW(
+            root,
+            wide(KEY).as_ptr(),
+            0,
+            std::ptr::null(),
+            REG_OPTION_VOLATILE,
+            KEY_READ | KEY_WRITE,
+            std::ptr::null(),
+            &mut key,
+            &mut disposition,
+        )
     };
     if made != ERROR_SUCCESS {
         return None;

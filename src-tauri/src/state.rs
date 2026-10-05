@@ -13,6 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::block::RunLock;
 use crate::schedule::Week;
 
 /// A running block as written to disk.
@@ -24,18 +25,11 @@ pub struct Saved {
     pub name: String,
     /// Its block lists, each with its own enforcers.
     pub parts: Vec<SavedPart>,
-    /// Seconds since the Unix epoch at which a duration or until lock ends, and the block with it;
-    /// `None`: no such lock.
-    pub until: Option<u64>,
     /// The latest time the block was known to be running at, so the clock cannot start from an
     /// earlier one while offline (`clock::at_least`).
     pub seen: Option<u64>,
-    /// Locked while this schedule is active (`lock::Lock::Scheduled`).
-    pub lock_schedule: Option<Week>,
-    /// Locked until Windows restarts: the start of Windows it was started in (`boot::id`).
-    pub boot: Option<String>,
-    /// Locked with a password: its salted hash (`lock::Lock::Password`), never the password.
-    pub password: Option<String>,
+    /// How it is locked; a password lock only as its hash, never the password.
+    pub lock: RunLock,
     /// When the block is active (`schedule.rs`); `None` is always.
     pub schedule: Option<Week>,
     /// The time zone the schedule is read in, by name (`localtime::Zone::named`), fixed when the
@@ -227,8 +221,15 @@ mod tests {
     }
 
     fn timed(until: Option<u64>) -> Saved {
-        let part = SavedPart { name: "A".into(), filters: vec!["tweakers.net".to_string()], allowed: Vec::new(), programs: Vec::new(), enforcers: Enforcers::default() };
-        Saved { id: "a".into(), name: "A".into(), parts: vec![part], until, seen: None, lock_schedule: None, boot: None, password: None, schedule: None, zone: "fixed:+0".into() }
+        let lock = until.map_or(RunLock::None, |at| RunLock::Ends { at });
+        let part = SavedPart {
+            name: "A".into(),
+            filters: vec!["tweakers.net".to_string()],
+            allowed: Vec::new(),
+            programs: Vec::new(),
+            enforcers: Enforcers::default(),
+        };
+        Saved { id: "a".into(), name: "A".into(), parts: vec![part], seen: None, lock, schedule: None, zone: "fixed:+0".into() }
     }
 
     #[test]
@@ -247,7 +248,7 @@ mod tests {
         assert_eq!(store.load(), vec![saved.clone()]);
         // Saving again replaces rather than appends.
         let mut shorter = saved.clone();
-        shorter.until = Some(now().unwrap().as_secs() + 60);
+        shorter.lock = RunLock::Ends { at: now().unwrap().as_secs() + 60 };
         let other = Saved { id: "b".into(), ..timed(None) };
         store.save(&[shorter.clone(), other.clone()]).unwrap();
         assert_eq!(store.load(), vec![shorter, other]);
@@ -272,7 +273,6 @@ mod tests {
         store.clear();
     }
 
-
     #[test]
     fn what_can_run_depends_on_the_enforcers_and_the_lists() {
         let only = |tabs, split, obsidian, exe| Enforcers {
@@ -282,10 +282,12 @@ mod tests {
             exe_names: exe,
         };
         // Which lists have entries.
-        let lists = |sites: bool, programs: bool| move |uses: Uses| match uses {
-            Uses::Nothing => true,
-            Uses::Sites => sites,
-            Uses::Programs => programs,
+        let lists = |sites: bool, programs: bool| {
+            move |uses: Uses| match uses {
+                Uses::Nothing => true,
+                Uses::Sites => sites,
+                Uses::Programs => programs,
+            }
         };
         // With entries, any enforcer that is on can run.
         assert!(only(true, false, false, false).can_run(lists(true, false)));

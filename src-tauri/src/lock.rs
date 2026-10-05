@@ -85,7 +85,9 @@ impl Lock {
     /// How long a duration lock locks the block for; `None` for the other methods.
     pub fn duration(&self) -> Result<Option<Duration>, String> {
         match self {
-            Lock::Duration { duration } => duration::parse(duration)?.map(Some).ok_or_else(|| "Enter how long to lock the block for, e.g. 2h 30m".into()),
+            Lock::Duration { duration } => {
+                duration::parse(duration)?.map(Some).ok_or_else(|| "Enter how long to lock the block for, e.g. 2h 30m".into())
+            }
             _ => Ok(None),
         }
     }
@@ -131,7 +133,10 @@ mod tests {
         let timed = Lock::Duration { duration: "10m".into() };
         assert_eq!(serde_json::to_string(&timed).unwrap(), r#"{"method":"duration","duration":"10m"}"#);
         assert_eq!(serde_json::from_str::<Lock>(r#"{"method":"duration","duration":"10m"}"#).unwrap(), timed);
-        assert_eq!(serde_json::to_string(&Lock::Until { until: "2026-10-06 18:00".into() }).unwrap(), r#"{"method":"until","until":"2026-10-06 18:00"}"#);
+        assert_eq!(
+            serde_json::to_string(&Lock::Until { until: "2026-10-06 18:00".into() }).unwrap(),
+            r#"{"method":"until","until":"2026-10-06 18:00"}"#
+        );
         assert_eq!(serde_json::to_string(&Lock::UntilRestart).unwrap(), r#"{"method":"until_restart"}"#);
         assert!(serde_json::from_str::<Lock>(r#"{"method":"forever"}"#).is_err());
         assert_eq!(serde_json::to_string(&Lock::Scheduled { schedule: "s".into() }).unwrap(), r#"{"method":"scheduled","schedule":"s"}"#);

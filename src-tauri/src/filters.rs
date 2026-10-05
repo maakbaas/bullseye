@@ -65,9 +65,7 @@ fn normalize(url: &str) -> String {
 /// `://` further on, in its query, and must not be cut there.
 fn split_scheme(url: &str) -> (Option<&str>, &str) {
     match url.split_once("://") {
-        Some((scheme, rest))
-            if !scheme.is_empty() && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) =>
-        {
+        Some((scheme, rest)) if !scheme.is_empty() && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) => {
             (Some(scheme), rest)
         }
         _ => (None, url),

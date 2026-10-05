@@ -16,8 +16,8 @@ use std::collections::HashMap;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::client::Remote;
 use crate::block::Active;
+use crate::client::Remote;
 use crate::sync::spawn_critical;
 use crate::watchdog::note;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -133,11 +133,8 @@ impl Closer {
     /// Looks at the running programs, once, for the checks below (`close_obsidian_with_web_content`,
     /// `close_programs`). Command lines are only fetched when Obsidian's check needs them.
     fn scan_processes(&mut self, command_lines: bool) {
-        let kind = if command_lines {
-            ProcessRefreshKind::nothing().with_cmd(UpdateKind::OnlyIfNotSet)
-        } else {
-            ProcessRefreshKind::nothing()
-        };
+        let kind =
+            if command_lines { ProcessRefreshKind::nothing().with_cmd(UpdateKind::OnlyIfNotSet) } else { ProcessRefreshKind::nothing() };
         self.system.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
     }
 
@@ -148,10 +145,7 @@ impl Closer {
         let obsidian = |p: &&sysinfo::Process| p.name().eq_ignore_ascii_case("obsidian.exe");
         let has = |p: &sysinfo::Process, flag: &str| p.cmd().iter().any(|a| a.to_string_lossy() == flag);
         let processes = self.system.processes();
-        let web_content = processes
-            .values()
-            .filter(obsidian)
-            .any(|p| has(p, "--type=renderer") && has(p, "--enable-sandbox"));
+        let web_content = processes.values().filter(obsidian).any(|p| has(p, "--type=renderer") && has(p, "--enable-sandbox"));
         if !web_content {
             return;
         }
@@ -429,5 +423,4 @@ mod tests {
         println!("blocked tab closed: {closed} (after {:?})", start.elapsed());
         assert!(closed, "the tab on example.com should have been closed");
     }
-
 }

@@ -13,8 +13,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
 use windows_sys::Win32::System::Time::{
-    EnumDynamicTimeZoneInformation, FileTimeToSystemTime, GetDynamicTimeZoneInformation, SystemTimeToFileTime, SystemTimeToTzSpecificLocalTimeEx,
-    TzSpecificLocalTimeToSystemTimeEx, DYNAMIC_TIME_ZONE_INFORMATION,
+    EnumDynamicTimeZoneInformation, FileTimeToSystemTime, GetDynamicTimeZoneInformation, SystemTimeToFileTime,
+    SystemTimeToTzSpecificLocalTimeEx, TzSpecificLocalTimeToSystemTimeEx, DYNAMIC_TIME_ZONE_INFORMATION,
 };
 
 use serde::Serialize;
