@@ -770,6 +770,34 @@
         };
       }
 
+      // Text areas side by side (the sites to block and the allowed ones) keep one height: dragging
+      // one's resize handle sizes the others in its row too. Carbon's textarea has no attribute or
+      // part for its height, so this sets the same inline height on the others' own <textarea> that
+      // the browser's resize handle set on the dragged one; nothing else of the component is touched.
+      // Stacked (a narrow window), each keeps its own height.
+      function sameHeight(areas) {
+        if (areas.length < 2) return;
+        Promise.all(areas.map((area) => customElements.whenDefined("cds-textarea").then(() => area.updateComplete))).then(() => {
+          const inner = areas.map((area) => area.shadowRoot && area.shadowRoot.querySelector("textarea")).filter(Boolean);
+          let syncing = false;
+          const observer = new ResizeObserver((entries) => {
+            if (syncing) return;
+            const moved = entries.find((entry) => entry.target.style.height);
+            if (!moved) return;
+            const row = moved.target.getBoundingClientRect().top;
+            syncing = true;
+            for (const other of inner) {
+              if (other !== moved.target && Math.abs(other.getBoundingClientRect().top - row) < 1 && other.style.height !== moved.target.style.height) {
+                other.style.height = moved.target.style.height;
+              }
+            }
+            // The others' resize comes back as an entry of its own: let it pass before listening again.
+            requestAnimationFrame(() => (syncing = false));
+          });
+          for (const textarea of inner) observer.observe(textarea);
+        });
+      }
+
       function listForm() {
         const name = nameField("e.g. Social media");
         const areas = {};
@@ -782,6 +810,7 @@
             areas[key] = el("cds-textarea", { label: list.label, placeholder: list.placeholder, "helper-text": list.helper, rows: 5 });
             lists.append(areas[key]);
           }
+          sameHeight(section.lists.map((key) => areas[key]));
           const group = el("cds-checkbox-group", { "legend-text": section.lists.length ? "How" : "Enforcers" });
           for (const enforcer of section.enforcers) {
             checks[enforcer.key] = el("cds-checkbox", { "label-text": enforcer.label });
