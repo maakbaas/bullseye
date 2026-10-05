@@ -14,6 +14,11 @@ concurrency:
 permissions:
   contents: read
 
+# The Carbon packages (dev dependencies, see scripts/vendor-carbon.mjs) report usage to IBM on
+# install unless this is set.
+env:
+  IBM_TELEMETRY_DISABLED: 'true'
+
 jobs:
   installer:
     runs-on: windows-latest

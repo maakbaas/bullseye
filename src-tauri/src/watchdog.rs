@@ -262,7 +262,7 @@ pub fn spawn_supervisor(blocklist: Blocklist, slot: Arc<AppSlot>) {
             let resumed = last_round.elapsed() >= RESUME_GAP;
             last_round = Instant::now();
 
-            let block_active = blocklist.filters().is_some();
+            let block_active = blocklist.is_running();
             let no_app = slot.supervise(block_active, resumed);
             if !block_active && !LAUNCH_APP.load(Ordering::SeqCst) {
                 missed = 0;

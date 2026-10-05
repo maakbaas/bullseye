@@ -11,15 +11,17 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use tauri::window::{Effect, EffectsBuilder};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Window};
 
 use crate::sync::{spawn_critical, LockExt};
 use crate::watchdog::note;
 
 const LABEL: &str = "main";
-const WIDTH: f64 = 340.0;
-const HEIGHT: f64 = 850.0;
+/// The page is responsive (Carbon's grid), so the window can be any size from the minimum up.
+const WIDTH: f64 = 760.0;
+const HEIGHT: f64 = 720.0;
+const MIN_WIDTH: f64 = 360.0;
+const MIN_HEIGHT: f64 = 480.0;
 
 /// How long a dismissed window is kept before it is destroyed.
 const KEEP_HIDDEN: Duration = Duration::from_secs(5 * 60);
@@ -77,9 +79,8 @@ fn create(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("index.html".into()))
         .title("Site Blocker")
         .inner_size(WIDTH, HEIGHT)
-        .resizable(false)
-        .transparent(true)
-        .effects(EffectsBuilder::new().effect(Effect::Mica).build())
+        .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
+        .resizable(true)
         .visible(false)
         .build()
 }

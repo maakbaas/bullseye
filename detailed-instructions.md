@@ -4569,3 +4569,27 @@ If you get stuck or unsure, these are the places to ask for a review before merg
 2. `watchdog::launch_app`: it hands out the user's token. It must never start the app as SYSTEM.
 3. `pipe.rs`: the access list and the checks. A hole here lets a standard user talk to a SYSTEM process.
 4. The installer hooks: this was the one part checked only by reading the generated script, not by running it.
+
+## 11. Several blocks, and the Carbon UI (later change)
+
+Sections 1 to 10 describe one block at a time. Since then the app keeps any number of named block
+**definitions** and runs each on its own; the code is the reference, this is the summary.
+
+- `definitions.rs`: `Definition { id, name, filters, allowed, programs, enforcers, schedule }`, kept by
+  the service in `%ProgramData%\SiteBlocker\blocks.json`. `Schedule` is a tagged enum
+  (`{"kind":"duration","duration":"1h"}`), so other kinds of schedule can be added without changing
+  the file format. A definition is checked when saved (name, id, lists, schedule) and again when
+  started (something to do).
+- `block.rs`: `Blocklist` holds a list of running blocks, keyed by the definition's id. Starting copies
+  the definition; a running block cannot be started again, and its definition cannot be saved or
+  deleted until it ends. Each timed block ends by itself; `stop` refuses a timed one. The unlock
+  password ends them all. `Active` is every running block's part; `blocks_page`, `blocks_program`,
+  `closes_obsidian` combine them, each block going by its own enforcers and its own allowed sites.
+- `state.json` is now `{"blocks":[Saved…]}`; `Saved` has `id` and `name`. A file from before (one
+  block, no id) still loads, as a block with an empty id that the UI shows as "Earlier block".
+- The pipe protocol: `Save { block }`, `Delete { id }`, `Start { id }`, `Stop { id }`; `Status` answers
+  an `Overview { blocks, running, clock_synced }`; `Policy` answers one policy per running block.
+  The installer rules are unchanged in spirit: uninstall is refused while any timed block runs,
+  update while any block runs.
+- The UI is Carbon web components (see `CLAUDE.md`, "Design system"), vendored in `src/vendor/`; the
+  window is resizable and the page responsive. Unlock moved to a Settings page.

@@ -8,8 +8,9 @@
 //! Obsidian's web viewer exposes neither its URL nor its tabs, so while a block is running
 //! Obsidian is closed whenever it hosts any web content.
 //!
-//! Each of these is an enforcer the block can turn on or off (`state::Enforcers`): blocked
-//! tabs, blocked pages in a split view (a window showing two pages), and Obsidian.
+//! Each of these is an enforcer a block can turn on or off (`state::Enforcers`): blocked
+//! tabs, blocked pages in a split view (a window showing two pages), and Obsidian. With several
+//! blocks running, each goes by its own enforcers and lists (`block::Active`).
 
 use std::collections::HashMap;
 use std::thread;
@@ -17,8 +18,6 @@ use std::time::{Duration, Instant};
 
 use crate::client::Remote;
 use crate::block::Active;
-use crate::programs::ProgramList;
-use crate::state::{Enforcers, Uses};
 use crate::sync::spawn_critical;
 use crate::watchdog::note;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -50,23 +49,23 @@ pub fn spawn(remote: Remote) {
         loop {
             let start = Instant::now();
             if let Some(active) = remote.active() {
-                let enforcers = active.enforcers;
                 // With no entries there is nothing for these to match, so skip the UI Automation work.
-                if enforcers.uses(Uses::Sites) && !active.filters.is_empty() {
-                    if let Err(e) = closer.tick(&active, enforcers) {
+                if active.watches_sites() {
+                    if let Err(e) = closer.tick(&active) {
                         eprintln!("tab_closer: {e}");
                     }
                 }
                 // Obsidian and the programs both look at the running programs: one scan serves both.
-                let programs = enforcers.uses(Uses::Programs) && !active.programs.is_empty();
-                if enforcers.obsidian_web_viewer || programs {
-                    closer.scan_processes(enforcers.obsidian_web_viewer);
+                let obsidian = active.closes_obsidian();
+                let programs = active.closes_programs();
+                if obsidian || programs {
+                    closer.scan_processes(obsidian);
                 }
-                if enforcers.obsidian_web_viewer {
+                if obsidian {
                     closer.close_obsidian_with_web_content();
                 }
                 if programs {
-                    closer.close_programs(&active.programs);
+                    closer.close_programs(&active);
                 }
             }
             thread::sleep(INTERVAL.saturating_sub(start.elapsed()));
@@ -105,7 +104,7 @@ struct Page {
 }
 
 impl Closer {
-    fn tick(&mut self, active: &Active, enforcers: Enforcers) -> uiautomation::Result<()> {
+    fn tick(&mut self, active: &Active) -> uiautomation::Result<()> {
         // The browser windows are found by a plain window enumeration, which takes a fraction of a
         // millisecond. Asking UI Automation to search the desktop for them took about 90.
         let handles = browser_windows();
@@ -119,11 +118,8 @@ impl Closer {
                 continue;
             };
             // Two pages at once is a split view; one is an ordinary tab.
-            let enforced = if pages.len() > 1 { enforcers.chromium_split_view } else { enforcers.chromium_tabs };
-            if !enforced {
-                continue;
-            }
-            if let Some(page) = pages.iter().find(|p| active.blocks_site(&p.url)) {
+            let split_view = pages.len() > 1;
+            if let Some(page) = pages.iter().find(|p| active.blocks_page(&p.url, split_view)) {
                 match close_tab(&self.automation, &browser.window, &page.title) {
                     Ok(()) => eprintln!("tab_closer: closed {}", page.url),
                     Err(e) => eprintln!("tab_closer: failed to close {}: {e}", page.url),
@@ -182,15 +178,15 @@ impl Closer {
         }
     }
 
-    /// Closes the programs on the list: asks each to close like the X of its windows does, and ends
-    /// the ones still running `KILL_AFTER` later (or that have no window to ask). Programs Windows
-    /// needs are never touched (`ProgramList::is_blocked`), nor is this app.
-    fn close_programs(&mut self, programs: &ProgramList) {
+    /// Closes the programs on the running blocks' lists: asks each to close like the X of its
+    /// windows does, and ends the ones still running `KILL_AFTER` later (or that have no window to
+    /// ask). Programs Windows needs are never touched (`ProgramList::is_blocked`), nor is this app.
+    fn close_programs(&mut self, active: &Active) {
         let me = std::process::id();
         let mut running = Vec::new();
         for (pid, process) in self.system.processes() {
             let pid = pid.as_u32();
-            if pid == me || !programs.is_blocked(&process.name().to_string_lossy()) {
+            if pid == me || !active.blocks_program(&process.name().to_string_lossy()) {
                 continue;
             }
             running.push(pid);
@@ -332,7 +328,24 @@ fn close_tab(a: &UIAutomation, window: &UIElement, title: &str) -> uiautomation:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::block::Enforced;
+    use crate::filters::FilterList;
+    use crate::programs::ProgramList;
+    use crate::state::Enforcers;
     use std::process::{Child, Command, Stdio};
+    use std::sync::Arc;
+
+    /// One block with these sites and programs, and every enforcer on.
+    fn active(sites: &[&str], programs: &[&str]) -> Active {
+        Active {
+            blocks: vec![Enforced {
+                filters: Arc::new(FilterList::parse(sites).unwrap()),
+                allowed: Arc::new(FilterList::default()),
+                programs: Arc::new(ProgramList::parse(programs).unwrap()),
+                enforcers: Enforcers::default(),
+            }],
+        }
+    }
 
     /// A copy of a stock Windows program under a name of its own, so a test never touches a
     /// program the person running it is using.
@@ -346,7 +359,7 @@ mod tests {
     }
 
     /// What the loop does for the programs: one scan, then the check.
-    fn pass(closer: &mut Closer, programs: &ProgramList) {
+    fn pass(closer: &mut Closer, programs: &Active) {
         closer.scan_processes(false);
         closer.close_programs(programs);
     }
@@ -356,7 +369,7 @@ mod tests {
         let Ok(automation) = UIAutomation::new() else { return eprintln!("skipping: no UI Automation here") };
         let mut closer = Closer { automation, windows: HashMap::new(), system: System::new(), asked: HashMap::new() };
         let (mut listed, mut other) = (copy_of_ping("siteblocker-test-listed"), copy_of_ping("siteblocker-test-other"));
-        let programs = ProgramList::parse(&["siteblocker-test-l*"]).unwrap();
+        let programs = active(&[], &["siteblocker-test-l*"]);
 
         // The first pass asks. This program has no window to ask, so it carries on for now.
         pass(&mut closer, &programs);
@@ -389,22 +402,16 @@ mod tests {
     #[test]
     #[ignore]
     fn a_real_browser_tab_is_closed() {
-        use crate::filters::FilterList;
         let automation = UIAutomation::new().unwrap();
         let mut closer = Closer { automation, windows: HashMap::new(), system: System::new(), asked: HashMap::new() };
-        let active = |entry: &str| crate::block::Active {
-            filters: std::sync::Arc::new(FilterList::parse(&[entry]).unwrap()),
-            allowed: std::sync::Arc::new(FilterList::default()),
-            programs: std::sync::Arc::new(ProgramList::default()),
-            enforcers: Enforcers::default(),
-        };
+        let active = |entry: &str| active(&[entry], &[]);
         println!("chromium-class visible windows: {}", browser_windows().len());
         let quiet = active("real-check-nothing.invalid");
-        let _ = closer.tick(&quiet, Enforcers::default());
+        let _ = closer.tick(&quiet);
         let runs = 20;
         let start = Instant::now();
         for _ in 0..runs {
-            closer.tick(&quiet, Enforcers::default()).unwrap();
+            closer.tick(&quiet).unwrap();
         }
         println!("tick, nothing to close: {:.2} ms per pass", start.elapsed().as_secs_f64() * 1000.0 / runs as f64);
         let browsers = closer.windows.values().filter(|w| matches!(w, Window::Browser(_))).count();
@@ -415,7 +422,7 @@ mod tests {
         let before = browser_windows().len();
         let start = Instant::now();
         let closed = (0..60).any(|_| {
-            let _ = closer.tick(&block, Enforcers::default());
+            let _ = closer.tick(&block);
             thread::sleep(Duration::from_millis(250));
             browser_windows().len() < before
         });

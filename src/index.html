@@ -1,202 +1,280 @@
 <!doctype html>
-<html>
+<html lang="en" class="cds--g10">
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Site Blocker</title>
+    <!-- The Carbon design system, vendored (scripts/vendor-carbon.mjs): IBM Plex, the themes and
+         tokens, and the cds-* web components. Nothing is loaded from the network. -->
+    <link rel="stylesheet" href="vendor/fonts.css" />
+    <link rel="stylesheet" href="vendor/carbon.css" />
+    <script>
+      // Carbon's g10 theme, or g100 when Windows is set to dark; follows a change while open.
+      (() => {
+        const dark = matchMedia("(prefers-color-scheme: dark)");
+        const apply = () => {
+          document.documentElement.classList.toggle("cds--g100", dark.matches);
+          document.documentElement.classList.toggle("cds--g10", !dark.matches);
+        };
+        apply();
+        dark.addEventListener("change", apply);
+      })();
+    </script>
+    <script src="vendor/carbon.js"></script>
     <style>
-      /* Windows 11 Fluent styling; the window background is Mica (see tauri.conf.json). */
-      :root {
-        color-scheme: light dark;
-        --text: rgba(0, 0, 0, 0.896);
-        --text-secondary: rgba(0, 0, 0, 0.606);
-        --control: rgba(255, 255, 255, 0.7);
-        --control-hover: rgba(249, 249, 249, 0.5);
-        --control-pressed: rgba(249, 249, 249, 0.3);
-        --control-stroke: rgba(0, 0, 0, 0.0578);
-        --control-stroke-bottom: rgba(0, 0, 0, 0.1622);
-        --input-stroke-bottom: rgba(0, 0, 0, 0.4458);
-        --input-focus: #ffffff;
-        --text-disabled: rgba(0, 0, 0, 0.3614);
-        --control-disabled: rgba(249, 249, 249, 0.3);
-        --accent: #005fb8;
-        --accent-hover: #1a6fc0;
-        --accent-pressed: #3381c8;
-        --on-accent: #ffffff;
-        --error: #c42b1c;
-        --check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 6.5l2.5 2.5L10 3.5' fill='none' stroke='white' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-      }
-      @media (prefers-color-scheme: dark) {
-        :root {
-          --text: #ffffff;
-          --text-secondary: rgba(255, 255, 255, 0.786);
-          --control: rgba(255, 255, 255, 0.0605);
-          --control-hover: rgba(255, 255, 255, 0.0837);
-          --control-pressed: rgba(255, 255, 255, 0.0326);
-          --control-stroke: rgba(255, 255, 255, 0.0698);
-          --control-stroke-bottom: rgba(255, 255, 255, 0.093);
-          --input-stroke-bottom: rgba(255, 255, 255, 0.5442);
-          --input-focus: rgba(30, 30, 30, 0.7);
-          --text-disabled: rgba(255, 255, 255, 0.3628);
-          --control-disabled: rgba(255, 255, 255, 0.0419);
-          --accent: #60cdff;
-          --accent-hover: #5abce9;
-          --accent-pressed: #52aad3;
-          --on-accent: #000000;
-          --error: #ff99a4;
-          --check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 6.5l2.5 2.5L10 3.5' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-        }
-      }
-      html, body { margin: 0; height: 100%; background: transparent; }
+      /* Layout only: colours, type and spacing all come from Carbon tokens and classes. */
+      html, body { min-height: 100%; }
       body {
-        box-sizing: border-box;
-        padding: 16px 16px 0;
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-        font: 14px/20px "Segoe UI Variable Text", "Segoe UI", sans-serif;
-        color: var(--text);
-        user-select: none;
-        cursor: default;
-        overflow: hidden;
-      }
-      textarea {
-        flex: none;
-        resize: none;
-        padding: 6px 10px;
-        font: inherit;
-        color: var(--text);
-        background: var(--control);
-        border: 1px solid var(--control-stroke);
-        border-bottom-color: var(--input-stroke-bottom);
-        border-radius: 4px;
-        outline: none;
-      }
-      textarea::placeholder { color: var(--text-secondary); }
-      textarea:focus { background: var(--input-focus); border-bottom: 2px solid var(--accent); padding-bottom: 5px; }
-      textarea:disabled { color: var(--text-disabled); background: var(--control-disabled); border-color: var(--control-stroke); }
-      textarea:disabled::placeholder { color: var(--text-disabled); }
-      /* The enforcers, grouped by whether they go by the block list. */
-      section { display: flex; flex-direction: column; gap: 8px; }
-      h2 { margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; }
-      label.check { display: flex; align-items: center; gap: 8px; }
-      label.check:has(input:disabled) { color: var(--text-disabled); }
-      input[type="checkbox"] {
-        appearance: none;
-        flex: none;
-        width: 20px;
-        height: 20px;
         margin: 0;
-        padding: 0;
-        background: var(--control);
-        border: 1px solid var(--input-stroke-bottom);
-        border-radius: 4px;
+        background: var(--cds-background);
+        color: var(--cds-text-primary);
+        font-family: "IBM Plex Sans", system-ui, sans-serif;
       }
-      input[type="checkbox"]:checked {
-        border-color: transparent;
-        background: var(--accent) var(--check) center / 12px no-repeat;
+      /* Until the components are defined, show nothing rather than unstyled markup. */
+      body:not(.ready) { visibility: hidden; }
+      .header-global { display: flex; margin-left: auto; height: 100%; }
+      main { padding: calc(3rem + var(--cds-spacing-07)) 0 var(--cds-spacing-09); }
+      [hidden] { display: none !important; }
+
+      /* A page: its header (title, description, main action), then its content. */
+      .page-header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: var(--cds-spacing-05);
+        margin-bottom: var(--cds-spacing-07);
       }
-      input[type="checkbox"]:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
-      input[type="checkbox"]:disabled { border-color: var(--text-disabled); background-color: var(--control-disabled); }
-      input[type="checkbox"]:checked:disabled { border-color: transparent; background-color: var(--text-disabled); }
-      /* Every control on its own line, full width. */
-      .buttons { display: flex; flex-direction: column; gap: 8px; }
-      button {
-        min-width: 96px;
-        padding: 5px 12px;
-        font: inherit;
-        color: var(--text);
-        background: var(--control);
-        border: 1px solid var(--control-stroke);
-        border-bottom-color: var(--control-stroke-bottom);
-        border-radius: 4px;
-      }
-      button:hover:not(:disabled) { background: var(--control-hover); }
-      button:active:not(:disabled) { background: var(--control-pressed); color: var(--text-secondary); }
-      button.accent { color: var(--on-accent); background: var(--accent); border-color: transparent; }
-      button.accent:hover:not(:disabled) { background: var(--accent-hover); }
-      button.accent:active:not(:disabled) { background: var(--accent-pressed); }
-      button:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
-      button:disabled, button.accent:disabled { color: var(--text-disabled); background: var(--control-disabled); border-color: var(--control-stroke); }
-      input {
-        padding: 4px 10px;
-        font: inherit;
-        color: var(--text);
-        background: var(--control);
-        border: 1px solid var(--control-stroke);
-        border-bottom-color: var(--input-stroke-bottom);
-        border-radius: 4px;
-        outline: none;
-      }
-      input::placeholder { color: var(--text-secondary); }
-      input:focus { background: var(--input-focus); border-bottom: 2px solid var(--accent); padding-bottom: 3px; }
-      input:disabled { color: var(--text-disabled); background: var(--control-disabled); border-color: var(--control-stroke); }
-      /* A status bar along the bottom edge: full width, past the body's side and bottom padding. */
-      #status {
-        margin: auto -16px 0;
-        padding: 4px 16px 8px;
-        min-height: 16px;
-        font-family: "Cascadia Mono", Consolas, monospace;
-        font-size: 12px;
-        line-height: 16px;
-        color: var(--text-secondary);
-        background: var(--control);
-        border-top: 1px solid var(--control-stroke-bottom);
-      }
-      #status.error { color: var(--error); }
-      /* The emergency stop: set apart below a divider, so it is not mistaken for the normal flow. */
-      .emergency { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; padding: 20px 0 4px; border-top: 1px solid var(--control-stroke-bottom); }
+      .page-header p { margin-top: var(--cds-spacing-03); color: var(--cds-text-secondary); max-width: 40rem; }
+      .back { display: block; margin-bottom: var(--cds-spacing-03); }
+      .notices:empty { display: none; }
+      .notices { margin-bottom: var(--cds-spacing-05); }
+      .notices cds-inline-notification { max-width: none; }
+
+      /* The blocks, as tiles in the Carbon grid. */
+      /* A column that is itself a grid: Carbon's col-span classes would make it a block. */
+      .blocks.cds--subgrid { display: grid; row-gap: var(--cds-spacing-07); }
+      .block-tile.cds--css-grid-column { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
+      .block-tile .top { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--cds-spacing-03); }
+      .block-tile h2 { overflow-wrap: anywhere; padding-top: var(--cds-spacing-02); }
+      .block-tile .summary { display: flex; flex-direction: column; gap: var(--cds-spacing-02); color: var(--cds-text-secondary); flex: 1; }
+      .block-tile .actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--cds-spacing-04); }
+      .block-tile .actions .note { color: var(--cds-text-secondary); }
+      .empty { display: flex; flex-direction: column; align-items: flex-start; gap: var(--cds-spacing-05); }
+
+      /* The editor: sections stacked, lists side by side where there is room. */
+      .form { display: flex; flex-direction: column; gap: var(--cds-spacing-07); }
+      .form section { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
+      .form section > p { color: var(--cds-text-secondary); margin-top: calc(-1 * var(--cds-spacing-03)); }
+      .form section + section, #schedule { padding-top: var(--cds-spacing-07); border-top: 1px solid var(--cds-border-subtle-01); }
+      .lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: var(--cds-spacing-05); }
+      .lists:empty { display: none; }
+      .form-actions { display: flex; flex-wrap: wrap; gap: var(--cds-spacing-05); justify-content: space-between; }
+      .form-actions .end { display: flex; flex-wrap: wrap; gap: var(--cds-spacing-05); margin-left: auto; }
+
+      /* Settings. */
+      .setting { display: flex; flex-direction: column; gap: var(--cds-spacing-05); max-width: 32rem; }
+      .setting + .setting { margin-top: var(--cds-spacing-09); }
+      .setting p { color: var(--cds-text-secondary); }
+      .setting .row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--cds-spacing-05); }
+      .setting .row cds-password-input { flex: 1 1 14rem; }
     </style>
   </head>
   <body>
-    <section class="list">
-      <h2>Block list</h2>
-      <textarea id="sites" rows="5" placeholder="One site per line, e.g. youtube.com" aria-label="Block list" autofocus></textarea>
-      <h2>Always allowed</h2>
-      <textarea id="allowed" rows="5" placeholder="One site per line, e.g. google.com" aria-label="Always allowed sites"></textarea>
-      <label class="check"><input type="checkbox" data-enforcer="chromium_tabs" checked />Close blocked tabs in Chrome, Edge, Brave</label>
-      <label class="check"><input type="checkbox" data-enforcer="chromium_split_view" checked />Close blocked pages in split view</label>
-    </section>
-    <section class="list">
-      <h2>Programs</h2>
-      <textarea id="programs" rows="5" placeholder="One program per line, e.g. steam.exe" aria-label="Programs to close"></textarea>
-      <label class="check"><input type="checkbox" data-enforcer="exe_names" checked />Close these programs</label>
-    </section>
-    <section>
-      <h2>Without block list</h2>
-      <label class="check"><input type="checkbox" data-enforcer="obsidian_web_viewer" checked />Close Obsidian when it shows web pages</label>
-    </section>
-    <div class="buttons">
-      <input id="duration" placeholder="Duration, e.g. 10m" title="Empty: block until stopped. Or 5s, 10m, 3h, 1d: block for that long, without stopping early." />
-      <button id="toggle" class="accent">Start block</button>
-    </div>
-    <form class="emergency" id="unlock">
-      <input id="password" type="password" placeholder="Unlock password" aria-label="Unlock password" autocomplete="off" />
-      <button id="force" type="submit" title="Ends the block, the app, its launcher and the login task, so nothing starts again by itself." disabled>Unlock</button>
-    </form>
-    <div id="status" role="status">No active block</div>
+    <cds-header aria-label="Site Blocker">
+      <cds-header-name href="#/" prefix="">Site Blocker</cds-header-name>
+      <div class="header-global">
+        <cds-header-global-action id="open-settings" aria-label="Settings" tooltip-text="Settings" tooltip-alignment="right"></cds-header-global-action>
+      </div>
+    </cds-header>
+
+    <main>
+      <!-- The blocks: one tile each, with its status, and starting / stopping. -->
+      <div id="view-blocks" class="cds--css-grid">
+        <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
+          <div class="page-header">
+            <div>
+              <h1 class="cds--type-productive-heading-05">Blocks</h1>
+              <p class="cds--type-body-01">Each block is its own set of sites, programs and rules. Start any of them; they run independently.</p>
+            </div>
+            <cds-button id="new-block" kind="primary">New block</cds-button>
+          </div>
+          <div class="notices" id="blocks-notices"></div>
+        </div>
+        <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16 cds--subgrid blocks" id="blocks"></div>
+        <cds-tile class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16 empty" id="empty" hidden>
+          <h2 class="cds--type-productive-heading-03">No blocks yet</h2>
+          <p class="cds--type-body-01">A block is a list of sites and programs to close, the ways to close them, and how long it runs.</p>
+          <cds-button id="first-block" kind="tertiary">Create a block</cds-button>
+        </cds-tile>
+      </div>
+
+      <!-- Making or changing a block. Built from the tables in the script (LISTS, SECTIONS, SCHEDULES). -->
+      <div id="view-editor" class="cds--css-grid" hidden>
+        <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-12 cds--xlg:col-span-10">
+          <cds-breadcrumb class="back" no-trailing-slash><cds-breadcrumb-item><cds-breadcrumb-link href="#/">Blocks</cds-breadcrumb-link></cds-breadcrumb-item></cds-breadcrumb>
+          <div class="page-header">
+            <div>
+              <h1 class="cds--type-productive-heading-05" id="editor-title">New block</h1>
+              <p class="cds--type-body-01">Saved blocks are kept by the Site Blocker service and survive restarts. A running block keeps the settings it was started with.</p>
+            </div>
+          </div>
+          <div class="notices" id="editor-notices"></div>
+          <div class="form" id="form">
+            <section>
+              <cds-text-input id="name" label="Name" placeholder="e.g. Work hours" max-count="60"></cds-text-input>
+            </section>
+            <div id="sections" class="form"></div>
+            <section id="schedule">
+              <h2 class="cds--type-productive-heading-03">Schedule</h2>
+              <p class="cds--type-body-01">How long the block runs once you start it.</p>
+              <cds-select id="schedule-kind" label-text="Kind"></cds-select>
+              <div id="schedule-fields" class="lists"></div>
+            </section>
+            <div class="form-actions">
+              <cds-button id="delete" kind="danger--ghost" hidden>Delete</cds-button>
+              <div class="end">
+                <cds-button kind="secondary" href="#/">Cancel</cds-button>
+                <cds-button id="save" kind="primary">Save</cds-button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Settings: the unlock password, kept apart from the blocks. -->
+      <div id="view-settings" class="cds--css-grid" hidden>
+        <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-12 cds--xlg:col-span-10">
+          <cds-breadcrumb class="back" no-trailing-slash><cds-breadcrumb-item><cds-breadcrumb-link href="#/">Blocks</cds-breadcrumb-link></cds-breadcrumb-item></cds-breadcrumb>
+          <div class="page-header">
+            <h1 class="cds--type-productive-heading-05">Settings</h1>
+          </div>
+          <div class="setting">
+            <h2 class="cds--type-productive-heading-03">Unlock</h2>
+            <p class="cds--type-body-01">Ends every running block, timed ones included, and quits Site Blocker. The service stays installed and starts the app again at your next sign-in. This is the only way to end a timed block early.</p>
+            <div class="notices" id="settings-notices"></div>
+            <div class="row">
+              <cds-password-input id="password" label="Unlock password" autocomplete="off"></cds-password-input>
+              <cds-button id="unlock" kind="danger" disabled>Unlock</cds-button>
+            </div>
+          </div>
+          <div class="setting">
+            <h2 class="cds--type-productive-heading-03">Time</h2>
+            <p class="cds--type-body-01" id="clock">Timed blocks are measured in internet time, so changing the Windows clock does not shorten them.</p>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <cds-modal id="confirm-delete" size="xs" prevent-close-on-click-outside>
+      <cds-modal-header>
+        <cds-modal-close-button></cds-modal-close-button>
+        <cds-modal-heading id="confirm-heading">Delete block?</cds-modal-heading>
+      </cds-modal-header>
+      <cds-modal-body><cds-modal-body-content>The block and its settings are removed. This cannot be undone.</cds-modal-body-content></cds-modal-body>
+      <cds-modal-footer>
+        <cds-modal-footer-button kind="secondary" data-modal-close>Cancel</cds-modal-footer-button>
+        <cds-modal-footer-button kind="danger" id="confirm-delete-button">Delete</cds-modal-footer-button>
+      </cds-modal-footer>
+    </cds-modal>
+
     <script>
       const { invoke } = window.__TAURI__.core;
-      const sites = document.getElementById("sites");
-      const programBox = document.getElementById("programs");
-      const allowedBox = document.getElementById("allowed");
-      const duration = document.getElementById("duration");
-      const toggle = document.getElementById("toggle");
-      const status = document.getElementById("status");
-      const force = document.getElementById("force");
-      const password = document.getElementById("password");
-      const checks = [...document.querySelectorAll("[data-enforcer]")];
-      let error = "";
+      const $ = (id) => document.getElementById(id);
 
-      // The enforcers as the backend takes them: { chromium_tabs: true, ... }.
-      function enforcers() {
-        return Object.fromEntries(checks.map((c) => [c.dataset.enforcer, c.checked]));
+      // ---- What a block is made of. The editor, the tiles and their summaries are all built from
+      // these three tables, so a new kind of list, enforcer or schedule is an entry here (plus its
+      // backend side, see CLAUDE.md), not new markup.
+
+      // The lists a block can have (`definitions::Definition`), by field name.
+      const LISTS = {
+        filters: {
+          label: "Sites to block",
+          placeholder: "youtube.com",
+          helper: "One per line: a site and everything under it. * matches any part; a lone * blocks every site.",
+          count: (n) => `${n} ${n === 1 ? "site" : "sites"} blocked`,
+        },
+        allowed: {
+          label: "Always allowed",
+          placeholder: "google.com",
+          helper: "Exceptions to this block's list. These always win.",
+          count: (n) => `${n} always allowed`,
+        },
+        programs: {
+          label: "Programs to close",
+          placeholder: "steam.exe",
+          helper: "One program per line, e.g. steam.exe; * matches any part. Windows' own programs cannot be listed.",
+          count: (n) => `${n} ${n === 1 ? "program" : "programs"} closed`,
+        },
+      };
+
+      // The enforcers (`state::Enforcers`), grouped into the editor's sections with the lists they use.
+      const SECTIONS = [
+        {
+          title: "Websites",
+          description: "Closes pages on the list in Chrome, Edge and Brave.",
+          lists: ["filters", "allowed"],
+          enforcers: [
+            { key: "chromium_tabs", label: "Close blocked tabs" },
+            { key: "chromium_split_view", label: "Close blocked pages in split view" },
+          ],
+        },
+        {
+          title: "Programs",
+          description: "Asks the programs on the list to close, and ends them after 3 seconds.",
+          lists: ["programs"],
+          enforcers: [{ key: "exe_names", label: "Close these programs" }],
+        },
+        {
+          title: "Apps",
+          description: "Need no list.",
+          lists: [],
+          enforcers: [{ key: "obsidian_web_viewer", label: "Close Obsidian when it shows web pages", short: "Closes Obsidian's web viewer" }],
+        },
+      ];
+
+      // The ways a block's time is decided (`definitions::Schedule`), by `kind`.
+      const SCHEDULES = {
+        duration: {
+          label: "For a set time",
+          fields: [
+            {
+              key: "duration",
+              label: "Duration",
+              placeholder: "e.g. 1h",
+              helper: "Empty: runs until you stop it. 5s, 10m, 3h or 1d: runs that long and cannot be stopped early.",
+            },
+          ],
+          describe: (s) => (s.duration ? `Runs for ${s.duration}, cannot be stopped early` : "Runs until stopped"),
+        },
+      };
+
+      const ENFORCERS = SECTIONS.flatMap((section) => section.enforcers);
+
+      function newBlock() {
+        const kind = Object.keys(SCHEDULES)[0];
+        const schedule = { kind };
+        for (const field of SCHEDULES[kind].fields) schedule[field.key] = "";
+        return {
+          id: crypto.randomUUID ? crypto.randomUUID() : `b${Date.now()}${Math.random().toString(36).slice(2)}`,
+          name: "",
+          ...Object.fromEntries(Object.keys(LISTS).map((key) => [key, []])),
+          enforcers: Object.fromEntries(ENFORCERS.map((e) => [e.key, true])),
+          schedule,
+        };
       }
 
-      // The last choice is remembered for the next block; a running block shows its own instead.
-      try {
-        const saved = JSON.parse(localStorage.getItem("enforcers") || "{}");
-        for (const c of checks) if (c.dataset.enforcer in saved) c.checked = saved[c.dataset.enforcer];
-      } catch {}
+      // ---- Small helpers.
+
+      function el(tag, attributes = {}, ...children) {
+        const node = document.createElement(tag);
+        for (const [name, value] of Object.entries(attributes)) {
+          if (value === false || value == null) continue;
+          node.setAttribute(name, value === true ? "" : value);
+        }
+        node.append(...children.filter((c) => c != null));
+        return node;
+      }
 
       function formatRemaining(seconds) {
         const d = Math.floor(seconds / 86400);
@@ -207,88 +285,354 @@
         return parts.join(" ");
       }
 
-      // The backend owns the block (timed blocks end there); the UI mirrors it every second.
-      async function refresh() {
-        let state;
-        try {
-          state = await invoke("block_status");
-        } catch (e) {
-          // The service did not answer: say so, and leave the rest as it was.
-          status.classList.add("error");
-          status.textContent = String(e);
-          return;
-        }
-        const { blocking, remaining, filters, allowed: allowedEntries, programs: programEntries, enforcers: running, clock_synced } = state;
-        const timed = remaining != null;
-        // A block resumed from disk comes with its list, so show it rather than an empty box.
-        if (blocking && filters.length && !sites.value) sites.value = filters.join("\n");
-        if (blocking && allowedEntries.length && !allowedBox.value) allowedBox.value = allowedEntries.join("\n");
-        if (blocking && programEntries.length && !programBox.value) programBox.value = programEntries.join("\n");
-        toggle.textContent = blocking ? "Stop block" : "Start block";
-        toggle.disabled = timed;
-        sites.disabled = blocking;
-        allowedBox.disabled = blocking;
-        programBox.disabled = blocking;
-        // Fixed while a block runs, so turning one off is not a way around it.
-        for (const c of checks) {
-          if (running) c.checked = running[c.dataset.enforcer];
-          c.disabled = blocking;
-        }
-        duration.disabled = blocking;
-        status.classList.toggle("error", !!error);
-        // Until internet time is in, time with the app closed does not count, so say why it lags.
-        const offline = clock_synced ? "" : " (waiting for internet time)";
-        status.textContent = error
-          || (timed ? `Remaining time in active block: ${formatRemaining(remaining)}${offline}` : blocking ? "Unlocked block active" : "No active block");
+      function lines(text) {
+        return text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
       }
 
-      async function run(command, args) {
+      // One message per place; a new one replaces the old.
+      function notify(slot, kind, title, subtitle = "", { closable = true } = {}) {
+        const box = $(slot);
+        box.replaceChildren();
+        if (!title) return;
+        box.append(el("cds-inline-notification", { kind, title, subtitle, "low-contrast": true, "hide-close-button": !closable }));
+      }
+
+      // ---- The service's view of things, asked every second while the window is shown.
+
+      let overview = { blocks: [], running: [], clock_synced: true };
+      let reachable = true;
+
+      async function refresh() {
         try {
-          await invoke(command, args);
-          error = "";
+          overview = await invoke("block_status");
+          if (!reachable) notify("blocks-notices");
+          reachable = true;
         } catch (e) {
-          error = String(e);
+          // The service did not answer: say so, and leave the rest as it was.
+          reachable = false;
+          notify("blocks-notices", "error", "The Site Blocker service does not answer", String(e));
         }
+        render();
+      }
+
+      const runningOf = (id) => overview.running.find((r) => r.id === id);
+
+      function render() {
+        renderBlocks();
+        renderEditorLock();
+        $("clock").textContent = overview.clock_synced
+          ? "Timed blocks are measured in internet time, so changing the Windows clock does not shorten them. Internet time is in."
+          : "Timed blocks are measured in internet time, so changing the Windows clock does not shorten them. Waiting for internet time: until it is in, time with the service not running does not count.";
+      }
+
+      // ---- The blocks page. Tiles are kept and updated in place, so an open menu survives a refresh.
+
+      const tiles = new Map();
+
+      function summaryOf(block) {
+        const parts = [];
+        for (const [key, list] of Object.entries(LISTS)) {
+          if (block[key] && block[key].length) parts.push(list.count(block[key].length));
+        }
+        const on = ENFORCERS.filter((e) => block.enforcers && block.enforcers[e.key]);
+        const listless = on.filter((e) => !SECTIONS.find((s) => s.enforcers.includes(e)).lists.length);
+        for (const e of listless) parts.push(e.short || e.label);
+        if (!parts.length) parts.push("Nothing to block yet");
+        if (block.schedule) {
+          const schedule = SCHEDULES[block.schedule.kind];
+          parts.push(schedule ? schedule.describe(block.schedule) : "Unknown schedule");
+        }
+        return parts;
+      }
+
+      function makeTile(id) {
+        const menu = el(
+          "cds-overflow-menu",
+          { "aria-label": "Options", "menu-alignment": "bottom-end" },
+          carbonIcon("overflow-menu-vertical", "icon"),
+          el("span", { slot: "tooltip-content" }, "Options"),
+          el(
+            "cds-overflow-menu-body",
+            { flipped: true },
+            el("cds-overflow-menu-item", { "data-action": "edit" }, "Edit"),
+            el("cds-overflow-menu-item", { "data-action": "delete", danger: true }, "Delete"),
+          ),
+        );
+        const name = el("h2", { class: "cds--type-productive-heading-03" });
+        const tag = el("cds-tag", { size: "md" });
+        const summary = el("div", { class: "summary cds--type-body-compact-01" });
+        const toggle = el("cds-button", { kind: "primary", size: "md" });
+        const note = el("span", { class: "note cds--type-helper-text-01" });
+        const tile = el(
+          "cds-tile",
+          { class: "block-tile cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-4 cds--lg:col-span-8 cds--max:col-span-4" },
+          el("div", { class: "top" }, el("div", {}, name), menu),
+          el("div", {}, tag),
+          summary,
+          el("div", { class: "actions" }, toggle, note),
+        );
+        // On the items themselves: Carbon moves the open menu out of the tile.
+        for (const item of menu.querySelectorAll("[data-action]")) {
+          item.addEventListener("click", () => {
+            if (item.disabled) return;
+            if (item.dataset.action === "edit") location.hash = `#/edit/${encodeURIComponent(id)}`;
+            if (item.dataset.action === "delete") confirmDelete(id);
+          });
+        }
+        toggle.addEventListener("click", () => startOrStop(id));
+        const parts = { tile, name, tag, summary, toggle, note, items: [...menu.querySelectorAll("[data-action]")] };
+        tiles.set(id, parts);
+        return parts;
+      }
+
+      function renderBlocks() {
+        const container = $("blocks");
+        // Every definition, plus any running block whose definition is gone (one from an older
+        // version, say): it shows what it runs with and can still be stopped.
+        const shown = overview.blocks.map((b) => ({ block: b, running: runningOf(b.id), defined: true }));
+        for (const r of overview.running) {
+          if (!overview.blocks.some((b) => b.id === r.id)) shown.push({ block: { ...r, name: r.name || "Earlier block" }, running: r, defined: false });
+        }
+        const wanted = new Set(shown.map((s) => s.block.id));
+        for (const [id, parts] of tiles) {
+          if (!wanted.has(id)) {
+            parts.tile.remove();
+            tiles.delete(id);
+          }
+        }
+        shown.forEach(({ block, running, defined }, index) => {
+          const parts = tiles.get(block.id) || makeTile(block.id);
+          if (container.children[index] !== parts.tile) container.insertBefore(parts.tile, container.children[index] || null);
+          parts.name.textContent = block.name;
+          const timed = running && running.remaining != null;
+          parts.tag.setAttribute("type", running ? (timed ? "green" : "blue") : "gray");
+          parts.tag.textContent = running
+            ? timed ? `Running · ${formatRemaining(running.remaining)} left` : "Running until stopped"
+            : "Not running";
+          const summary = summaryOf(running ? { ...block, ...running, schedule: block.schedule } : block);
+          if (parts.summary.dataset.text !== summary.join("\n")) {
+            parts.summary.dataset.text = summary.join("\n");
+            parts.summary.replaceChildren(...summary.map((line) => el("span", {}, line)));
+          }
+          const busy = parts.toggle.dataset.busy === "1";
+          const action = running ? "stop" : "start";
+          if (parts.toggle.dataset.action !== action) {
+            parts.toggle.dataset.action = action;
+            parts.toggle.setAttribute("kind", running ? "secondary" : "primary");
+            parts.toggle.replaceChildren(running ? "Stop" : "Start", carbonIcon(running ? "stop" : "play", "icon"));
+          }
+          parts.toggle.disabled = busy || timed || !reachable;
+          parts.note.textContent = timed ? "A timed block cannot be stopped early" : "";
+          for (const item of parts.items) item.disabled = !!running || !defined;
+        });
+        $("empty").hidden = shown.length > 0;
+      }
+
+      async function startOrStop(id) {
+        const parts = tiles.get(id);
+        const running = runningOf(id);
+        const block = overview.blocks.find((b) => b.id === id) || running;
+        parts.toggle.dataset.busy = "1";
+        parts.toggle.disabled = true;
+        try {
+          await invoke(running ? "stop_block" : "start_block", { id });
+          notify("blocks-notices");
+        } catch (e) {
+          notify("blocks-notices", "error", `Could not ${running ? "stop" : "start"} “${block ? block.name : "the block"}”`, String(e));
+        }
+        parts.toggle.dataset.busy = "";
         await refresh();
       }
 
-      toggle.addEventListener("click", async () => {
-        let blocking;
+      let deleting = null;
+      function confirmDelete(id) {
+        const block = overview.blocks.find((b) => b.id === id);
+        if (!block) return;
+        deleting = id;
+        $("confirm-heading").textContent = `Delete “${block.name}”?`;
+        $("confirm-delete").open = true;
+      }
+      $("confirm-delete-button").addEventListener("click", async () => {
+        const id = deleting;
+        $("confirm-delete").open = false;
         try {
-          ({ blocking } = await invoke("block_status"));
+          await invoke("delete_block", { id });
+          notify("blocks-notices");
+          if (location.hash.startsWith("#/edit/")) location.hash = "#/";
         } catch (e) {
-          error = String(e);
-          return refresh();
+          notify(location.hash.startsWith("#/edit/") ? "editor-notices" : "blocks-notices", "error", "Could not delete the block", String(e));
         }
-        if (blocking) return run("stop_block");
-        const filters = sites.value.split(/\r?\n/);
-        const programs = programBox.value.split(/\r?\n/);
-        const allowed = allowedBox.value.split(/\r?\n/);
-        await run("start_block", { filters, allowed, programs, duration: duration.value, enforcers: enforcers() });
+        await refresh();
       });
 
-      // Enter in the field submits too.
-      document.getElementById("unlock").addEventListener("submit", async (event) => {
-        event.preventDefault();
-        if (!password.value) return;
-        force.disabled = true;
-        // The app exits on success, so only a wrong password (or a failure) comes back here.
-        await run("force_exit", { password: password.value });
-        password.value = "";
-        password.focus();
-      });
-      password.addEventListener("input", () => { error = ""; force.disabled = !password.value; refresh(); });
-      sites.addEventListener("input", () => { error = ""; refresh(); });
-      programBox.addEventListener("input", () => { error = ""; refresh(); });
-      allowedBox.addEventListener("input", () => { error = ""; refresh(); });
-      duration.addEventListener("input", () => { error = ""; refresh(); });
-      for (const c of checks) {
-        c.addEventListener("change", () => {
-          error = "";
-          try { localStorage.setItem("enforcers", JSON.stringify(enforcers())); } catch {}
-          refresh();
-        });
+      // ---- The editor, built once from the tables; filled in for each block that is opened.
+
+      const fields = { lists: {}, enforcers: {}, schedule: {} };
+
+      function buildEditor() {
+        const sections = $("sections");
+        for (const section of SECTIONS) {
+          const lists = el("div", { class: "lists" });
+          for (const key of section.lists) {
+            const list = LISTS[key];
+            const area = el("cds-textarea", { label: list.label, placeholder: list.placeholder, "helper-text": list.helper, rows: 5 });
+            fields.lists[key] = area;
+            lists.append(area);
+          }
+          const group = el("cds-checkbox-group", { "legend-text": section.lists.length ? "How" : "Enforcers" });
+          for (const enforcer of section.enforcers) {
+            const box = el("cds-checkbox", { "label-text": enforcer.label });
+            fields.enforcers[enforcer.key] = box;
+            group.append(box);
+          }
+          sections.append(
+            el(
+              "section",
+              {},
+              el("h2", { class: "cds--type-productive-heading-03" }, section.title),
+              el("p", { class: "cds--type-body-01" }, section.description),
+              lists,
+              group,
+            ),
+          );
+        }
+        const kinds = Object.entries(SCHEDULES);
+        for (const [kind, schedule] of kinds) $("schedule-kind").append(el("cds-select-item", { value: kind, label: schedule.label }, schedule.label));
+        // With only one kind there is nothing to choose.
+        $("schedule-kind").hidden = kinds.length < 2;
+        $("schedule-kind").addEventListener("cds-select-selected", () => showScheduleFields($("schedule-kind").value, {}));
       }
+
+      function showScheduleFields(kind, values) {
+        $("schedule-fields").replaceChildren();
+        fields.schedule = {};
+        for (const field of SCHEDULES[kind].fields) {
+          const input = el("cds-text-input", { label: field.label, placeholder: field.placeholder, "helper-text": field.helper });
+          input.value = values[field.key] || "";
+          fields.schedule[field.key] = input;
+          $("schedule-fields").append(input);
+        }
+      }
+
+      let editing = null; // the block being edited, as it was opened
+      let isNew = false;
+
+      function openEditor(id) {
+        isNew = !id;
+        const block = id ? overview.blocks.find((b) => b.id === id) : newBlock();
+        if (!block) {
+          location.hash = "#/";
+          return;
+        }
+        editing = structuredClone(block);
+        $("editor-title").textContent = isNew ? "New block" : "Edit block";
+        $("delete").hidden = isNew;
+        $("name").value = block.name;
+        for (const [key, area] of Object.entries(fields.lists)) area.value = (block[key] || []).join("\n");
+        for (const [key, box] of Object.entries(fields.enforcers)) box.checked = !!(block.enforcers && block.enforcers[key]);
+        const kind = SCHEDULES[block.schedule && block.schedule.kind] ? block.schedule.kind : Object.keys(SCHEDULES)[0];
+        $("schedule-kind").value = kind;
+        showScheduleFields(kind, block.schedule || {});
+        notify("editor-notices");
+        renderEditorLock();
+        if (isNew) setTimeout(() => $("name").focus(), 0);
+      }
+
+      // A running block keeps what it started with, so its settings are read-only until it ends.
+      function renderEditorLock() {
+        if ($("view-editor").hidden || !editing) return;
+        const running = !isNew && runningOf(editing.id);
+        const controls = [$("name"), $("schedule-kind"), $("save"), $("delete"), ...Object.values(fields.lists), ...Object.values(fields.enforcers), ...Object.values(fields.schedule)];
+        for (const control of controls) control.disabled = !!running;
+        const box = $("editor-notices");
+        const shown = box.dataset.lock === "1";
+        if (running && !shown) {
+          notify("editor-notices", "info", "This block is running", "Its settings can be changed once it ends.", { closable: false });
+          box.dataset.lock = "1";
+        } else if (!running && shown) {
+          notify("editor-notices");
+          box.dataset.lock = "";
+        }
+      }
+
+      function readEditor() {
+        const block = structuredClone(editing);
+        block.name = $("name").value.trim();
+        for (const [key, area] of Object.entries(fields.lists)) block[key] = lines(area.value);
+        block.enforcers = { ...block.enforcers };
+        for (const [key, box] of Object.entries(fields.enforcers)) block.enforcers[key] = box.checked;
+        block.schedule = { kind: $("schedule-kind").value || Object.keys(SCHEDULES)[0] };
+        for (const [key, input] of Object.entries(fields.schedule)) block.schedule[key] = input.value.trim();
+        return block;
+      }
+
+      $("save").addEventListener("click", async () => {
+        const block = readEditor();
+        if (!block.name) {
+          $("name").invalid = true;
+          $("name").setAttribute("invalid-text", "Give the block a name");
+          return;
+        }
+        $("save").disabled = true;
+        try {
+          await invoke("save_block", { block });
+          location.hash = "#/";
+        } catch (e) {
+          notify("editor-notices", "error", "Could not save the block", String(e));
+          $("editor-notices").dataset.lock = "";
+        }
+        $("save").disabled = false;
+        await refresh();
+      });
+      $("name").addEventListener("input", () => { $("name").invalid = false; });
+      $("delete").addEventListener("click", () => editing && confirmDelete(editing.id));
+
+      // ---- Settings: the unlock password.
+
+      async function unlock() {
+        const password = $("password").value;
+        if (!password) return;
+        $("unlock").disabled = true;
+        try {
+          // The app exits on success, so only a wrong password (or a failure) comes back here.
+          await invoke("force_exit", { password });
+        } catch (e) {
+          notify("settings-notices", "error", "Not unlocked", String(e));
+        }
+        $("password").value = "";
+        $("password").focus();
+      }
+      $("unlock").addEventListener("click", unlock);
+      $("password").addEventListener("input", () => {
+        $("unlock").disabled = !$("password").value;
+        notify("settings-notices");
+      });
+      $("password").addEventListener("keydown", (event) => { if (event.key === "Enter") unlock(); });
+
+      // ---- Pages, by the address after #: #/ (the blocks), #/new, #/edit/<id>, #/settings.
+
+      function route() {
+        const hash = location.hash || "#/";
+        const edit = hash.match(/^#\/edit\/(.+)$/);
+        const view = hash === "#/new" || edit ? "editor" : hash === "#/settings" ? "settings" : "blocks";
+        for (const name of ["blocks", "editor", "settings"]) $(`view-${name}`).hidden = name !== view;
+        if (view === "editor") openEditor(edit ? decodeURIComponent(edit[1]) : null);
+        else editing = null;
+        if (view === "settings") {
+          $("password").value = "";
+          $("unlock").disabled = true;
+          notify("settings-notices");
+        }
+        window.scrollTo(0, 0);
+      }
+      window.addEventListener("hashchange", route);
+      $("new-block").addEventListener("click", () => (location.hash = "#/new"));
+      $("first-block").addEventListener("click", () => (location.hash = "#/new"));
+      $("open-settings").append(carbonIcon("settings", "icon"));
+      $("open-settings").addEventListener("click", () => (location.hash = "#/settings"));
+      $("new-block").append(carbonIcon("add", "icon"));
+      $("delete").append(carbonIcon("trash-can", "icon"));
+      buildEditor();
 
       // The window is made when it is asked for and shown once this page has drawn (`ui::window_ready`);
       // its X only hides it. While it is hidden nothing is looked at, so nothing is asked of the service.
@@ -298,7 +642,12 @@
         if (visible) refresh();
       });
       setInterval(() => { if (visible && !document.hidden) refresh(); }, 1000);
-      refresh().finally(() => invoke("window_ready"));
+      refresh()
+        .then(route)
+        .finally(() => {
+          document.body.classList.add("ready");
+          invoke("window_ready");
+        });
     </script>
   </body>
 </html>

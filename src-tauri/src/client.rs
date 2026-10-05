@@ -1,7 +1,7 @@
 //! The app's side of the service: asks the service what to show and what to enforce.
 //!
 //! The app holds no block of its own. `tab_closer.rs` asks `Remote::active` every second, which
-//! has the same shape as `Blocklist::active` did, so the closing code did not have to change.
+//! has the same shape as `Blocklist::active`: every running block's part.
 //! If the service cannot be reached (it is restarting, or being updated), the last answer keeps
 //! being enforced: a gap in the service must not open the block.
 //!
@@ -13,11 +13,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::block::{Active, Status};
+use crate::block::{Active, Enforced};
 use crate::filters::FilterList;
 use crate::pipe;
 use crate::programs::ProgramList;
-use crate::proto::{self, Policy, Request, Response};
+use crate::proto::{self, Overview, Policy, Request, Response};
 use crate::registration;
 use crate::sync::LockExt;
 use crate::watchdog::note;
@@ -48,7 +48,7 @@ pub struct Remote {
 const START_EVERY: Duration = Duration::from_secs(5);
 
 struct Cached {
-    policy: Policy,
+    policies: Vec<Policy>,
     active: Active,
 }
 
@@ -85,7 +85,7 @@ impl Remote {
         }
     }
 
-    pub fn status(&self) -> Result<Status, String> {
+    pub fn status(&self) -> Result<Overview, String> {
         match self.send(Request::Status)? {
             Response::Status(status) => Ok(status),
             Response::Failed(why) => Err(why),
@@ -134,30 +134,31 @@ impl Remote {
         }
     }
 
-    /// Takes in what the service said; the list is only parsed again when it changed.
-    fn apply(&self, policy: Option<Policy>) {
+    /// Takes in what the service said; the lists are only parsed again when they changed.
+    fn apply(&self, policies: Vec<Policy>) {
         let mut cache = self.cache.locked();
-        let Some(policy) = policy else {
+        if policies.is_empty() {
             *cache = None;
             return;
-        };
-        if cache.as_ref().is_some_and(|c| c.policy == policy) {
+        }
+        if cache.as_ref().is_some_and(|c| c.policies == policies) {
             return;
         }
-        match (FilterList::parse(&policy.filters), FilterList::parse(&policy.allowed), ProgramList::parse(&policy.programs)) {
-            (Ok(filters), Ok(allowed), Ok(programs)) => {
-                let active = Active {
-                    filters: Arc::new(filters),
-                    allowed: Arc::new(allowed),
-                    programs: Arc::new(programs),
-                    enforcers: policy.enforcers,
-                };
-                *cache = Some(Cached { policy, active });
-            }
+        match policies.iter().map(parse).collect::<Option<Vec<Enforced>>>() {
+            Some(blocks) => *cache = Some(Cached { policies, active: Active { blocks } }),
             // Cannot happen with a service of this version; keep what is being enforced.
-            _ => note("app", "the service sent a block list that cannot be read"),
+            None => note("app", "the service sent a block list that cannot be read"),
         }
     }
+}
+
+fn parse(policy: &Policy) -> Option<Enforced> {
+    Some(Enforced {
+        filters: Arc::new(FilterList::parse(&policy.filters).ok()?),
+        allowed: Arc::new(FilterList::parse(&policy.allowed).ok()?),
+        programs: Arc::new(ProgramList::parse(&policy.programs).ok()?),
+        enforcers: policy.enforcers,
+    })
 }
 
 #[cfg(test)]
@@ -184,18 +185,20 @@ mod tests {
         let remote = Remote::new();
         assert!(current(&remote).is_none());
 
-        remote.apply(Some(policy(&["tweakers.net"])));
-        let list = current(&remote).unwrap().filters;
+        remote.apply(vec![policy(&["tweakers.net"])]);
+        let list = current(&remote).unwrap().blocks[0].filters.clone();
         assert!(list.is_blocked("https://tweakers.net/nieuws"));
 
         // The same policy again keeps the same parsed list.
-        remote.apply(Some(policy(&["tweakers.net"])));
-        assert!(Arc::ptr_eq(&list, &current(&remote).unwrap().filters));
+        remote.apply(vec![policy(&["tweakers.net"])]);
+        assert!(Arc::ptr_eq(&list, &current(&remote).unwrap().blocks[0].filters));
 
-        // A different one replaces it; none at all ends the block.
-        remote.apply(Some(policy(&["b.com"])));
-        assert!(current(&remote).unwrap().filters.is_blocked("b.com/x"));
-        remote.apply(None);
+        // A different one replaces it, a second block comes along; none at all ends the blocks.
+        remote.apply(vec![policy(&["b.com"]), policy(&["c.com"])]);
+        let active = current(&remote).unwrap();
+        assert!(active.blocks_page("https://b.com/x", false) && active.blocks_page("https://c.com/", false));
+        assert!(!active.blocks_page("https://tweakers.net/", false));
+        remote.apply(Vec::new());
         assert!(current(&remote).is_none());
     }
 
@@ -203,38 +206,35 @@ mod tests {
     fn the_programs_come_along_and_are_parsed_with_the_policy() {
         let remote = Remote::new();
         let with_programs = Policy { filters: vec![], allowed: vec![], programs: vec!["Steam*".into()], enforcers: Enforcers::default() };
-        remote.apply(Some(with_programs));
+        remote.apply(vec![with_programs]);
         let active = current(&remote).unwrap();
-        assert!(active.programs.is_blocked("steamwebhelper.exe") && !active.programs.is_blocked("chrome.exe"));
+        assert!(active.blocks_program("steamwebhelper.exe") && !active.blocks_program("chrome.exe"));
         // A list that cannot be read leaves what is being enforced as it was.
         let wrong = Policy { filters: vec![], allowed: vec![], programs: vec!["*".into()], enforcers: Enforcers::default() };
-        remote.apply(Some(wrong));
-        assert!(current(&remote).unwrap().programs.is_blocked("steamwebhelper.exe"));
+        remote.apply(vec![wrong]);
+        assert!(current(&remote).unwrap().blocks_program("steamwebhelper.exe"));
     }
 
     #[test]
     fn a_local_remote_is_a_service_of_its_own_without_a_pipe() {
         use crate::block::Blocklist;
+        use crate::definitions::{tests::definition, Definition, Definitions, Schedule};
         use crate::state::Store;
         let dir = std::env::temp_dir().join(format!("client-{}-local", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let remote = Remote::local(service::local_handler(Blocklist::with_store(Store::new(dir.join("state.json")))));
+        let blocklist = Blocklist::with_store(Store::new(dir.join("state.json")));
+        let remote = Remote::local(service::local_handler(blocklist, Definitions::at(Some(dir.join("blocks.json")))));
         assert!(remote.is_local());
         assert!(remote.active().is_none());
 
-        let start = Request::Start {
-            filters: vec!["a.com".into()],
-            allowed: vec![],
-            programs: vec![],
-            duration: "1h".into(),
-            enforcers: Enforcers::default(),
-        };
-        remote.command(start).unwrap();
-        assert!(remote.active().unwrap().blocks_site("https://a.com/x"));
-        assert!(remote.status().unwrap().remaining.is_some());
+        let block = Definition { schedule: Schedule::Duration { duration: "1h".into() }, ..definition("a", &["a.com"]) };
+        remote.command(Request::Save { block }).unwrap();
+        remote.command(Request::Start { id: "a".into() }).unwrap();
+        assert!(remote.active().unwrap().blocks_page("https://a.com/x", false));
+        assert!(remote.status().unwrap().running[0].remaining.is_some());
         // The same rules as with the real service: a timed block cannot be stopped early, the
         // password ends it.
-        assert!(remote.command(Request::Stop).is_err());
+        assert!(remote.command(Request::Stop { id: "a".into() }).is_err());
         assert!(remote.command(Request::Unlock { password: "wrong".into() }).is_err());
         remote.command(Request::Unlock { password: "test1234".into() }).unwrap();
         assert!(remote.active().is_none());

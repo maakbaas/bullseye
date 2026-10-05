@@ -1,33 +1,35 @@
 # Site Blocker (Tauri tray app, Windows only)
 
-Blocks sites listed in the UI (closes matching Chromium-browser tabs), closes programs by exe name, and closes Obsidian when it shows web content. The block is held by a **SYSTEM Windows service**; the tray app does the closing. `detailed-instructions.md` is the long design guide with the reasoning, measurements and a test table; this file is the short version.
+Blocks sites (closes matching Chromium-browser tabs), closes programs by exe name, and closes Obsidian when it shows web content. The user defines any number of named **blocks**, each a combination of lists, enforcers and a schedule (today: a duration); each block is started and stopped on its own, and several can run at once. Definitions and running blocks are held by a **SYSTEM Windows service**; the tray app does the closing. `detailed-instructions.md` is the long design guide with the reasoning, measurements and a test table; this file is the short version.
 
-- `src/index.html` – the whole frontend (no bundler), Fluent styling, Mica; three lists (block list, always-allowed sites, programs) of 5 lines each, no page scroll
-- `src-tauri/src/main.rs` – entry modes (`--service`, `--install`, `--uninstall`, `--prepare-update`, otherwise the app), tray, and the `start_block` / `stop_block` / `block_status` / `force_exit` commands, which only forward to the service
+- `src/index.html` – the whole frontend (no bundler of its own), built with the **Carbon design system** (see "Design system" below). Three views by URL hash: `#/` the blocks as tiles with their status and Start/Stop, `#/new` and `#/edit/<id>` the block editor, `#/settings` the unlock password. The editor and the tile summaries are generated from three tables in the script: `LISTS`, `SECTIONS` (enforcers grouped with the lists they use) and `SCHEDULES`
+- `src/vendor/` – Carbon, built by `npm run vendor` (`scripts/vendor-carbon.mjs` from `scripts/carbon/entry.js` and `carbon.scss`) and committed; never edit by hand
+- `src-tauri/src/main.rs` – entry modes (`--service`, `--install`, `--uninstall`, `--prepare-update`, otherwise the app), tray, and the `block_status` / `save_block` / `delete_block` / `start_block` / `stop_block` / `force_exit` commands, which only forward to the service
 - `src-tauri/src/ui.rs` – the window: none at startup, made on a tray click (shown once the page has drawn), its X only hides it, destroyed after 5 minutes hidden (the web view is almost all of the app's memory)
 - `src-tauri/src/service.rs` – the running SYSTEM service (service manager, start-up, data folder lock-down); `handler.rs` – what it does with each request (the same code over the pipe and, in debug builds, inside the app); `registration.rs` – installing, locking down (SDDL), starting and removing it
 - `src-tauri/src/pipe.rs`, `proto.rs`, `client.rs` – the named pipe `\\.\pipe\SiteBlocker`: server, messages, and the app's side (keeps the last policy in memory; `Remote::local` is the in-process variant)
-- `src-tauri/src/block.rs` – the running block (lists, end time, enforcers); timed blocks (`5s`/`10m`/`3h`/`1d`) are enforced here, never in the UI
+- `src-tauri/src/definitions.rs` – the block definitions (`Definition`: id, name, lists, enforcers, `Schedule`), kept in `%ProgramData%\SiteBlocker\blocks.json`; a running block's definition cannot be changed or deleted
+- `src-tauri/src/block.rs` – the running blocks, keyed by definition id (lists, end time, enforcers each); timed blocks (`5s`/`10m`/`3h`/`1d`) are enforced here, never in the UI. `Active` is what the app enforces: every running block's part, each by its own enforcers and allowed sites
 - `src-tauri/src/clock.rs` – internet time (SNTP) that timed blocks are measured against, so moving the Windows clock does nothing
 - `src-tauri/src/unlock.rs` – the unlock password, kept only as a salted PBKDF2-SHA256 hash
 - `src-tauri/src/filters.rs` – site lists: plain address prefixes plus `*` (user rejected full uBlock syntax as too complex). Used for the block list and the always-allowed list, which **wins**. Only web pages are matched, never the browser's own pages, so a lone `*` blocks every site and leaves the browser usable
 - `src-tauri/src/programs.rs` – programs to close: exe names with `*`, `.exe` added when missing, and a protected list (Windows' own, this app, WebView2) that is never closed and refuses entries that would match it
 - `src-tauri/src/tab_closer.rs` – 1-second worker in the app doing the closing, as enforcers (`state::Enforcers`, checkboxes in the UI, fixed while a block runs): with the site list, Chromium tabs and split view; with the program list, programs (asked to close, ended after 3 s); without a list, Obsidian's web viewer
-- `src-tauri/src/state.rs` – the block on disk (`%ProgramData%\SiteBlocker\state.json`, SYSTEM-owned) and the `Enforcers` table (one place to add an enforcer)
+- `src-tauri/src/state.rs` – the running blocks on disk (`%ProgramData%\SiteBlocker\state.json`, SYSTEM-owned; the single-block file of older versions still loads) and the `Enforcers` table (one place to add an enforcer)
 - `src-tauri/src/watchdog.rs` – the service's watch over the app (`AppSlot`) and the log writer
 - `src-tauri/src/sync.rs` – `locked()` (locks that survive a crash) and `spawn_critical` (a crash in a long-lived thread ends the process, so Windows restarts it)
 - `src-tauri/src/setup.rs` + `src-tauri/windows/hooks.nsh` – `--install` / `--uninstall` / `--prepare-update`, run by the NSIS installer
 
 ## How the pieces keep each other alive
 
-The `SiteBlocker` service runs as SYSTEM, starts at boot, and holds the block, internet time and the unlock hash. The tray app (user session) asks it every second what to enforce, does the closing, and keeps no state; it keeps enforcing the last answer if the service is briefly unreachable.
+The `SiteBlocker` service runs as SYSTEM, starts at boot, and holds the block definitions, the running blocks, internet time and the unlock hash. The tray app (user session) asks it every second what to enforce, does the closing, and keeps no state; it keeps enforcing the last answer if the service is briefly unreachable.
 
 - The service does not accept a stop request, and its access list (`registration.rs`) gives only SYSTEM stop / change / delete. If it fails by itself, Windows restarts it at once (failure actions).
 - The service starts the app at every logon and, **while any block runs**, starts it again within ~1 s of it ending. Which process is "the app" is the service's decision: the one it launched, or the installed exe in the console session that registered; never a matter of the process name. An app that has not asked for its policy for 5 s (20 s after starting) during a block is ended and started again, which covers a suspended app. After a sleep the app gets a fresh start instead.
 - If the service is not running, the app asks Windows to start it (interactive users may *start* it, nothing more).
-- Reboot mid-block: the service reads `state.json` back and resumes with the time left.
+- Reboot mid-block: the service reads `state.json` back and resumes every running block with its time left.
 
-**"Unlock"** in the UI (`force_exit`, password `test1234`, stored only as a hash in `unlock.rs`, which says how to change it) is checked by the service, rate-limited after 3 wrong guesses. It clears the block and the app quits; the service keeps running idle and starts the app again at the next logon. It is the only way to end a timed block early.
+**"Unlock"** in the UI (`force_exit`, password `test1234`, stored only as a hash in `unlock.rs`, which says how to change it) is checked by the service, rate-limited after 3 wrong guesses. It lives on the Settings page, ends **every** running block (the definitions stay) and the app quits; the service keeps running idle and starts the app again at the next logon. It is the only way to end a timed block early.
 
 ### Deliberately not hidden
 
@@ -37,7 +39,7 @@ Per the user's decision: nothing here is obscured. The service is named `SiteBlo
 
 ### Install / remove
 
-`npm run build` makes a **per-machine** NSIS installer (`src-tauri\target\release\bundle\nsis\`), which needs admin and installs to `C:\Program Files\Site Blocker` (never a user-writable folder: the exe runs as SYSTEM). The hooks (`windows/hooks.nsh`) run the app with `--prepare-update` (before replacing files; refused during any block), `--install` (create the service, lock it down, safe-mode keys, start it) and `--uninstall` (the service removes itself, its data and the app). Uninstall is **refused during a timed block** (exit code 2, internet time). If a service is registered but does not answer, the uninstall also stops (exit code 1, nothing removed); with no service registered it carries on. The installer cannot stop the service itself, so it asks over the pipe. `.github/workflows/build.yml` builds the installer as an artifact for every push.
+`npm run build` makes a **per-machine** NSIS installer (`src-tauri\target\release\bundle\nsis\`), which needs admin and installs to `C:\Program Files\Site Blocker` (never a user-writable folder: the exe runs as SYSTEM). The hooks (`windows/hooks.nsh`) run the app with `--prepare-update` (before replacing files; refused during any block), `--install` (create the service, lock it down, safe-mode keys, start it) and `--uninstall` (the service removes itself, its data and the app). Uninstall is **refused while any timed block runs** (exit code 2, internet time). If a service is registered but does not answer, the uninstall also stops (exit code 1, nothing removed); with no service registered it carries on. The installer cannot stop the service itself, so it asks over the pipe. `.github/workflows/build.yml` builds the installer as an artifact for every push.
 
 Recovery when your own test locks you out (commands in `detailed-instructions.md`, section 8.2): test installs in a VM; a SYSTEM shell can `sc delete SiteBlocker` and end the process.
 
@@ -48,8 +50,27 @@ Recovery when your own test locks you out (commands in `detailed-instructions.md
 - Run `npm run dev` as a background task; it rebuilds and relaunches on changes in `src-tauri/`. Changes in `src/` are not picked up automatically – `touch src-tauri/src/main.rs` to force a relaunch.
 - Unlocking with the password quits the app, which also ends `tauri dev`; restart it afterwards.
 - Dev log lines contain ANSI colour codes (`Running\e[0m \`target\...`), so patterns like `'Running \`'` never match. Wait for a relaunch by matching `tray-app.exe`, and check the real log text before writing any wait loop.
+- Look at UI changes in a browser without Windows: Playwright's Chromium can open `src/index.html` from disk with a stand-in `window.__TAURI__` (an `addInitScript` that answers the commands from memory); check narrow (~400 px) and wide, light and dark.
 - Edit JS/HTML containing escapes (`\n`, regexes) with the Write/Edit tools, not heredocs or Python string replacement – escapes got mangled into literal newlines several times. Syntax-check the page script with `node --check` after edits.
-- `cargo test` (in `src-tauri/`) runs 67 tests. Ignored on purpose: the network clock, printing a new unlock hash, `the_pipe_answers_like_the_app_expects` (`-- --ignored the_pipe`; no service may be installed, it takes the pipe name) and `a_real_browser_tab_is_closed` (needs a Chromium browser window open on example.com). Also run `cargo clippy --all-targets` (clean) and `cargo check --release`.
+- `cargo test` (in `src-tauri/`) runs 73 tests. Ignored on purpose: the network clock, printing a new unlock hash, `the_pipe_answers_like_the_app_expects` (`-- --ignored the_pipe`; no service may be installed, it takes the pipe name) and `a_real_browser_tab_is_closed` (needs a Chromium browser window open on example.com). Also run `cargo clippy --all-targets` (clean) and `cargo check --release`.
+
+## Adding an enforcer, a list or a schedule
+
+The UI is built from tables so these need no new markup:
+- **Enforcer**: a field in `state::Enforcers` and a line in `Enforcers::all`; an entry in the right `SECTIONS` group in `index.html` (`key` = the field name). If it acts per block, a method on `block::Active` that combines the running blocks (see `blocks_page` / `blocks_program`).
+- **List**: see `block::Lists` (a `Uses` variant, `Lists::has`, fields in `Block`, `state::Saved`, `definitions::Definition`, `proto::Policy`); an entry in `LISTS` and its key in a `SECTIONS` group.
+- **Schedule**: a variant of `definitions::Schedule` (tagged by `kind`) and how it decides when a block runs (today `Schedule::duration`; anything not "from now for a while" needs the ticker in `service::start_blocklist` to start and end blocks); an entry in `SCHEDULES` with its fields and `describe`. With two or more kinds the editor shows a kind selector by itself.
+
+## Design system (Carbon)
+
+All UI uses IBM's **Carbon design system** (https://github.com/carbon-design-system/carbon), through `@carbon/web-components` (`cds-*` elements), `@carbon/styles` and IBM Plex:
+- **Only Carbon components.** Use a `cds-*` component for every control, message and container (buttons, inputs, textareas, checkboxes, selects, tiles, tags, notifications, modals, overflow menus, breadcrumbs, the UI shell header). No hand-made controls and no other UI library. A component not yet in the bundle is added to `scripts/carbon/entry.js` (import the specific file, e.g. `.../tag/tag.js`, not the folder's `index.js`) and `npm run vendor` is run; the same goes for icons (`@carbon/icons`, used through `carbonIcon(name, slot)`).
+- **Only Carbon tokens.** Colours are `var(--cds-*)` theme tokens, spacing is `var(--cds-spacing-01…13)`, type is Carbon's `cds--type-*` classes in IBM Plex. No hex colours, pixel spacing or other fonts in the page's CSS; its own `<style>` is layout only.
+- **Themes**: `g10` in light mode and `g100` in dark mode, following Windows (the script at the top of `index.html` switches the `cds--g10` / `cds--g100` class on `<html>`). Check both.
+- **Responsive**: layout with Carbon's CSS grid (`cds--css-grid`, columns with `cds--css-grid-column cds--sm:col-span-4 cds--md:… cds--lg:…`, nested grids `cds--subgrid`) and its breakpoints (sm 320, md 672, lg 1056, xlg 1312, max 1584). The window is resizable down to 360 × 480; every view must work from there up, with no horizontal scrolling. Carbon's `col-span` classes set `display: block`, so a column that is also a grid or flex box needs that restated (see `.blocks.cds--subgrid`).
+- **Patterns**: page title `cds--type-productive-heading-05` with a short description; sections `productive-heading-03`; errors and states as `cds-inline-notification` (low contrast) at the top of the view; a destructive action is `danger` and asks in a `cds-modal`; secondary pages have a `cds-breadcrumb` back to the blocks.
+- Web-component quirks: icons go in the `icon` slot (`cds-button`, `cds-overflow-menu`, `cds-header-global-action`); an open `cds-overflow-menu` moves its body out of the host, so listen on the items; read values from the elements (`.value`, `.checked`), whose events are `input` and `cds-checkbox-changed` / `cds-select-selected`.
+- `src/vendor/` is generated and committed (the app must work offline and the page has no build step). Carbon's npm packages run IBM telemetry on install unless `IBM_TELEMETRY_DISABLED=true`, which the CI workflow sets.
 
 ## User constraints
 
