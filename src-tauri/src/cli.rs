@@ -818,7 +818,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             } else if let Some(left) = status.remaining_words {
                 println!("Unlocking is not ready yet: {left} to go. Run `bullseye-cli unlock` again then, or `bullseye-cli unlock --abort` to stop.");
             } else {
-                send(Request::RequestUnlock)?;
+                send(Request::AskForUnlock)?;
                 println!(
                     "Unlocking was asked for: ready in {}. Run `bullseye-cli unlock` again then, or `bullseye-cli unlock --abort` to stop.",
                     status.delay_words

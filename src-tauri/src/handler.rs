@@ -107,7 +107,7 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
             (done(blocklist.stop(&id, given)), None)
         }
         Request::Unlock => (done(unlock(context)), None),
-        Request::RequestUnlock => (done(context.unlock.request(blocklist.now())), None),
+        Request::AskForUnlock => (done(context.unlock.request(blocklist.now())), None),
         Request::AbortUnlock => (done(context.unlock.abort()), None),
         Request::SetUnlockDelay { delay } => (done(set_unlock_delay(context, &delay)), None),
         // Refused while a block cannot be stopped, judged by internet time, like the block itself.
@@ -619,7 +619,7 @@ mod tests {
         // Not asked for: refused, and the block stays.
         assert!(failed(ask(Request::Unlock)) && context.blocklist.is_running());
         // Asked for: counting down, and still refused.
-        assert_eq!(ask(Request::RequestUnlock), Response::Done);
+        assert_eq!(ask(Request::AskForUnlock), Response::Done);
         assert_eq!(status().remaining, Some(1));
         assert!(status().remaining_words.is_some());
         assert!(failed(ask(Request::Unlock)) && context.blocklist.is_running());
@@ -628,7 +628,7 @@ mod tests {
         assert_eq!(status().remaining, None);
         assert!(failed(ask(Request::Unlock)));
         // Asked again, and waited for: ready.
-        assert_eq!(ask(Request::RequestUnlock), Response::Done);
+        assert_eq!(ask(Request::AskForUnlock), Response::Done);
         std::thread::sleep(Duration::from_millis(1100));
         assert_eq!(status().remaining, Some(0));
         // Ready, it can still be aborted instead: locked again.
@@ -636,7 +636,7 @@ mod tests {
         assert_eq!(status().remaining, None);
         assert!(failed(ask(Request::Unlock)) && context.blocklist.is_running());
         // Or used: every block ends, and the request is used up: the next time starts again.
-        assert_eq!(ask(Request::RequestUnlock), Response::Done);
+        assert_eq!(ask(Request::AskForUnlock), Response::Done);
         std::thread::sleep(Duration::from_millis(1100));
         assert_eq!(ask(Request::Unlock), Response::Done);
         assert!(!context.blocklist.is_running());
@@ -665,7 +665,7 @@ mod tests {
         assert_eq!(ask(delay("24h")), Response::Done);
         assert_eq!(overview(&context).unlock.delay, 86_400);
         // Asking for unlocking does not shorten the wait, and unlocking stays refused.
-        assert_eq!(ask(Request::RequestUnlock), Response::Done);
+        assert_eq!(ask(Request::AskForUnlock), Response::Done);
         assert!(failed(ask(delay("1h"))) && failed(ask(Request::Unlock)));
         assert!(context.blocklist.is_running());
     }
@@ -676,7 +676,7 @@ mod tests {
         let ask = |request: Request| handle(&context, 0, request).0;
         let delay = |text: &str| Request::SetUnlockDelay { delay: text.into() };
         assert_eq!(ask(delay("1s")), Response::Done);
-        assert_eq!(ask(Request::RequestUnlock), Response::Done);
+        assert_eq!(ask(Request::AskForUnlock), Response::Done);
         std::thread::sleep(Duration::from_millis(1100));
         assert_eq!(ask(delay("0")), Response::Done);
         let status = overview(&context).unlock;
@@ -695,7 +695,7 @@ mod tests {
         };
         let first = service("one");
         assert_eq!(handle(&first, 0, Request::SetUnlockDelay { delay: "1s".into() }).0, Response::Done);
-        assert_eq!(handle(&first, 0, Request::RequestUnlock).0, Response::Done);
+        assert_eq!(handle(&first, 0, Request::AskForUnlock).0, Response::Done);
         // A restart: another service over the same file counts on.
         let second = service("two");
         let status = overview(&second).unlock;
@@ -722,7 +722,7 @@ mod tests {
         assert_eq!(handle(&context, 0, Request::SetUnlockDelay { delay: "1h 30m".into() }).0, Response::Done);
         let status = overview(&context).unlock;
         assert_eq!((status.delay, status.delay_words.as_str(), status.remaining), (5400, "1 hour and 30 minutes", None));
-        assert_eq!(handle(&context, 0, Request::RequestUnlock).0, Response::Done);
+        assert_eq!(handle(&context, 0, Request::AskForUnlock).0, Response::Done);
         let status = overview(&context).unlock;
         assert_eq!((status.remaining, status.remaining_words.as_deref()), (Some(5400), Some("1 hour and 30 minutes")));
     }

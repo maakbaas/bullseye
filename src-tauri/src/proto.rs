@@ -65,10 +65,10 @@ pub enum Request {
         text: Option<String>,
     },
     /// Ends every block, whatever its time, once unlocking is ready: at once with no delay,
-    /// otherwise when the countdown of `RequestUnlock` is over (`unlock::UnlockDelay`).
+    /// otherwise when the countdown of `AskForUnlock` is over (`unlock::UnlockDelay`).
     Unlock,
     /// Starts the countdown to unlocking. It can be aborted.
-    RequestUnlock,
+    AskForUnlock,
     /// Stops the countdown, or ends the readiness: back to locked.
     AbortUnlock,
     /// Sets how long unlocking takes, as typed (`2h 30m`, `0`; at most 24 hours). A longer delay is

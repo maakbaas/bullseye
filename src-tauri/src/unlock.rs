@@ -14,7 +14,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use pbkdf2::pbkdf2_hmac_array;
 use serde::{Deserialize, Serialize};
@@ -196,6 +196,7 @@ impl UnlockDelay {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn file(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("unlock-{}-{name}", std::process::id()));

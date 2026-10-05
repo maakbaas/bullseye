@@ -193,7 +193,7 @@ fn import_settings(path: String, remote: State<Remote>) -> Result<(), String> {
 /// Starts the countdown to unlocking (`unlock.rs`); it can be aborted.
 #[tauri::command]
 fn request_unlock(remote: State<Remote>) -> Result<(), String> {
-    remote.command(Request::RequestUnlock)
+    remote.command(Request::AskForUnlock)
 }
 
 /// Stops the countdown, or ends the readiness: back to locked.
