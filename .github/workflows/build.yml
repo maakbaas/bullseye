@@ -44,6 +44,11 @@ jobs:
         working-directory: src-tauri
         run: cargo fmt --check
 
+      # The linter, tests included, with warnings as errors (`cargo clippy --all-targets` is kept clean).
+      - name: Clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
       # The unit tests, before spending time on the installer.
       - name: Test
         working-directory: src-tauri
