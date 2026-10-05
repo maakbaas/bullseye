@@ -345,10 +345,13 @@
       }
 
       function makeTile(id) {
+        // The class is how Carbon colours an overflow menu's icon (without it: white on a white tile).
+        const menuIcon = carbonIcon("overflow-menu-vertical", "icon");
+        menuIcon.classList.add("cds--overflow-menu__icon");
         const menu = el(
           "cds-overflow-menu",
           { "aria-label": "Options", "menu-alignment": "bottom-end" },
-          carbonIcon("overflow-menu-vertical", "icon"),
+          menuIcon,
           el("span", { slot: "tooltip-content" }, "Options"),
           el(
             "cds-overflow-menu-body",
