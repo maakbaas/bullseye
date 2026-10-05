@@ -65,7 +65,7 @@ Recovery when your own test locks you out (commands in `detailed-instructions.md
 - Look at UI changes in a browser without Windows: Playwright's Chromium can open `src/index.html` from disk with a stand-in `window.__TAURI__` (an `addInitScript` that answers the commands from memory); check narrow (~400 px) and wide, light and dark.
 - Edit JS/HTML containing escapes (`\n`, regexes) with the Write/Edit tools, not heredocs or Python string replacement – escapes got mangled into literal newlines several times. Syntax-check the page script with `node --check` after edits.
 - From Linux, `rustup target add x86_64-pc-windows-msvc` and `cargo clippy --target x86_64-pc-windows-msvc --all-targets` type-check everything (no linking, so no tests); the platform-free modules (`duration`, `schedule`, `lock`) can be tested in a scratch crate via `#[path]`.
-- `cargo test` (in `src-tauri/`) runs 117 tests. Ignored on purpose: the network clock, printing a new unlock hash, `the_pipe_answers_like_the_app_expects` (`-- --ignored the_pipe`; no service may be installed, it takes the pipe name) and `a_real_browser_tab_is_closed` (needs a Chromium browser window open on example.com). Also run `cargo clippy --all-targets` (clean) and `cargo check --release`.
+- `cargo test` (in `src-tauri/`) runs 119 tests. Ignored on purpose: the network clock, printing a new unlock hash, `the_pipe_answers_like_the_app_expects` (`-- --ignored the_pipe`; no service may be installed, it takes the pipe name) and `a_real_browser_tab_is_closed` (needs a Chromium browser window open on example.com). Also run `cargo clippy --all-targets` (clean) and `cargo check --release`.
 
 ## Adding an enforcer, a list, a schedule kind or a lock method
 
