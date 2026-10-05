@@ -27,7 +27,7 @@ mod unlock;
 mod watchdog;
 
 use client::Remote;
-use definitions::Definition;
+use definitions::{BlockList, Definition, NamedSchedule};
 use proto::{Overview, Request, Response};
 use schedule::Week;
 use tauri::{
@@ -38,7 +38,7 @@ use tauri::{
 // The page's commands. **Each one has a CLI command that does the same** (`cli::GUI_COMMANDS`, which a
 // test checks against the page): a new one needs one there too, and a line in `CLI.md`.
 
-/// Every block, and which of them run.
+/// Every block list, schedule and block, and which blocks run.
 #[tauri::command]
 fn block_status(remote: State<Remote>) -> Result<Overview, String> {
     remote.status()
@@ -48,12 +48,36 @@ fn block_status(remote: State<Remote>) -> Result<Overview, String> {
 /// refuses it while that block runs.
 #[tauri::command]
 fn save_block(block: Definition, remote: State<Remote>) -> Result<(), String> {
-    remote.command(Request::Save { block })
+    remote.command(Request::SaveBlock { block })
 }
 
 #[tauri::command]
 fn delete_block(id: String, remote: State<Remote>) -> Result<(), String> {
-    remote.command(Request::Delete { id })
+    remote.command(Request::DeleteBlock { id })
+}
+
+/// Adds a block list, or changes the one with its id; refused while a running block uses it.
+#[tauri::command]
+fn save_list(list: BlockList, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::SaveList { list })
+}
+
+/// Refused while any block uses it.
+#[tauri::command]
+fn delete_list(id: String, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::DeleteList { id })
+}
+
+/// Adds a schedule, or changes the one with its id; refused while a running block uses it.
+#[tauri::command]
+fn save_schedule(schedule: NamedSchedule, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::SaveSchedule { schedule })
+}
+
+/// Refused while any block uses it.
+#[tauri::command]
+fn delete_schedule(id: String, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::DeleteSchedule { id })
 }
 
 /// Starts a block as it is defined. The service owns it from then on: it goes on even if this app
@@ -152,6 +176,10 @@ pub fn run() {
             block_status,
             save_block,
             delete_block,
+            save_list,
+            delete_list,
+            save_schedule,
+            delete_schedule,
             start_block,
             stop_block,
             force_exit,

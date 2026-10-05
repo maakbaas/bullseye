@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::schedule::Week;
 
 /// A running block as written to disk.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Saved {
     /// Which definition it was started from (`definitions.rs`). Empty in files from before there
     /// were several blocks.
@@ -25,25 +25,21 @@ pub struct Saved {
     /// The definition's name when it started, so the block can be shown if the definition is gone.
     #[serde(default)]
     pub name: String,
-    /// One blocked entry per line, as typed in the UI.
-    pub filters: Vec<String>,
-    /// Seconds since the Unix epoch at which the block ends; `None` blocks until stopped.
+    /// Its block lists, each with its own enforcers. Missing in files from before blocks had several
+    /// lists; those have the one list in the fields below (`parts`).
+    #[serde(default)]
+    pub parts: Vec<SavedPart>,
+    /// Seconds since the Unix epoch at which a timer lock ends, and the block with it; `None`: no
+    /// timer.
+    #[serde(default)]
     pub until: Option<u64>,
     /// The latest time the block was known to be running at, so the clock cannot start from an
     /// earlier one while offline (`clock::at_least`). Missing in files from older versions.
     #[serde(default)]
     pub seen: Option<u64>,
-    /// Which enforcers the block runs. Missing in files from older versions, which ran all.
+    /// Locked while its schedule has it active (`lock::Lock::WhileActive`).
     #[serde(default)]
-    pub enforcers: Enforcers,
-    /// The programs to close, one entry per line, as typed in the UI. Missing in files from older
-    /// versions, which had none.
-    #[serde(default)]
-    pub programs: Vec<String>,
-    /// The sites that are always allowed, one entry per line, as typed in the UI. They win over
-    /// `filters`. Missing in files from older versions, which had none.
-    #[serde(default)]
-    pub allowed: Vec<String>,
+    pub while_active: bool,
     /// When the block is active (`schedule.rs`); `None` is always. Missing in files from older
     /// versions, whose blocks were always active.
     #[serde(default)]
@@ -52,6 +48,47 @@ pub struct Saved {
     /// block started. Missing in files from older versions.
     #[serde(default)]
     pub zone: Option<String>,
+    /// From before blocks had several lists: the one list, as typed in the UI. Only read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filters: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enforcers: Option<Enforcers>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub programs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed: Vec<String>,
+}
+
+/// One block list of a running block, as written to disk.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct SavedPart {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub filters: Vec<String>,
+    #[serde(default)]
+    pub allowed: Vec<String>,
+    #[serde(default)]
+    pub programs: Vec<String>,
+    #[serde(default)]
+    pub enforcers: Enforcers,
+}
+
+impl Saved {
+    /// Its block lists; for a block from before there were several, its one list (all enforcers
+    /// if the file is older still).
+    pub fn parts(&self) -> Vec<SavedPart> {
+        if !self.parts.is_empty() {
+            return self.parts.clone();
+        }
+        vec![SavedPart {
+            name: self.name.clone(),
+            filters: self.filters.clone(),
+            allowed: self.allowed.clone(),
+            programs: self.programs.clone(),
+            enforcers: self.enforcers.unwrap_or_default(),
+        }]
+    }
 }
 
 /// The ways a block is enforced, chosen when it starts and fixed while it runs, so turning one
@@ -91,11 +128,6 @@ impl Enforcers {
             (self.obsidian_web_viewer, Uses::Nothing),
             (self.exe_names, Uses::Programs),
         ]
-    }
-
-    /// Whether any enforcer is turned on.
-    pub fn any(&self) -> bool {
-        self.all().iter().any(|&(on, _)| on)
     }
 
     /// Whether any enforcer that is turned on needs this kind of list.
@@ -255,7 +287,8 @@ mod tests {
     }
 
     fn timed(until: Option<u64>) -> Saved {
-        Saved { id: "a".into(), name: "A".into(), filters: vec!["tweakers.net".to_string()], until, seen: None, enforcers: Enforcers::default(), programs: Vec::new(), allowed: Vec::new(), schedule: None, zone: None }
+        let part = SavedPart { name: "A".into(), filters: vec!["tweakers.net".to_string()], allowed: Vec::new(), programs: Vec::new(), enforcers: Enforcers::default() };
+        Saved { id: "a".into(), name: "A".into(), parts: vec![part], until, ..Saved::default() }
     }
 
     #[test]
@@ -318,19 +351,11 @@ mod tests {
         let store = store("old");
         fs::create_dir_all(store.path().parent().unwrap()).unwrap();
         fs::write(store.path(), r#"{"filters":["a.com"],"until":1800000000}"#).unwrap();
-        let old = Saved {
-            id: String::new(),
-            name: String::new(),
-            filters: vec!["a.com".into()],
-            until: Some(1_800_000_000),
-            seen: None,
-            enforcers: Enforcers::default(),
-            programs: Vec::new(),
-            allowed: Vec::new(),
-            schedule: None,
-            zone: None,
-        };
-        assert_eq!(store.load(), vec![old]);
+        let old = Saved { filters: vec!["a.com".into()], until: Some(1_800_000_000), ..Saved::default() };
+        assert_eq!(store.load(), vec![old.clone()]);
+        // Its one list, with every enforcer, as such a file ran.
+        let parts = old.parts();
+        assert_eq!((parts.len(), parts[0].filters.clone(), parts[0].enforcers), (1, vec!["a.com".to_string()], Enforcers::default()));
         store.clear();
     }
 
@@ -364,9 +389,8 @@ mod tests {
         assert!(!only(false, false, false, false).can_run(lists(true, true)));
         // The checks the closing code and the start use agree with it.
         let programs_only = only(false, false, false, true);
-        assert!(programs_only.uses(Uses::Programs) && !programs_only.uses(Uses::Sites) && programs_only.any());
+        assert!(programs_only.uses(Uses::Programs) && !programs_only.uses(Uses::Sites));
         assert!(only(true, false, false, false).uses(Uses::Sites));
-        assert!(!only(false, false, false, false).any());
     }
 
     #[test]

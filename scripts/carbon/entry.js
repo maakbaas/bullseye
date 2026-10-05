@@ -35,19 +35,23 @@ import '@carbon/web-components/es/components/inline-loading/inline-loading.js';
 // Carbon icons, as `carbonIcon(name)`: an <svg> element, 16 px unless another size is given.
 import { toSVG } from '@carbon/icon-helpers';
 import add16 from '@carbon/icons/es/add/16.js';
+import calendar20 from '@carbon/icons/es/calendar/20.js';
 import edit16 from '@carbon/icons/es/edit/16.js';
 import locked16 from '@carbon/icons/es/locked/16.js';
 import overflowMenuVertical16 from '@carbon/icons/es/overflow-menu--vertical/16.js';
 import play16 from '@carbon/icons/es/play/16.js';
 import home20 from '@carbon/icons/es/home/20.js';
+import listChecked20 from '@carbon/icons/es/list--checked/20.js';
 import settings20 from '@carbon/icons/es/settings/20.js';
 import stop16 from '@carbon/icons/es/stop/16.js';
 import trashCan16 from '@carbon/icons/es/trash-can/16.js';
 
 const icons = {
   add: add16,
+  calendar: calendar20,
   edit: edit16,
   home: home20,
+  'list-checked': listChecked20,
   locked: locked16,
   'overflow-menu-vertical': overflowMenuVertical16,
   play: play16,

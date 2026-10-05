@@ -207,7 +207,7 @@ fn lock_down_data_dir() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::definitions::tests::definition;
+    use crate::definitions::tests::{block, block_list};
     use crate::definitions::Definition;
     use crate::lock::Lock;
     use crate::proto::{Request, Response};
@@ -238,8 +238,9 @@ mod tests {
         assert_eq!(client::call(&Request::Register), Ok(Response::Done));
         let Ok(Response::Status(status)) = client::call(&Request::Status) else { panic!("no status") };
         assert!(status.running.is_empty());
-        let block = Definition { lock: Lock::Timer { duration: "1h".into() }, ..definition("a", &["a.com"]) };
-        assert_eq!(client::call(&Request::Save { block }), Ok(Response::Done));
+        assert_eq!(client::call(&Request::SaveList { list: block_list("a", &["a.com"]) }), Ok(Response::Done));
+        let block = Definition { lock: Lock::Timer { duration: "1h".into() }, ..block("a", &["a"]) };
+        assert_eq!(client::call(&Request::SaveBlock { block }), Ok(Response::Done));
         assert_eq!(client::call(&Request::Start { id: "a".into() }), Ok(Response::Done));
         let Ok(Response::Policy(policies)) = client::call(&Request::Policy) else { panic!("no policy") };
         assert_eq!(policies[0].filters, vec!["a.com"]);

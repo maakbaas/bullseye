@@ -10,14 +10,14 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::block::Running;
-use crate::definitions::Definition;
+use crate::definitions::{BlockList, Definition, NamedSchedule};
 use crate::state::Enforcers;
 
 /// The pipe the service listens on.
 pub const PIPE: &str = r"\\.\pipe\bullseye";
 
 /// Larger messages are refused, so a request cannot make the service allocate without limit.
-/// Room for the status of every block (`definitions::MAX_BLOCKS`) with long lists.
+/// Room for the status of everything defined (`definitions::MAX_ITEMS` of each) with long lists.
 const MAX_MESSAGE: usize = 1024 * 1024;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -26,7 +26,7 @@ const MAX_MESSAGE: usize = 1024 * 1024;
 // answered.
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
-    /// What the UI shows: the blocks, and which of them run.
+    /// What the UI shows: the block lists, schedules and blocks, and which blocks run.
     Status,
     /// What the app enforces: asked every second, from the thread that closes tabs, which is how
     /// the service knows the closing is going on (`watchdog::AppSlot`).
@@ -34,17 +34,25 @@ pub enum Request {
     /// The app, when it starts: asks the service to take it in as the app. Refused if another app
     /// is running or this is not the installed exe, and then the app ends itself.
     Register,
-    /// Adds a block definition, or replaces the one with its id. Refused while that block runs.
-    Save { block: Definition },
-    /// Removes a block definition. Refused while that block runs.
-    Delete { id: String },
+    /// Adds a block, or replaces the one with its id. Refused while that block runs.
+    SaveBlock { block: Definition },
+    /// Removes a block. Refused while it runs.
+    DeleteBlock { id: String },
+    /// Adds a block list, or replaces the one with its id. Refused while a running block uses it.
+    SaveList { list: BlockList },
+    /// Removes a block list. Refused while any block uses it.
+    DeleteList { id: String },
+    /// Adds a schedule, or replaces the one with its id. Refused while a running block uses it.
+    SaveSchedule { schedule: NamedSchedule },
+    /// Removes a schedule. Refused while any block uses it.
+    DeleteSchedule { id: String },
     /// Starts the block defined as `id`, as it is defined now.
     Start { id: String },
-    /// Stops the running block `id`, unless it is timed.
+    /// Stops the running block `id`, unless it is locked right now.
     Stop { id: String },
     /// Ends every block, whatever its time.
     Unlock { password: String },
-    /// From the installer: end the service and remove it. Refused during a timed block.
+    /// From the installer: end the service and remove it. Refused while a block is locked.
     PrepareUninstall,
     /// From the installer: let go of the exe so it can be replaced. Refused during any block.
     PrepareUpdate,
@@ -68,7 +76,9 @@ pub enum Response {
 /// What the UI shows.
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Overview {
-    /// Every block the user has defined, in the order they were made.
+    /// Everything the user has defined, each kind in the order it was made (`definitions.rs`).
+    pub lists: Vec<BlockList>,
+    pub schedules: Vec<NamedSchedule>,
     pub blocks: Vec<Definition>,
     /// The blocks that run, as they were started (`Running::id` is the definition's).
     pub running: Vec<Running>,
@@ -118,10 +128,20 @@ mod tests {
 
     #[test]
     fn a_request_survives_the_wire() {
-        let mut definition = crate::definitions::tests::definition("a", &["tweakers.net"]);
-        definition.allowed = vec!["gathering.tweakers.net".into()];
-        definition.programs = vec!["steam*".into()];
-        for request in [Request::Save { block: definition }, Request::Start { id: "a".into() }, Request::Delete { id: "a".into() }] {
+        use crate::definitions::tests::{block, block_list, weekly};
+        let mut list = block_list("l", &["tweakers.net"]);
+        list.allowed = vec!["gathering.tweakers.net".into()];
+        list.programs = vec!["steam*".into()];
+        let requests = [
+            Request::SaveList { list },
+            Request::SaveSchedule { schedule: weekly("s", "mon-fri 8-17") },
+            Request::SaveBlock { block: block("a", &["l"]) },
+            Request::Start { id: "a".into() },
+            Request::DeleteBlock { id: "a".into() },
+            Request::DeleteList { id: "l".into() },
+            Request::DeleteSchedule { id: "s".into() },
+        ];
+        for request in requests {
             let mut wire = Vec::new();
             write_message(&mut wire, &request).unwrap();
             assert_eq!(read_message::<Request>(&mut Cursor::new(wire)), Ok(request));
@@ -149,12 +169,17 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_block_without_lists_still_reads() {
-        let body = br#"{"cmd":"save","args":{"block":{"id":"a","name":"A","filters":["a.com"]}}}"#;
+    fn what_can_be_left_out_reads_as_its_default() {
+        let body = br#"{"cmd":"save_list","args":{"list":{"id":"a","name":"A","filters":["a.com"]}}}"#;
         let mut wire = (body.len() as u32).to_le_bytes().to_vec();
         wire.extend_from_slice(body);
-        let Ok(Request::Save { block }) = read_message::<Request>(&mut Cursor::new(wire)) else { panic!("not read") };
-        assert!(block.programs.is_empty() && block.allowed.is_empty() && block.enforcers == Enforcers::default());
+        let Ok(Request::SaveList { list }) = read_message::<Request>(&mut Cursor::new(wire)) else { panic!("not read") };
+        assert!(list.programs.is_empty() && list.allowed.is_empty() && list.enforcers == Enforcers::default());
+        let body = br#"{"cmd":"save_block","args":{"block":{"id":"b","name":"B"}}}"#;
+        let mut wire = (body.len() as u32).to_le_bytes().to_vec();
+        wire.extend_from_slice(body);
+        let Ok(Request::SaveBlock { block }) = read_message::<Request>(&mut Cursor::new(wire)) else { panic!("not read") };
+        assert!(block.lists.is_empty() && block.schedule.is_none() && block.lock == crate::lock::Lock::None);
     }
 
     #[test]

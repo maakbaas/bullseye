@@ -267,7 +267,7 @@ mod tests {
     #[test]
     fn a_local_remote_is_a_service_of_its_own_without_a_pipe() {
         use crate::block::Blocklist;
-        use crate::definitions::{tests::definition, Definition, Definitions};
+        use crate::definitions::{tests::block, tests::block_list, Definition, Definitions};
         use crate::lock::Lock;
         use crate::state::Store;
         let dir = std::env::temp_dir().join(format!("client-{}-local", std::process::id()));
@@ -277,8 +277,9 @@ mod tests {
         assert!(remote.is_local());
         assert!(remote.active().is_none());
 
-        let block = Definition { lock: Lock::Timer { duration: "1h".into() }, ..definition("a", &["a.com"]) };
-        remote.command(Request::Save { block }).unwrap();
+        remote.command(Request::SaveList { list: block_list("a", &["a.com"]) }).unwrap();
+        let block = Definition { lock: Lock::Timer { duration: "1h".into() }, ..block("a", &["a"]) };
+        remote.command(Request::SaveBlock { block }).unwrap();
         remote.command(Request::Start { id: "a".into() }).unwrap();
         assert!(remote.active().unwrap().blocks_page("https://a.com/x", false));
         assert!(remote.status().unwrap().running[0].remaining.is_some());
