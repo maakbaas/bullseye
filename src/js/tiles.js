@@ -49,6 +49,7 @@ function summaryOf(kind, item) {
   const lockIcon = running.locked ? "locked" : "unlocked";
   const lockRule = running.lock_condition;
   if (running.password) parts.push([lockIcon, t("blocks.tile.lockedPassword")]);
+  else if (running.lock_text) parts.push([lockIcon, t("blocks.tile.lockedText")]);
   else if (running.until_restart) parts.push([lockIcon, t("blocks.tile.lockedRestart")]);
   else if (running.remaining_words) parts.push([lockIcon, t("blocks.tile.lockedTimer", { left: running.remaining_words })]);
   else if (lockRule && lockRule.type === "flash_drive") parts.push([lockIcon, t(running.locked ? "blocks.tile.lockedDrive" : "blocks.tile.freeDrive", { drive: quoted(lockRule.drive) })]);
@@ -161,7 +162,30 @@ function addBlockControls(parts, id) {
   const controls = el("div", { class: "lock-controls" }, method);
   parts.actions.append(controls, toggle);
   Object.assign(parts, { method, toggle, controls });
-  method.addEventListener("cds-select-selected", () => setLock(id, method.value));
+  // Choosing the lock the block already has changes nothing, so the select says nothing and its
+  // settings could not be opened that way. While its list is open the select is therefore blank,
+  // so any choice is a change; it goes back to the block's lock when the list closes without one.
+  let had = null;
+  const restore = () => {
+    if (had === null) return;
+    method.value = had;
+    had = null;
+    parts.choosing = false;
+  };
+  method.addEventListener("pointerdown", () => {
+    if (had !== null) return setTimeout(restore, 0);
+    if (!method.value || parts.choosing) return;
+    had = method.value;
+    parts.choosing = true;
+    method.value = "";
+  });
+  method.addEventListener("focusout", restore);
+  method.addEventListener("keydown", (event) => event.key === "Escape" && restore());
+  method.addEventListener("cds-select-selected", () => {
+    if (!method.value) return;
+    had = null;
+    setLock(id, method.value);
+  });
   toggle.addEventListener("click", () => startOrStop(id));
 }
 
@@ -238,8 +262,31 @@ function renderBlockControls(parts, block) {
     parts.toggle.setAttribute("kind", running ? "secondary" : "primary");
     parts.toggle.replaceChildren(t(running ? "blocks.stop" : "blocks.start"), carbonIcon(running ? "stop" : "play", "icon"));
   }
-  // A block locked with a password stops with it (asked for on Stop).
-  parts.toggle.disabled = busy || (running && running.locked && !running.password) || !reachable;
+  // A block locked with a password stops with it, one locked with a text by typing it (asked for on Stop).
+  parts.toggle.disabled = busy || (running && running.locked && !running.password && !running.lock_text) || !reachable;
+}
+
+// The dialog of a text lock: the text, and an input to type it into. Pasting and dropping text
+// into the input are refused, so the text has to be typed; the dialog only goes on when what is
+// typed is exactly the text (the service checks it again). Resolves the typed text, or null.
+async function askText(block, expected) {
+  const shown = el("p", { class: "typed-text cds--type-body-01" }, expected);
+  const field = el("cds-textarea", { label: t("blocks.stopTextLabel"), rows: 4, autocomplete: "off", spellcheck: "false" });
+  const refuse = (event) => event.preventDefault();
+  for (const name of ["paste", "drop"]) field.addEventListener(name, refuse, true);
+  field.addEventListener("beforeinput", (event) => (/^insertFrom(Paste|Drop|Yank)/.test(event.inputType) ? refuse(event) : null), true);
+  field.addEventListener("input", () => invalid(field, null));
+  setTimeout(() => field.focus(), 150);
+  const same = (a, b) => a.replace(/\r\n/g, "\n") === b.replace(/\r\n/g, "\n");
+  const given = await ask({
+    heading: t("blocks.stopHeading", { name: quoted(block.name) }),
+    body: t("blocks.stopTextBody"),
+    action: t("blocks.stop"),
+    kind: "danger",
+    fields: [shown, field],
+    read: async () => (invalid(field, same(field.value, expected) ? null : t("blocks.stopTextDiffers")) ? null : field.value),
+  });
+  return given || null;
 }
 
 async function startOrStop(id) {
@@ -265,10 +312,16 @@ async function startOrStop(id) {
     if (!given) return;
     password = given;
   }
+  // A block locked with a text stops by typing it in.
+  let text = null;
+  if (running && running.lock_text) {
+    text = await askText(block, running.lock_text);
+    if (text === null) return;
+  }
   parts.toggle.dataset.busy = "1";
   parts.toggle.disabled = true;
   try {
-    if (running) await invoke("stop_block", { id, password });
+    if (running) await invoke("stop_block", { id, password, text });
     else await invoke("start_block", { id });
     notify("list-notices");
   } catch (e) {

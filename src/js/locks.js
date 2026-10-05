@@ -124,6 +124,22 @@ const LOCKS = {
       };
     },
   },
+  text: {
+    label: t("locks.text.label"),
+    // A text of its own: stopping the block means typing it in exactly as it is shown, with
+    // nothing pasted (`askText` in tiles.js). It is no secret, so it is kept as typed here.
+    form: (block) => {
+      const area = el("cds-textarea", { label: t("locks.text.field"), placeholder: t("locks.text.placeholder"), "helper-text": t("locks.text.helper"), rows: 4, "max-count": "1000" });
+      area.value = settingsOf(block, "text").text || "";
+      return { fields: [area], read: async () => (invalid(area, area.value.trim() ? null : t("locks.text.missing")) ? null : { method: "text", text: area.value }) };
+    },
+    describe: () => t("locks.text.describe"),
+    confirm: async (block) => ({
+      heading: t("locks.text.confirmHeading", { name: quoted(block.name) }),
+      body: t("locks.text.confirmBody", { name: quoted(block.name) }),
+      action: t("locks.text.confirmAction", { name: quoted(block.name) }),
+    }),
+  },
   password: {
     label: t("locks.password.label"),
     // Sent once; the service keeps only a salted hash and never sends either back, so a block

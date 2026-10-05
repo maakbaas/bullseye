@@ -90,6 +90,7 @@ window.STRINGS = {
       always: "Always active",
       unknownLock: "Unknown lock",
       lockedPassword: "Locked with a password: stop it with its password",
+      lockedText: "Locked: type its text in to stop it",
       lockedRestart: "Locked until Windows restarts",
       lockedDrive: "Locked because {drive} is not connected",
       freeDrive: "Unlocked because {drive} is connected",
@@ -125,6 +126,10 @@ window.STRINGS = {
     stopHeading: "Stop {name}?",
     stopBody: "It is locked with a password. Enter it to stop the block.",
     stopPassword: "Password",
+    // Stopping a block locked with a text: the text is shown above the input.
+    stopTextBody: "It is locked until its text is typed in. Type the text above exactly as it is: pasting is not possible.",
+    stopTextLabel: "Type the text here",
+    stopTextDiffers: "This is not the text above yet",
     stopPasswordMissing: "Type its password",
   },
 
@@ -185,6 +190,17 @@ window.STRINGS = {
       describeGone: "Locked by a condition that is gone",
       confirmHeading: "Start {name} locked during {condition}?",
       confirmBody: "It cannot be stopped while {condition} is active ({what}). Otherwise you can stop it. Only the unlock password in Settings ends it early.",
+      confirmAction: "Start locked",
+    },
+    text: {
+      label: "Custom text",
+      field: "Text to type",
+      placeholder: "e.g. I will not scroll tonight",
+      helper: "To stop the block, this text has to be typed in exactly. It cannot be pasted. Anyone who can see the block sees the text.",
+      missing: "Give the text to type",
+      describe: "Locked until its text is typed in",
+      confirmHeading: "Start {name} locked by a custom text?",
+      confirmBody: "It can only be stopped by typing its text in exactly, in this window, or with the unlock password in Settings.",
       confirmAction: "Start locked",
     },
     password: {

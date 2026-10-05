@@ -60,6 +60,8 @@ cds-header { border-block-start: 1px solid var(--cds-border-subtle); background-
 .block-tile .lock-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--cds-spacing-04); }
 .block-tile .lock-method { inline-size: 9rem; }
 .modal-fields { display: flex; flex-direction: column; gap: var(--cds-spacing-06); }
+/* Carbon leaves 3rem under a modal's content, which looks high under a form field or a sentence: 1.5rem, the same everywhere. */
+#confirm cds-modal-body { padding-block-end: var(--cds-spacing-06); }
 /* The until lock's date and time, side by side as Carbon shows them. */
 .date-time { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--cds-spacing-05); }
 /* The time takes the room beside the date, so a message under it wraps there. */
@@ -113,3 +115,5 @@ cds-header { border-block-start: 1px solid var(--cds-border-subtle); background-
 .app-picker > .cds--type-label-01 { color: var(--cds-text-secondary); }
 /* White on the light theme, a step up from the page on the dark one: like the text areas' fields. */
 .app-picker .apps { max-block-size: 20rem; overflow-y: auto; background: var(--cds-field-01); padding: var(--cds-spacing-03) var(--cds-spacing-05); }
+/* The text of a text lock, shown above the input it has to be typed into (`askText`): as far from the sentence above as from the input below, which the dialog's fields gap sets. */
+.typed-text { white-space: pre-wrap; overflow-wrap: anywhere; padding: var(--cds-spacing-05); margin-block-start: var(--cds-spacing-06); background: var(--cds-layer-accent-01); border-inline-start: 3px solid var(--cds-border-strong-01); }

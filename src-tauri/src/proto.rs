@@ -57,8 +57,8 @@ pub enum Request {
     /// Starts the block defined as `id`, as it is defined now.
     Start { id: String },
     /// Stops the running block `id`, unless it is locked right now. `password`: the password of its
-    /// password lock, which stops that one.
-    Stop { id: String, password: Option<String> },
+    /// password lock, which stops that one; `text`: the text of its text lock, likewise.
+    Stop { id: String, password: Option<String>, #[serde(default)] text: Option<String> },
     /// Ends every block, whatever its time.
     Unlock { password: String },
     /// From the installer: end the service and remove it. Refused while a block is locked.

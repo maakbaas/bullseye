@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use crate::datetime::DateTime;
 use crate::duration;
 
+/// The longest text a text lock can ask to be typed: it is shown, and typed, by hand.
+const MAX_TEXT: usize = 1000;
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(tag = "method", rename_all = "snake_case")]
 pub enum Lock {
@@ -34,6 +37,10 @@ pub enum Lock {
     /// connected, so the drive is the key. With the block's own condition, it is locked exactly
     /// while it is active.
     Condition { condition: String },
+    /// Locked until a text of the user's own choosing is typed in: the block can only be stopped
+    /// by typing `text` exactly as it is shown (the window shows it above an input that cannot be
+    /// pasted into, and the service compares the two). It is no secret, so it is kept as it is.
+    Text { text: String },
     /// Locked with a password of its own: it runs until stopped with that password (or the unlock
     /// password). Meant for someone else to set, so the user does not know it. Only a salted hash
     /// of it is kept (`unlock::new_hash`); neither is ever sent back to a client (`redacted`).
@@ -107,6 +114,14 @@ impl Lock {
     pub fn check(&self) -> Result<(), String> {
         self.duration()?;
         self.until()?;
+        if let Lock::Text { text } = self {
+            if text.trim().is_empty() {
+                return Err("Give the text that has to be typed to stop the block".into());
+            }
+            if text.chars().count() > MAX_TEXT {
+                return Err(format!("Keep the text under {MAX_TEXT} characters"));
+            }
+        }
         Ok(())
     }
 }
@@ -140,6 +155,12 @@ mod tests {
             r#"{"method":"until","until":"2026-10-06 18:00"}"#
         );
         assert_eq!(serde_json::to_string(&Lock::UntilRestart).unwrap(), r#"{"method":"until_restart"}"#);
+        let typed = Lock::Text { text: "I will not scroll".into() };
+        assert_eq!(serde_json::to_string(&typed).unwrap(), r#"{"method":"text","text":"I will not scroll"}"#);
+        assert_eq!(serde_json::from_str::<Lock>(r#"{"method":"text","text":"I will not scroll"}"#).unwrap(), typed);
+        assert!(typed.check().is_ok() && typed.has_settings());
+        assert!(Lock::Text { text: "  \n ".into() }.check().is_err());
+        assert!(Lock::Text { text: "x".repeat(MAX_TEXT + 1) }.check().is_err());
         assert!(serde_json::from_str::<Lock>(r#"{"method":"forever"}"#).is_err());
         assert_eq!(serde_json::to_string(&Lock::Condition { condition: "s".into() }).unwrap(), r#"{"method":"condition","condition":"s"}"#);
         // A client sends the password; what it gets back has neither the password nor the hash.

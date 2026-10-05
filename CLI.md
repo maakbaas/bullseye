@@ -22,6 +22,7 @@ As in the window, which has a page for each:
   - `until`: the same, until a date and time (local time, read when the block starts).
   - `until restart`: locked until Windows restarts, and it ends then. A shut down with Fast Startup on is not a restart.
   - `condition`: locked while a condition of its choosing is active. Otherwise it can be stopped; it runs until stopped. With the block's own condition, it is locked exactly while the block is active. With a flash drive condition the drive is the key: the block can only be stopped while the drive is plugged in.
+  - `text`: locked until a text of your own is typed in exactly. To stop the block, the window shows the text above an input that refuses pasting (and dropping text into it), and only an exact match stops it; the service compares them again. The CLI cannot stop such a block (a terminal cannot refuse a paste), so it says to use the window.
   - `password`: locked with a password, for someone else to set. It runs until stopped with that password (or the unlock password). Only a salted hash of it is kept, and it is never shown again.
 
 While its condition is not active a running block keeps running, but enforces nothing. For example, with a schedule condition of `daily 08:00-17:00`, a block started at 16:00 with a 2-hour duration lock blocks until 17:00; from then on everything is accessible again, and at 18:00 the lock ends the block. With a lock condition of `daily 08:00-17:00` instead (say the same schedule), it blocks every day from 8 to 5 and cannot be stopped then, until you stop it some evening.
@@ -72,6 +73,7 @@ Exit codes: `0` done, `1` failed, refused or cancelled (the reason is printed), 
 | `--lock-until-restart` | Lock: until Windows restarts. | |
 | `--lock-condition <condition>` | Lock: while this condition is active. A schedule locks at its times; a flash drive locks while it is not connected. | |
 | `--lock-password <pw>` | Lock: with this password. Only a hash of it is kept. | |
+| `--lock-text <text>` | Lock: until this text is typed in exactly. The window shows it above an input that cannot be pasted into; that is the only place to stop such a block (or with the unlock password). The text is no secret: anyone who can see the block sees it. | |
 | `--no-lock` | Not locked. | yes |
 | `--name <name>` | (`edit` only) A new name. | |
 
@@ -136,7 +138,7 @@ Conditions:
 
 ### `stop`, `delete`, `list delete`, `condition delete`
 
-`stop <block>` stops a running block that is not locked right now; a locked one is refused, and the message says why and for how long. A block locked with a password stops with it: give it with `--password`, or the CLI asks for it without showing it. Deleting asks first (`[y/N]`), or goes ahead with `--yes`, which is also needed when there is no terminal to ask in (a script). A running block, and a block list or condition that a running block uses, cannot be deleted; the question before deleting a block list or schedule says what it does to the blocks that use it.
+`stop <block>` stops a running block that is not locked right now; a locked one is refused, and the message says why and for how long. A block locked with a text is not stopped here: it is stopped in the window, by typing its text. A block locked with a password stops with it: give it with `--password`, or the CLI asks for it without showing it. Deleting asks first (`[y/N]`), or goes ahead with `--yes`, which is also needed when there is no terminal to ask in (a script). A running block, and a block list or condition that a running block uses, cannot be deleted; the question before deleting a block list or schedule says what it does to the blocks that use it.
 
 ### `duplicate`, `list duplicate`, `condition duplicate`
 

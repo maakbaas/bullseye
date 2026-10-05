@@ -89,9 +89,11 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
         }
         Request::Import { library } => (done(import(context, library)), None),
         Request::Start { id } => (done(start(context, &id)), None),
-        // A password lock stops with its own password; the others take none.
-        Request::Stop { id, password } => {
-            let given = password.is_some_and(|password| blocklist.password_matches(&id, &password));
+        // A password lock stops with its own password, a text lock with its text typed in; the
+        // others take none.
+        Request::Stop { id, password, text } => {
+            let given = password.is_some_and(|password| blocklist.password_matches(&id, &password))
+                || text.is_some_and(|text| blocklist.text_matches(&id, &text));
             (done(blocklist.stop(&id, given)), None)
         }
         Request::Unlock { password } => (done(unlock(context, &password)), None),
@@ -141,6 +143,7 @@ fn start(context: &Context, id: &str) -> Result<(), String> {
         Lock::Until { .. } => StartLock::Until(lock.until()?.ok_or("No end for the lock")?),
         Lock::Condition { .. } => StartLock::Condition(resolved.lock_condition.clone().ok_or("No condition for the lock")?),
         Lock::UntilRestart => StartLock::UntilRestart,
+        Lock::Text { text } => StartLock::Text(text.clone()),
         Lock::Password { .. } => StartLock::Password(lock.password_hash().ok_or("Set a password for the password lock")?.to_string()),
     };
     let parts = resolved
@@ -335,8 +338,8 @@ mod tests {
         assert_eq!(handle(&context, 0, Request::DeleteBlock { id: "idle".into() }).0, Response::Done);
 
         // The unlocked one stops, and can then be changed; the timed one cannot stop.
-        assert_eq!(handle(&context, 0, Request::Stop { id: "evening".into(), password: None }).0, Response::Done);
-        assert!(failed(handle(&context, 0, Request::Stop { id: "work".into(), password: None }).0));
+        assert_eq!(handle(&context, 0, Request::Stop { id: "evening".into(), password: None, text: None }).0, Response::Done);
+        assert!(failed(handle(&context, 0, Request::Stop { id: "work".into(), password: None, text: None }).0));
         assert_eq!(save(&context, definition("evening", &["d.com"])), Response::Done);
         assert_eq!(policies(&context).iter().map(|p| p.entries.filters.clone()).collect::<Vec<_>>(), vec![vec!["a.com".to_string()]]);
     }
@@ -365,7 +368,7 @@ mod tests {
         assert_eq!(handle(&context, 0, Request::SaveBlock { block: block("work", &["social", "games"]) }).0, Response::Done);
 
         // Once it ends, the list can change, and be deleted: the blocks keep their other list.
-        assert_eq!(handle(&context, 0, Request::Stop { id: "evening".into(), password: None }).0, Response::Done);
+        assert_eq!(handle(&context, 0, Request::Stop { id: "evening".into(), password: None, text: None }).0, Response::Done);
         assert_eq!(handle(&context, 0, Request::SaveList { list: block_list("social", &["reddit.com"]) }).0, Response::Done);
         assert_eq!(handle(&context, 0, Request::DeleteList { id: "social".into() }).0, Response::Done);
         let blocks = overview(&context).blocks;
@@ -472,7 +475,7 @@ mod tests {
         assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
         // Not shortened through its definition, not stopped.
         assert!(failed(handle(&context, 0, Request::SaveBlock { block: timed("a", &["a.com"], "1s").block }).0));
-        assert!(failed(handle(&context, 0, Request::Stop { id: "a".into(), password: None }).0));
+        assert!(failed(handle(&context, 0, Request::Stop { id: "a".into(), password: None, text: None }).0));
         // Uninstalling does not get through, and the service keeps running.
         let (response, shutdown) = handle(&context, 0, Request::PrepareUninstall);
         assert!(matches!(response, Response::Refused(_)) && shutdown.is_none());
@@ -489,7 +492,7 @@ mod tests {
         // no stop, no uninstall.
         assert_eq!(handle(&context, 0, Request::SaveCondition { condition: weekly("daily", "daily") }).0, Response::Done);
         assert_eq!(run(&context, definition("a", &["a.com"]).lock(Lock::Condition { condition: "daily".into() })), Response::Done);
-        let Response::Failed(why) = handle(&context, 0, Request::Stop { id: "a".into(), password: None }).0 else { panic!("stopped") };
+        let Response::Failed(why) = handle(&context, 0, Request::Stop { id: "a".into(), password: None, text: None }).0 else { panic!("stopped") };
         assert!(why.contains("locked by its lock schedule"), "{why}");
         assert!(matches!(handle(&context, 0, Request::PrepareUninstall).0, Response::Refused(_)));
         let running = &overview(&context).running[0];
@@ -512,12 +515,12 @@ mod tests {
         // A time ahead locks like a duration.
         assert_eq!(run(&context, definition("a", &["a.com"]).lock(Lock::Until { until: "2999-01-01 00:00".into() })), Response::Done);
         assert!(overview(&context).running[0].remaining.is_some());
-        assert!(failed(handle(&context, 0, Request::Stop { id: "a".into(), password: None }).0));
+        assert!(failed(handle(&context, 0, Request::Stop { id: "a".into(), password: None, text: None }).0));
         // Until Windows restarts: locked, no stop, no uninstall.
         assert_eq!(run(&context, definition("b", &["b.com"]).lock(Lock::UntilRestart)), Response::Done);
         let b = overview(&context).running.into_iter().find(|r| r.id == "b").unwrap();
         assert!(b.until_restart && b.locked && b.remaining.is_none());
-        assert!(failed(handle(&context, 0, Request::Stop { id: "b".into(), password: None }).0));
+        assert!(failed(handle(&context, 0, Request::Stop { id: "b".into(), password: None, text: None }).0));
         assert!(matches!(handle(&context, 0, Request::PrepareUninstall).0, Response::Refused(_)));
     }
 
@@ -556,7 +559,7 @@ mod tests {
         assert_eq!(overview(&context).blocks[0].lock, Lock::Password { password: None, hash: None });
         assert!(overview(&context).running[0].password);
         // Not stopped without it, nor with a wrong one; not uninstalled; then stopped with it.
-        let stop = |password: Option<&str>| Request::Stop { id: "p".into(), password: password.map(str::to_string) };
+        let stop = |password: Option<&str>| Request::Stop { id: "p".into(), password: password.map(str::to_string), text: None };
         assert!(failed(handle(&context, 0, stop(None)).0));
         assert!(failed(handle(&context, 0, stop(Some("wrong"))).0));
         assert!(matches!(handle(&context, 0, Request::PrepareUninstall).0, Response::Refused(_)));
@@ -577,7 +580,7 @@ mod tests {
         let running = &overview(&context).running[0];
         assert!(running.enforcing && running.condition.is_some());
         assert_eq!(policies(&context).len(), 1);
-        let Response::Failed(why) = handle(&context, 0, Request::Stop { id: "w".into(), password: None }).0 else { panic!("stopped") };
+        let Response::Failed(why) = handle(&context, 0, Request::Stop { id: "w".into(), password: None, text: None }).0 else { panic!("stopped") };
         assert!(why.contains("2 hours, 4 minutes and") || why.contains("2 hours and 5 minutes"), "{why}");
         let Response::Refused(why) = handle(&context, 0, Request::PrepareUninstall).0 else { panic!("not refused") };
         assert!(why.contains("2 hours"), "{why}");
@@ -614,7 +617,7 @@ mod tests {
         assert_eq!(handle(&context, 0, Request::Duplicate { kind: Kind::List, id: list, new_id: "l2".into() }).0, Response::Done);
         assert_eq!(overview(&context).running.len(), 1);
 
-        assert_eq!(handle(&context, 0, Request::Stop { id: "a".into(), password: None }).0, Response::Done);
+        assert_eq!(handle(&context, 0, Request::Stop { id: "a".into(), password: None, text: None }).0, Response::Done);
         assert_eq!(handle(&context, 0, Request::Import { library }).0, Response::Done);
         assert_eq!(overview(&context).blocks.len(), 1);
     }

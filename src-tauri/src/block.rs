@@ -174,6 +174,8 @@ pub enum StartLock {
     /// While this condition is active (`condition.rs`).
     Condition(Rule),
     UntilRestart,
+    /// Until this text is typed in (`Lock::Text`).
+    Text(String),
     /// Until stopped with the password of this hash (`unlock::new_hash`).
     Password(String),
 }
@@ -197,6 +199,10 @@ pub enum RunLock {
     /// started in (`boot::id`).
     UntilRestart {
         boot: String,
+    },
+    /// Stopped only by typing `text` in exactly.
+    Text {
+        text: String,
     },
     /// Stopped only with the password of `hash`.
     Password {
@@ -263,6 +269,14 @@ impl Block {
         self.lock_rule()?.next_change(&self.zone, now)
     }
 
+    /// The text a text lock asks to be typed.
+    fn lock_text(&self) -> Option<&str> {
+        match &self.lock {
+            RunLock::Text { text } => Some(text),
+            _ => None,
+        }
+    }
+
     fn password_hash(&self) -> Option<&str> {
         match &self.lock {
             RunLock::Password { hash } => Some(hash),
@@ -285,6 +299,7 @@ impl Block {
                 Rule::FlashDrive { drive, .. } => format!("“{name}” is locked until the flash drive “{drive}” is connected"),
             }),
             RunLock::UntilRestart { .. } => Some(format!("“{name}” is locked until Windows restarts")),
+            RunLock::Text { .. } => Some(format!("“{name}” is locked until its text is typed in")),
             RunLock::Password { .. } => Some(format!("“{name}” is locked with a password")),
         }
     }
@@ -312,6 +327,8 @@ pub struct Running {
     pub lock_condition: Option<Rule>,
     /// Locked until Windows restarts, and ends then (`Lock::UntilRestart`).
     pub until_restart: bool,
+    /// Locked until this text is typed in (`Lock::Text`): shown by the window when it asks.
+    pub lock_text: Option<String>,
     /// Locked with a password: stopped only with it (`Lock::Password`).
     pub password: bool,
     /// Whether it cannot be stopped right now (without its password, for a password lock).
@@ -384,6 +401,7 @@ impl Blocklist {
             StartLock::UntilRestart => {
                 RunLock::UntilRestart { boot: self.boot().ok_or("Cannot tell when Windows restarts, so this lock cannot be used")? }
             }
+            StartLock::Text(text) => RunLock::Text { text },
             StartLock::Password(hash) => RunLock::Password { hash },
         };
         let parts = parts
@@ -401,9 +419,10 @@ impl Blocklist {
         Ok(())
     }
 
-    /// Stops the block `id` unless it is locked right now. `password_given`: the right password of
-    /// its password lock was given (`password_matches`), which is what lets that one stop.
-    pub fn stop(&self, id: &str, password_given: bool) -> Result<(), String> {
+    /// Stops the block `id` unless it is locked right now. `answered`: the right password of its
+    /// password lock, or the right text of its text lock, was given (`password_matches`,
+    /// `text_matches`), which is what lets those stop.
+    pub fn stop(&self, id: &str, answered: bool) -> Result<(), String> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
         let Some(at) = inner.blocks.iter().position(|b| b.id == id) else {
@@ -411,9 +430,16 @@ impl Blocklist {
         };
         let block = &inner.blocks[at];
         let password_locked = block.password_hash().is_some();
-        if !(password_given && password_locked) {
+        let text_locked = block.lock_text().is_some();
+        if !(answered && (password_locked || text_locked)) {
             if let Some(why) = block.locked(self.clock.now()) {
-                let how = if password_locked { "; give its password to stop it" } else { ", so it cannot be stopped now" };
+                let how = if password_locked {
+                    "; give its password to stop it"
+                } else if text_locked {
+                    "; type its text in to stop it"
+                } else {
+                    ", so it cannot be stopped now"
+                };
                 return Err(format!("{why}{how}"));
             }
         }
@@ -498,6 +524,14 @@ impl Blocklist {
     }
 
     /// Whether `password` is the password of the running block `id`'s password lock.
+    /// Whether `text` is exactly the text of the running block `id`'s text lock (line breaks
+    /// whichever way they were typed).
+    pub fn text_matches(&self, id: &str, text: &str) -> bool {
+        let inner = self.inner.locked();
+        let same = |a: &str, b: &str| a.replace("\r\n", "\n") == b.replace("\r\n", "\n");
+        inner.blocks.iter().find(|b| b.id == id).and_then(|b| b.lock_text()).is_some_and(|expected| same(expected, text))
+    }
+
     pub fn password_matches(&self, id: &str, password: &str) -> bool {
         let inner = self.inner.locked();
         let hash = inner.blocks.iter().find(|b| b.id == id).and_then(|b| b.password_hash().map(str::to_string));
@@ -539,6 +573,7 @@ impl Blocklist {
                 remaining: b.remaining(now),
                 lock_condition: b.lock_rule().cloned(),
                 until_restart: matches!(b.lock, RunLock::UntilRestart { .. }),
+                lock_text: b.lock_text().map(str::to_string),
                 password: b.password_hash().is_some(),
                 locked: b.locked(now).is_some(),
                 condition: b.condition.clone(),
@@ -1023,6 +1058,30 @@ mod tests {
         assert!(resumed.stop("a", false).is_err());
         assert!(!std::fs::read_to_string(resumed.store.clone().unwrap().path()).unwrap().contains("partner"));
         assert!(resumed.password_matches("a", "partner"));
+        resumed.stop("a", true).unwrap();
+        assert!(!resumed.is_running());
+    }
+
+    #[test]
+    fn a_text_lock_stops_only_with_exactly_its_text() {
+        let list = blocklist("text");
+        let locks = StartLock::Text("Write this\nout by hand".into());
+        list.start("a", "Games", vec![part(sites(&["a.com"]), Enforcers::default())], None, locks).unwrap();
+        let why = list.stop("a", false).unwrap_err();
+        assert!(why.contains("type its text in"), "{why}");
+        let a = running(&list, "a");
+        assert!(a.locked && !a.password && a.lock_text.as_deref() == Some("Write this\nout by hand"));
+        // Exactly: every character, case and spacing; only the kind of line break is forgiven.
+        assert!(list.text_matches("a", "Write this\nout by hand") && list.text_matches("a", "Write this\r\nout by hand"));
+        for wrong in ["write this\nout by hand", "Write this\nout by hand ", "Write this out by hand", "", "Write this"] {
+            assert!(!list.text_matches("a", wrong), "{wrong:?}");
+        }
+        assert!(!list.text_matches("nope", "Write this\nout by hand"));
+        // It survives a restart, and then stops with the text.
+        let resumed = reopened("text");
+        resumed.restore();
+        assert!(resumed.stop("a", false).is_err());
+        assert!(resumed.text_matches("a", "Write this\nout by hand"));
         resumed.stop("a", true).unwrap();
         assert!(!resumed.is_running());
     }

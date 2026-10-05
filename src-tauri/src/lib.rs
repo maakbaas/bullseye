@@ -103,8 +103,8 @@ fn start_block(id: String, remote: State<Remote>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn stop_block(id: String, password: Option<String>, remote: State<Remote>) -> Result<(), String> {
-    remote.command(Request::Stop { id, password })
+fn stop_block(id: String, password: Option<String>, text: Option<String>, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::Stop { id, password, text })
 }
 
 /// A weekly schedule as text, after checking it, for the condition editor and the block's summary.

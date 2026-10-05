@@ -88,6 +88,9 @@ Blocks:
                                it is locked exactly while it is active.
       --lock-password <pw>     Locked with a password: it runs until stopped with that password
                                (or the unlock password). Only a hash of it is kept.
+      --lock-text <text>       Locked until the text is typed in exactly: the window shows it
+                               above an input that cannot be pasted into, and that is the only
+                               place to stop such a block (or the unlock password).
       --no-lock                Not locked: it can be stopped at any time (the default).
   edit <block> [options]   Change a block that is not running: the options of new, which replace
                            what they name (--list replaces all its lists), and --name <name>.
@@ -97,7 +100,8 @@ Blocks:
                            on its tile in the window does. A locked block asks first, unless --yes.
   stop <block> [--password <pw>]
                            Stop a running block that is not locked right now; one locked with a
-                           password with its password (asked for when not given).
+                           password with its password (asked for when not given). One locked
+                           with a text is stopped in the window, by typing the text.
 
 Block lists:
   list show <list> [--json]   One block list, and the blocks that use it.
@@ -398,7 +402,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
 }
 
 /// `--lock-duration <duration>`, `--lock-until <date time>`, `--lock-until-restart`,
-/// `--lock-condition <condition>`, `--lock-password <pw>` or `--no-lock`, at most one. A lock
+/// `--lock-condition <condition>`, `--lock-password <pw>`, `--lock-text <text>` or `--no-lock`, at most one. A lock
 /// condition by name or id, looked up when the command runs (`resolve_lock`).
 fn parse_lock(options: &mut Options) -> Result<Option<Lock>, String> {
     let duration = options.value("--lock-duration")?.map(|duration| Lock::Duration { duration });
@@ -406,14 +410,15 @@ fn parse_lock(options: &mut Options) -> Result<Option<Lock>, String> {
     let restart = options.flag("--lock-until-restart").then_some(Lock::UntilRestart);
     let conditional = options.value("--lock-condition")?.map(|condition| Lock::Condition { condition });
     let password = options.value("--lock-password")?.map(|password| Lock::Password { password: Some(password), hash: None });
+    let typed = options.value("--lock-text")?.map(|text| Lock::Text { text });
     let unlocked = options.flag("--no-lock").then_some(Lock::None);
-    let mut given: Vec<Lock> = [duration, until, restart, conditional, password, unlocked].into_iter().flatten().collect();
+    let mut given: Vec<Lock> = [duration, until, restart, conditional, password, typed, unlocked].into_iter().flatten().collect();
     let lock = match given.len() {
         0 => return Ok(None),
         1 => given.remove(0),
         _ => {
             return Err(
-                "Give one of --lock-duration, --lock-until, --lock-until-restart, --lock-condition, --lock-password and --no-lock".into()
+                "Give one of --lock-duration, --lock-until, --lock-until-restart, --lock-condition, --lock-password, --lock-text and --no-lock".into()
             )
         }
     };
@@ -632,13 +637,18 @@ fn execute(command: Command) -> Result<(), Failure> {
         Command::Stop { block, password } => {
             let overview = overview()?;
             let block = find(&overview.blocks, &block, "block", |b| (&b.id, &b.name))?;
+            // A block locked with a text stops in the window, by typing the text: typing it is the
+            // point, and a command line cannot stop a paste.
+            if overview.running.iter().any(|r| r.id == block.id && r.lock_text.is_some()) {
+                return Err(failed(format!("\"{}\" is locked until its text is typed in: stop it in the window", block.name)));
+            }
             // A block locked with a password stops with it: asked for when it was not given.
             let password_locked = overview.running.iter().any(|r| r.id == block.id && r.password);
             let password = match password {
                 None if password_locked => Some(read_password(&format!("Password of \"{}\": ", block.name)).map_err(Failure::Failed)?),
                 given => given,
             };
-            send(Request::Stop { id: block.id.clone(), password })?;
+            send(Request::Stop { id: block.id.clone(), password, text: None })?;
             println!("Stopped \"{}\".", block.name);
         }
         Command::ListShow { list, json } => {
@@ -892,6 +902,7 @@ fn lock_warning(overview: &Overview, block: &Definition) -> Option<String> {
                 describe_rule(&condition.rule)
             ))
         }
+        Lock::Text { .. } => Some("It can only be stopped by typing its text in, in the window.".into()),
         Lock::Password { .. } => Some("It can only be stopped with its password.".into()),
     }
 }
@@ -993,6 +1004,7 @@ fn state(running: Option<&Running>) -> String {
     });
     parts.push(match (&running.remaining_words, running.locked) {
         _ if running.password => "locked with a password".into(),
+        _ if running.lock_text.is_some() => "locked until its text is typed in".into(),
         _ if running.until_restart => "locked until Windows restarts".into(),
         (Some(left), _) => format!("locked, {left} left"),
         (None, true) => match (&running.lock_condition, &running.lock_change_words) {
@@ -1110,6 +1122,7 @@ fn describe_block(overview: &Overview, block: &Definition, running: Option<&Runn
             Some(c) => format!("condition: cannot be stopped while \"{}\" is active ({})", c.name, describe_rule(&c.rule)),
             None => "condition: (condition gone)".into(),
         },
+        Lock::Text { .. } => "text: can only be stopped by typing its text in, in the window".into(),
         Lock::Password { .. } => "password: can only be stopped with its password".into(),
     };
     format!(
@@ -1385,6 +1398,11 @@ mod tests {
             })
         );
         assert!(parse(&args(&["start", "Work", "--lock-password", "pw", "--no-lock"])).is_err());
+        assert_eq!(
+            parse(&args(&["start", "Work", "--lock-text", "I will not scroll", "--yes"])),
+            Ok(Command::Start { block: "Work".into(), lock: Some(Lock::Text { text: "I will not scroll".into() }), yes: true })
+        );
+        assert!(parse(&args(&["start", "Work", "--lock-text", "x", "--lock-password", "pw"])).is_err());
         // A flash drive is named here and looked up among the connected ones when the command runs.
         assert_eq!(
             parse(&args(&["condition", "new", "Key", "--drive", "Kingston"])),
@@ -1443,6 +1461,7 @@ mod tests {
             remaining: None,
             lock_condition: Week::parse("mon-fri 8-17").unwrap().map(|week| Rule::Schedule { week }),
             until_restart: false,
+            lock_text: None,
             password: false,
             locked: false,
             condition: Week::parse("mon-fri 8-17").unwrap().map(|week| Rule::Schedule { week }),
