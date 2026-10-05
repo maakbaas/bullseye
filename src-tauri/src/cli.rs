@@ -960,7 +960,7 @@ mod tests {
     fn the_enforcers_are_the_same_as_in_the_window() {
         let names = enforcer_names();
         assert_eq!(names.len(), 4);
-        let page = include_str!("../../src/index.html");
+        let page = include_str!("../../src/js/forms.js");
         let strings = include_str!("../../src/strings.js");
         for name in names {
             assert!(page.contains(&format!("enforcer(\"{name}\")")), "{name} is not on the page");

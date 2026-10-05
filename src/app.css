@@ -1,0 +1,103 @@
+/* Layout only: colours, type and spacing all come from Carbon tokens and classes. */
+html, body { min-height: 100%; }
+body {
+  margin: 0;
+  background: var(--cds-background);
+  color: var(--cds-text-primary);
+  font-family: "IBM Plex Sans", system-ui, sans-serif;
+}
+/* Until the components are defined, show nothing rather than unstyled markup. */
+body:not(.ready) { visibility: hidden; }
+/* Every view fills the width up to Carbon's lg breakpoint (66rem) and is centred beyond it, so
+   the margins grow evenly instead of jumping. */
+main { padding: var(--cds-spacing-07) 0 var(--cds-spacing-09); max-inline-size: 66rem; margin-inline: auto; }
+/* The tabs: a band at the top on the first layer (white on light, a step up from the background on
+   dark), so menu and content stand apart, that stays in place when the page scrolls. As nothing
+   sets it off from a Windows 11 title bar (a browser has its tab strip there), it has a line on
+   top. An icon before a tab's label, as Carbon's tabs with icons. */
+.pages { position: sticky; inset-block-start: 0; z-index: 1; padding-inline: var(--cds-spacing-05); background-color: var(--cds-layer-01); border-block-start: 1px solid var(--cds-border-subtle); }
+#pages cds-tab svg { flex: none; fill: currentColor; margin-inline-end: var(--cds-spacing-03); vertical-align: text-bottom; }
+/* Below Carbon's md breakpoint the tabs are Carbon's icon-only tabs (`icon-only`, set by main.js),
+   so all four fit; each names itself in a tooltip and to screen readers (its aria-label). */
+#pages cds-tab[icon-only] svg { margin-inline-end: 0; }
+#pages cds-tab[icon-only] .label { display: none; }
+[hidden] { display: none !important; }
+
+/* A page: its header (title, description, main action), then its content. */
+.page-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--cds-spacing-05);
+  margin-bottom: var(--cds-spacing-07);
+}
+.page-header p { margin-top: var(--cds-spacing-03); color: var(--cds-text-secondary); max-width: 40rem; }
+.trail { display: block; margin-bottom: var(--cds-spacing-03); }
+.notices:empty { display: none; }
+.notices { margin-bottom: var(--cds-spacing-05); }
+.notices cds-inline-notification { max-width: none; }
+
+/* The blocks, as tiles in the Carbon grid. */
+/* The tiles are columns of the page's grid itself (this wrapper only keeps them together), so
+   they line up with the header above them. */
+#tiles { display: contents; }
+/* One block per row, full width. On wider windows its actions move to the right of the row. */
+.block-tile.cds--css-grid-column { display: flex; flex-direction: column; gap: var(--cds-spacing-03); margin-bottom: var(--cds-spacing-05); }
+.block-tile .body { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
+.block-tile .info { display: flex; flex-direction: column; align-items: flex-start; gap: var(--cds-spacing-05); }
+.block-tile .top { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--cds-spacing-03); }
+/* The size of the overflow menu's button it stands in for. */
+.block-tile .lock { display: flex; align-items: center; justify-content: center; flex: none; inline-size: var(--cds-spacing-08); block-size: var(--cds-spacing-08); fill: var(--cds-icon-secondary); }
+.block-tile h2 { overflow-wrap: anywhere; padding-top: var(--cds-spacing-02); }
+.block-tile .summary { display: flex; flex-direction: column; gap: var(--cds-spacing-02); color: var(--cds-text-secondary); }
+/* An icon in front of a block's line, level with its first line of text. */
+.block-tile .summary .line { display: flex; align-items: flex-start; gap: var(--cds-spacing-03); }
+.block-tile .summary .line svg { flex: none; fill: var(--cds-icon-secondary); margin-block-start: var(--cds-spacing-01); }
+.block-tile .actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--cds-spacing-04); }
+/* A block's lock, next to Start: the method; its settings are in the modal. */
+.block-tile .lock-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--cds-spacing-04); }
+.block-tile .lock-method { inline-size: 9rem; }
+.modal-fields { display: flex; flex-direction: column; gap: var(--cds-spacing-06); }
+/* The until lock's date and time, side by side as Carbon shows them. */
+.date-time { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--cds-spacing-05); }
+/* The time takes the room beside the date, so a message under it wraps there. */
+.date-time cds-time-picker { flex: 1 1 8rem; min-inline-size: 0; }
+@media (min-width: 42rem) { /* Carbon's md breakpoint */
+  .block-tile .body { flex-direction: row; align-items: flex-end; justify-content: space-between; }
+  .block-tile .actions { flex: none; }
+}
+.empty { display: flex; flex-direction: column; align-items: flex-start; gap: var(--cds-spacing-05); }
+
+/* The editor: sections stacked, lists side by side where there is room. */
+.form { display: flex; flex-direction: column; gap: var(--cds-spacing-07); }
+.form section { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
+.form section > p { color: var(--cds-text-secondary); margin-top: calc(-1 * var(--cds-spacing-03)); }
+.form section + section { padding-top: var(--cds-spacing-07); border-top: 1px solid var(--cds-border-subtle-01); }
+/* Top-aligned: a row stretched to the longer helper text would make one textarea taller. */
+.lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); align-items: start; gap: var(--cds-spacing-05); }
+.lists:empty { display: none; }
+.inline-action { display: flex; flex-direction: column; align-items: flex-start; gap: var(--cds-spacing-04); }
+/* The weekly schedule: a column per day and a row per half hour, labelled every two hours.
+   Carbon has no calendar grid, so this is layout in Carbon's tokens (see `weekEditor`). */
+/* As wide as the fields above it, whatever the window's width: the days share the room. */
+.week { display: grid; grid-template-columns: var(--cds-spacing-09) repeat(7, minmax(0, 1fr)); grid-auto-rows: var(--cds-spacing-03); inline-size: 100%; touch-action: none; user-select: none; }
+.week .day { align-self: center; text-align: center; color: var(--cds-text-secondary); }
+/* An hour's label is centred on the line it names (see `weekEditor`). */
+.week .hour { display: flex; align-items: center; color: var(--cds-text-secondary); }
+.week .cell { background: var(--cds-layer-01); border-inline-start: 1px solid var(--cds-border-subtle-01); cursor: pointer; }
+.week .cell.hour-start { border-block-start: 1px solid var(--cds-border-subtle-01); }
+.week .cell.last { border-block-end: 1px solid var(--cds-border-subtle-01); }
+.week-help, .week-summary { color: var(--cds-text-secondary); }
+.week-summary.problem { color: var(--cds-text-error); }
+.week .cell.on { background: var(--cds-interactive); }
+.week.disabled .cell { cursor: default; }
+.week.disabled .cell.on { background: var(--cds-border-disabled); }
+.form-actions { display: flex; flex-wrap: wrap; gap: var(--cds-spacing-05); justify-content: space-between; }
+.form-actions .end { display: flex; flex-wrap: wrap; gap: var(--cds-spacing-05); margin-left: auto; }
+
+/* Settings. */
+.setting { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
+.setting p { color: var(--cds-text-secondary); }
+.setting .row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--cds-spacing-05); }
+.setting .row cds-password-input { flex: 1 1 14rem; }

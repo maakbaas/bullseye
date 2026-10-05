@@ -14,7 +14,7 @@ window.STRINGS = {
     name: "Bullseye",
   },
 
-  // The tabs under the header, one per page.
+  // The tabs at the top, one per page.
   nav: {
     // What a screen reader calls the tabs.
     label: "Pages",
