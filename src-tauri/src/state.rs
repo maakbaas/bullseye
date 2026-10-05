@@ -210,7 +210,7 @@ pub fn use_dir(dir: PathBuf) {
     let _ = DIR_OVERRIDE.set(dir);
 }
 
-/// The folder the service keeps its files in: `%ProgramData%\SiteBlocker`, which the service
+/// The folder the service keeps its files in: `%ProgramData%\bullseye`, which the service
 /// locks down to SYSTEM (`service::lock_down_data_dir`). The running blocks and the definitions
 /// live here, so the user whose blocks they are cannot edit or delete them.
 ///
@@ -220,15 +220,15 @@ pub fn dir() -> Option<PathBuf> {
     if let Some(dir) = DIR_OVERRIDE.get() {
         return Some(dir.clone());
     }
-    Some(PathBuf::from(std::env::var_os("ProgramData")?).join("SiteBlocker"))
+    Some(PathBuf::from(std::env::var_os("ProgramData")?).join("bullseye"))
 }
 
-/// The app's own folder, for its log: `%LOCALAPPDATA%\SiteBlocker`. Nothing in it matters to a block.
+/// The app's own folder, for its log: `%LOCALAPPDATA%\bullseye`. Nothing in it matters to a block.
 pub fn user_dir() -> Option<PathBuf> {
-    Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("SiteBlocker"))
+    Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("bullseye"))
 }
 
-/// The store the service uses: `%ProgramData%\SiteBlocker\state.json`.
+/// The store the service uses: `%ProgramData%\bullseye\state.json`.
 pub fn store() -> Option<Store> {
     Some(Store::new(dir()?.join("state.json")))
 }

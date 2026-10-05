@@ -14,7 +14,7 @@ use crate::definitions::Definition;
 use crate::state::Enforcers;
 
 /// The pipe the service listens on.
-pub const PIPE: &str = r"\\.\pipe\SiteBlocker";
+pub const PIPE: &str = r"\\.\pipe\bullseye";
 
 /// Larger messages are refused, so a request cannot make the service allocate without limit.
 /// Room for the status of every block (`definitions::MAX_BLOCKS`) with long lists.

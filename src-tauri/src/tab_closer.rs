@@ -368,8 +368,8 @@ mod tests {
     fn a_listed_program_is_asked_to_close_then_ended_and_others_are_left_alone() {
         let Ok(automation) = UIAutomation::new() else { return eprintln!("skipping: no UI Automation here") };
         let mut closer = Closer { automation, windows: HashMap::new(), system: System::new(), asked: HashMap::new() };
-        let (mut listed, mut other) = (copy_of_ping("siteblocker-test-listed"), copy_of_ping("siteblocker-test-other"));
-        let programs = active(&[], &["siteblocker-test-l*"]);
+        let (mut listed, mut other) = (copy_of_ping("bullseye-test-listed"), copy_of_ping("bullseye-test-other"));
+        let programs = active(&[], &["bullseye-test-l*"]);
 
         // The first pass asks. This program has no window to ask, so it carries on for now.
         pass(&mut closer, &programs);

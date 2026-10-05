@@ -69,11 +69,11 @@ fn force_exit(password: String, app: AppHandle, remote: State<Remote>) -> Result
 
 /// Who the app talks to. Normally the service, over its pipe. In a debug build (`npm run dev`) the
 /// service's logic runs inside the app instead, so development needs no installed service; set
-/// `SITEBLOCKER_USE_SERVICE` to talk to a real, installed one anyway. A release build has no
+/// `BULLSEYE_USE_SERVICE` to talk to a real, installed one anyway. A release build has no
 /// such code.
 fn remote_for_this_run() -> Remote {
     #[cfg(debug_assertions)]
-    if std::env::var_os("SITEBLOCKER_USE_SERVICE").is_none() {
+    if std::env::var_os("BULLSEYE_USE_SERVICE").is_none() {
         return Remote::local(service::embedded());
     }
     Remote::new()

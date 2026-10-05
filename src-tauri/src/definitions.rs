@@ -1,5 +1,5 @@
 //! The blocks the user has defined: each a name, its lists, its enforcers and its schedule. They are
-//! kept by the service (`%ProgramData%\SiteBlocker\blocks.json`), so they survive restarts like
+//! kept by the service (`%ProgramData%\bullseye\blocks.json`), so they survive restarts like
 //! everything else, and are only templates: starting one copies it into a running block
 //! (`block.rs`), which is then fixed until it ends. That is why a running block's definition cannot
 //! be changed or deleted either.
@@ -107,7 +107,7 @@ pub struct Definitions {
 }
 
 impl Definitions {
-    /// The service's: `%ProgramData%\SiteBlocker\blocks.json`, read back from the last run.
+    /// The service's: `%ProgramData%\bullseye\blocks.json`, read back from the last run.
     pub fn new() -> Definitions {
         Definitions::at(state::dir().map(|dir| dir.join("blocks.json")))
     }

@@ -165,9 +165,9 @@ pub fn local_handler(blocklist: Blocklist, definitions: Definitions) -> Local {
 }
 
 /// For `npm run dev`: the service inside the app, with no service installed, no pipe and no
-/// administrator rights. **Debug builds only**, and not used with `SITEBLOCKER_USE_SERVICE` set.
+/// administrator rights. **Debug builds only**, and not used with `BULLSEYE_USE_SERVICE` set.
 /// Ending the app ends the enforcing, which is fine while developing. The blocks are kept in
-/// `%LOCALAPPDATA%\SiteBlocker-dev`, so a timed block is still there the next time; delete that
+/// `%LOCALAPPDATA%\bullseye-dev`, so a timed block is still there the next time; delete that
 /// folder to forget it.
 #[cfg(debug_assertions)]
 pub fn embedded() -> Local {
@@ -175,11 +175,11 @@ pub fn embedded() -> Local {
     local_handler(start_blocklist(), Definitions::new())
 }
 
-/// Development keeps its files apart from a real install's: `%LOCALAPPDATA%\SiteBlocker-dev`.
+/// Development keeps its files apart from a real install's: `%LOCALAPPDATA%\bullseye-dev`.
 #[cfg(debug_assertions)]
 fn use_dev_dir() {
     if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        state::use_dir(Path::new(&local).join("SiteBlocker-dev"));
+        state::use_dir(Path::new(&local).join("bullseye-dev"));
     }
 }
 
@@ -227,11 +227,11 @@ mod tests {
         let quit = start_engine(false).unwrap();
 
         // This server runs in the user's session, not in session 0: the app refuses to talk to it.
-        std::env::remove_var("SITEBLOCKER_DEV");
+        std::env::remove_var("BULLSEYE_DEV");
         let refused = client::call(&Request::Status).unwrap_err();
         assert!(refused.contains("not by the service"), "{refused}");
         // The test lets the app talk to it anyway, which only a test build allows (`pipe::verify_server`).
-        std::env::set_var("SITEBLOCKER_DEV", "1");
+        std::env::set_var("BULLSEYE_DEV", "1");
 
         // This engine looks after no app, so taking one in is always fine.
         assert_eq!(client::call(&Request::Register), Ok(Response::Done));

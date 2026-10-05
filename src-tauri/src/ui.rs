@@ -36,7 +36,7 @@ impl Ui {
     pub fn new() -> Ui {
         // Debug builds can shorten the wait, to try the destroying and reopening.
         #[cfg(debug_assertions)]
-        let keep_hidden = env_seconds("SITEBLOCKER_UI_TIMEOUT_SECS").unwrap_or(KEEP_HIDDEN);
+        let keep_hidden = env_seconds("BULLSEYE_UI_TIMEOUT_SECS").unwrap_or(KEEP_HIDDEN);
         #[cfg(not(debug_assertions))]
         let keep_hidden = KEEP_HIDDEN;
         Ui { hidden_since: Mutex::new(None), keep_hidden }
@@ -77,7 +77,7 @@ pub fn show_in_background(app: AppHandle) {
 
 fn create(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("index.html".into()))
-        .title("Site Blocker")
+        .title("Bullseye")
         .inner_size(WIDTH, HEIGHT)
         .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
         .resizable(true)
@@ -127,16 +127,16 @@ fn env_seconds(name: &str) -> Option<Duration> {
     std::env::var(name).ok()?.parse().ok().map(Duration::from_secs)
 }
 
-/// Development aids, debug builds only. `SITEBLOCKER_SHOW=1` opens the window at start (otherwise
-/// click the tray icon), `SITEBLOCKER_REOPEN_AFTER_SECS=n` opens it again n seconds later, as another
-/// click on the tray icon would, and `SITEBLOCKER_UI_TIMEOUT_SECS=n` shortens how long a hidden
+/// Development aids, debug builds only. `BULLSEYE_SHOW=1` opens the window at start (otherwise
+/// click the tray icon), `BULLSEYE_REOPEN_AFTER_SECS=n` opens it again n seconds later, as another
+/// click on the tray icon would, and `BULLSEYE_UI_TIMEOUT_SECS=n` shortens how long a hidden
 /// window is kept.
 #[cfg(debug_assertions)]
 pub fn debug_aids(app: &AppHandle) {
-    if std::env::var_os("SITEBLOCKER_SHOW").is_some() {
+    if std::env::var_os("BULLSEYE_SHOW").is_some() {
         show_in_background(app.clone());
     }
-    if let Some(after) = env_seconds("SITEBLOCKER_REOPEN_AFTER_SECS") {
+    if let Some(after) = env_seconds("BULLSEYE_REOPEN_AFTER_SECS") {
         let app = app.clone();
         thread::spawn(move || {
             thread::sleep(after);

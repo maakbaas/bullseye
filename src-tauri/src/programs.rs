@@ -12,7 +12,7 @@ use regex::RegexSet;
 
 /// Programs that are never closed: Windows' own, and this app's (the tray app, its WebView2 and
 /// the service). Lower case, as the names are compared.
-const PROTECTED: [&str; 25] = [
+const PROTECTED: [&str; 24] = [
     "explorer.exe",
     "winlogon.exe",
     "wininit.exe",
@@ -32,8 +32,7 @@ const PROTECTED: [&str; 25] = [
     "startmenuexperiencehost.exe",
     "shellexperiencehost.exe",
     "msedgewebview2.exe",
-    "siteblocker.exe",
-    "tray-app.exe",
+    "bullseye.exe",
     "system",
     "registry",
     "memory compression",
@@ -172,7 +171,7 @@ mod tests {
     #[test]
     fn what_windows_needs_cannot_be_listed() {
         // Directly, in any case, and by wildcards that reach one of them.
-        for bad in ["explorer.exe", "Explorer", "svchost", "*", "*.exe", "s*", "*host*", "siteblocker", "msedgewebview2.exe"] {
+        for bad in ["explorer.exe", "Explorer", "svchost", "*", "*.exe", "s*", "*host*", "bullseye", "msedgewebview2.exe"] {
             let error = ProgramList::parse(&[bad]).err().unwrap_or_default();
             assert!(error.contains("needs"), "{bad}: {error:?}");
         }

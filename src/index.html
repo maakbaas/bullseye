@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Site Blocker</title>
+    <title>Bullseye</title>
     <!-- The Carbon design system, vendored (scripts/vendor-carbon.mjs): IBM Plex, the themes and
          tokens, and the cds-* web components. Nothing is loaded from the network. -->
     <link rel="stylesheet" href="vendor/fonts.css" />
@@ -92,8 +92,8 @@
   </head>
   <body>
     <!-- The two pages are header actions on the right, as icons: the blocks (home) and settings. -->
-    <cds-header aria-label="Site Blocker">
-      <cds-header-name href="#/" prefix="">Site Blocker</cds-header-name>
+    <cds-header aria-label="Bullseye">
+      <cds-header-name href="#/" prefix="">Bullseye</cds-header-name>
       <div class="cds--header__global">
         <cds-header-global-action data-page="blocks" aria-label="Blocks" tooltip-text="Blocks"></cds-header-global-action>
         <cds-header-global-action data-page="settings" aria-label="Settings" tooltip-text="Settings" tooltip-alignment="right"></cds-header-global-action>
@@ -131,7 +131,7 @@
           <div class="page-header">
             <div>
               <h1 class="cds--type-productive-heading-05" id="editor-title">New block</h1>
-              <p class="cds--type-body-01">Saved blocks are kept by the Site Blocker service and survive restarts. A running block keeps the settings it was started with.</p>
+              <p class="cds--type-body-01">Saved blocks are kept by the Bullseye service and survive restarts. A running block keeps the settings it was started with.</p>
             </div>
           </div>
           <div class="notices" id="editor-notices"></div>
@@ -165,7 +165,7 @@
           </div>
           <div class="setting">
             <h2 class="cds--type-productive-heading-03">Unlock</h2>
-            <p class="cds--type-body-01">Ends every running block, timed ones included, and quits Site Blocker. The service stays installed and starts the app again at your next sign-in. This is the only way to end a timed block early.</p>
+            <p class="cds--type-body-01">Ends every running block, timed ones included, and quits Bullseye. The service stays installed and starts the app again at your next sign-in. This is the only way to end a timed block early.</p>
             <div class="notices" id="settings-notices"></div>
             <div class="row">
               <cds-password-input id="password" label="Unlock password" autocomplete="off"></cds-password-input>
@@ -325,7 +325,7 @@
         } catch (e) {
           // The service did not answer: say so, and leave the rest as it was.
           reachable = false;
-          notify("blocks-notices", "error", "The Site Blocker service does not answer", String(e));
+          notify("blocks-notices", "error", "The Bullseye service does not answer", String(e));
         }
         render();
       }
