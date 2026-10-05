@@ -1,67 +1,86 @@
-//! Installing and uninstalling: what the Windows installer runs (`windows/hooks.nsh`), as
-//! `SiteBlocker.exe --install` after copying the app and `--uninstall` before removing it.
+//! Installing and uninstalling: what the Windows installer runs (`windows/hooks.nsh`), as an
+//! administrator, as `SiteBlocker.exe --prepare-update` before replacing the app, `--install`
+//! after copying it, and `--uninstall` before removing it.
 //!
-//! Uninstalling is refused while a timed block runs, so it is not a way around the block: the
-//! way out of a timed block stays waiting for it to end or the unlock password.
+//! The installer cannot stop the service itself (nobody but SYSTEM can), so it asks it, over the
+//! pipe. The service refuses while a block runs, so none of this is a way around a block: the way
+//! out of a timed block stays waiting for it to end or the unlock password.
 
-use std::fs;
+use std::thread;
+use std::time::Duration;
 
-use crate::{clock, state, task, watchdog};
+use crate::proto::{Request, Response};
+use crate::watchdog::note;
+use crate::{client, registration};
 
 /// Exit codes the installer hooks act on.
 pub const OK: i32 = 0;
 pub const FAILED: i32 = 1;
 pub const REFUSED: i32 = 2;
 
-/// Registers the login task and starts the app with its launcher, as a logon would.
+/// Registers the service and starts it. The service starts the app for whoever is logged on.
 pub fn install() -> i32 {
     let Ok(exe) = std::env::current_exe() else { return FAILED };
-    let registered = task::install(&exe);
-    match &registered {
-        Ok(()) => watchdog::note("install", &format!("registered the {} task for {}", task::NAME, exe.display())),
-        Err(e) => watchdog::note("install", e),
-    }
-    // The app runs either way; without the task it just does not come back after a reboot.
-    watchdog::spawn_launcher();
-    if registered.is_ok() { OK } else { FAILED }
-}
-
-/// Removes everything the app leaves outside its install folder: the login task, the saved
-/// block, the log, and its running processes. Refused during a timed block.
-pub fn uninstall() -> i32 {
-    if let Some(left) = timed_block_left() {
-        watchdog::note("uninstall", &format!("refused: a timed block has {left}s left"));
-        return REFUSED;
-    }
-    // The saved block first: without it, the app and the launcher stop starting each other.
-    if let Some(store) = state::store() {
-        store.clear();
-    }
-    let removed = task::remove();
-    watchdog::kill_all();
-    if let Some(dir) = state::dir() {
-        let _ = fs::remove_dir_all(dir);
-    }
-    match removed {
-        Ok(()) => OK,
+    match registration::install(&exe) {
+        Ok(()) => {
+            note("install", &format!("registered the {} service for {}", registration::NAME, exe.display()));
+            OK
+        }
         Err(e) => {
-            eprintln!("uninstall: {e}");
+            note("install", &e);
             FAILED
         }
     }
 }
 
-/// Seconds left of a saved timed block, by internet time like the block itself (`clock.rs`), so
-/// setting the Windows clock forward does not let the uninstaller through either. Offline, the
-/// time the block was last seen running at stands in for it.
-fn timed_block_left() -> Option<u64> {
-    let saved = state::store()?.load()?;
-    let until = saved.until?;
-    let clock = clock::global();
-    if let Some(seen) = saved.seen {
-        clock.at_least(seen);
+/// Removes the service and everything it kept, and ends the app. Refused during a timed block.
+pub fn uninstall() -> i32 {
+    ask("uninstall", Request::PrepareUninstall)
+}
+
+/// Lets go of the exe so the installer can replace it. Refused during any block.
+pub fn prepare_update() -> i32 {
+    ask("update", Request::PrepareUpdate)
+}
+
+fn ask(what: &str, request: Request) -> i32 {
+    // Nothing to ask: never installed, or already removed.
+    if !registration::exists() {
+        return OK;
     }
-    clock::sync();
-    let now = state::to_unix(clock.now())?;
-    until.checked_sub(now).filter(|&left| left > 0)
+    let mut answer = client::call(&request);
+    if answer.is_err() {
+        // Not running (an update that did not finish, say). Administrators may start it.
+        let _ = registration::start_registered();
+        for _ in 0..10 {
+            thread::sleep(Duration::from_secs(1));
+            answer = client::call(&request);
+            if answer.is_ok() {
+                break;
+            }
+        }
+    }
+    match answer {
+        Ok(Response::Done) => {
+            // The exe is in use until the service has ended.
+            if registration::wait_stopped(Duration::from_secs(30)) {
+                OK
+            } else {
+                note(what, "the service did not end in time");
+                FAILED
+            }
+        }
+        Ok(Response::Refused(why)) => {
+            note(what, &format!("refused: {why}"));
+            REFUSED
+        }
+        Ok(other) => {
+            note(what, &format!("unexpected answer: {other:?}"));
+            FAILED
+        }
+        Err(e) => {
+            note(what, &e);
+            FAILED
+        }
+    }
 }

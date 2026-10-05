@@ -1,0 +1,51 @@
+name: Build installer
+
+# Builds the Windows installer on every push and keeps it as a downloadable artifact of the run
+# (Actions tab > the run > Artifacts). Can also be started by hand (Run workflow).
+on:
+  push:
+  workflow_dispatch:
+
+# A newer push to the same branch makes an unfinished build of it pointless.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # The Rust toolchain is already on the runner. This caches the compiled dependencies,
+      # which is most of the build time.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      # The unit tests, before spending time on the installer.
+      - name: Test
+        working-directory: src-tauri
+        run: cargo test
+
+      # Same command as on a developer machine; produces the per-machine NSIS installer.
+      - name: Build installer
+        run: npm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Site-Blocker-installer-${{ github.sha }}
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 14

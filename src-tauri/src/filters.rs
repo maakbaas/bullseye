@@ -1,5 +1,9 @@
-//! Blocked-site list: one address per line, `*` as wildcard.
+//! A list of sites: one address per line, `*` as wildcard. Used twice: for the sites to block, and
+//! for the sites that are always allowed, which win over the block list (`block::Active::blocks_site`).
 //!
+//! - Only web pages count. The browser's own pages (`chrome://settings`, `edge://newtab`,
+//!   `about:blank`), extensions and local files are never matched, so even a lone `*`, which
+//!   matches every site, leaves the browser itself usable.
 //! - `https://`, `www.` and letter case are ignored.
 //! - An entry blocks everything that continues it at a break (`/ ? # & :`):
 //!   `tweakers.net` blocks `tweakers.net/nieuws?x=1`, not `tweakers.network`.
@@ -12,6 +16,12 @@ pub struct FilterList {
     /// The normalized entries, kept so a block can be written to disk and resumed (`state.rs`).
     entries: Vec<String>,
     matchers: RegexSet,
+}
+
+impl Default for FilterList {
+    fn default() -> FilterList {
+        FilterList { entries: Vec::new(), matchers: RegexSet::empty() }
+    }
 }
 
 impl FilterList {
@@ -37,16 +47,45 @@ impl FilterList {
         self.entries.clone()
     }
 
+    /// Whether the address is a web page that an entry of this list matches.
     pub fn is_blocked(&self, url: &str) -> bool {
-        self.matchers.is_match(&normalize(url))
+        is_website(url) && self.matchers.is_match(&normalize(url))
     }
 }
 
 /// Lowercases and strips scheme, `www.` and trailing slashes.
 fn normalize(url: &str) -> String {
     let url = url.trim().to_lowercase();
-    let url = url.split_once("://").map_or(url.as_str(), |(_, rest)| rest);
-    url.strip_prefix("www.").unwrap_or(url).trim_end_matches('/').to_string()
+    let rest = split_scheme(&url).1;
+    rest.strip_prefix("www.").unwrap_or(rest).trim_end_matches('/').to_string()
+}
+
+/// The scheme of an address (`https`) and the rest of it, if it starts with a scheme. Only text that
+/// looks like one counts: an address with none (the address bar leaves it off) can still have a
+/// `://` further on, in its query, and must not be cut there.
+fn split_scheme(url: &str) -> (Option<&str>, &str) {
+    match url.split_once("://") {
+        Some((scheme, rest))
+            if !scheme.is_empty() && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) =>
+        {
+            (Some(scheme), rest)
+        }
+        _ => (None, url),
+    }
+}
+
+/// Whether the address is a page on the web, which is all these lists are about. Not the browser's
+/// own pages, extensions, local files or an empty address. An address without a scheme counts: the
+/// address bar leaves it off.
+fn is_website(url: &str) -> bool {
+    let url = url.trim().to_lowercase();
+    if url.is_empty() {
+        return false;
+    }
+    match split_scheme(&url) {
+        (Some(scheme), _) => matches!(scheme, "http" | "https" | "ftp" | "ws" | "wss"),
+        (None, rest) => !["about:", "data:", "javascript:", "blob:", "view-source:"].iter().any(|p| rest.starts_with(p)),
+    }
 }
 
 fn to_regex(entry: &str) -> String {
@@ -93,6 +132,52 @@ mod tests {
         assert!(!blocks("tweakers.net/*/a.html", "https://tweakers.net/test/b.html"));
         assert!(blocks("tweakers.net/test*/index.html", "https://tweakers.net/test123/index.html"));
         assert!(!blocks("tweakers.net/test*/index.html", "https://tweakers.net/other/index.html"));
+    }
+
+    #[test]
+    fn a_lone_star_blocks_every_site_but_not_the_browser_itself() {
+        let everything = FilterList::parse(&["*"]).unwrap();
+        for url in [
+            "https://youtube.com/watch?v=1",
+            "http://example.org/",
+            "https://sub.domain.example.co.uk/a/b?c=d#e",
+            "https://www.tweakers.net/",
+            "localhost:3000/app",
+            "youtube.com/watch?v=1",
+            "example.com",
+            "ftp://files.example.com/pub",
+        ] {
+            assert!(everything.is_blocked(url), "{url}");
+        }
+        // The browser's own pages, extensions, local files and an empty address are not sites.
+        for url in [
+            "chrome://settings",
+            "chrome://newtab/",
+            "edge://newtab/",
+            "brave://settings/",
+            "about:blank",
+            "chrome-extension://abcdef/popup.html",
+            "devtools://devtools/bundled/inspector.html",
+            "view-source:https://example.com/",
+            "file:///C:/Users/me/page.html",
+            "data:text/html,hello",
+            "",
+            "   ",
+        ] {
+            assert!(!everything.is_blocked(url), "{url:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_real_scheme_is_cut_off() {
+        // An address without a scheme can have a "://" in its query: that is not its scheme.
+        assert!(!blocks("tweakers.net", "google.com/url?q=https://tweakers.net/nieuws"));
+        assert!(blocks("google.com", "google.com/url?q=https://tweakers.net/nieuws"));
+        assert!(!blocks("tweakers.net", "https://google.com/url?q=https://tweakers.net/nieuws"));
+        // Real schemes still go, whatever they are written like.
+        assert!(blocks("tweakers.net", "HTTPS://tweakers.net/"));
+        assert!(blocks("tweakers.net", "http://tweakers.net/x"));
+        assert!(blocks("tweakers.net", "wss://tweakers.net/socket"));
     }
 
     #[test]

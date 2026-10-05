@@ -9,18 +9,7 @@
   },
   "app": {
     "withGlobalTauri": true,
-    "windows": [
-      {
-        "label": "main",
-        "title": "Site Blocker",
-        "width": 340,
-        "height": 560,
-        "visible": false,
-        "resizable": false,
-        "transparent": true,
-        "windowEffects": { "effects": ["mica"] }
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }
@@ -32,7 +21,7 @@
     "shortDescription": "Blocks distracting sites in Chromium browsers and Obsidian",
     "windows": {
       "nsis": {
-        "installMode": "currentUser",
+        "installMode": "perMachine",
         "installerHooks": "./windows/hooks.nsh"
       }
     },

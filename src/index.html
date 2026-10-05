@@ -57,9 +57,10 @@
         color: var(--text);
         user-select: none;
         cursor: default;
+        overflow: hidden;
       }
       textarea {
-        flex: 1;
+        flex: none;
         resize: none;
         padding: 6px 10px;
         font: inherit;
@@ -76,7 +77,6 @@
       textarea:disabled::placeholder { color: var(--text-disabled); }
       /* The enforcers, grouped by whether they go by the block list. */
       section { display: flex; flex-direction: column; gap: 8px; }
-      section.list { flex: 1; min-height: 0; }
       h2 { margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; }
       label.check { display: flex; align-items: center; gap: 8px; }
       label.check:has(input:disabled) { color: var(--text-disabled); }
@@ -132,7 +132,7 @@
       input:disabled { color: var(--text-disabled); background: var(--control-disabled); border-color: var(--control-stroke); }
       /* A status bar along the bottom edge: full width, past the body's side and bottom padding. */
       #status {
-        margin: 0 -16px;
+        margin: auto -16px 0;
         padding: 4px 16px 8px;
         min-height: 16px;
         font-family: "Cascadia Mono", Consolas, monospace;
@@ -150,9 +150,16 @@
   <body>
     <section class="list">
       <h2>Block list</h2>
-      <textarea id="sites" placeholder="One site per line, e.g. youtube.com" aria-label="Block list" autofocus></textarea>
+      <textarea id="sites" rows="5" placeholder="One site per line, e.g. youtube.com" aria-label="Block list" autofocus></textarea>
+      <h2>Always allowed</h2>
+      <textarea id="allowed" rows="5" placeholder="One site per line, e.g. google.com" aria-label="Always allowed sites"></textarea>
       <label class="check"><input type="checkbox" data-enforcer="chromium_tabs" checked />Close blocked tabs in Chrome, Edge, Brave</label>
       <label class="check"><input type="checkbox" data-enforcer="chromium_split_view" checked />Close blocked pages in split view</label>
+    </section>
+    <section class="list">
+      <h2>Programs</h2>
+      <textarea id="programs" rows="5" placeholder="One program per line, e.g. steam.exe" aria-label="Programs to close"></textarea>
+      <label class="check"><input type="checkbox" data-enforcer="exe_names" checked />Close these programs</label>
     </section>
     <section>
       <h2>Without block list</h2>
@@ -170,6 +177,8 @@
     <script>
       const { invoke } = window.__TAURI__.core;
       const sites = document.getElementById("sites");
+      const programBox = document.getElementById("programs");
+      const allowedBox = document.getElementById("allowed");
       const duration = document.getElementById("duration");
       const toggle = document.getElementById("toggle");
       const status = document.getElementById("status");
@@ -200,13 +209,26 @@
 
       // The backend owns the block (timed blocks end there); the UI mirrors it every second.
       async function refresh() {
-        const { blocking, remaining, filters, enforcers: running, clock_synced } = await invoke("block_status");
+        let state;
+        try {
+          state = await invoke("block_status");
+        } catch (e) {
+          // The service did not answer: say so, and leave the rest as it was.
+          status.classList.add("error");
+          status.textContent = String(e);
+          return;
+        }
+        const { blocking, remaining, filters, allowed: allowedEntries, programs: programEntries, enforcers: running, clock_synced } = state;
         const timed = remaining != null;
         // A block resumed from disk comes with its list, so show it rather than an empty box.
         if (blocking && filters.length && !sites.value) sites.value = filters.join("\n");
+        if (blocking && allowedEntries.length && !allowedBox.value) allowedBox.value = allowedEntries.join("\n");
+        if (blocking && programEntries.length && !programBox.value) programBox.value = programEntries.join("\n");
         toggle.textContent = blocking ? "Stop block" : "Start block";
         toggle.disabled = timed;
         sites.disabled = blocking;
+        allowedBox.disabled = blocking;
+        programBox.disabled = blocking;
         // Fixed while a block runs, so turning one off is not a way around it.
         for (const c of checks) {
           if (running) c.checked = running[c.dataset.enforcer];
@@ -231,10 +253,18 @@
       }
 
       toggle.addEventListener("click", async () => {
-        const { blocking } = await invoke("block_status");
+        let blocking;
+        try {
+          ({ blocking } = await invoke("block_status"));
+        } catch (e) {
+          error = String(e);
+          return refresh();
+        }
         if (blocking) return run("stop_block");
         const filters = sites.value.split(/\r?\n/);
-        await run("start_block", { filters, duration: duration.value, enforcers: enforcers() });
+        const programs = programBox.value.split(/\r?\n/);
+        const allowed = allowedBox.value.split(/\r?\n/);
+        await run("start_block", { filters, allowed, programs, duration: duration.value, enforcers: enforcers() });
       });
 
       // Enter in the field submits too.
@@ -249,6 +279,8 @@
       });
       password.addEventListener("input", () => { error = ""; force.disabled = !password.value; refresh(); });
       sites.addEventListener("input", () => { error = ""; refresh(); });
+      programBox.addEventListener("input", () => { error = ""; refresh(); });
+      allowedBox.addEventListener("input", () => { error = ""; refresh(); });
       duration.addEventListener("input", () => { error = ""; refresh(); });
       for (const c of checks) {
         c.addEventListener("change", () => {
@@ -258,8 +290,15 @@
         });
       }
 
-      refresh();
-      setInterval(refresh, 1000);
+      // The window is made when it is asked for and shown once this page has drawn (`ui::window_ready`);
+      // its X only hides it. While it is hidden nothing is looked at, so nothing is asked of the service.
+      let visible = true;
+      window.__TAURI__.event.listen("visibility", (event) => {
+        visible = event.payload;
+        if (visible) refresh();
+      });
+      setInterval(() => { if (visible && !document.hidden) refresh(); }, 1000);
+      refresh().finally(() => invoke("window_ready"));
     </script>
   </body>
 </html>
