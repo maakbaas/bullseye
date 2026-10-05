@@ -6,9 +6,10 @@
 //! **Keep it level with the window.** Every command the window can invoke (the list in
 //! `generate_handler!` in `lib.rs`) is in `GUI_COMMANDS` with the CLI commands that do the same, and
 //! a test fails when one is missing, or missing from `HELP` or `CLI.md`. Enforcer names come from
-//! `Enforcers` itself, so a new enforcer is here without any change. A new list, schedule kind or
+//! `Enforcers` itself, so a new enforcer is here without any change. A new list, condition kind or
 //! lock method needs an option here, a line in `HELP` and in `CLI.md`.
 
+use std::collections::BTreeMap;
 use std::io::{BufRead, IsTerminal, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,8 +17,10 @@ use serde_json::{Map, Value};
 
 use crate::block::Running;
 use crate::client::Remote;
-use crate::definitions::{self, BlockList, Definition, Kind, Library, NamedSchedule};
+use crate::condition::Rule;
+use crate::definitions::{self, BlockList, Condition, Definition, Kind, Library};
 use crate::duration;
+use crate::lists::Entries;
 use crate::localtime;
 use crate::lock::Lock;
 use crate::proto::{Overview, Request};
@@ -26,24 +29,28 @@ use crate::state::Enforcers;
 
 /// Each command the window can invoke, and the CLI commands that do the same. Empty: it is about
 /// the window itself.
-pub const GUI_COMMANDS: [(&str, &[&str]); 19] = [
-    ("block_status", &["status", "show", "list show", "schedule show"]),
+pub const GUI_COMMANDS: [(&str, &[&str]); 21] = [
+    ("block_status", &["status", "show", "list show", "condition show"]),
     ("save_block", &["new", "edit"]),
     ("delete_block", &["delete"]),
     ("save_list", &["list new", "list edit"]),
     ("delete_list", &["list delete"]),
-    ("save_schedule", &["schedule new", "schedule edit"]),
-    ("delete_schedule", &["schedule delete"]),
-    ("duplicate", &["duplicate", "list duplicate", "schedule duplicate"]),
+    // The installed Store apps the editor offers to tick.
+    ("installed_apps", &["list apps"]),
+    // The flash drives the editor of a flash drive condition offers.
+    ("connected_drives", &["drives"]),
+    ("save_condition", &["condition new", "condition edit"]),
+    ("delete_condition", &["condition delete"]),
+    ("duplicate", &["duplicate", "list duplicate", "condition duplicate"]),
     ("start_block", &["start"]),
     ("stop_block", &["stop"]),
     ("unlock_all", &["unlock"]),
-    ("describe_schedule", &["schedule check"]),
+    ("describe_schedule", &["condition check"]),
     // A lock's length or end in words: what `show` and `start` say of a duration or until lock.
     ("describe_duration", &["show"]),
     ("describe_until", &["show", "start"]),
     // What the question before a deletion says.
-    ("deletion_fallout", &["list delete", "schedule delete"]),
+    ("deletion_fallout", &["list delete", "condition delete"]),
     ("export_settings", &["export"]),
     // A settings file's contents: what the question before importing it says.
     ("open_settings", &["import"]),
@@ -55,18 +62,19 @@ const HELP: &str = "\
 Bullseye command line: everything the window can do.
 
 Usage: bullseye-cli <command> [options]
-A <block>, <list> or <schedule> is its name (any case) or its id.
+A <block>, <list> or <condition> is its name (any case) or its id.
 
-A block is what you start: one or more block lists (what to block), a schedule (when it is
-active; 'always' or a weekly schedule) and a lock (how it is kept from being stopped).
+A block is what you start: one or more block lists (what to block), a condition (when it is
+active; 'always', a weekly schedule, or a flash drive that is not connected) and a lock (how it
+is kept from being stopped).
 
 Blocks:
   status [--json]          Every block (running or not, active or not, locked or not), every
-                           block list and every schedule.
-  show <block> [--json]    One block: its lists, schedule, lock and state.
+                           block list and every condition.
+  show <block> [--json]    One block: its lists, condition, lock and state.
   new <name> [options]     Make a block. Options:
       --list <list>            A block list it enforces (repeatable).
-      --schedule <schedule>    When it is active: a schedule's name, or 'always' (the default).
+      --condition <condition>  When it is active: a condition's name, or 'always' (the default).
       --lock-duration <duration>
                                Locked for this long once started, e.g. 2h 30m: it cannot be
                                stopped and ends by itself.
@@ -74,10 +82,10 @@ Blocks:
                                cannot be stopped and ends by itself.
       --lock-until-restart     Locked until Windows restarts, and ends then. A shut down with
                                Fast Startup is not a restart.
-      --lock-schedule <schedule>
-                               Locked while this schedule is active: it cannot be stopped then,
-                               and runs until stopped outside those times. With the block's own
-                               schedule, it is locked exactly while it is active.
+      --lock-condition <condition>
+                               Locked while this condition is active: it cannot be stopped then,
+                               and runs until stopped otherwise. With the block's own condition,
+                               it is locked exactly while it is active.
       --lock-password <pw>     Locked with a password: it runs until stopped with that password
                                (or the unlock password). Only a hash of it is kept.
       --no-lock                Not locked: it can be stopped at any time (the default).
@@ -93,42 +101,55 @@ Blocks:
 
 Block lists:
   list show <list> [--json]   One block list, and the blocks that use it.
+  list apps [--json]          The Store apps installed, by name and package family name, to
+                              block with --store-app.
   list new <name> [options]   Make a block list. Options:
       --site <entry>           A site to block (repeatable). Address prefix, * as a wildcard.
       --allow <entry>          A site that is always allowed, also when blocked (repeatable).
       --program <name>         A program to close, by exe name (repeatable), e.g. steam.exe.
-      --sites-file <file>      Sites to block, one per line. Likewise --allowed-file and
-                               --programs-file.
+      --store-app <family>     A Store app to close, by package family name (repeatable), e.g.
+                               Microsoft.WindowsCalculator_8wekyb3d8bbwe; * as a wildcard.
+                               'list apps' shows them.
+      --title <title>          A window to close, by its title (repeatable), * as a wildcard,
+                               e.g. \"*YouTube*\". The whole window closes, tabs and all.
+      --sites-file <file>      Sites to block, one per line. Likewise --allowed-file,
+                               --programs-file, --store-apps-file and --titles-file.
       --enforcers <list>       Comma-separated, or 'all' (the default). Names:
                                {enforcers}
   list edit <list> [options]  Change a block list that no running block uses: the options of
                               list new, which replace what they name, --name <name> and
-                              --clear <sites|allowed|programs> (repeatable).
+                              --clear <sites|allowed|programs|store-apps|titles> (repeatable).
   list delete <list> [--yes]  Delete a block list that no running block uses; it is taken out of
                               the blocks that use it (a block left without one is deleted).
   list duplicate <list>       Make a copy of a block list, named after it with a number.
 
-Schedules:
-  schedule show <schedule>          One schedule, per day, and the blocks that use it.
-  schedule new <name> <times>       Make a weekly schedule, e.g. \"Mon-Fri 08:00-17:00; Sat 10-12\".
-  schedule edit <schedule> [--name <name>] [--times <times>]
-                                    Change a schedule that no running block uses.
-  schedule delete <schedule> [--yes]
-                                    Delete a schedule that no running block uses; blocks it was
-                                    the schedule of are always active, and those it locked are
+Conditions:
+  condition show <condition>        One condition, and the blocks that use it.
+  condition new <name> (--times <times> | --drive <drive>)
+                                    Make a condition: a weekly schedule, e.g. --times
+                                    \"Mon-Fri 08:00-17:00; Sat 10-12\"; or a flash drive, by name
+                                    or serial number ('drives' lists them): active while it is
+                                    not connected.
+  condition edit <condition> [--name <name>] [--times <times> | --drive <drive>]
+                                    Change a condition that no running block uses.
+  condition delete <condition> [--yes]
+                                    Delete a condition that no running block uses; blocks it was
+                                    the condition of are always active, and those it locked are
                                     not locked any more.
-  schedule duplicate <schedule>     Make a copy of a schedule, named after it with a number.
-  schedule check <times>            Check times and show them per day, as a schedule takes them.
+  condition duplicate <condition>   Make a copy of a condition, named after it with a number.
+  condition check <times>           Check times and show them per day, as a schedule takes them.
 
 Moving to another computer:
-  export <file>            Write every block list, schedule and block to a settings file, as
+  export <file>            Write every block list, condition and block to a settings file, as
                            Export in Settings does. Password locks are in it without their
                            password.
-  import <file> [--yes]    Replace every block list, schedule and block with those in a settings
+  import <file> [--yes]    Replace every block list, condition and block with those in a settings
                            file, as Import in Settings does; not while a block runs. A block with
                            a password lock comes without a lock. Asks first, unless --yes.
 
 Other:
+  drives [--json]          The flash drives connected, by name and serial number, for
+                           'condition new --drive'.
   unlock [--password <pw>] End every running block with the unlock password, as the window's
                            Unlock does. Asks for the password when not given (or reads standard
                            input when that is not a terminal).
@@ -175,6 +196,12 @@ enum Command {
         list: String,
         json: bool,
     },
+    ListApps {
+        json: bool,
+    },
+    Drives {
+        json: bool,
+    },
     ListNew {
         name: String,
         changes: ListChanges,
@@ -187,23 +214,23 @@ enum Command {
         list: String,
         yes: bool,
     },
-    ScheduleShow {
-        schedule: String,
+    ConditionShow {
+        condition: String,
     },
-    ScheduleNew {
+    ConditionNew {
         name: String,
-        times: String,
+        rule: RuleChoice,
     },
-    ScheduleEdit {
-        schedule: String,
+    ConditionEdit {
+        condition: String,
         name: Option<String>,
-        times: Option<String>,
+        rule: Option<RuleChoice>,
     },
-    ScheduleDelete {
-        schedule: String,
+    ConditionDelete {
+        condition: String,
         yes: bool,
     },
-    ScheduleCheck {
+    ConditionCheck {
         times: String,
     },
     Export {
@@ -223,14 +250,22 @@ enum Command {
     },
 }
 
-/// What `new` and `edit` set on a block; `None` leaves it. Lists and the schedule by name or id,
+/// The rule a condition is given: weekly times as typed, or a flash drive by name or serial number;
+/// read when the command runs (`resolve_rule`).
+#[derive(Debug, PartialEq)]
+enum RuleChoice {
+    Times(String),
+    Drive(String),
+}
+
+/// What `new` and `edit` set on a block; `None` leaves it. Lists and the condition by name or id,
 /// looked up when the command runs.
 #[derive(Debug, PartialEq, Default)]
 struct BlockChanges {
     name: Option<String>,
     lists: Option<Vec<String>>,
     /// `Some(None)`: always.
-    schedule: Option<Option<String>>,
+    condition: Option<Option<String>>,
     lock: Option<Lock>,
 }
 
@@ -238,25 +273,30 @@ struct BlockChanges {
 #[derive(Debug, PartialEq, Default)]
 struct ListChanges {
     name: Option<String>,
-    filters: Option<Vec<String>>,
-    allowed: Option<Vec<String>>,
-    programs: Option<Vec<String>>,
+    /// The lists to set, by their field of `Entries`.
+    lists: BTreeMap<&'static str, Vec<String>>,
     enforcers: Option<Enforcers>,
 }
+
+/// The options that set a list, one per list: the option, the one that reads it from a file, its
+/// name in `--clear`, and its field of `Entries`. **A new list is a line here.**
+const LIST_OPTIONS: [(&str, &str, &str, &str); 5] = [
+    ("--site", "--sites-file", "sites", "filters"),
+    ("--allow", "--allowed-file", "allowed", "allowed"),
+    ("--program", "--programs-file", "programs", "programs"),
+    ("--store-app", "--store-apps-file", "store-apps", "store_apps"),
+    ("--title", "--titles-file", "titles", "titles"),
+];
 
 impl ListChanges {
     fn apply(self, list: &mut BlockList) {
         if let Some(name) = self.name {
             list.name = name;
         }
-        if let Some(filters) = self.filters {
-            list.filters = filters;
-        }
-        if let Some(allowed) = self.allowed {
-            list.allowed = allowed;
-        }
-        if let Some(programs) = self.programs {
-            list.programs = programs;
+        for (key, entries) in self.lists {
+            if let Some(field) = list.entries.field(key) {
+                *field = entries;
+            }
         }
         if let Some(enforcers) = self.enforcers {
             list.enforcers = enforcers;
@@ -294,13 +334,13 @@ pub fn main() -> i32 {
 
 fn parse(args: &[String]) -> Result<Command, String> {
     let Some((command, rest)) = args.split_first() else { return Ok(Command::Help) };
-    // `list` and `schedule` take a second word.
+    // `list` and `condition` take a second word.
     let (command, rest) = match (command.as_str(), rest.split_first()) {
-        ("list" | "schedule", Some((verb, rest))) => (format!("{command} {verb}"), rest),
-        ("list" | "schedule", None) => {
+        ("list" | "condition", Some((verb, rest))) => (format!("{command} {verb}"), rest),
+        ("list" | "condition", None) => {
             return Err(format!(
                 "`{command}` needs show, new, edit, delete, duplicate{}",
-                if command == "schedule" { " or check" } else { "" }
+                if command == "condition" { " or check" } else { "" }
             ))
         }
         _ => (command.clone(), rest),
@@ -322,30 +362,33 @@ fn parse(args: &[String]) -> Result<Command, String> {
         "import" => Command::Import { file: options.positional().ok_or("Give the settings file to read")?, yes: options.flag("--yes") },
         "duplicate" => Command::Duplicate { kind: Kind::Block, item: named(&mut options, "block")? },
         "list duplicate" => Command::Duplicate { kind: Kind::List, item: named(&mut options, "block list")? },
-        "schedule duplicate" => Command::Duplicate { kind: Kind::Schedule, item: named(&mut options, "schedule")? },
+        "condition duplicate" => Command::Duplicate { kind: Kind::Condition, item: named(&mut options, "condition")? },
         "start" => Command::Start { block: named(&mut options, "block")?, lock: parse_lock(&mut options)?, yes: options.flag("--yes") },
         "stop" => Command::Stop { block: named(&mut options, "block")?, password: options.value("--password")? },
         "list show" => Command::ListShow { list: named(&mut options, "block list")?, json: options.flag("--json") },
+        "list apps" => Command::ListApps { json: options.flag("--json") },
+        "drives" => Command::Drives { json: options.flag("--json") },
         "list new" => {
             let name = options.positional().ok_or("Give the new block list a name")?;
             Command::ListNew { name, changes: parse_list_changes(&mut options, false)? }
         }
         "list edit" => Command::ListEdit { list: named(&mut options, "block list")?, changes: parse_list_changes(&mut options, true)? },
         "list delete" => Command::ListDelete { list: named(&mut options, "block list")?, yes: options.flag("--yes") },
-        "schedule show" => Command::ScheduleShow { schedule: named(&mut options, "schedule")? },
-        "schedule new" => {
-            let name = options.positional().ok_or("Give the new schedule a name")?;
-            let times = options.positional().ok_or("Give its times, e.g. \"Mon-Fri 08:00-17:00\"")?;
-            Command::ScheduleNew { name, times }
+        "condition show" => Command::ConditionShow { condition: named(&mut options, "condition")? },
+        "condition new" => {
+            let name = options.positional().ok_or("Give the new condition a name")?;
+            let rule =
+                parse_rule(&mut options)?.ok_or("Give --times \"Mon-Fri 08:00-17:00\" for a weekly schedule, or --drive <flash drive>")?;
+            Command::ConditionNew { name, rule }
         }
-        "schedule edit" => Command::ScheduleEdit {
-            schedule: named(&mut options, "schedule")?,
+        "condition edit" => Command::ConditionEdit {
+            condition: named(&mut options, "condition")?,
             name: options.value("--name")?,
-            times: options.value("--times")?,
+            rule: parse_rule(&mut options)?,
         },
-        "schedule delete" => Command::ScheduleDelete { schedule: named(&mut options, "schedule")?, yes: options.flag("--yes") },
-        "schedule check" => {
-            Command::ScheduleCheck { times: options.positional().ok_or("Give the times to check, e.g. \"Mon-Fri 08:00-17:00\"")? }
+        "condition delete" => Command::ConditionDelete { condition: named(&mut options, "condition")?, yes: options.flag("--yes") },
+        "condition check" => {
+            Command::ConditionCheck { times: options.positional().ok_or("Give the times to check, e.g. \"Mon-Fri 08:00-17:00\"")? }
         }
         "unlock" => Command::Unlock { password: options.value("--password")? },
         other => return Err(format!("Unknown command \"{other}\"")),
@@ -355,22 +398,22 @@ fn parse(args: &[String]) -> Result<Command, String> {
 }
 
 /// `--lock-duration <duration>`, `--lock-until <date time>`, `--lock-until-restart`,
-/// `--lock-schedule <schedule>`, `--lock-password <pw>` or `--no-lock`,
-/// at most one. A lock schedule by name or id, looked up when the command runs (`find_lock_schedule`).
+/// `--lock-condition <condition>`, `--lock-password <pw>` or `--no-lock`, at most one. A lock
+/// condition by name or id, looked up when the command runs (`resolve_lock`).
 fn parse_lock(options: &mut Options) -> Result<Option<Lock>, String> {
     let duration = options.value("--lock-duration")?.map(|duration| Lock::Duration { duration });
     let until = options.value("--lock-until")?.map(|until| Lock::Until { until });
     let restart = options.flag("--lock-until-restart").then_some(Lock::UntilRestart);
-    let scheduled = options.value("--lock-schedule")?.map(|schedule| Lock::Scheduled { schedule });
+    let conditional = options.value("--lock-condition")?.map(|condition| Lock::Condition { condition });
     let password = options.value("--lock-password")?.map(|password| Lock::Password { password: Some(password), hash: None });
     let unlocked = options.flag("--no-lock").then_some(Lock::None);
-    let mut given: Vec<Lock> = [duration, until, restart, scheduled, password, unlocked].into_iter().flatten().collect();
+    let mut given: Vec<Lock> = [duration, until, restart, conditional, password, unlocked].into_iter().flatten().collect();
     let lock = match given.len() {
         0 => return Ok(None),
         1 => given.remove(0),
         _ => {
             return Err(
-                "Give one of --lock-duration, --lock-until, --lock-until-restart, --lock-schedule, --lock-password and --no-lock".into()
+                "Give one of --lock-duration, --lock-until, --lock-until-restart, --lock-condition, --lock-password and --no-lock".into()
             )
         }
     };
@@ -385,32 +428,39 @@ fn parse_block_changes(options: &mut Options, editing: bool) -> Result<BlockChan
     Ok(BlockChanges {
         name: if editing { options.value("--name")? } else { None },
         lists: (!lists.is_empty()).then_some(lists),
-        schedule: options.value("--schedule")?.map(|s| (!s.eq_ignore_ascii_case("always")).then_some(s)),
+        condition: options.value("--condition")?.map(|c| (!c.eq_ignore_ascii_case("always")).then_some(c)),
         lock: parse_lock(options)?,
     })
+}
+
+/// `--times <times>` or `--drive <drive>` of a condition, at most one.
+fn parse_rule(options: &mut Options) -> Result<Option<RuleChoice>, String> {
+    let times = options.value("--times")?.map(RuleChoice::Times);
+    let drive = options.value("--drive")?.map(RuleChoice::Drive);
+    match (times, drive) {
+        (Some(_), Some(_)) => Err("Give --times or --drive, not both".into()),
+        (times, drive) => Ok(times.or(drive)),
+    }
 }
 
 /// The options of `list new` and `list edit`. Only `list edit` takes `--name` and `--clear`.
 fn parse_list_changes(options: &mut Options, editing: bool) -> Result<ListChanges, String> {
     let mut changes = ListChanges::default();
     let cleared = if editing { options.values("--clear")? } else { Vec::new() };
+    let names: Vec<&str> = LIST_OPTIONS.iter().map(|(_, _, name, _)| *name).collect();
     for list in &cleared {
-        if !["sites", "allowed", "programs"].contains(&list.as_str()) {
-            return Err(format!("--clear takes sites, allowed or programs, not \"{list}\""));
+        if !names.contains(&list.as_str()) {
+            return Err(format!("--clear takes {}, not \"{list}\"", names.join(", ")));
         }
     }
-    for (option, file, cleared_as, field) in [
-        ("--site", "--sites-file", "sites", &mut changes.filters),
-        ("--allow", "--allowed-file", "allowed", &mut changes.allowed),
-        ("--program", "--programs-file", "programs", &mut changes.programs),
-    ] {
+    for (option, file, cleared_as, key) in LIST_OPTIONS {
         let mut entries = options.values(option)?;
         for path in options.values(file)? {
             let text = std::fs::read_to_string(&path).map_err(|e| format!("Cannot read {path}: {e}"))?;
             entries.extend(text.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string));
         }
         if !entries.is_empty() || cleared.iter().any(|c| c == cleared_as) {
-            *field = Some(entries);
+            changes.lists.insert(key, entries);
         }
     }
     if editing {
@@ -537,7 +587,7 @@ fn execute(command: Command) -> Result<(), Failure> {
         }
         Command::New { name, changes } => {
             let overview = overview()?;
-            let mut block = Definition { id: new_id(), name, lists: Vec::new(), schedule: None, lock: Lock::None, kept_locks: Vec::new() };
+            let mut block = Definition { id: new_id(), name, lists: Vec::new(), condition: None, lock: Lock::None, kept_locks: Vec::new() };
             apply_block_changes(&overview, &mut block, changes)?;
             let (id, name) = (block.id.clone(), block.name.clone());
             send(Request::SaveBlock { block })?;
@@ -564,7 +614,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             let overview = overview()?;
             let mut block = find(&overview.blocks, &block, "block", |b| (&b.id, &b.name))?.clone();
             // As the lock on the block's tile: set on the block, then started with it.
-            let lock = lock.map(|lock| find_lock_schedule(&overview, lock)).transpose()?;
+            let lock = lock.map(|lock| resolve_lock(&overview, lock)).transpose()?;
             if let Some(lock) = lock.filter(|lock| *lock != block.lock) {
                 block.lock = lock;
                 send(Request::SaveBlock { block: block.clone() })?;
@@ -600,15 +650,30 @@ fn execute(command: Command) -> Result<(), Failure> {
                 print!("{}", describe_list(&overview, list));
             }
         }
+        Command::Drives { json } => {
+            let drives = crate::drives::connected().map_err(Failure::Failed)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&drives).map_err(|e| failed(e.to_string()))?);
+            } else if drives.is_empty() {
+                println!("No flash drive with a serial number is connected.");
+            } else {
+                for drive in drives {
+                    println!("{:<40} {}", drive.name, drive.serial);
+                }
+            }
+        }
+        Command::ListApps { json } => {
+            let apps = crate::store_apps::installed().map_err(Failure::Failed)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&apps).map_err(|e| failed(e.to_string()))?);
+            } else {
+                for app in apps {
+                    println!("{:<40} {}", app.name, app.family);
+                }
+            }
+        }
         Command::ListNew { name, changes } => {
-            let mut list = BlockList {
-                id: new_id(),
-                name,
-                filters: Vec::new(),
-                allowed: Vec::new(),
-                programs: Vec::new(),
-                enforcers: Enforcers::default(),
-            };
+            let mut list = BlockList { id: new_id(), name, entries: Entries::default(), enforcers: Enforcers::default() };
             changes.apply(&mut list);
             let name = list.name.clone();
             send(Request::SaveList { list })?;
@@ -631,59 +696,62 @@ fn execute(command: Command) -> Result<(), Failure> {
             send(Request::DeleteList { id: list.id.clone() })?;
             println!("Deleted the block list \"{}\".", list.name);
         }
-        Command::ScheduleShow { schedule } => {
+        Command::ConditionShow { condition } => {
             let overview = overview()?;
-            let schedule = find(&overview.schedules, &schedule, "schedule", |s| (&s.id, &s.name))?;
-            println!("{}", schedule.name);
-            print!("{}", per_day(&schedule.week));
-            println!("Used by: {}", users(&overview, &schedule.id));
+            let condition = find(&overview.conditions, &condition, "condition", |c| (&c.id, &c.name))?;
+            println!("{}", condition.name);
+            match &condition.rule {
+                Rule::Schedule { week } => print!("{}", per_day(week)),
+                rule => println!("{}", describe_rule(rule)),
+            }
+            println!("Used by: {}", users(&overview, &condition.id));
         }
-        Command::ScheduleNew { name, times } => {
-            let week = times_of(&times)?;
-            send(Request::SaveSchedule { schedule: NamedSchedule { id: new_id(), name: name.clone(), week } })?;
-            println!("Made the schedule \"{name}\". Use it with: bullseye-cli new <block> --schedule \"{name}\"");
+        Command::ConditionNew { name, rule } => {
+            let rule = resolve_rule(rule)?;
+            send(Request::SaveCondition { condition: Condition { id: new_id(), name: name.clone(), rule } })?;
+            println!("Made the condition \"{name}\". Use it with: bullseye-cli new <block> --condition \"{name}\"");
         }
-        Command::ScheduleEdit { schedule, name, times } => {
+        Command::ConditionEdit { condition, name, rule } => {
             let overview = overview()?;
-            let mut schedule = find(&overview.schedules, &schedule, "schedule", |s| (&s.id, &s.name))?.clone();
+            let mut condition = find(&overview.conditions, &condition, "condition", |c| (&c.id, &c.name))?.clone();
             if let Some(name) = name {
-                schedule.name = name;
+                condition.name = name;
             }
-            if let Some(times) = times {
-                schedule.week = times_of(&times)?;
+            if let Some(rule) = rule {
+                condition.rule = resolve_rule(rule)?;
             }
-            let name = schedule.name.clone();
-            send(Request::SaveSchedule { schedule })?;
-            println!("Saved the schedule \"{name}\".");
+            let name = condition.name.clone();
+            send(Request::SaveCondition { condition })?;
+            println!("Saved the condition \"{name}\".");
         }
-        Command::ScheduleDelete { schedule, yes } => {
+        Command::ConditionDelete { condition, yes } => {
             let overview = overview()?;
-            let schedule = find(&overview.schedules, &schedule, "schedule", |s| (&s.id, &s.name))?;
+            let condition = find(&overview.conditions, &condition, "condition", |c| (&c.id, &c.name))?;
             if !confirm(
-                &format!("Delete the schedule \"{}\"?{} This cannot be undone.", schedule.name, fallout(&overview, &schedule.id)),
+                &format!("Delete the condition \"{}\"?{} This cannot be undone.", condition.name, fallout(&overview, &condition.id)),
                 yes,
             )? {
                 return Err(failed("Not deleted."));
             }
-            send(Request::DeleteSchedule { id: schedule.id.clone() })?;
-            println!("Deleted the schedule \"{}\".", schedule.name);
+            send(Request::DeleteCondition { id: condition.id.clone() })?;
+            println!("Deleted the condition \"{}\".", condition.name);
         }
-        Command::ScheduleCheck { times } => match Week::parse(&times).map_err(Failure::Usage)? {
+        Command::ConditionCheck { times } => match Week::parse(&times).map_err(Failure::Usage)? {
             Some(week) => print!("{}", per_day(&week)),
-            None => println!("Always active: a block without a schedule"),
+            None => println!("Always active: a block without a condition"),
         },
         Command::Export { file } => {
             definitions::write_settings(std::path::Path::new(&file), overview()?.library()).map_err(failed)?;
-            println!("Wrote every block list, schedule and block to {file}.");
+            println!("Wrote every block list, condition and block to {file}.");
         }
         Command::Import { file, yes } => {
             let library = definitions::read_settings(std::path::Path::new(&file)).map_err(failed)?;
             let contents = library.contents();
             let count = |n: usize, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
             let mut question = format!(
-                "Replace every block list, schedule and block with the {}, {} and {} in {file}? This cannot be undone.",
+                "Replace every block list, condition and block with the {}, {} and {} in {file}? This cannot be undone.",
                 count(contents.lists, "block list"),
-                count(contents.schedules, "schedule"),
+                count(contents.conditions, "condition"),
                 count(contents.blocks, "block"),
             );
             if !contents.unlocked.is_empty() {
@@ -702,13 +770,13 @@ fn execute(command: Command) -> Result<(), Failure> {
                 match kind {
                     Kind::Block => overview.blocks.iter().map(|b| (b.id.clone(), b.name.clone())).collect(),
                     Kind::List => overview.lists.iter().map(|l| (l.id.clone(), l.name.clone())).collect(),
-                    Kind::Schedule => overview.schedules.iter().map(|s| (s.id.clone(), s.name.clone())).collect(),
+                    Kind::Condition => overview.conditions.iter().map(|c| (c.id.clone(), c.name.clone())).collect(),
                 }
             };
             let noun = match kind {
                 Kind::Block => "block",
                 Kind::List => "block list",
-                Kind::Schedule => "schedule",
+                Kind::Condition => "condition",
             };
             let items = names(&overview()?);
             let (id, name) = find(&items, &item, noun, |(id, name)| (id, name))?;
@@ -730,15 +798,43 @@ fn execute(command: Command) -> Result<(), Failure> {
     Ok(())
 }
 
-/// Weekly times, as a schedule takes them; "always" is not a schedule (a block without one is).
+/// Weekly times, as a schedule takes them; "always" is not a schedule (a block without a condition is
+/// always active).
 fn times_of(text: &str) -> Result<Week, Failure> {
     match Week::parse(text).map_err(failed)? {
         Some(week) => Ok(week),
-        None => Err(failed("Give the times, e.g. \"Mon-Fri 08:00-17:00\"; a block that is always active needs no schedule")),
+        None => Err(failed("Give the times, e.g. \"Mon-Fri 08:00-17:00\"; a block that is always active needs no condition")),
     }
 }
 
-/// `new` and `edit`'s changes, with lists and the schedule looked up by name or id.
+/// A condition's rule from what was typed: weekly times, or a flash drive looked up among the
+/// connected ones by name or serial number.
+fn resolve_rule(choice: RuleChoice) -> Result<Rule, Failure> {
+    match choice {
+        RuleChoice::Times(text) => Ok(Rule::Schedule { week: times_of(&text)? }),
+        RuleChoice::Drive(given) => {
+            let drives = crate::drives::connected().map_err(Failure::Failed)?;
+            let wanted = given.trim().to_lowercase();
+            let found: Vec<&crate::drives::Drive> =
+                drives.iter().filter(|d| d.serial.to_lowercase() == wanted || d.name.to_lowercase() == wanted).collect();
+            match found[..] {
+                [drive] => Ok(Rule::FlashDrive { serial: drive.serial.clone(), drive: drive.name.clone() }),
+                [] => Err(failed(format!("No flash drive \"{given}\" is connected; `bullseye-cli drives` lists the ones that are"))),
+                _ => Err(failed(format!("More than one flash drive is called \"{given}\"; give its serial number instead"))),
+            }
+        }
+    }
+}
+
+/// A condition as words: its times, or the drive it waits for.
+fn describe_rule(rule: &Rule) -> String {
+    match rule {
+        Rule::Schedule { week } => week.describe(),
+        Rule::FlashDrive { drive, .. } => format!("while the flash drive \"{drive}\" is not connected"),
+    }
+}
+
+/// `new` and `edit`'s changes, with lists and the condition looked up by name or id.
 fn apply_block_changes(overview: &Overview, block: &mut Definition, changes: BlockChanges) -> Result<(), Failure> {
     if let Some(name) = changes.name {
         block.name = name;
@@ -749,23 +845,24 @@ fn apply_block_changes(overview: &Overview, block: &mut Definition, changes: Blo
             .map(|l| find(&overview.lists, l, "block list", |l| (&l.id, &l.name)).map(|l| l.id.clone()))
             .collect::<Result<_, _>>()?;
     }
-    if let Some(schedule) = changes.schedule {
-        block.schedule = match schedule {
-            Some(s) => Some(find(&overview.schedules, &s, "schedule", |s| (&s.id, &s.name))?.id.clone()),
+    if let Some(condition) = changes.condition {
+        block.condition = match condition {
+            Some(c) => Some(find(&overview.conditions, &c, "condition", |c| (&c.id, &c.name))?.id.clone()),
             None => None,
         };
     }
     if let Some(lock) = changes.lock {
-        block.lock = find_lock_schedule(overview, lock)?;
+        block.lock = resolve_lock(overview, lock)?;
     }
     Ok(())
 }
 
-/// A lock with its lock schedule, given by name or id, as the schedule's id.
-fn find_lock_schedule(overview: &Overview, lock: Lock) -> Result<Lock, Failure> {
+/// A lock with what it names looked up: its lock condition, given by name or id, as the
+/// condition's id.
+fn resolve_lock(overview: &Overview, lock: Lock) -> Result<Lock, Failure> {
     match lock {
-        Lock::Scheduled { schedule } => {
-            Ok(Lock::Scheduled { schedule: find(&overview.schedules, &schedule, "schedule", |s| (&s.id, &s.name))?.id.clone() })
+        Lock::Condition { condition } => {
+            Ok(Lock::Condition { condition: find(&overview.conditions, &condition, "condition", |c| (&c.id, &c.name))?.id.clone() })
         }
         other => Ok(other),
     }
@@ -787,9 +884,13 @@ fn lock_warning(overview: &Overview, block: &Definition) -> Option<String> {
         Lock::UntilRestart => {
             Some("It cannot be stopped, changed or deleted until Windows restarts (a shut down with Fast Startup is not a restart).".into())
         }
-        Lock::Scheduled { schedule } => {
-            let schedule = overview.schedules.iter().find(|n| &n.id == schedule)?;
-            Some(format!("It cannot be stopped while its lock schedule \"{}\" is active ({}).", schedule.name, schedule.week.describe()))
+        Lock::Condition { condition } => {
+            let condition = overview.conditions.iter().find(|c| &c.id == condition)?;
+            Some(format!(
+                "It cannot be stopped while its lock condition \"{}\" is active ({}).",
+                condition.name,
+                describe_rule(&condition.rule)
+            ))
         }
         Lock::Password { .. } => Some("It can only be stopped with its password.".into()),
     }
@@ -884,23 +985,25 @@ fn read_password(prompt: &str) -> Result<String, String> {
 fn state(running: Option<&Running>) -> String {
     let Some(running) = running else { return "Not running".into() };
     let mut parts = vec!["Running".to_string()];
-    parts.push(match (running.enforcing, &running.schedule_change_words) {
+    parts.push(match (running.enforcing, &running.condition_change_words) {
         (true, None) => "blocking now".into(),
         (true, Some(change)) => format!("blocking now, inactive in {change}"),
-        (false, Some(change)) => format!("inactive by its schedule, active in {change}"),
-        (false, None) => "inactive by its schedule".into(),
+        (false, Some(change)) => format!("inactive by its condition, active in {change}"),
+        (false, None) => "inactive by its condition".into(),
     });
     parts.push(match (&running.remaining_words, running.locked) {
         _ if running.password => "locked with a password".into(),
         _ if running.until_restart => "locked until Windows restarts".into(),
         (Some(left), _) => format!("locked, {left} left"),
-        (None, true) => match &running.lock_change_words {
-            Some(change) => format!("locked by its lock schedule, for another {change}"),
-            None => "locked by its lock schedule".into(),
+        (None, true) => match (&running.lock_condition, &running.lock_change_words) {
+            (Some(Rule::FlashDrive { drive, .. }), _) => format!("locked, the flash drive \"{drive}\" is not connected"),
+            (_, Some(change)) => format!("locked by its lock condition, for another {change}"),
+            (_, None) => "locked by its lock condition".into(),
         },
-        (None, false) if running.lock_schedule.is_some() => match &running.lock_change_words {
-            Some(change) => format!("can be stopped, locked again in {change}"),
-            None => "can be stopped".into(),
+        (None, false) if running.lock_condition.is_some() => match (&running.lock_condition, &running.lock_change_words) {
+            (Some(Rule::FlashDrive { drive, .. }), _) => format!("can be stopped while the flash drive \"{drive}\" is connected"),
+            (_, Some(change)) => format!("can be stopped, locked again in {change}"),
+            (_, None) => "can be stopped".into(),
         },
         (None, false) => "not locked".into(),
     });
@@ -913,7 +1016,7 @@ fn table(rows: &[(String, String)]) -> String {
     rows.iter().map(|(name, what)| format!("  {name:width$}  {what}\n")).collect()
 }
 
-/// The names of the blocks that use a block list or schedule (`Library::users_of`).
+/// The names of the blocks that use a block list or condition (`Library::users_of`).
 fn users(overview: &Overview, id: &str) -> String {
     let library = Library { blocks: overview.blocks.clone(), ..Library::default() };
     let names: Vec<&str> = library.users_of(id).iter().map(|b| b.name.as_str()).collect();
@@ -924,7 +1027,7 @@ fn users(overview: &Overview, id: &str) -> String {
     }
 }
 
-/// What deleting a block list or schedule does to the blocks that use it, in sentences each with a
+/// What deleting a block list or condition does to the blocks that use it, in sentences each with a
 /// space in front, as the window's question says it; empty when no block uses it.
 fn fallout(overview: &Overview, id: &str) -> String {
     let library = Library { blocks: overview.blocks.clone(), ..Library::default() };
@@ -944,18 +1047,18 @@ fn fallout(overview: &Overview, id: &str) -> String {
     text
 }
 
-/// Everything, as the window's pages show it: the blocks, the block lists, the schedules.
+/// Everything, as the window's pages show it: the blocks, the block lists, the conditions.
 fn describe_overview(overview: &Overview) -> String {
     let blocks: Vec<(String, String)> =
         overview.blocks.iter().map(|b| (b.name.clone(), state(overview.running.iter().find(|r| r.id == b.id)))).collect();
     let lists: Vec<(String, String)> =
         overview.lists.iter().map(|l| (l.name.clone(), format!("used by {}", users(overview, &l.id)))).collect();
-    let schedules: Vec<(String, String)> = overview.schedules.iter().map(|s| (s.name.clone(), s.week.describe())).collect();
+    let conditions: Vec<(String, String)> = overview.conditions.iter().map(|c| (c.name.clone(), describe_rule(&c.rule))).collect();
     let mut text = String::new();
     for (title, rows, empty) in [
         ("Blocks", blocks, "  None yet. Make one with: bullseye-cli new <name> --list <block list>\n"),
         ("Block lists", lists, "  None yet. Make one with: bullseye-cli list new <name> --site <site>\n"),
-        ("Schedules", schedules, "  None (blocks without one are always active).\n"),
+        ("Conditions", conditions, "  None (blocks without one are always active).\n"),
     ] {
         text.push_str(&format!("{title}:\n"));
         text.push_str(&if rows.is_empty() { empty.to_string() } else { table(&rows) });
@@ -985,10 +1088,10 @@ fn enforcers_on(enforcers: Enforcers) -> Vec<String> {
 fn describe_block(overview: &Overview, block: &Definition, running: Option<&Running>) -> String {
     let lists: Vec<&str> =
         block.lists.iter().map(|l| overview.lists.iter().find(|n| &n.id == l).map(|n| n.name.as_str()).unwrap_or("(gone)")).collect();
-    let schedule = match &block.schedule {
+    let condition = match &block.condition {
         None => "always active".to_string(),
-        Some(id) => match overview.schedules.iter().find(|s| &s.id == id) {
-            Some(s) => format!("{} ({})", s.name, s.week.describe()),
+        Some(id) => match overview.conditions.iter().find(|c| &c.id == id) {
+            Some(c) => format!("{} ({})", c.name, describe_rule(&c.rule)),
             None => "(gone)".into(),
         },
     };
@@ -1003,14 +1106,14 @@ fn describe_block(overview: &Overview, block: &Definition, running: Option<&Runn
             _ => format!("until {until}"),
         },
         Lock::UntilRestart => "until restart: cannot be stopped until Windows restarts, and ends then".into(),
-        Lock::Scheduled { schedule } => match overview.schedules.iter().find(|s| &s.id == schedule) {
-            Some(s) => format!("scheduled: cannot be stopped while \"{}\" is active ({})", s.name, s.week.describe()),
-            None => "scheduled: (schedule gone)".into(),
+        Lock::Condition { condition } => match overview.conditions.iter().find(|c| &c.id == condition) {
+            Some(c) => format!("condition: cannot be stopped while \"{}\" is active ({})", c.name, describe_rule(&c.rule)),
+            None => "condition: (condition gone)".into(),
         },
         Lock::Password { .. } => "password: can only be stopped with its password".into(),
     };
     format!(
-        "Name:        {}\nId:          {}\nState:       {}\nBlock lists: {}\nSchedule:    {schedule}\nLock:        {lock}\n",
+        "Name:        {}\nId:          {}\nState:       {}\nBlock lists: {}\nCondition:   {condition}\nLock:        {lock}\n",
         block.name,
         block.id,
         state(running),
@@ -1021,12 +1124,14 @@ fn describe_block(overview: &Overview, block: &Definition, running: Option<&Runn
 /// One block list, everything about it.
 fn describe_list(overview: &Overview, list: &BlockList) -> String {
     format!(
-        "Name:           {}\nId:             {}\nBlock list:     {}\nAlways allowed: {}\nPrograms:       {}\nEnforcers:      {}\nUsed by:        {}\n",
+        "Name:           {}\nId:             {}\nBlock list:     {}\nAlways allowed: {}\nPrograms:       {}\nStore apps:     {}\nWindow titles:  {}\nEnforcers:      {}\nUsed by:        {}\n",
         list.name,
         list.id,
-        entries(&list.filters),
-        entries(&list.allowed),
-        entries(&list.programs),
+        entries(&list.entries.filters),
+        entries(&list.entries.allowed),
+        entries(&list.entries.programs),
+        entries(&list.entries.store_apps),
+        entries(&list.entries.titles),
         entries(&enforcers_on(list.enforcers)),
         users(overview, &list.id),
     )
@@ -1062,9 +1167,9 @@ mod tests {
         work.name = "Work hours".into();
         let mut b = block("b1", &["l1"]);
         b.name = "Work".into();
-        b.schedule = Some("s1".into());
-        b.lock = Lock::Scheduled { schedule: "s1".into() };
-        Overview { lists: vec![social], schedules: vec![work], blocks: vec![b], running: vec![], clock_synced: true }
+        b.condition = Some("s1".into());
+        b.lock = Lock::Condition { condition: "s1".into() };
+        Overview { lists: vec![social], conditions: vec![work], blocks: vec![b], running: vec![], clock_synced: true }
     }
 
     /// Every command the window can invoke has CLI commands that do the same, in the help and in
@@ -1092,7 +1197,7 @@ mod tests {
     #[test]
     fn the_enforcers_are_the_same_as_in_the_window() {
         let names = enforcer_names();
-        assert_eq!(names.len(), 4);
+        assert!(!names.is_empty());
         let page = include_str!("../../src/js/forms.js");
         let strings = include_str!("../../src/strings.js");
         for name in names {
@@ -1114,6 +1219,10 @@ mod tests {
             "youtube.com/watch*",
             "--program",
             "steam",
+            "--store-app",
+            "Microsoft.Xbox*",
+            "--title",
+            "*YouTube*",
             "--enforcers",
             "chromium_tabs, exe_names",
         ]);
@@ -1121,34 +1230,46 @@ mod tests {
         assert_eq!(name, "Social");
         let mut list = block_list("x", &[]);
         changes.apply(&mut list);
-        assert_eq!(list.filters, vec!["youtube.com", "reddit.com"]);
-        assert_eq!(list.allowed, vec!["youtube.com/watch*"]);
-        assert_eq!(list.programs, vec!["steam"]);
+        assert_eq!(list.entries.filters, vec!["youtube.com", "reddit.com"]);
+        assert_eq!(list.entries.allowed, vec!["youtube.com/watch*"]);
+        assert_eq!(list.entries.programs, vec!["steam"]);
+        assert_eq!(list.entries.store_apps, vec!["Microsoft.Xbox*"]);
+        assert_eq!(list.entries.titles, vec!["*YouTube*"]);
         assert_eq!(
             list.enforcers,
-            Enforcers { chromium_tabs: true, chromium_split_view: false, obsidian_web_viewer: false, exe_names: true }
+            Enforcers {
+                chromium_tabs: true,
+                chromium_split_view: false,
+                obsidian_web_viewer: false,
+                exe_names: true,
+                chromium_app_windows: false,
+                firefox_tabs: false,
+                firefox_split_view: false,
+                store_apps: false,
+                window_titles: false,
+            }
         );
     }
 
     #[test]
-    fn a_new_block_finds_its_lists_and_schedule_by_name() {
-        let line = args(&["new", "Evening", "--list", "social", "--list", "l1", "--schedule", "WORK HOURS", "--lock-duration", "2h 30m"]);
+    fn a_new_block_finds_its_lists_and_condition_by_name() {
+        let line = args(&["new", "Evening", "--list", "social", "--list", "l1", "--condition", "WORK HOURS", "--lock-duration", "2h 30m"]);
         let Ok(Command::New { name, changes }) = parse(&line) else { panic!("not new") };
         assert_eq!(name, "Evening");
         let mut b = block("x", &[]);
         assert!(apply_block_changes(&library(), &mut b, changes).is_ok());
         assert_eq!(
-            (b.lists, b.schedule, b.lock),
+            (b.lists, b.condition, b.lock),
             (vec!["l1".to_string(), "l1".to_string()], Some("s1".to_string()), Lock::Duration { duration: "2h 30m".into() })
         );
 
         // `always`, and a list that does not exist.
-        let Ok(Command::Edit { changes, .. }) = parse(&args(&["edit", "Work", "--schedule", "always", "--no-lock"])) else {
+        let Ok(Command::Edit { changes, .. }) = parse(&args(&["edit", "Work", "--condition", "always", "--no-lock"])) else {
             panic!("not edit")
         };
         let mut b = library().blocks[0].clone();
         assert!(apply_block_changes(&library(), &mut b, changes).is_ok());
-        assert_eq!((b.schedule, b.lock), (None, Lock::None));
+        assert_eq!((b.condition, b.lock), (None, Lock::None));
         let Ok(Command::Edit { changes, .. }) = parse(&args(&["edit", "Work", "--list", "Games"])) else { panic!("not edit") };
         assert!(apply_block_changes(&library(), &mut library().blocks[0].clone(), changes).is_err());
     }
@@ -1156,8 +1277,8 @@ mod tests {
     #[test]
     fn start_can_set_the_lock_as_the_tile_does() {
         assert_eq!(
-            parse(&args(&["start", "Work", "--lock-schedule", "Work hours", "--yes"])),
-            Ok(Command::Start { block: "Work".into(), lock: Some(Lock::Scheduled { schedule: "Work hours".into() }), yes: true })
+            parse(&args(&["start", "Work", "--lock-condition", "Work hours", "--yes"])),
+            Ok(Command::Start { block: "Work".into(), lock: Some(Lock::Condition { condition: "Work hours".into() }), yes: true })
         );
         assert_eq!(parse(&args(&["start", "Work"])), Ok(Command::Start { block: "Work".into(), lock: None, yes: false }));
         assert_eq!(
@@ -1173,21 +1294,21 @@ mod tests {
         // What starting asks, per lock.
         let overview = library();
         let warning = lock_warning(&overview, &overview.blocks[0]).unwrap();
-        assert!(warning.contains("while its lock schedule \"Work hours\" is active (Mon-Fri 08:00-17:00)"), "{warning}");
+        assert!(warning.contains("while its lock condition \"Work hours\" is active (Mon-Fri 08:00-17:00)"), "{warning}");
         let timed = Definition { lock: Lock::Duration { duration: "2h5m".into() }, ..overview.blocks[0].clone() };
         assert!(lock_warning(&overview, &timed).unwrap().contains("for 2 hours and 5 minutes."));
         assert_eq!(lock_warning(&overview, &Definition { lock: Lock::None, ..timed }), None);
     }
 
     #[test]
-    fn schedules_are_made_from_times() {
+    fn conditions_are_made_from_times_or_a_drive() {
         assert_eq!(
-            parse(&args(&["schedule", "new", "Work hours", "weekdays 9-17"])),
-            Ok(Command::ScheduleNew { name: "Work hours".into(), times: "weekdays 9-17".into() })
+            parse(&args(&["condition", "new", "Work hours", "--times", "weekdays 9-17"])),
+            Ok(Command::ConditionNew { name: "Work hours".into(), rule: RuleChoice::Times("weekdays 9-17".into()) })
         );
         assert_eq!(
-            parse(&args(&["schedule", "edit", "Work hours", "--times", "mon-thu 9-17"])),
-            Ok(Command::ScheduleEdit { schedule: "Work hours".into(), name: None, times: Some("mon-thu 9-17".into()) })
+            parse(&args(&["condition", "edit", "Work hours", "--times", "mon-thu 9-17"])),
+            Ok(Command::ConditionEdit { condition: "Work hours".into(), name: None, rule: Some(RuleChoice::Times("mon-thu 9-17".into())) })
         );
         assert!(times_of("always").is_err() && times_of("someday").is_err());
         assert_eq!(times_of("sat").ok().map(|w| w.describe()), Some("Sat 00:00-24:00".into()));
@@ -1199,7 +1320,7 @@ mod tests {
         std::fs::write(&path, "a.com\r\n\r\nb.com\n").unwrap();
         let line = args(&["list", "new", "A", "--sites-file", path.to_str().unwrap(), "--site", "c.com"]);
         let Ok(Command::ListNew { changes, .. }) = parse(&line) else { panic!("not new") };
-        assert_eq!(changes.filters, Some(vec!["c.com".into(), "a.com".into(), "b.com".into()]));
+        assert_eq!(changes.lists.get("filters"), Some(&vec!["c.com".to_string(), "a.com".into(), "b.com".into()]));
         let _ = std::fs::remove_file(path);
     }
 
@@ -1221,8 +1342,9 @@ mod tests {
             &["list", "new", "A", "--clear", "sites"],
             &["list", "edit", "A", "--clear", "everything"],
             &["list", "frob", "A"],
-            &["schedule", "new", "A"],
-            &["schedule", "check"],
+            &["condition", "new", "A"],
+            &["condition", "new", "A", "--times", "mon 9-17", "--drive", "Kingston"],
+            &["condition", "check"],
             &["edit"],
             &["start"],
             &["start", "A", "B"],
@@ -1246,8 +1368,8 @@ mod tests {
         assert_eq!(parse(&args(&["duplicate", "Work"])), Ok(Command::Duplicate { kind: Kind::Block, item: "Work".into() }));
         assert_eq!(parse(&args(&["list", "duplicate", "Social"])), Ok(Command::Duplicate { kind: Kind::List, item: "Social".into() }));
         assert_eq!(
-            parse(&args(&["schedule", "duplicate", "Evenings"])),
-            Ok(Command::Duplicate { kind: Kind::Schedule, item: "Evenings".into() })
+            parse(&args(&["condition", "duplicate", "Evenings"])),
+            Ok(Command::Duplicate { kind: Kind::Condition, item: "Evenings".into() })
         );
         assert_eq!(parse(&args(&["stop", "Work"])), Ok(Command::Stop { block: "Work".into(), password: None }));
         assert_eq!(
@@ -1263,14 +1385,20 @@ mod tests {
             })
         );
         assert!(parse(&args(&["start", "Work", "--lock-password", "pw", "--no-lock"])).is_err());
+        // A flash drive is named here and looked up among the connected ones when the command runs.
+        assert_eq!(
+            parse(&args(&["condition", "new", "Key", "--drive", "Kingston"])),
+            Ok(Command::ConditionNew { name: "Key".into(), rule: RuleChoice::Drive("Kingston".into()) })
+        );
+        assert_eq!(parse(&args(&["drives", "--json"])), Ok(Command::Drives { json: true }));
         assert_eq!(parse(&args(&["list", "show", "Social"])), Ok(Command::ListShow { list: "Social".into(), json: false }));
         assert_eq!(parse(&args(&["list", "delete", "Social", "--yes"])), Ok(Command::ListDelete { list: "Social".into(), yes: true }));
-        assert_eq!(parse(&args(&["schedule", "show", "Work hours"])), Ok(Command::ScheduleShow { schedule: "Work hours".into() }));
+        assert_eq!(parse(&args(&["condition", "show", "Work hours"])), Ok(Command::ConditionShow { condition: "Work hours".into() }));
         assert_eq!(
-            parse(&args(&["schedule", "delete", "Work hours"])),
-            Ok(Command::ScheduleDelete { schedule: "Work hours".into(), yes: false })
+            parse(&args(&["condition", "delete", "Work hours"])),
+            Ok(Command::ConditionDelete { condition: "Work hours".into(), yes: false })
         );
-        assert_eq!(parse(&args(&["schedule", "check", "weekdays 9-5pm"])), Ok(Command::ScheduleCheck { times: "weekdays 9-5pm".into() }));
+        assert_eq!(parse(&args(&["condition", "check", "weekdays 9-5pm"])), Ok(Command::ConditionCheck { times: "weekdays 9-5pm".into() }));
         assert_eq!(parse(&args(&["unlock", "--password", "pw"])), Ok(Command::Unlock { password: Some("pw".into()) }));
     }
 
@@ -1301,7 +1429,7 @@ mod tests {
 
     #[test]
     fn the_status_reads_like_the_pages() {
-        let empty = Overview { lists: vec![], schedules: vec![], blocks: vec![], running: vec![], clock_synced: true };
+        let empty = Overview { lists: vec![], conditions: vec![], blocks: vec![], running: vec![], clock_synced: true };
         assert!(describe_overview(&empty).contains("Blocks:\n  None yet"));
         let mut overview = library();
         overview.running.push(Running {
@@ -1309,40 +1437,38 @@ mod tests {
             name: "Work".into(),
             lists: vec![RunningList {
                 name: "Social".into(),
-                filters: vec!["youtube.com".into()],
-                allowed: vec![],
-                programs: vec![],
+                entries: Entries { filters: vec!["youtube.com".into()], ..Entries::default() },
                 enforcers: Enforcers::default(),
             }],
             remaining: None,
-            lock_schedule: Week::parse("mon-fri 8-17").unwrap(),
+            lock_condition: Week::parse("mon-fri 8-17").unwrap().map(|week| Rule::Schedule { week }),
             until_restart: false,
             password: false,
             locked: false,
-            schedule: Week::parse("mon-fri 8-17").unwrap(),
+            condition: Week::parse("mon-fri 8-17").unwrap().map(|week| Rule::Schedule { week }),
             enforcing: false,
-            schedule_change: Some(3600),
+            condition_change: Some(3600),
             remaining_words: None,
-            schedule_change_words: Some(duration::words(3600)),
+            condition_change_words: Some(duration::words(3600)),
             lock_change: Some(3600),
             lock_change_words: Some(duration::words(3600)),
         });
         overview.clock_synced = false;
         let text = describe_overview(&overview);
         assert!(
-            text.contains("  Work  Running · inactive by its schedule, active in 1 hour · can be stopped, locked again in 1 hour"),
+            text.contains("  Work  Running · inactive by its condition, active in 1 hour · can be stopped, locked again in 1 hour"),
             "{text}"
         );
         assert!(text.contains("Block lists:\n  Social  used by Work"), "{text}");
-        assert!(text.contains("Schedules:\n  Work hours  Mon-Fri 08:00-17:00"), "{text}");
+        assert!(text.contains("Conditions:\n  Work hours  Mon-Fri 08:00-17:00"), "{text}");
         assert!(text.contains("Waiting for internet time"), "{text}");
 
         let block = describe_block(&overview, &overview.blocks[0], overview.running.first());
-        assert!(block.contains("Block lists: Social") && block.contains("Schedule:    Work hours (Mon-Fri 08:00-17:00)"), "{block}");
-        assert!(block.contains("Lock:        scheduled: cannot be stopped while \"Work hours\" is active"), "{block}");
+        assert!(block.contains("Block lists: Social") && block.contains("Condition:   Work hours (Mon-Fri 08:00-17:00)"), "{block}");
+        assert!(block.contains("Lock:        condition: cannot be stopped while \"Work hours\" is active"), "{block}");
         assert_eq!(
-            find_lock_schedule(&overview, Lock::Scheduled { schedule: "work HOURS".into() }).ok(),
-            Some(Lock::Scheduled { schedule: "s1".into() })
+            resolve_lock(&overview, Lock::Condition { condition: "work HOURS".into() }).ok(),
+            Some(Lock::Condition { condition: "s1".into() })
         );
         let list = describe_list(&overview, &overview.lists[0]);
         assert!(list.contains("Block list:     youtube.com") && list.contains("Used by:        Work"), "{list}");

@@ -10,7 +10,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::block::Running;
-use crate::definitions::{BlockList, Definition, Kind, Library, NamedSchedule};
+use crate::definitions::{BlockList, Condition, Definition, Kind, Library};
+use crate::lists::Entries;
 use crate::state::Enforcers;
 
 /// The pipe the service listens on.
@@ -22,11 +23,11 @@ const MAX_MESSAGE: usize = 1024 * 1024;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 #[serde(tag = "cmd", content = "args", rename_all = "snake_case")]
-// A saved block is larger than the rest (its weekly schedule); a request lives only as long as it is
+// A saved condition is larger than the rest (its weekly schedule); a request lives only as long as it is
 // answered.
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
-    /// What the UI shows: the block lists, schedules and blocks, and which blocks run.
+    /// What the UI shows: the block lists, conditions and blocks, and which blocks run.
     Status,
     /// What the app enforces: asked every second, from the thread that closes tabs, which is how
     /// the service knows the closing is going on (`watchdog::AppSlot`).
@@ -43,14 +44,14 @@ pub enum Request {
     /// Removes a block list, and takes it out of the blocks that use it. Refused while a running
     /// block uses it.
     DeleteList { id: String },
-    /// Adds a schedule, or replaces the one with its id. Refused while a running block uses it.
-    SaveSchedule { schedule: NamedSchedule },
-    /// Removes a schedule, and takes it out of the blocks that use it. Refused while a running
+    /// Adds a condition, or replaces the one with its id. Refused while a running block uses it.
+    SaveCondition { condition: Condition },
+    /// Removes a condition, and takes it out of the blocks that use it. Refused while a running
     /// block uses it.
-    DeleteSchedule { id: String },
-    /// Copies a block, block list or schedule as `new_id`, named after it with a number.
+    DeleteCondition { id: String },
+    /// Copies a block, block list or condition as `new_id`, named after it with a number.
     Duplicate { kind: Kind, id: String, new_id: String },
-    /// Replaces every block list, schedule and block with these, from a settings file (Import).
+    /// Replaces every block list, condition and block with these, from a settings file (Import).
     /// Refused while a block runs.
     Import { library: Library },
     /// Starts the block defined as `id`, as it is defined now.
@@ -81,7 +82,7 @@ pub enum Response {
 pub struct Overview {
     /// Everything the user has defined, each kind in the order it was made (`definitions.rs`).
     pub lists: Vec<BlockList>,
-    pub schedules: Vec<NamedSchedule>,
+    pub conditions: Vec<Condition>,
     pub blocks: Vec<Definition>,
     /// The blocks that run, as they were started (`Running::id` is the definition's).
     pub running: Vec<Running>,
@@ -93,16 +94,15 @@ pub struct Overview {
 impl Overview {
     /// What the user has defined, without what runs.
     pub fn library(self) -> Library {
-        Library { lists: self.lists, schedules: self.schedules, blocks: self.blocks }
+        Library { lists: self.lists, conditions: self.conditions, blocks: self.blocks }
     }
 }
 
 /// What the app has to enforce for one running block.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Policy {
-    pub filters: Vec<String>,
-    pub allowed: Vec<String>,
-    pub programs: Vec<String>,
+    #[serde(flatten)]
+    pub entries: Entries,
     pub enforcers: Enforcers,
 }
 
@@ -138,16 +138,18 @@ mod tests {
     fn a_request_survives_the_wire() {
         use crate::definitions::tests::{block, block_list, weekly};
         let mut list = block_list("l", &["tweakers.net"]);
-        list.allowed = vec!["gathering.tweakers.net".into()];
-        list.programs = vec!["steam*".into()];
+        list.entries.allowed = vec!["gathering.tweakers.net".into()];
+        list.entries.programs = vec!["steam*".into()];
+        list.entries.store_apps = vec!["Microsoft.Xbox*".into()];
+        list.entries.titles = vec!["*YouTube*".into()];
         let requests = [
             Request::SaveList { list },
-            Request::SaveSchedule { schedule: weekly("s", "mon-fri 8-17") },
+            Request::SaveCondition { condition: weekly("s", "mon-fri 8-17") },
             Request::SaveBlock { block: block("a", &["l"]) },
             Request::Start { id: "a".into() },
             Request::DeleteBlock { id: "a".into() },
             Request::DeleteList { id: "l".into() },
-            Request::DeleteSchedule { id: "s".into() },
+            Request::DeleteCondition { id: "s".into() },
         ];
         for request in requests {
             let mut wire = Vec::new();
@@ -163,9 +165,13 @@ mod tests {
     #[test]
     fn a_policy_survives_the_wire() {
         let response = Response::Policy(vec![Policy {
-            filters: vec!["a.com".into()],
-            allowed: vec!["b.com".into()],
-            programs: vec!["game.exe".into()],
+            entries: Entries {
+                filters: vec!["a.com".into()],
+                allowed: vec!["b.com".into()],
+                programs: vec!["game.exe".into()],
+                store_apps: vec!["A.B_1".into()],
+                titles: vec!["*c*".into()],
+            },
             enforcers: Enforcers::default(),
         }]);
         let mut wire = Vec::new();

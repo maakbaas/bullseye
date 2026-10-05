@@ -14,7 +14,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::block::RunLock;
-use crate::schedule::Week;
+use crate::condition::Rule;
+use crate::lists::Entries;
 
 /// A running block as written to disk.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -30,9 +31,9 @@ pub struct Saved {
     pub seen: Option<u64>,
     /// How it is locked; a password lock only as its hash, never the password.
     pub lock: RunLock,
-    /// When the block is active (`schedule.rs`); `None` is always.
-    pub schedule: Option<Week>,
-    /// The time zone the schedule is read in, by name (`localtime::Zone::named`), fixed when the
+    /// When the block is active (`condition.rs`); `None` is always.
+    pub condition: Option<Rule>,
+    /// The time zone a schedule is read in, by name (`localtime::Zone::named`), fixed when the
     /// block started.
     pub zone: String,
 }
@@ -41,9 +42,8 @@ pub struct Saved {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SavedPart {
     pub name: String,
-    pub filters: Vec<String>,
-    pub allowed: Vec<String>,
-    pub programs: Vec<String>,
+    #[serde(flatten)]
+    pub entries: Entries,
     pub enforcers: Enforcers,
 }
 
@@ -55,6 +55,17 @@ pub struct Enforcers {
     pub chromium_tabs: bool,
     /// Closes a blocked page shown in either half of a Chromium split view.
     pub chromium_split_view: bool,
+    /// Closes a blocked page shown in an app window (`chrome --app=<url>`, or a popup): a Chromium
+    /// window with no tab strip and no address bar.
+    pub chromium_app_windows: bool,
+    /// Closes a Firefox tab whose page is on the block list (`tab_closer.rs`).
+    pub firefox_tabs: bool,
+    /// Closes a blocked page shown in either half of a Firefox split view.
+    pub firefox_split_view: bool,
+    /// Closes the Store apps on the list of them (`store_apps.rs`).
+    pub store_apps: bool,
+    /// Closes the windows whose title is on the list of titles (`patterns.rs`).
+    pub window_titles: bool,
     /// Closes Obsidian while it shows web content; not linked to the block list.
     pub obsidian_web_viewer: bool,
     /// Closes the programs on the program list (`programs.rs`).
@@ -70,18 +81,27 @@ pub enum Uses {
     Sites,
     /// The list of programs (`programs.rs`).
     Programs,
+    /// The list of Store apps (`store_apps.rs`).
+    StoreApps,
+    /// The list of window titles (`patterns.rs`).
+    Titles,
 }
 
 impl Enforcers {
     /// Every enforcer as (turned on, what it needs). **The one place to list a new enforcer**: add
     /// its field above and a line here; what may start and what runs follow from it. (A new kind of
-    /// list also needs a `Uses` variant and an arm in `block::Lists::has`.)
+    /// list also needs a `Uses` variant and an arm in `lists::Lists::has`.)
     fn all(&self) -> Vec<(bool, Uses)> {
         vec![
             (self.chromium_tabs, Uses::Sites),
             (self.chromium_split_view, Uses::Sites),
+            (self.chromium_app_windows, Uses::Sites),
+            (self.firefox_tabs, Uses::Sites),
+            (self.firefox_split_view, Uses::Sites),
             (self.obsidian_web_viewer, Uses::Nothing),
             (self.exe_names, Uses::Programs),
+            (self.store_apps, Uses::StoreApps),
+            (self.window_titles, Uses::Titles),
         ]
     }
 
@@ -100,7 +120,17 @@ impl Enforcers {
 
 impl Default for Enforcers {
     fn default() -> Enforcers {
-        Enforcers { chromium_tabs: true, chromium_split_view: true, obsidian_web_viewer: true, exe_names: true }
+        Enforcers {
+            chromium_tabs: true,
+            chromium_split_view: true,
+            obsidian_web_viewer: true,
+            exe_names: true,
+            chromium_app_windows: true,
+            firefox_tabs: true,
+            firefox_split_view: true,
+            store_apps: true,
+            window_titles: true,
+        }
     }
 }
 
@@ -225,12 +255,10 @@ mod tests {
         let lock = until.map_or(RunLock::None, |at| RunLock::Ends { at });
         let part = SavedPart {
             name: "A".into(),
-            filters: vec!["tweakers.net".to_string()],
-            allowed: Vec::new(),
-            programs: Vec::new(),
+            entries: Entries { filters: vec!["tweakers.net".to_string()], ..Entries::default() },
             enforcers: Enforcers::default(),
         };
-        Saved { id: "a".into(), name: "A".into(), parts: vec![part], seen: None, lock, schedule: None, zone: "fixed:+0".into() }
+        Saved { id: "a".into(), name: "A".into(), parts: vec![part], seen: None, lock, condition: None, zone: "fixed:+0".into() }
     }
 
     #[test]
@@ -279,8 +307,13 @@ mod tests {
         let only = |tabs, split, obsidian, exe| Enforcers {
             chromium_tabs: tabs,
             chromium_split_view: split,
+            chromium_app_windows: false,
+            firefox_tabs: false,
+            firefox_split_view: false,
             obsidian_web_viewer: obsidian,
             exe_names: exe,
+            store_apps: false,
+            window_titles: false,
         };
         // Which lists have entries.
         let lists = |sites: bool, programs: bool| {
@@ -288,6 +321,7 @@ mod tests {
                 Uses::Nothing => true,
                 Uses::Sites => sites,
                 Uses::Programs => programs,
+                Uses::StoreApps | Uses::Titles => false,
             }
         };
         // With entries, any enforcer that is on can run.

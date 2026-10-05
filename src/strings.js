@@ -20,7 +20,7 @@ window.STRINGS = {
     label: "Pages",
     blocks: "Blocks",
     lists: "Block lists",
-    schedules: "Schedules",
+    conditions: "Conditions",
     settings: "Settings",
   },
 
@@ -36,30 +36,30 @@ window.STRINGS = {
     options: "Options",
     locked: "Locked",
     name: "Name",
-    // A block list or schedule that a block names but that no longer exists.
+    // A block list or condition that a block names but that no longer exists.
     gone: "(gone)",
     // A name inside a sentence; {name}.
     quoted: "“{name}”",
     // Between names in a list of them.
     separator: ", ",
     serviceDown: "The Bullseye service does not answer",
-    // A block list's or schedule's tile while a running block uses it.
+    // A block list's or condition's tile while a running block uses it.
     inUse: "In use by a running block",
     // {names}: the blocks that use it, quoted.
     usedBy: "Used by {names}",
-    // While a schedule's description is being asked of the backend.
+    // While a weekly schedule's description is being asked of the backend.
     weeklyStandIn: "a weekly schedule",
   },
 
   blocks: {
     title: "Blocks",
     noun: "block",
-    description: "A block is what you start: one or more block lists, a schedule and a lock. Start any of them; they run independently.",
+    description: "A block is what you start: one or more block lists, a condition and a lock. Start any of them; they run independently.",
     newLabel: "New block",
     editTitle: "Edit block",
     emptyTitle: "No blocks yet",
-    emptyText: "A block combines block lists (what to block) with a schedule (when). Make block lists first, then use New block.",
-    editorDescription: "A block enforces its block lists, when its schedule has it active. Its lock is set on its tile, next to Start, and changed from its menu.",
+    emptyText: "A block combines block lists (what to block) with a condition (when). Make block lists first, then use New block.",
+    editorDescription: "A block enforces its block lists, when its condition has it active. Its lock is set on its tile, next to Start, and changed from its menu.",
     held: "This block is running. Its settings can be changed once it ends.",
 
     // The editor.
@@ -69,25 +69,30 @@ window.STRINGS = {
     whatText: "The block lists it enforces, each by its own enforcers and allowed sites.",
     listsLegend: "Block lists",
     noLists: "No block lists yet: a block needs at least one.",
-    // Under the block lists and the schedule in the block editor: made there, added to this block.
+    // Under the block lists and the condition in the block editor: made there, added to this block.
     newList: "New block list",
-    newSchedule: "New schedule",
+    newCondition: "New condition",
+    editList: "Edit",
+    editCondition: "Edit condition",
     whenTitle: "When",
-    whenText: "Outside its schedule a running block blocks nothing, but keeps running.",
-    scheduleLabel: "Schedule",
-    scheduleHelper: "When it is active once started. Schedules are made on the Schedules page.",
+    whenText: "While its condition is not active a running block blocks nothing, but keeps running.",
+    conditionLabel: "Condition",
+    conditionHelper: "When it is active once started. Conditions are made on the Conditions page.",
     always: "Always",
 
-    // A block's tile. {times}: a weekly schedule in words; {schedule}: its name; {left} and
-    // {change}: times in words.
+    // A block's tile. {times}: a weekly schedule in words; {drive}: a flash drive's name, quoted;
+    // {name}: the condition's name; {left} and {change}: times in words.
     tile: {
       noLists: "No block lists yet",
       active: "Active {times}",
-      activeNamed: "Active {times} ({schedule})",
+      activeNamed: "Active {times} ({name})",
+      activeDrive: "Active while {drive} is not connected",
       always: "Always active",
       unknownLock: "Unknown lock",
       lockedPassword: "Locked with a password: stop it with its password",
       lockedRestart: "Locked until Windows restarts",
+      lockedDrive: "Locked because {drive} is not connected",
+      freeDrive: "Unlocked because {drive} is connected",
       lockedTimer: "Locked: {left} left",
       lockedSchedule: "Locked by its lock schedule, for another {left}",
       lockedScheduleOpen: "Locked by its lock schedule",
@@ -97,13 +102,14 @@ window.STRINGS = {
       activeNow: "Active now; inactive in {change}",
       inactiveUntil: "Inactive by its schedule; active again in {change}",
       inactive: "Inactive by its schedule",
+      inactiveDrive: "Inactive because {drive} is connected",
     },
     // The tag on a block's tile.
     state: {
       notRunning: "Not running",
       running: "Running",
       runningLocked: "Running · locked",
-      inactive: "Inactive by schedule",
+      inactive: "Inactive by condition",
     },
     start: "Start",
     stop: "Stop",
@@ -163,20 +169,22 @@ window.STRINGS = {
       confirmBody: "It cannot be stopped, changed or deleted until Windows restarts, and it ends then. Shutting down with Fast Startup on is not a restart. Only the unlock password in Settings ends it early.",
       confirmAction: "Start locked",
     },
-    scheduled: {
-      label: "Schedule",
+    condition: {
+      label: "Condition",
       field: "Locked during",
-      helper: "It cannot be stopped while this schedule is active",
-      missing: "Choose a schedule",
-      // Chosen when there is no schedule yet: offers to make one, which the lock is then set to.
-      noneHeading: "No schedules yet",
-      noneBody: "A schedule lock needs a schedule to lock by. Make one now? Once it is saved, the lock is set to it.",
-      noneAction: "New schedule",
-      // {schedule}: the lock schedule's name; {times}: its times in words.
-      describe: "Locked while {schedule} is active ({times})",
-      describeGone: "Locked by a schedule that is gone",
-      confirmHeading: "Start {name} locked during {schedule}?",
-      confirmBody: "It cannot be stopped while {schedule} is active ({times}). Outside those times you can stop it. Only the unlock password in Settings ends it early.",
+      helper: "It cannot be stopped while this condition is active",
+      missing: "Choose a condition",
+      // Chosen when there is no condition yet: offers to make one, which the lock is then set to.
+      noneHeading: "No conditions yet",
+      noneBody: "A condition lock needs a condition to lock by. Make one now? Once it is saved, the lock is set to it.",
+      noneAction: "New condition",
+      // {condition}: its name, quoted; {what}: its schedule in words, or the drive it waits for.
+      describe: "Locked while {condition} is active ({what})",
+      // {drive}: a flash drive's name, quoted: said without the condition's name, which is long enough.
+      describeDrive: "Locked while {drive} is not connected",
+      describeGone: "Locked by a condition that is gone",
+      confirmHeading: "Start {name} locked during {condition}?",
+      confirmBody: "It cannot be stopped while {condition} is active ({what}). Otherwise you can stop it. Only the unlock password in Settings ends it early.",
       confirmAction: "Start locked",
     },
     password: {
@@ -233,58 +241,103 @@ window.STRINGS = {
       helper: "One program per line, e.g. steam.exe; * matches any part. Windows' own programs cannot be listed.",
       count: { one: "{n} program closed", other: "{n} programs closed" },
     },
+    store_apps: {
+      label: "Microsoft Store apps to close",
+      placeholder: "",
+      helper: "Apps installed from the Microsoft Store: tick the ones to close. Windows' own apps are not listed.",
+      loading: "Looking up the installed apps...",
+      failed: "The installed apps could not be listed",
+      count: { one: "{n} Microsoft Store app closed", other: "{n} Microsoft Store apps closed" },
+    },
+    titles: {
+      label: "Window titles to close",
+      placeholder: "*YouTube*",
+      helper: "One per line: the whole title, where * matches any part and letter case does not matter. The whole window closes, a browser's with all its tabs.",
+      count: { one: "{n} window title closed", other: "{n} window titles closed" },
+    },
 
     // The editor's sections, with the enforcers in each. `short` is the tile's line for an
     // enforcer that needs no list.
     sections: {
       websites: {
         title: "Websites",
-        description: "Closes pages on the list in Chrome, Edge and Brave.",
+        description: "Closes pages on the list in Chrome, Edge, Brave and Firefox.",
       },
       programs: {
         title: "Programs",
         description: "Asks the programs on the list to close, and ends them after 3 seconds.",
       },
-      apps: {
-        title: "Apps",
-        description: "Need no list.",
+      store: {
+        title: "Microsoft Store apps",
+        description: "Asks the apps ticked to close, and ends them after 3 seconds.",
+      },
+      titles: {
+        title: "Windows by title",
+        description: "Closes a window when its title matches one on the list.",
+      },
+      other: {
+        title: "Other",
       },
     },
     enforcers: {
-      chromium_tabs: { label: "Close blocked tabs" },
-      chromium_split_view: { label: "Close blocked pages in split view" },
+      chromium_tabs: { label: "Close blocked tabs in Chromium" },
+      chromium_split_view: { label: "Close blocked pages in Chromium split view" },
+      chromium_app_windows: { label: "Close blocked app windows in Chromium" },
+      firefox_tabs: { label: "Close blocked tabs in Firefox" },
+      firefox_split_view: { label: "Close blocked pages in Firefox split view" },
       exe_names: { label: "Close these programs" },
-      obsidian_web_viewer: { label: "Close Obsidian when it shows web pages", short: "Closes Obsidian's web viewer" },
+      store_apps: { label: "Close these Microsoft Store apps" },
+      window_titles: { label: "Close these windows" },
+      obsidian_web_viewer: { label: "Close Obsidian when web viewer is active", short: "Closes Obsidian's web viewer" },
     },
   },
 
-  schedules: {
-    title: "Schedules",
-    noun: "schedule",
-    description: "When a block is active, as a weekly schedule. A block without one is always active. Outside its schedule a running block blocks nothing.",
-    newLabel: "New schedule",
-    editTitle: "Edit schedule",
-    emptyTitle: "No schedules yet",
-    emptyText: "Blocks without a schedule are always active. Use New schedule to make one, e.g. work hours.",
-    editorDescription: "Kept by the Bullseye service. A running block keeps the schedule it was started with.",
+  conditions: {
+    title: "Conditions",
+    noun: "condition",
+    description: "When a block is active: at the times of a weekly schedule, or while a flash drive is not connected. A block without one is always active. While its condition is not active a running block blocks nothing.",
+    newLabel: "New condition",
+    editTitle: "Edit condition",
+    emptyTitle: "No conditions yet",
+    emptyText: "Blocks without a condition are always active. Use New condition to make one, e.g. work hours.",
+    editorDescription: "Kept by the Bullseye service. A running block keeps the condition it was started with.",
     held: "{names} uses it and is running. It can be changed once that has ended.",
     namePlaceholder: "e.g. Work hours",
-    nameMissing: "Give the schedule a name",
-    // {times}: the schedule in words.
+    nameMissing: "Give the condition a name",
+    typeLabel: "Type",
+    typeSchedule: "Weekly schedule",
+    typeDrive: "Flash drive",
+    // {times}: the schedule in words; {drive}: the drive's name, quoted.
     active: "Active {times}",
+    activeDrive: "Active while {drive} is not connected",
+    // What a condition lock waits for, in words; {drive}: quoted.
+    driveWhat: "the flash drive {drive} is not connected",
     notUsed: "Not used by a block yet",
     // Above the week grid.
     nothingMarked: "Nothing marked yet: mark when blocks are active.",
     gridHelp: "Drag over the week to mark when blocks are active. Start on a marked time to clear it instead.",
     // The week grid's column heads, Monday first.
     days: { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" },
+    // A flash drive condition: the drive is the key. The connected drives are looked up when the
+    // editor opens and on "Scan again".
+    drive: {
+      field: "Flash drive",
+      helper: "Active while this drive is not connected: plug it in and blocks that use it are inactive (and a lock by it opens), take it out and they are active again. Drives that report no serial number are not listed.",
+      choose: "Choose a flash drive",
+      scanning: "Looking for connected drives...",
+      none: "No flash drive found: connect it and scan again",
+      // {name}: the drive's name and serial number, for the one the condition was set to that is not connected now.
+      away: "{name}, not connected",
+      scan: "Scan again",
+      missing: "Choose a flash drive",
+    },
   },
 
-  // Deleting a block, block list or schedule. {noun}: the kind's noun above.
+  // Deleting a block, block list or condition. {noun}: the kind's noun above.
   delete: {
     heading: "Delete {name}?",
     body: "The {noun} is removed. This cannot be undone.",
-    // What it does to the blocks that use a block list or schedule; {names}: those blocks, quoted.
+    // What it does to the blocks that use a block list or condition; {names}: those blocks, quoted.
     deletesToo: "{names} is deleted too, as it has no other block list.",
     keepsOthers: "{names} keeps its other block lists.",
     becomesAlways: "{names} is always active from then on.",
@@ -300,23 +353,23 @@ window.STRINGS = {
   settings: {
     title: "Settings",
     unlockTitle: "Unlock",
-    unlockText: "Ends every running block, locked ones included. Bullseye stays open, and your blocks, block lists and schedules stay as they are. This is the only way to end a locked block early.",
+    unlockText: "Ends every running block, locked ones included. Bullseye stays open, and your blocks, block lists and conditions stay as they are. This is the only way to end a locked block early.",
     passwordLabel: "Unlock password",
     unlock: "Unlock",
     failed: "Not unlocked",
     unlocked: "Unlocked: every block has ended",
     transferTitle: "Move to another computer",
-    transferText: "Export saves every block list, schedule and block to a file. Import, on the other computer, replaces all of them there with what is in the file. Password locks are not in the file: a block with one comes without a lock.",
+    transferText: "Export saves every block list, condition and block to a file. Import, on the other computer, replaces all of them there with what is in the file. Password locks are not in the file: a block with one comes without a lock.",
     export: "Export",
     import: "Import",
     // {file}: the file's name.
     exported: "Exported to {file}",
     exportFailed: "Not exported",
     importHeading: "Replace everything with this file?",
-    // {lists}, {schedules}, {blocks}: the counts below, as in the file.
-    importBody: "Its {lists}, {schedules} and {blocks} replace the block lists, schedules and blocks you have now. This cannot be undone.",
+    // {lists}, {conditions}, {blocks}: the counts below, as in the file.
+    importBody: "Its {lists}, {conditions} and {blocks} replace the block lists, conditions and blocks you have now. This cannot be undone.",
     importLists: { one: "{n} block list", other: "{n} block lists" },
-    importSchedules: { one: "{n} schedule", other: "{n} schedules" },
+    importConditions: { one: "{n} condition", other: "{n} conditions" },
     importBlocks: { one: "{n} block", other: "{n} blocks" },
     // {names}: the blocks, quoted; {n}: how many.
     importUnlocked: {

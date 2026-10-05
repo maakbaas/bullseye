@@ -23,7 +23,7 @@ pub struct Context {
     /// Which process is the app (`watchdog.rs`).
     slot: Arc<AppSlot>,
     /// Held while the definitions change or a block starts, so a block cannot start while a list or
-    /// schedule it uses is being changed (the check and the change are one step).
+    /// condition it uses is being changed (the check and the change are one step).
     editing: Mutex<()>,
 }
 
@@ -49,7 +49,7 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
             let library = context.definitions.library().redacted();
             let overview = Overview {
                 lists: library.lists,
-                schedules: library.schedules,
+                conditions: library.conditions,
                 blocks: library.blocks,
                 running: status.running,
                 clock_synced: status.clock_synced,
@@ -70,12 +70,7 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
                 .map(|active| active.blocks)
                 .unwrap_or_default()
                 .into_iter()
-                .map(|block| Policy {
-                    filters: block.filters.entries(),
-                    allowed: block.allowed.entries(),
-                    programs: block.programs.entries(),
-                    enforcers: block.enforcers,
-                })
+                .map(|block| Policy { entries: block.lists.entries(), enforcers: block.enforcers })
                 .collect();
             (Response::Policy(policies), None)
         }
@@ -85,8 +80,8 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
         Request::DeleteBlock { id } => (done(edit(context, &id, |d| d.delete_block(&id))), None),
         Request::SaveList { list } => (done(edit(context, &list.id.clone(), |d| d.save_list(list))), None),
         Request::DeleteList { id } => (done(edit(context, &id, |d| d.delete_list(&id))), None),
-        Request::SaveSchedule { schedule } => (done(edit(context, &schedule.id.clone(), |d| d.save_schedule(schedule))), None),
-        Request::DeleteSchedule { id } => (done(edit(context, &id, |d| d.delete_schedule(&id))), None),
+        Request::SaveCondition { condition } => (done(edit(context, &condition.id.clone(), |d| d.save_condition(condition))), None),
+        Request::DeleteCondition { id } => (done(edit(context, &id, |d| d.delete_condition(&id))), None),
         // A copy changes nothing that exists, so also of what a running block holds.
         Request::Duplicate { kind, id, new_id } => {
             let _editing = context.editing.locked();
@@ -119,7 +114,7 @@ fn import(context: &Context, library: Library) -> Result<(), String> {
 }
 
 /// A change to the definitions, unless it touches a running block: the block `id` itself, or a
-/// block list or schedule `id` that a running block uses.
+/// block list or condition `id` that a running block uses.
 fn edit(context: &Context, id: &str, change: impl FnOnce(&Definitions) -> Result<(), String>) -> Result<(), String> {
     let _editing = context.editing.locked();
     let running = context.blocklist.running_ids();
@@ -134,7 +129,7 @@ fn edit(context: &Context, id: &str, change: impl FnOnce(&Definitions) -> Result
     change(&context.definitions)
 }
 
-/// Starts a block as it is defined now, with its block lists and schedule, checked again where it
+/// Starts a block as it is defined now, with its block lists and condition, checked again where it
 /// counts.
 fn start(context: &Context, id: &str) -> Result<(), String> {
     let _editing = context.editing.locked();
@@ -144,7 +139,7 @@ fn start(context: &Context, id: &str) -> Result<(), String> {
         Lock::None => StartLock::None,
         Lock::Duration { .. } => StartLock::For(lock.duration()?.ok_or("No duration for the lock")?),
         Lock::Until { .. } => StartLock::Until(lock.until()?.ok_or("No end for the lock")?),
-        Lock::Scheduled { .. } => StartLock::Scheduled(resolved.lock_week.clone().ok_or("No schedule for the lock")?),
+        Lock::Condition { .. } => StartLock::Condition(resolved.lock_condition.clone().ok_or("No condition for the lock")?),
         Lock::UntilRestart => StartLock::UntilRestart,
         Lock::Password { .. } => StartLock::Password(lock.password_hash().ok_or("Set a password for the password lock")?.to_string()),
     };
@@ -158,7 +153,7 @@ fn start(context: &Context, id: &str) -> Result<(), String> {
     if !parts.iter().any(Part::can_run) {
         return Err("Nothing to block: add a site or program to its block lists, or turn on an enforcer that needs no list".into());
     }
-    context.blocklist.start(id, &resolved.block.name, parts, resolved.week, lock)
+    context.blocklist.start(id, &resolved.block.name, parts, resolved.condition, lock)
 }
 
 /// Ends every block for the unlock password. The app stays: it has nothing to enforce then.
@@ -174,7 +169,7 @@ fn unlock(context: &Context, password: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::definitions::tests::{block, block_list, weekly};
-    use crate::definitions::{BlockList, Definition, Kind, NamedSchedule};
+    use crate::definitions::{BlockList, Condition, Definition, Kind};
     use crate::state::{Enforcers, Store};
     use std::fs;
 
@@ -186,12 +181,12 @@ mod tests {
     }
 
     /// What most tests need: a block with one block list of its own (both with the block's id) and,
-    /// maybe, a schedule of its own.
+    /// maybe, a condition of its own.
     #[derive(Clone)]
     struct One {
         list: BlockList,
         block: Definition,
-        schedule: Option<NamedSchedule>,
+        condition: Option<Condition>,
     }
 
     impl One {
@@ -200,11 +195,11 @@ mod tests {
             self
         }
         fn allowed(mut self, allowed: &[&str]) -> One {
-            self.list.allowed = allowed.iter().map(|a| a.to_string()).collect();
+            self.list.entries.allowed = allowed.iter().map(|a| a.to_string()).collect();
             self
         }
         fn programs(mut self, programs: &[&str]) -> One {
-            self.list.programs = programs.iter().map(|p| p.to_string()).collect();
+            self.list.entries.programs = programs.iter().map(|p| p.to_string()).collect();
             self
         }
         fn lock(mut self, lock: Lock) -> One {
@@ -212,26 +207,26 @@ mod tests {
             self
         }
         fn week(mut self, text: &str) -> One {
-            let schedule = weekly(&format!("{}-schedule", self.block.id), text);
-            self.block.schedule = Some(schedule.id.clone());
-            self.schedule = Some(schedule);
+            let condition = weekly(&format!("{}-schedule", self.block.id), text);
+            self.block.condition = Some(condition.id.clone());
+            self.condition = Some(condition);
             self
         }
     }
 
     /// A block of one list with these sites and every enforcer, always active, not locked.
     fn definition(id: &str, filters: &[&str]) -> One {
-        One { list: block_list(id, filters), block: block(id, &[id]), schedule: None }
+        One { list: block_list(id, filters), block: block(id, &[id]), condition: None }
     }
 
     fn timed(id: &str, filters: &[&str], duration: &str) -> One {
         definition(id, filters).lock(Lock::Duration { duration: duration.into() })
     }
 
-    /// Saves the list, the schedule and the block; the first answer that is not Done, or Done.
+    /// Saves the list, the condition and the block; the first answer that is not Done, or Done.
     fn save(context: &Context, one: One) -> Response {
         let mut requests = vec![Request::SaveList { list: one.list }];
-        requests.extend(one.schedule.map(|schedule| Request::SaveSchedule { schedule }));
+        requests.extend(one.condition.map(|condition| Request::SaveCondition { condition }));
         requests.push(Request::SaveBlock { block: one.block });
         requests.into_iter().map(|r| handle(context, 0, r).0).find(|r| *r != Response::Done).unwrap_or(Response::Done)
     }
@@ -261,8 +256,28 @@ mod tests {
     fn requests_are_checked_again_by_the_service() {
         let context = context("checked");
         // An empty list with only enforcers that go by it, and nothing chosen.
-        let only_the_list = Enforcers { chromium_tabs: true, chromium_split_view: true, obsidian_web_viewer: false, exe_names: false };
-        let none = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: false, exe_names: false };
+        let only_the_list = Enforcers {
+            chromium_tabs: true,
+            chromium_split_view: true,
+            obsidian_web_viewer: false,
+            exe_names: false,
+            chromium_app_windows: false,
+            firefox_tabs: false,
+            firefox_split_view: false,
+            store_apps: false,
+            window_titles: false,
+        };
+        let none = Enforcers {
+            chromium_tabs: false,
+            chromium_split_view: false,
+            obsidian_web_viewer: false,
+            exe_names: false,
+            chromium_app_windows: false,
+            firefox_tabs: false,
+            firefox_split_view: false,
+            store_apps: false,
+            window_titles: false,
+        };
         for one in [definition("a", &[]).enforcers(only_the_list), definition("b", &["a.com"]).enforcers(none)] {
             assert!(failed(run(&context, one)));
         }
@@ -281,11 +296,21 @@ mod tests {
     #[test]
     fn an_empty_list_starts_a_block_when_an_enforcer_without_the_list_is_on() {
         let context = context("empty-list");
-        let obsidian_only = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: true, exe_names: false };
+        let obsidian_only = Enforcers {
+            chromium_tabs: false,
+            chromium_split_view: false,
+            obsidian_web_viewer: true,
+            exe_names: false,
+            chromium_app_windows: false,
+            firefox_tabs: false,
+            firefox_split_view: false,
+            store_apps: false,
+            window_titles: false,
+        };
         assert_eq!(run(&context, definition("a", &[]).enforcers(obsidian_only)), Response::Done);
         // The block keeps what it was started with: no entries, and Obsidian's enforcer only.
         let policy = &policies(&context)[0];
-        assert!(policy.filters.is_empty());
+        assert!(policy.entries.filters.is_empty());
         assert_eq!(policy.enforcers, obsidian_only);
 
         // With all enforcers on (the default), an empty list is fine too: Obsidian's can run.
@@ -313,17 +338,17 @@ mod tests {
         assert_eq!(handle(&context, 0, Request::Stop { id: "evening".into(), password: None }).0, Response::Done);
         assert!(failed(handle(&context, 0, Request::Stop { id: "work".into(), password: None }).0));
         assert_eq!(save(&context, definition("evening", &["d.com"])), Response::Done);
-        assert_eq!(policies(&context).iter().map(|p| p.filters.clone()).collect::<Vec<_>>(), vec![vec!["a.com".to_string()]]);
+        assert_eq!(policies(&context).iter().map(|p| p.entries.filters.clone()).collect::<Vec<_>>(), vec![vec!["a.com".to_string()]]);
     }
 
     #[test]
-    fn a_list_or_schedule_a_running_block_uses_is_fixed_until_it_ends() {
+    fn a_list_or_condition_a_running_block_uses_is_fixed_until_it_ends() {
         let context = context("shared");
         // Two blocks share the list "social"; one also has a list of its own and a schedule.
         assert_eq!(handle(&context, 0, Request::SaveList { list: block_list("social", &["youtube.com"]) }).0, Response::Done);
         assert_eq!(save(&context, definition("games", &[]).programs(&["steam"]).week("daily")), Response::Done);
         let mut evening = block("evening", &["social", "games"]);
-        evening.schedule = Some("games-schedule".into());
+        evening.condition = Some("games-schedule".into());
         assert_eq!(handle(&context, 0, Request::SaveBlock { block: evening }).0, Response::Done);
         assert_eq!(handle(&context, 0, Request::SaveBlock { block: block("work", &["social"]) }).0, Response::Done);
         assert_eq!(handle(&context, 0, Request::Start { id: "evening".into() }).0, Response::Done);
@@ -334,7 +359,7 @@ mod tests {
         // says which block holds them.
         let Response::Failed(why) = handle(&context, 0, Request::SaveList { list: block_list("social", &[]) }).0 else { panic!("changed") };
         assert!(why.contains("Block evening"), "{why}");
-        assert!(failed(handle(&context, 0, Request::SaveSchedule { schedule: weekly("games-schedule", "weekends") }).0));
+        assert!(failed(handle(&context, 0, Request::SaveCondition { condition: weekly("games-schedule", "weekends") }).0));
         assert!(failed(handle(&context, 0, Request::DeleteList { id: "games".into() }).0));
         // A block that is not running and uses the list can still be changed, as long as the list is not.
         assert_eq!(handle(&context, 0, Request::SaveBlock { block: block("work", &["social", "games"]) }).0, Response::Done);
@@ -376,7 +401,17 @@ mod tests {
 
     #[test]
     fn programs_alone_can_start_a_block_and_what_windows_needs_is_refused() {
-        let programs_only = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: false, exe_names: true };
+        let programs_only = Enforcers {
+            chromium_tabs: false,
+            chromium_split_view: false,
+            obsidian_web_viewer: false,
+            exe_names: true,
+            chromium_app_windows: false,
+            firefox_tabs: false,
+            firefox_split_view: false,
+            store_apps: false,
+            window_titles: false,
+        };
         let one = |programs: &[&str]| timed("p", &[], "1h").enforcers(programs_only).programs(programs);
         let context = context("programs");
 
@@ -392,8 +427,8 @@ mod tests {
         // A real one starts, and is what the app is told to close.
         assert_eq!(run(&context, one(&["Steam*", "game"])), Response::Done);
         let policy = &policies(&context)[0];
-        assert_eq!(policy.programs, vec!["steam*.exe", "game.exe"]);
-        assert!(policy.filters.is_empty());
+        assert_eq!(policy.entries.programs, vec!["steam*.exe", "game.exe"]);
+        assert!(policy.entries.filters.is_empty());
         assert_eq!(policy.enforcers, programs_only);
     }
 
@@ -407,16 +442,26 @@ mod tests {
         // Everything blocked but one site: the app is told about both.
         assert_eq!(run(&context, one(&["Google.com"])), Response::Done);
         let policy = &policies(&context)[0];
-        assert_eq!(policy.filters, vec!["*"]);
-        assert_eq!(policy.allowed, vec!["google.com"]);
-        assert_eq!(overview(&context).running[0].lists[0].allowed, vec!["google.com"]);
+        assert_eq!(policy.entries.filters, vec!["*"]);
+        assert_eq!(policy.entries.allowed, vec!["google.com"]);
+        assert_eq!(overview(&context).running[0].lists[0].entries.allowed, vec!["google.com"]);
     }
 
     #[test]
     fn allowed_sites_alone_are_not_something_to_block() {
         let context = context("allowed-alone");
         // Only the tab enforcers, no sites to block and only an allowed one: nothing to do.
-        let tabs_only = Enforcers { chromium_tabs: true, chromium_split_view: true, obsidian_web_viewer: false, exe_names: false };
+        let tabs_only = Enforcers {
+            chromium_tabs: true,
+            chromium_split_view: true,
+            obsidian_web_viewer: false,
+            exe_names: false,
+            chromium_app_windows: false,
+            firefox_tabs: false,
+            firefox_split_view: false,
+            store_apps: false,
+            window_titles: false,
+        };
         assert!(failed(run(&context, timed("a", &[], "1h").allowed(&["google.com"]).enforcers(tabs_only))));
         assert!(policies(&context).is_empty());
     }
@@ -432,26 +477,26 @@ mod tests {
         let (response, shutdown) = handle(&context, 0, Request::PrepareUninstall);
         assert!(matches!(response, Response::Refused(_)) && shutdown.is_none());
         // The policy is what the app enforces.
-        assert_eq!(policies(&context)[0].filters, vec!["a.com"]);
+        assert_eq!(policies(&context)[0].entries.filters, vec!["a.com"]);
     }
 
     #[test]
     fn a_lock_schedule_locks_while_it_is_active() {
         let context = context("lock-schedule");
         // A lock schedule that does not exist is refused.
-        assert!(failed(save(&context, definition("a", &["a.com"]).lock(Lock::Scheduled { schedule: "nope".into() }))));
+        assert!(failed(save(&context, definition("a", &["a.com"]).lock(Lock::Condition { condition: "nope".into() }))));
         // Its own schedule, active all week, so locked now while the block's schedule is Always:
         // no stop, no uninstall.
-        assert_eq!(handle(&context, 0, Request::SaveSchedule { schedule: weekly("daily", "daily") }).0, Response::Done);
-        assert_eq!(run(&context, definition("a", &["a.com"]).lock(Lock::Scheduled { schedule: "daily".into() })), Response::Done);
+        assert_eq!(handle(&context, 0, Request::SaveCondition { condition: weekly("daily", "daily") }).0, Response::Done);
+        assert_eq!(run(&context, definition("a", &["a.com"]).lock(Lock::Condition { condition: "daily".into() })), Response::Done);
         let Response::Failed(why) = handle(&context, 0, Request::Stop { id: "a".into(), password: None }).0 else { panic!("stopped") };
         assert!(why.contains("locked by its lock schedule"), "{why}");
         assert!(matches!(handle(&context, 0, Request::PrepareUninstall).0, Response::Refused(_)));
         let running = &overview(&context).running[0];
-        assert!(running.locked && running.lock_schedule.is_some() && running.schedule.is_none() && running.remaining.is_none());
+        assert!(running.locked && running.lock_condition.is_some() && running.condition.is_none() && running.remaining.is_none());
         // While it runs, its lock schedule cannot be changed or deleted.
-        assert!(failed(handle(&context, 0, Request::SaveSchedule { schedule: weekly("daily", "weekends") }).0));
-        assert!(failed(handle(&context, 0, Request::DeleteSchedule { id: "daily".into() }).0));
+        assert!(failed(handle(&context, 0, Request::SaveCondition { condition: weekly("daily", "weekends") }).0));
+        assert!(failed(handle(&context, 0, Request::DeleteCondition { id: "daily".into() }).0));
     }
 
     #[test]
@@ -530,16 +575,20 @@ mod tests {
         // Every day all day: active now, whatever the day.
         assert_eq!(run(&context, timed("w", &["a.com"], "2h 5m").week("daily")), Response::Done);
         let running = &overview(&context).running[0];
-        assert!(running.enforcing && running.schedule.is_some());
+        assert!(running.enforcing && running.condition.is_some());
         assert_eq!(policies(&context).len(), 1);
         let Response::Failed(why) = handle(&context, 0, Request::Stop { id: "w".into(), password: None }).0 else { panic!("stopped") };
         assert!(why.contains("2 hours, 4 minutes and") || why.contains("2 hours and 5 minutes"), "{why}");
         let Response::Refused(why) = handle(&context, 0, Request::PrepareUninstall).0 else { panic!("not refused") };
         assert!(why.contains("2 hours"), "{why}");
         // A weekly schedule with no time in it is never active: not even saved.
-        let never = NamedSchedule { id: "n".into(), name: "N".into(), week: crate::schedule::Week::default() };
+        let never = Condition {
+            id: "n".into(),
+            name: "N".into(),
+            rule: crate::condition::Rule::Schedule { week: crate::schedule::Week::default() },
+        };
         assert!(
-            matches!(handle(&context, 0, Request::SaveSchedule { schedule: never }).0, Response::Failed(why) if why.contains("never be active"))
+            matches!(handle(&context, 0, Request::SaveCondition { condition: never }).0, Response::Failed(why) if why.contains("never be active"))
         );
     }
 

@@ -1,8 +1,8 @@
 // The three kinds the user makes, each with a page of tiles and an editor: blocks, block lists and
-// schedules. Pages, tiles and the editor are the same code for all three, by this table.
+// conditions. Pages, tiles and the editor are the same code for all three, by this table.
 
 import { holdersOf, invoke, names, newId, overview, runningOf, t } from "./core.js";
-import { ENFORCERS, LISTS, blockForm, listForm, scheduleForm } from "./forms.js";
+import { ENFORCERS, LISTS, blockForm, conditionForm, listForm } from "./forms.js";
 
 // ---- The three kinds. Each has a page of tiles and an editor.
 
@@ -24,7 +24,7 @@ const KINDS = {
     newPath: "#/new",
     ...kindTexts("blocks"),
     items: () => overview.blocks,
-    create: () => ({ id: newId(), name: "", lists: [], schedule: null, lock: { method: "none" } }),
+    create: () => ({ id: newId(), name: "", lists: [], condition: null, lock: { method: "none" } }),
     save: (block) => invoke("save_block", { block }),
     remove: (id) => invoke("delete_block", { id }),
     duplicate: (id, copyId) => invoke("duplicate", { kind: "block", id, newId: copyId }),
@@ -53,21 +53,21 @@ const KINDS = {
     },
     form: () => listForm(),
   },
-  schedules: {
-    path: "#/schedules",
-    editPath: "#/schedules/edit/",
-    newPath: "#/schedules/new",
-    ...kindTexts("schedules"),
-    items: () => overview.schedules,
-    create: () => ({ id: newId(), name: "", days: [0, 1, 2, 3, 4, 5, 6].map(() => []) }),
-    save: (schedule) => invoke("save_schedule", { schedule }),
-    remove: (id) => invoke("delete_schedule", { id }),
-    duplicate: (id, copyId) => invoke("duplicate", { kind: "schedule", id, newId: copyId }),
-    held: (schedule) => {
-      const holders = holdersOf(schedule.id);
-      return holders.length ? t("schedules.held", { names: names(holders) }) : null;
+  conditions: {
+    path: "#/conditions",
+    editPath: "#/conditions/edit/",
+    newPath: "#/conditions/new",
+    ...kindTexts("conditions"),
+    items: () => overview.conditions,
+    create: () => ({ id: newId(), name: "", type: "schedule", days: [0, 1, 2, 3, 4, 5, 6].map(() => []) }),
+    save: (condition) => invoke("save_condition", { condition }),
+    remove: (id) => invoke("delete_condition", { id }),
+    duplicate: (id, copyId) => invoke("duplicate", { kind: "condition", id, newId: copyId }),
+    held: (condition) => {
+      const holders = holdersOf(condition.id);
+      return holders.length ? t("conditions.held", { names: names(holders) }) : null;
     },
-    form: () => scheduleForm(),
+    form: () => conditionForm(),
   },
 };
 

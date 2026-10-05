@@ -7,13 +7,17 @@ mod boot;
 pub mod cli;
 mod client;
 mod clock;
+mod condition;
 mod datetime;
 mod definitions;
+mod drives;
 mod duration;
 mod filters;
 mod handler;
+mod lists;
 mod localtime;
 mod lock;
+mod patterns;
 mod pipe;
 mod programs;
 mod proto;
@@ -22,6 +26,7 @@ mod schedule;
 mod service;
 mod setup;
 mod state;
+mod store_apps;
 mod sync;
 mod tab_closer;
 mod ui;
@@ -30,7 +35,7 @@ mod wake;
 mod watchdog;
 
 use client::Remote;
-use definitions::{BlockList, Contents, Definition, Fallout, Kind, Library, NamedSchedule};
+use definitions::{BlockList, Condition, Contents, Definition, Fallout, Kind, Library};
 use proto::{Overview, Request, Response};
 use schedule::Week;
 use tauri::{
@@ -42,7 +47,7 @@ use tauri_plugin_dialog::DialogExt;
 // The page's commands. **Each one has a CLI command that does the same** (`cli::GUI_COMMANDS`, which a
 // test checks against the page): a new one needs one there too, and a line in `CLI.md`.
 
-/// Every block list, schedule and block, and which blocks run.
+/// Every block list, condition and block, and which blocks run.
 #[tauri::command]
 fn block_status(remote: State<Remote>) -> Result<Overview, String> {
     remote.status()
@@ -72,19 +77,19 @@ fn delete_list(id: String, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::DeleteList { id })
 }
 
-/// Adds a schedule, or changes the one with its id; refused while a running block uses it.
+/// Adds a condition, or changes the one with its id; refused while a running block uses it.
 #[tauri::command]
-fn save_schedule(schedule: NamedSchedule, remote: State<Remote>) -> Result<(), String> {
-    remote.command(Request::SaveSchedule { schedule })
+fn save_condition(condition: Condition, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::SaveCondition { condition })
 }
 
 /// Takes it out of the blocks that use it too; refused while a running block uses it.
 #[tauri::command]
-fn delete_schedule(id: String, remote: State<Remote>) -> Result<(), String> {
-    remote.command(Request::DeleteSchedule { id })
+fn delete_condition(id: String, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::DeleteCondition { id })
 }
 
-/// A copy of a block, block list or schedule, as `new_id`, named after it with a number.
+/// A copy of a block, block list or condition, as `new_id`, named after it with a number.
 #[tauri::command]
 fn duplicate(kind: Kind, id: String, new_id: String, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::Duplicate { kind, id, new_id })
@@ -102,7 +107,7 @@ fn stop_block(id: String, password: Option<String>, remote: State<Remote>) -> Re
     remote.command(Request::Stop { id, password })
 }
 
-/// A weekly schedule as text, after checking it, for the schedule editor and the block's summary.
+/// A weekly schedule as text, after checking it, for the condition editor and the block's summary.
 #[tauri::command]
 fn describe_schedule(week: Week) -> Result<String, String> {
     week.normalized().map(|week| week.describe())
@@ -125,7 +130,21 @@ fn describe_until(text: String) -> Result<localtime::Until, String> {
     localtime::until(&text)
 }
 
-/// What deleting the block list or schedule `id` does to `blocks` (the window's copy of them),
+/// The Store apps installed, for the block list editor to offer to tick (`store_apps.rs`).
+/// PowerShell takes a second or two to list them, so not on the thread that draws the window.
+#[tauri::command]
+async fn installed_apps() -> Result<Vec<store_apps::StoreApp>, String> {
+    tauri::async_runtime::spawn_blocking(store_apps::installed).await.map_err(|e| e.to_string())?
+}
+
+/// The flash drives connected now, for the Flash drive lock's settings to offer (`drives.rs`).
+/// Asking Windows takes a moment, so not on the thread that draws the window.
+#[tauri::command]
+async fn connected_drives() -> Result<Vec<drives::Drive>, String> {
+    tauri::async_runtime::spawn_blocking(drives::connected).await.map_err(|e| e.to_string())?
+}
+
+/// What deleting the block list or condition `id` does to `blocks` (the window's copy of them),
 /// for the question before it: the service's own rule, so what is asked is what happens.
 #[tauri::command]
 fn deletion_fallout(blocks: Vec<Definition>, id: String) -> Fallout {
@@ -140,8 +159,7 @@ const SETTINGS_FILTER: (&str, &[&str]) = ("Bullseye settings", &["json"]);
 #[tauri::command]
 async fn export_settings(app: tauri::AppHandle, remote: State<'_, Remote>) -> Result<Option<String>, String> {
     let library = remote.status()?.library();
-    let chosen =
-        app.dialog().file().add_filter(SETTINGS_FILTER.0, SETTINGS_FILTER.1).set_file_name("Bullseye settings.json").blocking_save_file();
+    let chosen = app.dialog().file().add_filter(SETTINGS_FILTER.0, SETTINGS_FILTER.1).set_file_name("bullseye.json").blocking_save_file();
     let Some(path) = chosen.map(|path| path.into_path().map_err(|e| e.to_string())).transpose()? else { return Ok(None) };
     definitions::write_settings(&path, library)?;
     Ok(path.file_name().map(|name| name.to_string_lossy().into_owned()))
@@ -164,7 +182,7 @@ struct Opened {
     contents: Contents,
 }
 
-/// Import: replaces every block list, schedule and block with those in the settings file at
+/// Import: replaces every block list, condition and block with those in the settings file at
 /// `path`. Refused while a block runs.
 #[tauri::command]
 fn import_settings(path: String, remote: State<Remote>) -> Result<(), String> {
@@ -233,8 +251,8 @@ pub fn run() {
             delete_block,
             save_list,
             delete_list,
-            save_schedule,
-            delete_schedule,
+            save_condition,
+            delete_condition,
             duplicate,
             start_block,
             stop_block,
@@ -243,6 +261,8 @@ pub fn run() {
             describe_duration,
             describe_until,
             deletion_fallout,
+            installed_apps,
+            connected_drives,
             export_settings,
             open_settings,
             import_settings,

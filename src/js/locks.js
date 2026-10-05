@@ -1,7 +1,7 @@
 // The lock methods (`lock::Lock`), by `method`: their form in the dialog, the tile's line for a
 // block that is not running, and what starting a block with one asks first.
 
-import { durationText, el, invalid, invoke, localDate, overview, quoted, t, untilText, weekText } from "./core.js";
+import { durationText, el, invalid, invoke, localDate, overview, quoted, ruleText, t, untilText } from "./core.js";
 
 // How a started block is kept from being stopped (`lock::Lock`), by `method`. Set on the
 // block's tile, next to Start. `confirm` says what starting it asks first (null: nothing).
@@ -92,33 +92,35 @@ const LOCKS = {
       action: t("locks.until_restart.confirmAction", { name: quoted(block.name) }),
     }),
   },
-  scheduled: {
-    label: t("locks.scheduled.label"),
-    // A schedule of its own: with the block's own schedule, it is locked exactly while active.
-    // Only with a schedule to choose (`renderBlockControls` disables it otherwise).
+  condition: {
+    label: t("locks.condition.label"),
+    // A condition of its own: with the block's own condition, it is locked exactly while active.
+    // A weekly schedule locks at its times; a flash drive locks while it is not connected, so
+    // the drive is the key. Only with a condition to choose (`setLock` offers to make one).
     form: (block) => {
-      const select = el("cds-select", { "label-text": t("locks.scheduled.field"), "helper-text": t("locks.scheduled.helper") });
-      select.append(...overview.schedules.map((s) => el("cds-select-item", { value: s.id, label: s.name }, s.name)));
-      // The one it had, else the block's own schedule, else the first there is.
-      const exists = (id) => overview.schedules.some((s) => s.id === id);
-      const chosen = [settingsOf(block, "scheduled").schedule, block.schedule].find(exists);
-      select.value = chosen || (overview.schedules[0] || {}).id || "";
-      return { fields: [select], read: async () => (invalid(select, select.value ? null : t("locks.scheduled.missing")) ? null : { method: "scheduled", schedule: select.value }) };
+      const select = el("cds-select", { "label-text": t("locks.condition.field"), "helper-text": t("locks.condition.helper") });
+      select.append(...overview.conditions.map((c) => el("cds-select-item", { value: c.id, label: c.name }, c.name)));
+      // The one it had, else the block's own condition, else the first there is.
+      const exists = (id) => overview.conditions.some((c) => c.id === id);
+      const chosen = [settingsOf(block, "condition").condition, block.condition].find(exists);
+      select.value = chosen || (overview.conditions[0] || {}).id || "";
+      return { fields: [select], read: async () => (invalid(select, select.value ? null : t("locks.condition.missing")) ? null : { method: "condition", condition: select.value }) };
     },
     describe: (lock) => {
-      const schedule = overview.schedules.find((s) => s.id === lock.schedule);
-      return schedule ? t("locks.scheduled.describe", { schedule: quoted(schedule.name), times: weekText(schedule.days) }) : t("locks.scheduled.describeGone");
+      const condition = overview.conditions.find((c) => c.id === lock.condition);
+      if (!condition) return t("locks.condition.describeGone");
+      if (condition.type === "flash_drive") return t("locks.condition.describeDrive", { drive: quoted(condition.drive) });
+      return t("locks.condition.describe", { condition: quoted(condition.name), what: ruleText(condition) });
     },
     confirm: async (block) => {
-      // Without its schedule the service refuses the start, and says why.
-      const schedule = overview.schedules.find((s) => s.id === block.lock.schedule);
-      if (!schedule) return null;
-      const times = await invoke("describe_schedule", { week: { days: schedule.days } }).catch(() => t("common.weeklyStandIn"));
-      const values = { name: quoted(block.name), schedule: quoted(schedule.name), times };
+      // Without its condition the service refuses the start, and says why.
+      const condition = overview.conditions.find((c) => c.id === block.lock.condition);
+      if (!condition) return null;
+      const values = { name: quoted(block.name), condition: quoted(condition.name), what: ruleText(condition) };
       return {
-        heading: t("locks.scheduled.confirmHeading", values),
-        body: t("locks.scheduled.confirmBody", values),
-        action: t("locks.scheduled.confirmAction", values),
+        heading: t("locks.condition.confirmHeading", values),
+        body: t("locks.condition.confirmBody", values),
+        action: t("locks.condition.confirmAction", values),
       };
     },
   },

@@ -1,6 +1,6 @@
 # Bullseye command line
 
-`bullseye-cli.exe` does everything the window does, from a terminal or a script: make, change and delete block lists, schedules and blocks, start and stop blocks, and end them all with the unlock password. The installer puts it next to the app, in `C:\Program Files\Bullseye\`. To call it by name from anywhere, add that folder to your `PATH` (Settings > System > About > Advanced system settings > Environment Variables), or call it by its full path:
+`bullseye-cli.exe` does everything the window does, from a terminal or a script: make, change and delete block lists, conditions and blocks, start and stop blocks, and end them all with the unlock password. The installer puts it next to the app, in `C:\Program Files\Bullseye\`. To call it by name from anywhere, add that folder to your `PATH` (Settings > System > About > Advanced system settings > Environment Variables), or call it by its full path:
 
 ```powershell
 & "C:\Program Files\Bullseye\bullseye-cli.exe" status
@@ -8,31 +8,31 @@
 
 It talks to the Bullseye service exactly as the window does (the same requests, through the same code), so the service checks everything done here as it checks the window, and what you do here shows up in the window within a second (and the other way round). If the service is installed but not running, the CLI starts it first, as the app would. It needs no administrator rights.
 
-A `<block>`, `<list>` or `<schedule>` is its name (any case) or its id; `bullseye-cli status` lists the names, and `show` gives the id. When two have the same name, use the id.
+A `<block>`, `<list>` or `<condition>` is its name (any case) or its id; `bullseye-cli status` lists the names, and `show` gives the id. When two have the same name, use the id.
 
 ## Three kinds of things
 
 As in the window, which has a page for each:
 
-- **Block lists**: what to block. Sites, always-allowed sites, programs, and the enforcers that act on them.
-- **Schedules**: when, as a weekly schedule. A block without one is always active.
-- **Blocks**: what you start. One or more block lists, a schedule (or always) and a lock:
+- **Block lists**: what to block. Sites, always-allowed sites, programs, Store apps, window titles, and the enforcers that act on them.
+- **Conditions**: when. A weekly schedule (active at its times) or a flash drive (active while the drive is not connected, so the drive switches the block off while it is plugged in). A block without one is always active.
+- **Blocks**: what you start. One or more block lists, a condition (or always) and a lock:
   - `none`: not locked; it can be stopped at any time.
   - `duration`: locked for a while. It cannot be stopped, changed or deleted, and it ends by itself when the time is up.
   - `until`: the same, until a date and time (local time, read when the block starts).
   - `until restart`: locked until Windows restarts, and it ends then. A shut down with Fast Startup on is not a restart.
-  - `schedule`: locked while a schedule of its choosing is active. Outside those times it can be stopped; otherwise it runs until stopped. With the block's own schedule, it is locked exactly while the block is active.
+  - `condition`: locked while a condition of its choosing is active. Otherwise it can be stopped; it runs until stopped. With the block's own condition, it is locked exactly while the block is active. With a flash drive condition the drive is the key: the block can only be stopped while the drive is plugged in.
   - `password`: locked with a password, for someone else to set. It runs until stopped with that password (or the unlock password). Only a salted hash of it is kept, and it is never shown again.
 
-Outside its schedule a running block keeps running, but enforces nothing. For example, with a schedule of `daily 08:00-17:00`, a block started at 16:00 with a 2-hour duration lock blocks until 17:00; from then on everything is accessible again, and at 18:00 the lock ends the block. With a lock schedule of `daily 08:00-17:00` instead (say the same schedule), it blocks every day from 8 to 5 and cannot be stopped then, until you stop it some evening.
+While its condition is not active a running block keeps running, but enforces nothing. For example, with a schedule condition of `daily 08:00-17:00`, a block started at 16:00 with a 2-hour duration lock blocks until 17:00; from then on everything is accessible again, and at 18:00 the lock ends the block. With a lock condition of `daily 08:00-17:00` instead (say the same schedule), it blocks every day from 8 to 5 and cannot be stopped then, until you stop it some evening.
 
-A running block keeps what it was started with: while it runs, it cannot be changed or deleted, and neither can the block lists and the schedules it uses (for when it is active and for its lock). Deleting a block list or schedule that blocks use takes it out of them, as in the window: a block left without a block list is deleted too, one that loses its schedule is always active, and one that loses its lock schedule has no lock. The question before it says which.
+A running block keeps what it was started with: while it runs, it cannot be changed or deleted, and neither can the block lists and the conditions it uses (for when it is active and for its lock). Deleting a block list or condition that blocks use takes it out of them, as in the window: a block left without a block list is deleted too, one that loses its condition is always active, and one that loses its lock condition has no lock. The question before it says which.
 
 ## Commands
 
 | Command | Does what the window does with |
 |---|---|
-| `bullseye-cli status [--json]` | the three pages: every block (running or not, active or not, locked or not), every block list, every schedule |
+| `bullseye-cli status [--json]` | the three pages: every block (running or not, active or not, locked or not), every block list, every condition |
 | `bullseye-cli show <block> [--json]` | a block's tile and its editor |
 | `bullseye-cli new <name> [options]` | **New block**, then **Save** |
 | `bullseye-cli edit <block> [options]` | **Edit**, then **Save** |
@@ -41,18 +41,20 @@ A running block keeps what it was started with: while it runs, it cannot be chan
 | `bullseye-cli start <block> [lock option] [--yes]` | the lock on the block's tile, then **Start** (a locked block asks first, unless `--yes`) |
 | `bullseye-cli stop <block> [--password <pw>]` | **Stop** (a block locked with a password asks for it, as the window does) |
 | `bullseye-cli list show <list> [--json]` | a block list's tile and its editor |
+| `bullseye-cli list apps [--json]` | the installed Store apps the editor offers to tick, by name and package family name |
 | `bullseye-cli list new <name> [options]` | **New block list**, then **Save** |
 | `bullseye-cli list edit <list> [options]` | **Edit** a block list, then **Save** |
 | `bullseye-cli list delete <list> [--yes]` | **Delete** a block list |
 | `bullseye-cli list duplicate <list>` | **Duplicate** a block list |
-| `bullseye-cli schedule show <schedule>` | a schedule's tile and its editor |
-| `bullseye-cli schedule new <name> <times>` | **New schedule**, then **Save** |
-| `bullseye-cli schedule edit <schedule> [--name <name>] [--times <times>]` | **Edit** a schedule, then **Save** |
-| `bullseye-cli schedule delete <schedule> [--yes]` | **Delete** a schedule |
-| `bullseye-cli schedule duplicate <schedule>` | **Duplicate** a schedule |
-| `bullseye-cli schedule check <times>` | the schedule written out under the week grid in the schedule editor |
+| `bullseye-cli condition show <condition>` | a condition's tile and its editor |
+| `bullseye-cli condition new <name> (--times <times> \| --drive <drive>)` | **New condition**, of the type Weekly schedule or Flash drive, then **Save** |
+| `bullseye-cli condition edit <condition> [--name <name>] [--times <times> \| --drive <drive>]` | **Edit** a condition, then **Save** |
+| `bullseye-cli condition delete <condition> [--yes]` | **Delete** a condition |
+| `bullseye-cli condition duplicate <condition>` | **Duplicate** a condition |
+| `bullseye-cli condition check <times>` | the schedule written out under the week grid in the condition editor |
 | `bullseye-cli export <file>` | **Export** in Settings |
 | `bullseye-cli import <file> [--yes]` | **Import** in Settings |
+| `bullseye-cli drives [--json]` | the flash drives the **Flash drive** type of a condition offers, by name and serial number |
 | `bullseye-cli unlock [--password <pw>]` | **Unlock** in Settings |
 | `bullseye-cli help` | |
 | `bullseye-cli version` | |
@@ -64,11 +66,11 @@ Exit codes: `0` done, `1` failed, refused or cancelled (the reason is printed), 
 | Option | Meaning | New block's default |
 |---|---|---|
 | `--list <list>` | A block list it enforces (repeatable). | none (it cannot start without one) |
-| `--schedule <schedule>` | When it is active: a schedule, or `always`. | `always` |
+| `--condition <condition>` | When it is active: a condition, or `always`. | `always` |
 | `--lock-duration <duration>` | Lock: for this long once started. | |
 | `--lock-until <date time>` | Lock: until then, e.g. `"2026-10-06 18:00"` (local time). A time that has passed when the block starts is refused. | |
 | `--lock-until-restart` | Lock: until Windows restarts. | |
-| `--lock-schedule <schedule>` | Lock: while this schedule is active. | |
+| `--lock-condition <condition>` | Lock: while this condition is active. A schedule locks at its times; a flash drive locks while it is not connected. | |
 | `--lock-password <pw>` | Lock: with this password. Only a hash of it is kept. | |
 | `--no-lock` | Not locked. | yes |
 | `--name <name>` | (`edit` only) A new name. | |
@@ -82,10 +84,12 @@ With `edit`, an option replaces only what it names: `--list` replaces all its bl
 | `--site <entry>` | A site to block (repeatable). An address prefix with `*` as a wildcard, as in the window: `youtube.com`, `*.reddit.com`, `*` (every site). | none |
 | `--allow <entry>` | A site that is always allowed, also when this list's sites match it (repeatable). | none |
 | `--program <name>` | A program to close, by exe name (repeatable): `steam`, `steam*.exe`. | none |
-| `--sites-file <file>`, `--allowed-file <file>`, `--programs-file <file>` | The same, one entry per line, from a text file. Can be combined with the options above. | |
-| `--enforcers <list>` | Which enforcers act on this list, comma-separated: `chromium_tabs` (close blocked tabs in Chrome, Edge, Brave), `chromium_split_view` (close blocked pages in split view), `exe_names` (close the programs), `obsidian_web_viewer` (close Obsidian when it shows web pages), or `all`. `bullseye-cli help` lists the current names. | `all` |
+| `--store-app <family>` | A Store app to close, by package family name (repeatable): `Microsoft.WindowsCalculator_8wekyb3d8bbwe`, with `*` as a wildcard (`Microsoft.Xbox*`). `list apps` shows the installed ones. Windows' own apps are never closed. | none |
+| `--title <title>` | A window to close, by its title (repeatable), the whole title with `*` as a wildcard and letter case ignored: `*YouTube*`. The whole window closes, a browser's with all its tabs. A lone `*` is refused. | none |
+| `--sites-file <file>`, `--allowed-file <file>`, `--programs-file <file>`, `--store-apps-file <file>`, `--titles-file <file>` | The same, one entry per line, from a text file. Can be combined with the options above. | |
+| `--enforcers <list>` | Which enforcers act on this list, comma-separated: `chromium_tabs` (close blocked tabs in Chrome, Edge, Brave), `chromium_split_view` (close blocked pages in split view), `chromium_app_windows` (close app windows of blocked pages, e.g. `chrome --app=<url>`), `firefox_tabs` (close blocked tabs in Firefox), `firefox_split_view` (close blocked pages in Firefox split view), `exe_names` (close the programs), `store_apps` (close the Store apps), `window_titles` (close windows by title), `obsidian_web_viewer` (close Obsidian when its web viewer is active), or `all`. `bullseye-cli help` lists the current names. | `all` |
 | `--name <name>` | (`list edit` only) A new name. | |
-| `--clear <list>` | (`list edit` only) Empty a list: `sites`, `allowed` or `programs` (repeatable). | |
+| `--clear <list>` | (`list edit` only) Empty a list: `sites`, `allowed`, `programs`, `store-apps` or `titles` (repeatable). | |
 
 ### Examples
 
@@ -95,10 +99,14 @@ bullseye-cli list new "Social media" --site youtube.com --site reddit.com
 bullseye-cli list new "Games" --programs-file games.txt --enforcers exe_names
 
 # When.
-bullseye-cli schedule new "Work hours" "Mon-Fri 08:00-17:00"
+bullseye-cli condition new "Work hours" --times "Mon-Fri 08:00-17:00"
+
+# A flash drive as the key: active (and, as a lock, locked) while it is not connected.
+bullseye-cli drives
+bullseye-cli condition new "Key" --drive "Kingston DataTraveler 3.0"
 
 # Blocks: work hours that cannot be stopped during work hours, and an evening one for 2 hours.
-bullseye-cli new "Work" --list "Social media" --list Games --schedule "Work hours" --lock-schedule "Work hours"
+bullseye-cli new "Work" --list "Social media" --list Games --condition "Work hours" --lock-condition "Work hours"
 bullseye-cli new "Evening" --list Games
 bullseye-cli start Work --yes
 bullseye-cli start Evening --lock-duration 2h
@@ -107,7 +115,7 @@ bullseye-cli start Evening --lock-until-restart
 
 # Later: Saturdays too (once Work is stopped, outside work hours).
 bullseye-cli stop Work
-bullseye-cli schedule edit "Work hours" --times "Mon-Fri 08:00-17:00; Sat 10:00-14:00"
+bullseye-cli condition edit "Work hours" --times "Mon-Fri 08:00-17:00; Sat 10:00-14:00"
 ```
 
 ### `status` and `show`
@@ -115,28 +123,28 @@ bullseye-cli schedule edit "Work hours" --times "Mon-Fri 08:00-17:00; Sat 10:00-
 ```
 > bullseye-cli status
 Blocks:
-  Work     Running · inactive by its schedule, active in 15 hours · can be stopped, locked again in 15 hours
+  Work     Running · inactive by its condition, active in 15 hours · can be stopped, locked again in 15 hours
   Evening  Running · blocking now · locked, 1 hour 2 minutes 3 seconds left
 Block lists:
   Social media  used by Work
   Games         used by Work, Evening
-Schedules:
+Conditions:
   Work hours  Mon-Fri 08:00-17:00
 ```
 
-`show <block>`, `list show <list>` and `schedule show <schedule>` give everything about one. With `--json`, `status` prints what the service says, for scripts: `lists`, `schedules` and `blocks` (as defined; a schedule's `days` are Monday first, each a list of `[start, end)` spans in minutes since midnight; a block's `schedule` is a schedule's id or `null` for always, `kept_locks` the last settings of the other lock methods it has had (which the window starts from when one is chosen again; a password's only as `{"method":"password"}`), and its `lock` is `{"method":"none"}`, `{"method":"duration","duration":"2h 30m"}`, `{"method":"until","until":"2026-10-06 18:00"}`, `{"method":"until_restart"}`, `{"method":"scheduled","schedule":"<id>"}` or `{"method":"password"}`; a password is never shown), `running` (each running block with its `lists` as started; `remaining`, the seconds left of a duration or until lock, and `remaining_words`; `until_restart`; `lock_schedule`, the week of a scheduled lock, and `lock_change` / `lock_change_words`, the time until it locks or frees the block; `password`, whether it is locked with one; `locked`, whether it cannot be stopped right now; `schedule`; `enforcing`, whether it blocks anything right now; `schedule_change`, the seconds until its schedule turns it on or off, and `schedule_change_words`) and `clock_synced`.
+`show <block>`, `list show <list>` and `condition show <condition>` give everything about one. With `--json`, `status` prints what the service says, for scripts: `lists`, `conditions` and `blocks` (as defined; a condition has a `type`, `"schedule"` with `days` (Monday first, each a list of `[start, end)` spans in minutes since midnight) or `"flash_drive"` with the drive's `serial` number and `drive` name; a block's `condition` is a condition's id or `null` for always, `kept_locks` the last settings of the other lock methods it has had (which the window starts from when one is chosen again; a password's only as `{"method":"password"}`), and its `lock` is `{"method":"none"}`, `{"method":"duration","duration":"2h 30m"}`, `{"method":"until","until":"2026-10-06 18:00"}`, `{"method":"until_restart"}`, `{"method":"condition","condition":"<id>"}` or `{"method":"password"}`; a password is never shown), `running` (each running block with its `lists` as started; `remaining`, the seconds left of a duration or until lock, and `remaining_words`; `until_restart`; `lock_condition`, the rule of its condition lock, and `lock_change` / `lock_change_words`, the time until a schedule locks or frees the block; `password`, whether it is locked with one; `locked`, whether it cannot be stopped right now; `condition`, its condition's rule; `enforcing`, whether it blocks anything right now; `condition_change`, the seconds until its schedule turns it on or off, and `condition_change_words`) and `clock_synced`.
 
-### `stop`, `delete`, `list delete`, `schedule delete`
+### `stop`, `delete`, `list delete`, `condition delete`
 
-`stop <block>` stops a running block that is not locked right now; a locked one is refused, and the message says why and for how long. A block locked with a password stops with it: give it with `--password`, or the CLI asks for it without showing it. Deleting asks first (`[y/N]`), or goes ahead with `--yes`, which is also needed when there is no terminal to ask in (a script). A running block, and a block list or schedule that a running block uses, cannot be deleted; the question before deleting a block list or schedule says what it does to the blocks that use it.
+`stop <block>` stops a running block that is not locked right now; a locked one is refused, and the message says why and for how long. A block locked with a password stops with it: give it with `--password`, or the CLI asks for it without showing it. Deleting asks first (`[y/N]`), or goes ahead with `--yes`, which is also needed when there is no terminal to ask in (a script). A running block, and a block list or condition that a running block uses, cannot be deleted; the question before deleting a block list or schedule says what it does to the blocks that use it.
 
-### `duplicate`, `list duplicate`, `schedule duplicate`
+### `duplicate`, `list duplicate`, `condition duplicate`
 
-Make a copy, as **Duplicate** in a tile's menu does: named after the original with the next free number (a copy of `Work` or of `Work (2)` is `Work (2)`, or `Work (3)` when that is taken), with everything the original has. A block's copy uses the same block lists and schedule and has the same lock, a password lock with the same password. The CLI can also copy a running block, or what one uses (the window hides the menu of those); the copy is not running.
+Make a copy, as **Duplicate** in a tile's menu does: named after the original with the next free number (a copy of `Work` or of `Work (2)` is `Work (2)`, or `Work (3)` when that is taken), with everything the original has. A block's copy uses the same block lists and condition and has the same lock, a password lock with the same password. The CLI can also copy a running block, or what one uses (the window hides the menu of those); the copy is not running.
 
 ### `export`, `import`
 
-To move to another computer: `export <file>` writes every block list, schedule and block to a settings file (JSON), the same file the window's **Export** saves. `import <file>` replaces all of them with what is in such a file, after asking (or with `--yes`); it is refused while any block runs. A password lock is not in the file, so a block that has one comes without a lock: the question names them. The unlock password is part of Bullseye itself, not of the file.
+To move to another computer: `export <file>` writes every block list, condition and block to a settings file (JSON), the same file the window's **Export** saves. `import <file>` replaces all of them with what is in such a file, after asking (or with `--yes`); it is refused while any block runs. A password lock is not in the file, so a block that has one comes without a lock: the question names them. The unlock password is part of Bullseye itself, not of the file.
 
 ```powershell
 bullseye-cli export D:\bullseye.json
@@ -145,7 +153,7 @@ bullseye-cli import D:\bullseye.json
 
 ### `unlock`
 
-Ends every running block, locked or not, with the unlock password, exactly as the window's Unlock does: the block lists, schedules and blocks stay, and so does the app, with nothing to enforce. Without `--password` it asks for the password without showing it, or reads it from standard input when that is not a terminal:
+Ends every running block, locked or not, with the unlock password, exactly as the window's Unlock does: the block lists, conditions and blocks stay, and so does the app, with nothing to enforce. Without `--password` it asks for the password without showing it, or reads it from standard input when that is not a terminal:
 
 ```powershell
 bullseye-cli unlock
@@ -154,14 +162,14 @@ bullseye-cli unlock
 
 (A password given with `--password` ends up in your shell history.)
 
-### `schedule check`
+### `condition check`
 
 Checks times written as text and shows them per day, the way a schedule reads them, and as the window writes them out:
 
 ```
-> bullseye-cli schedule check "weekdays 8-12, 13-17; sat 10am-noon"
+> bullseye-cli condition check "weekdays 8-12, 13-17; sat 10am-noon"
 In "sat 10am-noon": "noon" is not a time such as 08:00, 17:30 or 5pm
-> bullseye-cli schedule check "weekdays 8-12, 13-17; sat 10am-12pm"
+> bullseye-cli condition check "weekdays 8-12, 13-17; sat 10am-12pm"
 Mon-Fri 08:00-12:00, 13:00-17:00; Sat 10:00-12:00
   Mon  08:00-12:00, 13:00-17:00
   ...

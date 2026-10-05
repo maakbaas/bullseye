@@ -241,7 +241,7 @@ mod tests {
         assert_eq!(client::call(&Request::SaveBlock { block }), Ok(Response::Done));
         assert_eq!(client::call(&Request::Start { id: "a".into() }), Ok(Response::Done));
         let Ok(Response::Policy(policies)) = client::call(&Request::Policy) else { panic!("no policy") };
-        assert_eq!(policies[0].filters, vec!["a.com"]);
+        assert_eq!(policies[0].entries.filters, vec!["a.com"]);
         assert!(matches!(client::call(&Request::Stop { id: "a".into(), password: None }), Ok(Response::Failed(_))));
         assert!(matches!(client::call(&Request::PrepareUninstall), Ok(Response::Refused(_))));
 

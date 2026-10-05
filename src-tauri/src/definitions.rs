@@ -1,16 +1,16 @@
 //! What the user has defined, in three kinds, each a list of its own (`Library`):
 //! - **block lists** (`BlockList`): what to block and how: sites, always-allowed sites, programs,
 //!   and the enforcers that act on them;
-//! - **schedules** (`NamedSchedule`): when, as a weekly schedule (`schedule.rs`); "always" is built
-//!   in and is no entry here;
-//! - **blocks** (`Definition`): one or more block lists, a schedule (or always) and a lock
+//! - **conditions** (`Condition`): when, as a weekly schedule or while a flash drive is not
+//!   connected (`condition.rs`); "always" is built in and is no entry here;
+//! - **blocks** (`Definition`): one or more block lists, a condition (or always) and a lock
 //!   (`lock.rs`). A block is what is started and runs.
 //!
 //! All of it is kept by the service (`%ProgramData%\bullseye\blocks.json`), so it survives
-//! restarts, and is only a template: starting a block copies its lists and schedule into a running
+//! restarts, and is only a template: starting a block copies its lists and condition into a running
 //! block (`block.rs`), which is then fixed until it ends. So that what is shown and what runs stay
-//! the same, a running block's definition, and every block list and schedule it uses, cannot be
-//! changed or deleted until it ends (`handler.rs`). Deleting a block list or schedule takes it out
+//! the same, a running block's definition, and every block list and condition it uses, cannot be
+//! changed or deleted until it ends (`handler.rs`). Deleting a block list or condition takes it out
 //! of the blocks that use it (`Library::fallout`).
 
 use std::fs;
@@ -19,11 +19,9 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::block::Lists;
-use crate::filters::FilterList;
+use crate::condition::Rule;
+use crate::lists::{Entries, Lists};
 use crate::lock::Lock;
-use crate::programs::ProgramList;
-use crate::schedule::Week;
 use crate::state::{self, Enforcers};
 use crate::sync::LockExt;
 use crate::unlock;
@@ -39,24 +37,21 @@ pub struct BlockList {
     /// Made by the UI or the CLI; letters, digits, `-` and `_`.
     pub id: String,
     pub name: String,
-    /// The sites to block, one entry per line, as typed.
-    pub filters: Vec<String>,
-    /// The sites that are always allowed, which win over `filters` (of this list only).
-    pub allowed: Vec<String>,
-    /// The programs to close (`programs.rs`).
-    pub programs: Vec<String>,
+    /// What it blocks: its lists, one entry per line as typed (fields of the list in the file).
+    #[serde(flatten)]
+    pub entries: Entries,
     pub enforcers: Enforcers,
 }
 
-/// A weekly schedule with a name. **A new kind of schedule** (other than weekly) would become a
-/// field here, with what it means in `block::Block::in_schedule`, and an editor in the UI.
+/// When a block is active, and what a condition lock locks by, with a name: a weekly schedule or a
+/// flash drive (`Rule`, `condition.rs`, which says how to make a new kind). Its rule is fields of
+/// the condition in the file: `type` and what the type has.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct NamedSchedule {
+pub struct Condition {
     pub id: String,
     pub name: String,
-    /// When it is active (`days`, Monday first).
     #[serde(flatten)]
-    pub week: Week,
+    pub rule: Rule,
 }
 
 /// Which kind of thing: what `Definitions::duplicate` copies.
@@ -65,10 +60,10 @@ pub struct NamedSchedule {
 pub enum Kind {
     Block,
     List,
-    Schedule,
+    Condition,
 }
 
-/// A block: what is started. Its lists by id, its schedule by id (`None`: always active) and its
+/// A block: what is started. Its lists by id, its condition by id (`None`: always active) and its
 /// lock.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Definition {
@@ -76,12 +71,12 @@ pub struct Definition {
     pub name: String,
     /// The block lists it enforces, by id.
     pub lists: Vec<String>,
-    /// The schedule it is active by, by id; `None` is always.
-    pub schedule: Option<String>,
+    /// The condition it is active by, by id; `None` is always.
+    pub condition: Option<String>,
     /// How it is kept from being stopped once started (`lock.rs`).
     pub lock: Lock,
     /// The last settings of each other lock method it has had (a duration, an end, a lock
-    /// schedule, a password's hash), so that choosing one again starts from them. Kept by the
+    /// condition, a password's hash), so that choosing one again starts from them. Kept by the
     /// service (`Definitions::save_block`): what a client sends here is ignored.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kept_locks: Vec<Lock>,
@@ -91,7 +86,7 @@ pub struct Definition {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Library {
     pub lists: Vec<BlockList>,
-    pub schedules: Vec<NamedSchedule>,
+    pub conditions: Vec<Condition>,
     pub blocks: Vec<Definition>,
 }
 
@@ -99,9 +94,9 @@ pub struct Library {
 pub struct Resolved {
     pub block: Definition,
     pub lists: Vec<BlockList>,
-    pub week: Option<Week>,
-    /// The week of its scheduled lock, if it has one.
-    pub lock_week: Option<Week>,
+    pub condition: Option<Rule>,
+    /// The rule of its condition lock, if it has one.
+    pub lock_condition: Option<Rule>,
 }
 
 /// An id and a name as every kind needs them.
@@ -122,11 +117,7 @@ fn check_name(kind: &str, id: &str, name: &str) -> Result<(), String> {
 impl BlockList {
     /// The lists, read and checked. Also refuses programs Windows needs (`programs.rs`).
     pub fn lists(&self) -> Result<Lists, String> {
-        let sites = FilterList::parse(&self.filters).map_err(|_| format!("{}: invalid block list syntax", self.name))?;
-        let allowed =
-            FilterList::parse(&self.allowed).map_err(|_| format!("{}: invalid syntax in the list of allowed sites", self.name))?;
-        let programs = ProgramList::parse(&self.programs).map_err(|why| format!("{}: {why}", self.name))?;
-        Ok(Lists { sites, allowed, programs })
+        Lists::parse(&self.entries).map_err(|why| format!("{}: {why}", self.name))
     }
 
     /// What can be checked without starting a block with it. Whether it has anything to do is only
@@ -137,11 +128,12 @@ impl BlockList {
     }
 }
 
-impl NamedSchedule {
-    /// The week, sorted, merged and checked: refused if it has no time in it.
-    fn checked(mut self) -> Result<NamedSchedule, String> {
-        check_name("schedule", &self.id, &self.name)?;
-        self.week = self.week.normalized()?;
+impl Condition {
+    /// The rule, in order and checked: a week sorted and merged, refused if it has no time in it;
+    /// a drive chosen.
+    fn checked(mut self) -> Result<Condition, String> {
+        check_name("condition", &self.id, &self.name)?;
+        self.rule = self.rule.checked()?;
         Ok(self)
     }
 }
@@ -160,25 +152,25 @@ impl Library {
         self.lists.iter().find(|l| l.id == id)
     }
 
-    pub fn schedule(&self, id: &str) -> Option<&NamedSchedule> {
-        self.schedules.iter().find(|s| s.id == id)
+    pub fn condition(&self, id: &str) -> Option<&Condition> {
+        self.conditions.iter().find(|s| s.id == id)
     }
 
     pub fn block(&self, id: &str) -> Option<&Definition> {
         self.blocks.iter().find(|b| b.id == id)
     }
 
-    /// The blocks that use a block list or a schedule (as their schedule or their lock's), by id.
+    /// The blocks that use a block list or a condition (as their condition or their lock's), by id.
     pub fn users_of(&self, part: &str) -> Vec<&Definition> {
         self.blocks
             .iter()
-            .filter(|b| b.lists.iter().any(|l| l == part) || b.schedule.as_deref() == Some(part) || b.lock.schedule() == Some(part))
+            .filter(|b| b.lists.iter().any(|l| l == part) || b.condition.as_deref() == Some(part) || b.lock.condition() == Some(part))
             .collect()
     }
 
-    /// A schedule's week, checked.
-    fn week_of(&self, id: &str) -> Result<Week, String> {
-        self.schedule(id).ok_or("A schedule of this block is gone")?.week.clone().normalized()
+    /// A condition's rule, checked.
+    fn rule_of(&self, id: &str) -> Result<Rule, String> {
+        self.condition(id).ok_or("A condition of this block is gone")?.rule.clone().checked()
     }
 
     /// A block with its parts, ready to start. Refused if it has no block list, or a part is gone.
@@ -189,9 +181,9 @@ impl Library {
         }
         let lists =
             block.lists.iter().map(|l| self.list(l).cloned().ok_or("A block list of this block is gone")).collect::<Result<Vec<_>, _>>()?;
-        let week = block.schedule.as_deref().map(|s| self.week_of(s)).transpose()?;
-        let lock_week = block.lock.schedule().map(|s| self.week_of(s)).transpose()?;
-        Ok(Resolved { block, lists, week, lock_week })
+        let condition = block.condition.as_deref().map(|c| self.rule_of(c)).transpose()?;
+        let lock_condition = block.lock.condition().map(|c| self.rule_of(c)).transpose()?;
+        Ok(Resolved { block, lists, condition, lock_condition })
     }
 
     /// What can be checked of a block without starting it: its name, that its parts exist, its lock.
@@ -200,12 +192,12 @@ impl Library {
         for list in &block.lists {
             self.list(list).ok_or_else(|| format!("No block list with id {list}"))?;
         }
-        if let Some(schedule) = &block.schedule {
-            self.schedule(schedule).ok_or_else(|| format!("No schedule with id {schedule}"))?;
+        if let Some(condition) = &block.condition {
+            self.condition(condition).ok_or_else(|| format!("No condition with id {condition}"))?;
         }
         block.lock.check()?;
-        if let Some(schedule) = block.lock.schedule() {
-            self.schedule(schedule).ok_or_else(|| format!("No schedule with id {schedule} for the lock"))?;
+        if let Some(condition) = block.lock.condition() {
+            self.condition(condition).ok_or_else(|| format!("No condition with id {condition} for the lock"))?;
         }
         Ok(())
     }
@@ -234,7 +226,7 @@ macro_rules! named {
         }
     )*};
 }
-named!(BlockList, NamedSchedule, Definition);
+named!(BlockList, Condition, Definition);
 
 /// A copy of the item `id` as `new_id`, at the end, named after it with the next number free among
 /// its kind (`copy_name`).
@@ -381,45 +373,45 @@ impl Definitions {
         })
     }
 
-    pub fn save_schedule(&self, mut schedule: NamedSchedule) -> Result<(), String> {
-        schedule.name = schedule.name.trim().to_string();
-        let schedule = schedule.checked()?;
+    pub fn save_condition(&self, mut condition: Condition) -> Result<(), String> {
+        condition.name = condition.name.trim().to_string();
+        let condition = condition.checked()?;
         self.change(|library| {
-            let id = schedule.id.clone();
-            put(&mut library.schedules, schedule, |s| s.id == id)
+            let id = condition.id.clone();
+            put(&mut library.conditions, condition, |c| c.id == id)
         })
     }
 
-    pub fn delete_schedule(&self, id: &str) -> Result<(), String> {
+    pub fn delete_condition(&self, id: &str) -> Result<(), String> {
         self.change(|library| {
-            library.schedule(id).ok_or("No such schedule")?;
-            library.schedules.retain(|s| s.id != id);
-            // The blocks it was the schedule of are always active; one it was the lock schedule of
+            library.condition(id).ok_or("No such condition")?;
+            library.conditions.retain(|c| c.id != id);
+            // The blocks it was the condition of are always active; one it was the lock condition of
             // has no lock (`Library::fallout`).
             for block in &mut library.blocks {
-                if block.schedule.as_deref() == Some(id) {
-                    block.schedule = None;
+                if block.condition.as_deref() == Some(id) {
+                    block.condition = None;
                 }
-                if block.lock.schedule() == Some(id) {
+                if block.lock.condition() == Some(id) {
                     block.lock = Lock::None;
                 }
             }
-            // A block may have kept it as the schedule of a lock it no longer has: forgotten too.
+            // A block may have kept it as the condition of a lock it no longer has: forgotten too.
             for block in &mut library.blocks {
-                block.kept_locks.retain(|lock| lock.schedule() != Some(id));
+                block.kept_locks.retain(|lock| lock.condition() != Some(id));
             }
             Ok(())
         })
     }
 
-    /// A copy of a block, block list or schedule, as `new_id` (made by the client, as for anything
-    /// new), named after it with a number (`copy_name`). A block's copy has its lists, schedule and
+    /// A copy of a block, block list or condition, as `new_id` (made by the client, as for anything
+    /// new), named after it with a number (`copy_name`). A block's copy has its lists, condition and
     /// lock, a password lock's hash included, and the lock settings it kept.
     pub fn duplicate(&self, kind: Kind, id: &str, new_id: &str) -> Result<(), String> {
         self.change(|library| match kind {
             Kind::Block => duplicate(&mut library.blocks, "block", id, new_id),
             Kind::List => duplicate(&mut library.lists, "block list", id, new_id),
-            Kind::Schedule => duplicate(&mut library.schedules, "schedule", id, new_id),
+            Kind::Condition => duplicate(&mut library.conditions, "condition", id, new_id),
         })
     }
 
@@ -427,7 +419,7 @@ impl Definitions {
     /// one. A password lock comes without its password, so as no lock (`SettingsFile`); a lock
     /// settings kept for a password is dropped. Whether a block runs is the handler's to refuse.
     pub fn replace(&self, mut library: Library) -> Result<(), String> {
-        let too_many = library.lists.len().max(library.schedules.len()).max(library.blocks.len()) > MAX_ITEMS;
+        let too_many = library.lists.len().max(library.conditions.len()).max(library.blocks.len()) > MAX_ITEMS;
         if too_many {
             return Err(format!("At most {MAX_ITEMS} of each"));
         }
@@ -435,7 +427,7 @@ impl Definitions {
             list.name = list.name.trim().to_string();
             list.check()?;
         }
-        library.schedules = library.schedules.into_iter().map(NamedSchedule::checked).collect::<Result<_, _>>()?;
+        library.conditions = library.conditions.into_iter().map(Condition::checked).collect::<Result<_, _>>()?;
         for block in &mut library.blocks {
             block.name = block.name.trim().to_string();
             if matches!(block.lock, Lock::Password { .. }) {
@@ -448,7 +440,7 @@ impl Definitions {
         }
         let unique = |ids: Vec<&str>| ids.iter().enumerate().all(|(at, id)| !ids[..at].contains(id));
         if !unique(library.lists.iter().map(|l| l.id.as_str()).collect())
-            || !unique(library.schedules.iter().map(|s| s.id.as_str()).collect())
+            || !unique(library.conditions.iter().map(|c| c.id.as_str()).collect())
             || !unique(library.blocks.iter().map(|b| b.id.as_str()).collect())
         {
             return Err("Two items of one kind in the file have the same id".into());
@@ -474,8 +466,8 @@ impl Definitions {
     }
 }
 
-/// What deleting a block list or schedule does to the blocks that use it, by their names: what
-/// the service does (`Definitions::delete_list`, `delete_schedule`), and what the window and the
+/// What deleting a block list or condition does to the blocks that use it, by their names: what
+/// the service does (`Definitions::delete_list`, `delete_condition`), and what the window and the
 /// CLI say before it.
 #[derive(Serialize, Default, Debug, PartialEq)]
 pub struct Fallout {
@@ -483,22 +475,22 @@ pub struct Fallout {
     pub deleted: Vec<String>,
     /// Blocks that keep their other block lists.
     pub without_it: Vec<String>,
-    /// Blocks it was the schedule of: always active from then on.
+    /// Blocks it was the condition of: always active from then on.
     pub always: Vec<String>,
-    /// Blocks it was the lock schedule of: no lock from then on.
+    /// Blocks it was the lock condition of: no lock from then on.
     pub unlocked: Vec<String>,
 }
 
 impl Library {
-    /// What deleting the block list or schedule `id` does (`Definitions::delete_list`,
-    /// `delete_schedule`), for the question before it.
+    /// What deleting the block list or condition `id` does (`Definitions::delete_list`,
+    /// `delete_condition`), for the question before it.
     pub fn fallout(&self, id: &str) -> Fallout {
         let names = |keep: &dyn Fn(&Definition) -> bool| self.blocks.iter().filter(|b| keep(b)).map(|b| b.name.clone()).collect();
         Fallout {
             deleted: names(&|b| b.lists.iter().all(|l| l == id) && !b.lists.is_empty()),
             without_it: names(&|b| b.lists.iter().any(|l| l == id) && b.lists.iter().any(|l| l != id)),
-            always: names(&|b| b.schedule.as_deref() == Some(id)),
-            unlocked: names(&|b| b.lock.schedule() == Some(id)),
+            always: names(&|b| b.condition.as_deref() == Some(id)),
+            unlocked: names(&|b| b.lock.condition() == Some(id)),
         }
     }
 }
@@ -520,7 +512,7 @@ struct SettingsFile {
 #[derive(Serialize, Debug, PartialEq)]
 pub struct Contents {
     pub lists: usize,
-    pub schedules: usize,
+    pub conditions: usize,
     pub blocks: usize,
     /// Blocks with a password lock, which come without a lock (the file has no password).
     pub unlocked: Vec<String>,
@@ -548,7 +540,7 @@ impl Library {
     pub fn contents(&self) -> Contents {
         Contents {
             lists: self.lists.len(),
-            schedules: self.schedules.len(),
+            conditions: self.conditions.len(),
             blocks: self.blocks.len(),
             unlocked: self.blocks.iter().filter(|b| matches!(b.lock, Lock::Password { .. })).map(|b| b.name.clone()).collect(),
         }
@@ -580,15 +572,14 @@ fn load(path: &PathBuf) -> Option<Library> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use crate::schedule::Week;
 
     /// A block list with these sites and the default enforcers.
     pub fn block_list(id: &str, filters: &[&str]) -> BlockList {
         BlockList {
             id: id.into(),
             name: format!("List {id}"),
-            filters: filters.iter().map(|f| f.to_string()).collect(),
-            allowed: Vec::new(),
-            programs: Vec::new(),
+            entries: Entries { filters: filters.iter().map(|f| f.to_string()).collect(), ..Entries::default() },
             enforcers: Enforcers::default(),
         }
     }
@@ -599,14 +590,14 @@ pub mod tests {
             id: id.into(),
             name: format!("Block {id}"),
             lists: lists.iter().map(|l| l.to_string()).collect(),
-            schedule: None,
+            condition: None,
             lock: Lock::None,
             kept_locks: Vec::new(),
         }
     }
 
-    pub fn weekly(id: &str, text: &str) -> NamedSchedule {
-        NamedSchedule { id: id.into(), name: format!("Schedule {id}"), week: Week::parse(text).unwrap().unwrap() }
+    pub fn weekly(id: &str, text: &str) -> Condition {
+        Condition { id: id.into(), name: format!("Schedule {id}"), rule: Rule::Schedule { week: Week::parse(text).unwrap().unwrap() } }
     }
 
     fn path(name: &str) -> PathBuf {
@@ -621,9 +612,9 @@ pub mod tests {
         let definitions = Definitions::at(Some(path.clone()));
         definitions.save_list(block_list("social", &["youtube.com"])).unwrap();
         definitions.save_list(block_list("games", &[])).unwrap();
-        definitions.save_schedule(weekly("work", "mon-fri 8-17")).unwrap();
+        definitions.save_condition(weekly("work", "mon-fri 8-17")).unwrap();
         let mut work = block("w", &["social", "games"]);
-        work.schedule = Some("work".into());
+        work.condition = Some("work".into());
         work.lock = Lock::Duration { duration: "1h".into() };
         definitions.save_block(work.clone()).unwrap();
         // Saving one with the same id replaces it, in its place.
@@ -631,11 +622,11 @@ pub mod tests {
 
         let again = Definitions::at(Some(path)).library();
         assert_eq!(again.lists.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(), vec!["social", "games"]);
-        assert_eq!(again.list("social").unwrap().filters, vec!["reddit.com"]);
+        assert_eq!(again.list("social").unwrap().entries.filters, vec!["reddit.com"]);
         assert_eq!(again.block("w").unwrap().lists, vec!["social", "games"]);
         let resolved = again.resolve("w").unwrap();
         assert_eq!(resolved.lists.len(), 2);
-        assert_eq!(resolved.week.unwrap().describe(), "Mon-Fri 08:00-17:00");
+        assert_eq!(resolved.condition.unwrap().week().unwrap().describe(), "Mon-Fri 08:00-17:00");
     }
 
     #[test]
@@ -647,19 +638,21 @@ pub mod tests {
             BlockList { name: "x".repeat(MAX_NAME + 1), ..block_list("x", &[]) },
             block_list("../x", &[]),
             block_list("x", &["has space.com"]),
-            BlockList { programs: vec!["explorer.exe".into()], ..block_list("x", &[]) },
+            BlockList { entries: Entries { programs: vec!["explorer.exe".into()], ..Entries::default() }, ..block_list("x", &[]) },
         ];
         for list in bad_lists {
             assert!(definitions.save_list(list.clone()).is_err(), "{list:?}");
         }
         // A schedule with no time in it is never active.
-        assert!(definitions.save_schedule(NamedSchedule { id: "s".into(), name: "S".into(), week: Week::default() }).is_err());
+        assert!(definitions
+            .save_condition(Condition { id: "s".into(), name: "S".into(), rule: Rule::Schedule { week: Week::default() } })
+            .is_err());
         let bad_blocks = [
             block("b", &["nope"]),
-            Definition { schedule: Some("nope".into()), ..block("b", &["l"]) },
+            Definition { condition: Some("nope".into()), ..block("b", &["l"]) },
             Definition { lock: Lock::Duration { duration: "soon".into() }, ..block("b", &["l"]) },
             Definition { lock: Lock::Duration { duration: "".into() }, ..block("b", &["l"]) },
-            Definition { lock: Lock::Scheduled { schedule: "nope".into() }, ..block("b", &["l"]) },
+            Definition { lock: Lock::Condition { condition: "nope".into() }, ..block("b", &["l"]) },
         ];
         for b in bad_blocks {
             assert!(definitions.save_block(b.clone()).is_err(), "{b:?}");
@@ -671,18 +664,18 @@ pub mod tests {
     }
 
     #[test]
-    fn deleting_a_list_or_schedule_takes_it_out_of_its_blocks() {
+    fn deleting_a_list_or_condition_takes_it_out_of_its_blocks() {
         let definitions = Definitions::at(None);
         definitions.save_list(block_list("l", &["a.com"])).unwrap();
         definitions.save_list(block_list("l2", &["b.com"])).unwrap();
-        definitions.save_schedule(weekly("s", "weekends")).unwrap();
-        definitions.save_schedule(weekly("s2", "weekdays")).unwrap();
+        definitions.save_condition(weekly("s", "weekends")).unwrap();
+        definitions.save_condition(weekly("s2", "weekdays")).unwrap();
         // "a" has only l; "b" has l and l2, schedule s and lock schedule s2.
         definitions.save_block(block("a", &["l"])).unwrap();
         definitions
             .save_block(Definition {
-                schedule: Some("s".into()),
-                lock: Lock::Scheduled { schedule: "s2".into() },
+                condition: Some("s".into()),
+                lock: Lock::Condition { condition: "s2".into() },
                 ..block("b", &["l", "l2"])
             })
             .unwrap();
@@ -700,24 +693,24 @@ pub mod tests {
         let library = definitions.library();
         assert!(library.block("a").is_none());
         assert_eq!(library.block("b").unwrap().lists, vec!["l2"]);
-        // The schedules: "b" is always active, and has no lock.
-        definitions.delete_schedule("s").unwrap();
-        definitions.delete_schedule("s2").unwrap();
+        // The conditions: "b" is always active, and has no lock.
+        definitions.delete_condition("s").unwrap();
+        definitions.delete_condition("s2").unwrap();
         let b = definitions.library().block("b").unwrap().clone();
-        assert_eq!((b.schedule, b.lock), (None, Lock::None));
+        assert_eq!((b.condition, b.lock), (None, Lock::None));
         assert!(b.kept_locks.is_empty(), "nor is it kept: {:?}", b.kept_locks);
         assert!(definitions.delete_list("l").is_err(), "gone already");
     }
 
     #[test]
-    fn a_kept_lock_schedule_is_forgotten_with_it() {
+    fn a_kept_lock_condition_is_forgotten_with_it() {
         let definitions = Definitions::at(None);
         definitions.save_list(block_list("l", &["a.com"])).unwrap();
-        definitions.save_schedule(weekly("s2", "weekdays")).unwrap();
-        definitions.save_block(Definition { lock: Lock::Scheduled { schedule: "s2".into() }, ..block("b", &["l"]) }).unwrap();
+        definitions.save_condition(weekly("s2", "weekdays")).unwrap();
+        definitions.save_block(Definition { lock: Lock::Condition { condition: "s2".into() }, ..block("b", &["l"]) }).unwrap();
         definitions.save_block(block("b", &["l"])).unwrap();
-        assert_eq!(definitions.library().block("b").unwrap().kept_locks, vec![Lock::Scheduled { schedule: "s2".into() }]);
-        definitions.delete_schedule("s2").unwrap();
+        assert_eq!(definitions.library().block("b").unwrap().kept_locks, vec![Lock::Condition { condition: "s2".into() }]);
+        definitions.delete_condition("s2").unwrap();
         assert!(definitions.library().block("b").unwrap().kept_locks.is_empty());
     }
 
@@ -787,39 +780,39 @@ pub mod tests {
     fn everything_can_be_duplicated() {
         let definitions = Definitions::at(Some(path("duplicate")));
         definitions.save_list(block_list("l", &["a.com"])).unwrap();
-        definitions.save_schedule(weekly("s", "Mon 08:00-09:00")).unwrap();
+        definitions.save_condition(weekly("s", "Mon 08:00-09:00")).unwrap();
         let block = Definition {
-            schedule: Some("s".into()),
+            condition: Some("s".into()),
             lock: Lock::Password { password: Some("secret".into()), hash: None },
             ..block("b", &["l"])
         };
         definitions.save_block(block).unwrap();
 
         definitions.duplicate(Kind::List, "l", "l2").unwrap();
-        definitions.duplicate(Kind::Schedule, "s", "s2").unwrap();
+        definitions.duplicate(Kind::Condition, "s", "s2").unwrap();
         definitions.duplicate(Kind::Block, "b", "b2").unwrap();
         definitions.duplicate(Kind::Block, "b", "b3").unwrap();
         let library = definitions.library();
-        assert_eq!(library.list("l2").unwrap().filters, vec!["a.com"]);
-        assert_eq!(library.schedule("s2").unwrap().week, library.schedule("s").unwrap().week);
+        assert_eq!(library.list("l2").unwrap().entries.filters, vec!["a.com"]);
+        assert_eq!(library.condition("s2").unwrap().rule, library.condition("s").unwrap().rule);
         let (original, copy) = (library.block("b").unwrap(), library.block("b2").unwrap());
         assert_eq!((copy.name.as_str(), library.block("b3").unwrap().name.as_str()), ("Block b (2)", "Block b (3)"));
         // The copy uses the same block list and schedule, and has the same lock, hash included.
-        assert_eq!((&copy.lists, &copy.schedule, &copy.lock), (&original.lists, &original.schedule, &original.lock));
+        assert_eq!((&copy.lists, &copy.condition, &copy.lock), (&original.lists, &original.condition, &original.lock));
         assert!(unlock::check_hash("secret", copy.lock.password_hash().unwrap()));
 
         // Not under an id that is taken, and not of what is not there.
         assert!(definitions.duplicate(Kind::Block, "b", "b2").is_err());
         assert!(definitions.duplicate(Kind::List, "nope", "x").is_err());
-        assert!(definitions.duplicate(Kind::Schedule, "s", "not an id").is_err());
+        assert!(definitions.duplicate(Kind::Condition, "s", "not an id").is_err());
     }
 
     #[test]
     fn everything_moves_through_a_settings_file_but_passwords() {
         let here = Definitions::at(Some(path("export")));
         here.save_list(block_list("l", &["a.com"])).unwrap();
-        here.save_schedule(weekly("s", "Mon 08:00-09:00")).unwrap();
-        let with = |id: &str, lock: Lock| Definition { schedule: Some("s".into()), lock, ..block(id, &["l"]) };
+        here.save_condition(weekly("s", "Mon 08:00-09:00")).unwrap();
+        let with = |id: &str, lock: Lock| Definition { condition: Some("s".into()), lock, ..block(id, &["l"]) };
         here.save_block(with("b", Lock::Password { password: Some("secret".into()), hash: None })).unwrap();
         here.save_block(with("b", Lock::Duration { duration: "1h".into() })).unwrap();
         here.save_block(with("p", Lock::Password { password: Some("secret".into()), hash: None })).unwrap();
@@ -828,7 +821,7 @@ pub mod tests {
         let hash = here.library().block("p").unwrap().lock.password_hash().unwrap().to_string();
         assert!(!text.contains(&hash) && !text.contains("secret"), "{text}");
         let read = Library::from_settings_text(&text).unwrap();
-        assert_eq!(read.contents(), Contents { lists: 1, schedules: 1, blocks: 2, unlocked: vec!["Block p".into()] });
+        assert_eq!(read.contents(), Contents { lists: 1, conditions: 1, blocks: 2, unlocked: vec!["Block p".into()] });
 
         let there = Definitions::at(Some(path("import")));
         there.save_list(block_list("other", &["b.com"])).unwrap();
@@ -839,7 +832,7 @@ pub mod tests {
         // A password lock comes as no lock, and a kept password is not kept.
         assert_eq!(library.block("p").unwrap().lock, Lock::None);
         assert!(library.block("b").unwrap().kept_locks.is_empty());
-        assert_eq!(library.schedule("s").unwrap().week, here.library().schedule("s").unwrap().week);
+        assert_eq!(library.condition("s").unwrap().rule, here.library().condition("s").unwrap().rule);
     }
 
     #[test]
@@ -847,7 +840,7 @@ pub mod tests {
         let definitions = Definitions::at(None);
         assert!(Library::from_settings_text("{}").is_err());
         assert!(Library::from_settings_text("not json").is_err());
-        assert!(Library::from_settings_text(r#"{"bullseye_settings": 2, "lists": [], "schedules": [], "blocks": []}"#).is_err());
+        assert!(Library::from_settings_text(r#"{"bullseye_settings": 2, "lists": [], "conditions": [], "blocks": []}"#).is_err());
         let file = |library: Library| Library::from_settings_text(&library.settings_text().unwrap()).unwrap();
         // A block naming a list that is not in the file, two lists with one id, a list Windows needs.
         let missing = Library { blocks: vec![block("b", &["gone"])], ..Library::default() };
@@ -855,7 +848,7 @@ pub mod tests {
         let twice = Library { lists: vec![block_list("l", &[]), block_list("l", &[])], ..Library::default() };
         assert!(definitions.replace(file(twice)).is_err());
         let mut windows = block_list("w", &[]);
-        windows.programs = vec!["explorer.exe".into()];
+        windows.entries.programs = vec!["explorer.exe".into()];
         assert!(definitions.replace(file(Library { lists: vec![windows], ..Library::default() })).is_err());
         // An empty file empties everything.
         definitions.save_list(block_list("l", &[])).unwrap();
@@ -866,7 +859,7 @@ pub mod tests {
     #[test]
     fn a_schedule_travels_with_its_days_beside_its_name() {
         let json = serde_json::to_string(&weekly("s", "sat")).unwrap();
-        assert!(json.starts_with(r#"{"id":"s","name":"Schedule s","days":[[],[],[],[],[],[[0,1440]],[]]"#), "{json}");
-        assert_eq!(serde_json::from_str::<NamedSchedule>(&json).unwrap(), weekly("s", "sat"));
+        assert!(json.starts_with(r#"{"id":"s","name":"Schedule s","type":"schedule","days":[[],[],[],[],[],[[0,1440]],[]]"#), "{json}");
+        assert_eq!(serde_json::from_str::<Condition>(&json).unwrap(), weekly("s", "sat"));
     }
 }

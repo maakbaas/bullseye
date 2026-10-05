@@ -1,6 +1,6 @@
 //! Lock methods: what keeps a running block from being stopped. A block is three layers: what it
-//! enforces (lists and enforcers, `block::Lists`, `state::Enforcers`), when it is active (its
-//! schedule, `definitions::Schedule`), and how it is locked (this).
+//! enforces (lists and enforcers, `lists::Lists`, `state::Enforcers`), when it is active (its
+//! condition, `condition.rs`), and how it is locked (this).
 //!
 //! **A new lock method goes here**, as a variant, together with what it means in `Blocklist`
 //! (`block.rs`), an entry in the UI's `LOCKS` table and an option in the CLI (`cli.rs`, `CLI.md`).
@@ -28,10 +28,12 @@ pub enum Lock {
     /// Locked until Windows restarts (`boot.rs`): the block cannot be stopped before, and ends with
     /// the restart. A shut down with Fast Startup is not a restart (Windows hibernates then).
     UntilRestart,
-    /// Locked while a schedule of its own choosing is active (`schedule`, a schedule's id): it
-    /// cannot be stopped then, and can be outside those times; it runs until stopped. With the
-    /// block's own schedule, it is locked exactly while it is active.
-    Scheduled { schedule: String },
+    /// Locked while a condition of its own choosing is active (`condition`, a condition's id,
+    /// `condition.rs`): it cannot be stopped then, and can be otherwise; it runs until stopped. A
+    /// weekly schedule locks it at those times; a flash drive locks it while the drive is not
+    /// connected, so the drive is the key. With the block's own condition, it is locked exactly
+    /// while it is active.
+    Condition { condition: String },
     /// Locked with a password of its own: it runs until stopped with that password (or the unlock
     /// password). Meant for someone else to set, so the user does not know it. Only a salted hash
     /// of it is kept (`unlock::new_hash`); neither is ever sent back to a client (`redacted`).
@@ -66,10 +68,10 @@ impl Lock {
         std::mem::discriminant(self) == std::mem::discriminant(other)
     }
 
-    /// The schedule of a scheduled lock, by id.
-    pub fn schedule(&self) -> Option<&str> {
+    /// The condition of a condition lock, by id.
+    pub fn condition(&self) -> Option<&str> {
         match self {
-            Lock::Scheduled { schedule } => Some(schedule),
+            Lock::Condition { condition } => Some(condition),
             _ => None,
         }
     }
@@ -119,7 +121,7 @@ mod tests {
         assert_eq!(Lock::Duration { duration: "2h 5m".into() }.duration(), Ok(Some(Duration::from_secs(7500))));
         assert!(Lock::Duration { duration: "".into() }.duration().is_err());
         assert!(Lock::Duration { duration: "soon".into() }.duration().is_err());
-        assert_eq!(Lock::Scheduled { schedule: "s".into() }.duration(), Ok(None));
+        assert_eq!(Lock::Condition { condition: "s".into() }.duration(), Ok(None));
         let until = Lock::Until { until: "2026-10-06 18:00".into() };
         assert_eq!(until.until().unwrap().map(|at| at.to_string()).as_deref(), Some("Tuesday 6 October 2026, 18:00"));
         assert_eq!(until.duration(), Ok(None));
@@ -139,7 +141,7 @@ mod tests {
         );
         assert_eq!(serde_json::to_string(&Lock::UntilRestart).unwrap(), r#"{"method":"until_restart"}"#);
         assert!(serde_json::from_str::<Lock>(r#"{"method":"forever"}"#).is_err());
-        assert_eq!(serde_json::to_string(&Lock::Scheduled { schedule: "s".into() }).unwrap(), r#"{"method":"scheduled","schedule":"s"}"#);
+        assert_eq!(serde_json::to_string(&Lock::Condition { condition: "s".into() }).unwrap(), r#"{"method":"condition","condition":"s"}"#);
         // A client sends the password; what it gets back has neither the password nor the hash.
         let sent: Lock = serde_json::from_str(r#"{"method":"password","password":"secret"}"#).unwrap();
         assert_eq!(sent, Lock::Password { password: Some("secret".into()), hash: None });

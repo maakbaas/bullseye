@@ -1,11 +1,17 @@
-// A page of tiles, one per block, block list or schedule: kept and updated in place, so an open menu
+// A page of tiles, one per block, block list or condition: kept and updated in place, so an open menu
 // survives a refresh. A block's tile also has its lock and Start / Stop. Deleting is asked here.
 
-import { $, ask, el, invalid, invoke, listName, names, newId, notify, overview, quoted, reachable, refresh, runningOf, scheduleOf, t, usersOf, weekText } from "./core.js";
+import { $, ask, el, invalid, invoke, listName, names, newId, notify, overview, quoted, reachable, refresh, runningOf, conditionOf, t, usersOf, weekText } from "./core.js";
 import { LOCKS } from "./locks.js";
 import { ENFORCERS, LISTS, SECTIONS } from "./forms.js";
 import { KINDS } from "./kinds.js";
 import { detour } from "./detour.js";
+
+// A condition's line on a block's tile, with its name when the block's definition still has it.
+const ruleLine = (rule, name) =>
+  rule.type === "flash_drive"
+    ? ["plug-16", t("blocks.tile.activeDrive", { drive: quoted(rule.drive) })]
+    : ["calendar-16", t(name ? "blocks.tile.activeNamed" : "blocks.tile.active", { times: weekText(rule.days), name })];
 
 // What a tile says, per kind: lines of text.
 function summaryOf(kind, item) {
@@ -19,21 +25,21 @@ function summaryOf(kind, item) {
     parts.push(users.length ? t("common.usedBy", { names: names(users) }) : t("lists.notUsed"));
     return parts;
   }
-  if (kind === "schedules") {
+  if (kind === "conditions") {
     const users = usersOf(item.id);
-    return [t("schedules.active", { times: weekText(item.days) }), users.length ? t("common.usedBy", { names: names(users) }) : t("schedules.notUsed")];
+    const what = item.type === "flash_drive" ? t("conditions.activeDrive", { drive: quoted(item.drive) }) : t("conditions.active", { times: weekText(item.days) });
+    return [what, users.length ? t("common.usedBy", { names: names(users) }) : t("conditions.notUsed")];
   }
   // A block: what it runs with while it runs, else what it is defined as. Each line has an
-  // icon in front: its block lists, its schedule, its lock (open when it does not lock), and
-  // for a running block when its schedule turns it on or off.
+  // icon in front: its block lists, its condition, its lock (open when it does not lock), and
+  // for a running block when its condition turns it on or off.
   const running = runningOf(item.id);
   const lists = running ? running.lists.map((l) => l.name) : item.lists.map(listName);
   const parts = [["list-checked-16", lists.length ? lists.join(t("common.separator")) : t("blocks.tile.noLists")]];
-  const schedule = scheduleOf(item);
-  const days = running ? running.schedule && running.schedule.days : schedule && schedule.days;
-  if (!days) parts.push(["calendar-16", t("blocks.tile.always")]);
-  else if (schedule) parts.push(["calendar-16", t("blocks.tile.activeNamed", { times: weekText(days), schedule: schedule.name })]);
-  else parts.push(["calendar-16", t("blocks.tile.active", { times: weekText(days) })]);
+  const condition = conditionOf(item);
+  const rule = running ? running.condition : condition;
+  if (!rule) parts.push(["calendar-16", t("blocks.tile.always")]);
+  else parts.push(ruleLine(rule, condition && condition.name));
   if (!running) {
     const lock = LOCKS[item.lock && item.lock.method];
     parts.push([item.lock && item.lock.method !== "none" ? "locked" : "unlocked", lock ? lock.describe(item.lock) : t("blocks.tile.unknownLock")]);
@@ -41,15 +47,20 @@ function summaryOf(kind, item) {
   }
   const change = running.lock_change_words;
   const lockIcon = running.locked ? "locked" : "unlocked";
+  const lockRule = running.lock_condition;
   if (running.password) parts.push([lockIcon, t("blocks.tile.lockedPassword")]);
   else if (running.until_restart) parts.push([lockIcon, t("blocks.tile.lockedRestart")]);
   else if (running.remaining_words) parts.push([lockIcon, t("blocks.tile.lockedTimer", { left: running.remaining_words })]);
-  else if (running.lock_schedule && running.locked) parts.push([lockIcon, change ? t("blocks.tile.lockedSchedule", { left: change }) : t("blocks.tile.lockedScheduleOpen")]);
-  else if (running.lock_schedule) parts.push([lockIcon, change ? t("blocks.tile.freeSchedule", { change }) : t("blocks.tile.freeScheduleOpen")]);
+  else if (lockRule && lockRule.type === "flash_drive") parts.push([lockIcon, t(running.locked ? "blocks.tile.lockedDrive" : "blocks.tile.freeDrive", { drive: quoted(lockRule.drive) })]);
+  else if (lockRule && running.locked) parts.push([lockIcon, change ? t("blocks.tile.lockedSchedule", { left: change }) : t("blocks.tile.lockedScheduleOpen")]);
+  else if (lockRule) parts.push([lockIcon, change ? t("blocks.tile.freeSchedule", { change }) : t("blocks.tile.freeScheduleOpen")]);
   else parts.push([lockIcon, t("blocks.tile.notLocked")]);
-  const next = running.schedule_change_words;
+  const next = running.condition_change_words;
   if (running.enforcing && next) parts.push(["time", t("blocks.tile.activeNow", { change: next })]);
-  if (!running.enforcing) parts.push(["time", next ? t("blocks.tile.inactiveUntil", { change: next }) : t("blocks.tile.inactive")]);
+  if (!running.enforcing) {
+    const waiting = running.condition.type === "flash_drive" ? t("blocks.tile.inactiveDrive", { drive: quoted(running.condition.drive) }) : t("blocks.tile.inactive");
+    parts.push(["time", next ? t("blocks.tile.inactiveUntil", { change: next }) : waiting]);
+  }
   return parts;
 }
 
@@ -77,7 +88,7 @@ function makeTile(kind, id) {
       el("cds-overflow-menu-item", { "data-action": "delete", danger: true }, t("common.delete")),
     ),
   );
-  // In the menu's place while it cannot be changed: a running block, or a list or schedule one uses.
+  // In the menu's place while it cannot be changed: a running block, or a list or condition one uses.
   const lock = el("span", { class: "lock", role: "img", "aria-label": t("common.locked"), title: t("common.locked") }, carbonIcon("locked"));
   const name = el("h2", { class: "cds--type-productive-heading-03" });
   const tag = el("cds-tag", { size: "md" });
@@ -160,14 +171,14 @@ async function setLock(id, method) {
   const parts = tiles.get(`blocks:${id}`);
   const block = overview.blocks.find((b) => b.id === id);
   if (!block) return;
-  // A lock schedule needs a schedule: without one, it offers to make one, and the lock is then
+  // A condition lock needs a condition: without one, it offers to make one, and the lock is then
   // set to it; otherwise the lock stays as it was.
-  if (method === "scheduled" && !overview.schedules.length) {
+  if (method === "condition" && !overview.conditions.length) {
     parts.choosing = true;
     const make = await ask({
-      heading: t("locks.scheduled.noneHeading"),
-      body: t("locks.scheduled.noneBody"),
-      action: t("locks.scheduled.noneAction"),
+      heading: t("locks.condition.noneHeading"),
+      body: t("locks.condition.noneBody"),
+      action: t("locks.condition.noneAction"),
       kind: "primary",
     });
     parts.choosing = false;
@@ -176,14 +187,14 @@ async function setLock(id, method) {
       detour.current = {
         back: KINDS.blocks.path,
         crumbs: [{ label: KINDS.blocks.title, href: KINDS.blocks.path }, { label: block.name, href: KINDS.blocks.path }],
-        onSaved: async (schedule) => {
+        onSaved: async (condition) => {
           const now = overview.blocks.find((b) => b.id === id) || block;
-          await invoke("save_block", { block: { ...now, lock: { method: "scheduled", schedule: schedule.id } } }).catch((e) =>
+          await invoke("save_block", { block: { ...now, lock: { method: "condition", condition: condition.id } } }).catch((e) =>
             notify("list-notices", "error", t("blocks.lockFailed", { name: quoted(block.name) }), String(e)),
           );
         },
       };
-      location.hash = `#/lock/${encodeURIComponent(id)}/schedules/new`;
+      location.hash = `#/lock/${encodeURIComponent(id)}/conditions/new`;
     }
     return;
   }
@@ -267,7 +278,7 @@ async function startOrStop(id) {
   await refresh();
 }
 
-// What deleting a block list or schedule does to the blocks that use it, in sentences: the
+// What deleting a block list or condition does to the blocks that use it, in sentences: the
 // service's rule (`deletion_fallout`, `Library::fallout`), worded by strings.js.
 async function fallout(id) {
   const effects = await invoke("deletion_fallout", { blocks: overview.blocks, id });

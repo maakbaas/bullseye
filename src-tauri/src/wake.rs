@@ -5,7 +5,8 @@
 //! Two sources, both costing nothing while nothing happens:
 //! - **In the app**, a WinEvent hook (`spawn_hook`): a Chromium window's title changing (a tab
 //!   navigated or was switched to), a value changing in the window itself (its address bar), or a
-//!   Chromium window coming to the foreground. Out of context, so no code goes into other
+//!   Chromium or Firefox window coming to the foreground. (A Firefox tab that navigates in the
+//!   background changes no title: that one waits for the pass every second.) Out of context, so no code goes into other
 //!   processes; the hook's thread only checks the window's class and sets an event.
 //! - **From the service**, a program starting (`spawn_process_watch`) that a running block would
 //!   close: one in its program list, or Obsidian while its enforcer is on. WMI's process start
@@ -42,6 +43,8 @@ const SERVICE_EVENT: &str = r"Global\bullseye-wake";
 const SDDL: &str = "D:(A;;GA;;;SY)(A;;0x00100000;;;IU)";
 /// The window class of Chromium browsers (and of Electron apps, Obsidian among them).
 const CHROMIUM: &str = "Chrome_WidgetWin_1";
+/// The window class of Firefox (and Thunderbird).
+const FIREFOX: &str = "MozillaWindowClass";
 
 /// A handle kept in a static: an event, which any thread may set or wait on.
 struct Event(HANDLE);
@@ -137,7 +140,7 @@ pub fn spawn_hook() {
     });
 }
 
-/// A window event: worth a look when it comes from a Chromium window itself, not from a page in it
+/// A window event: worth a look when it comes from a Chromium or Firefox window itself, not from a page
 /// (a page's own events come from its child window, so typing in a form does not count): the
 /// window's title changing (a tab navigated or was switched to), a value changing (its address
 /// bar), or the window coming to the foreground.
@@ -148,10 +151,14 @@ unsafe extern "system" fn on_event(_hook: HWINEVENTHOOK, event: u32, window: HWN
         _ => false,
     };
     // SAFETY: a window handle from Windows; a stale one only makes these calls fail.
-    if wanted && !window.is_null() && unsafe { GetAncestor(window, GA_ROOT) } == window && class_of(window) == CHROMIUM {
+    if wanted && !window.is_null() && unsafe { GetAncestor(window, GA_ROOT) } == window && is_browser(&class_of(window)) {
         // SAFETY: the app's own event, open for as long as the app runs.
         unsafe { SetEvent(local()) };
     }
+}
+
+fn is_browser(class: &str) -> bool {
+    class == CHROMIUM || class == FIREFOX
 }
 
 fn class_of(window: HWND) -> String {

@@ -92,8 +92,13 @@ impl ProgramList {
     /// `PROTECTED`, whatever the list says.
     pub fn is_blocked(&self, file_name: &str) -> bool {
         let name = file_name.to_lowercase();
-        !PROTECTED.contains(&name.as_str()) && self.matchers.is_match(&name)
+        !is_protected(&name) && self.matchers.is_match(&name)
     }
+}
+
+/// Whether a program (by file name, any case) is one of those that are never closed.
+pub fn is_protected(file_name: &str) -> bool {
+    PROTECTED.contains(&file_name.to_lowercase().as_str())
 }
 
 /// Lower case, with `.exe` added when missing.

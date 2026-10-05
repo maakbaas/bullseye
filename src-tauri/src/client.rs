@@ -14,9 +14,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::block::{Active, Enforced};
-use crate::filters::FilterList;
+use crate::lists::Lists;
 use crate::pipe;
-use crate::programs::ProgramList;
 use crate::proto::{self, Overview, Policy, Request, Response};
 use crate::registration;
 use crate::sync::LockExt;
@@ -178,25 +177,19 @@ impl Remote {
 }
 
 fn parse(policy: &Policy) -> Option<Enforced> {
-    Some(Enforced {
-        filters: Arc::new(FilterList::parse(&policy.filters).ok()?),
-        allowed: Arc::new(FilterList::parse(&policy.allowed).ok()?),
-        programs: Arc::new(ProgramList::parse(&policy.programs).ok()?),
-        enforcers: policy.enforcers,
-    })
+    Some(Enforced { lists: Arc::new(Lists::parse(&policy.entries).ok()?), enforcers: policy.enforcers })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lists::Entries;
     use crate::service;
     use crate::state::Enforcers;
 
     fn policy(filters: &[&str]) -> Policy {
         Policy {
-            filters: filters.iter().map(|f| f.to_string()).collect(),
-            allowed: Vec::new(),
-            programs: Vec::new(),
+            entries: Entries { filters: filters.iter().map(|f| f.to_string()).collect(), ..Entries::default() },
             enforcers: Enforcers::default(),
         }
     }
@@ -211,12 +204,12 @@ mod tests {
         assert!(current(&remote).is_none());
 
         remote.apply(vec![policy(&["tweakers.net"])]);
-        let list = current(&remote).unwrap().blocks[0].filters.clone();
-        assert!(list.is_blocked("https://tweakers.net/nieuws"));
+        let list = current(&remote).unwrap().blocks[0].lists.clone();
+        assert!(list.sites.is_blocked("https://tweakers.net/nieuws"));
 
         // The same policy again keeps the same parsed list.
         remote.apply(vec![policy(&["tweakers.net"])]);
-        assert!(Arc::ptr_eq(&list, &current(&remote).unwrap().blocks[0].filters));
+        assert!(Arc::ptr_eq(&list, &current(&remote).unwrap().blocks[0].lists));
 
         // A different one replaces it, a second block comes along; none at all ends the blocks.
         remote.apply(vec![policy(&["b.com"]), policy(&["c.com"])]);
@@ -230,12 +223,13 @@ mod tests {
     #[test]
     fn the_programs_come_along_and_are_parsed_with_the_policy() {
         let remote = Remote::new();
-        let with_programs = Policy { filters: vec![], allowed: vec![], programs: vec!["Steam*".into()], enforcers: Enforcers::default() };
+        let with_programs =
+            Policy { entries: Entries { programs: vec!["Steam*".into()], ..Entries::default() }, enforcers: Enforcers::default() };
         remote.apply(vec![with_programs]);
         let active = current(&remote).unwrap();
         assert!(active.blocks_program("steamwebhelper.exe") && !active.blocks_program("chrome.exe"));
         // A list that cannot be read leaves what is being enforced as it was.
-        let wrong = Policy { filters: vec![], allowed: vec![], programs: vec!["*".into()], enforcers: Enforcers::default() };
+        let wrong = Policy { entries: Entries { programs: vec!["*".into()], ..Entries::default() }, enforcers: Enforcers::default() };
         remote.apply(vec![wrong]);
         assert!(current(&remote).unwrap().blocks_program("steamwebhelper.exe"));
     }
