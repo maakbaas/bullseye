@@ -44,21 +44,24 @@ pub fn parse(text: &str) -> Result<Option<Duration>, String> {
     Ok(Some(Duration::from_secs(total)))
 }
 
-/// Seconds in words, to the three largest units that matter: `1 day 2 hours 5 minutes`,
-/// `2 hours 5 minutes 3 seconds`, `1 minute 0 seconds`, `0 seconds`. The same rules as the UI's
-/// `formatDuration` (`src/index.html`).
+/// Seconds in words, to the three largest units from the first that is not zero, leaving out the
+/// ones that are: `1 day, 2 hours and 5 minutes`, `2 hours and 5 seconds`, `1 minute`, `0 seconds`.
+/// The window and the CLI show every time this way.
 pub fn words(seconds: u64) -> String {
-    let (d, h, m, s) = (seconds / 86400, seconds % 86400 / 3600, seconds % 3600 / 60, seconds % 60);
-    let parts = if d > 0 {
-        vec![(d, "day"), (h, "hour"), (m, "minute")]
-    } else if h > 0 {
-        vec![(h, "hour"), (m, "minute"), (s, "second")]
-    } else if m > 0 {
-        vec![(m, "minute"), (s, "second")]
-    } else {
-        vec![(s, "second")]
-    };
-    parts.iter().map(|&(n, unit)| format!("{n} {unit}{}", if n == 1 { "" } else { "s" })).collect::<Vec<_>>().join(" ")
+    let units = [(seconds / 86400, "day"), (seconds % 86400 / 3600, "hour"), (seconds % 3600 / 60, "minute"), (seconds % 60, "second")];
+    let first = units.iter().position(|&(n, _)| n > 0).unwrap_or(units.len() - 1);
+    let parts: Vec<String> = units[first..]
+        .iter()
+        .take(3)
+        .enumerate()
+        .filter(|&(i, &(n, _))| n > 0 || i == 0)
+        .map(|(_, &(n, unit))| format!("{n} {unit}{}", if n == 1 { "" } else { "s" }))
+        .collect();
+    match parts.as_slice() {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
 }
 
 #[cfg(test)]
@@ -100,11 +103,14 @@ mod tests {
         assert_eq!(words(0), "0 seconds");
         assert_eq!(words(1), "1 second");
         assert_eq!(words(59), "59 seconds");
-        assert_eq!(words(60), "1 minute 0 seconds");
-        assert_eq!(words(61), "1 minute 1 second");
-        assert_eq!(words(3600), "1 hour 0 minutes 0 seconds");
-        assert_eq!(words(2 * 3600 + 5 * 60 + 3), "2 hours 5 minutes 3 seconds");
-        assert_eq!(words(86400 + 7200 + 60 + 5), "1 day 2 hours 1 minute");
-        assert_eq!(words(3 * 86400), "3 days 0 hours 0 minutes");
+        assert_eq!(words(60), "1 minute");
+        assert_eq!(words(61), "1 minute and 1 second");
+        assert_eq!(words(3600), "1 hour");
+        assert_eq!(words(2 * 3600 + 5), "2 hours and 5 seconds");
+        assert_eq!(words(2 * 3600 + 5 * 60 + 3), "2 hours, 5 minutes and 3 seconds");
+        assert_eq!(words(86400 + 7200 + 60 + 5), "1 day, 2 hours and 1 minute");
+        // Seconds are past the three largest units from a day on.
+        assert_eq!(words(86400 + 5), "1 day");
+        assert_eq!(words(3 * 86400), "3 days");
     }
 }

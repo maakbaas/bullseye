@@ -976,7 +976,7 @@ mod tests {
         let warning = lock_warning(&overview, &overview.blocks[0]).unwrap();
         assert!(warning.contains("while its lock schedule \"Work hours\" is active (Mon-Fri 08:00-17:00)"), "{warning}");
         let timed = Definition { lock: Lock::Duration { duration: "2h5m".into() }, ..overview.blocks[0].clone() };
-        assert!(lock_warning(&overview, &timed).unwrap().contains("2 hours 5 minutes 0 seconds"));
+        assert!(lock_warning(&overview, &timed).unwrap().contains("for 2 hours and 5 minutes."));
         assert_eq!(lock_warning(&overview, &Definition { lock: Lock::None, ..timed }), None);
     }
 
@@ -1093,7 +1093,7 @@ mod tests {
         });
         overview.clock_synced = false;
         let text = describe_overview(&overview);
-        assert!(text.contains("  Work  Running · inactive by its schedule, active in 1 hour 0 minutes 0 seconds · can be stopped, locked again in 1 hour 0 minutes 0 seconds"), "{text}");
+        assert!(text.contains("  Work  Running · inactive by its schedule, active in 1 hour · can be stopped, locked again in 1 hour"), "{text}");
         assert!(text.contains("Block lists:\n  Social  used by Work"), "{text}");
         assert!(text.contains("Schedules:\n  Work hours  Mon-Fri 08:00-17:00"), "{text}");
         assert!(text.contains("Waiting for internet time"), "{text}");

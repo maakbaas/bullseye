@@ -4,7 +4,7 @@
 // - `{name}`, `{times}`, … are filled in by the page. Keep each placeholder a text uses (you may
 //   move it); the comment above a group says what they stand for when it is not obvious.
 // - A text with `one` and `other` is chosen by the number `{n}`.
-// - Times in words (`2 hours 5 minutes 0 seconds`), weekly schedules (`Mon-Fri 08:00-17:00`) and
+// - Times in words (`2 hours and 5 minutes`), weekly schedules (`Mon-Fri 08:00-17:00`) and
 //   the service's own messages (why something was refused) come from the Rust code, so the window
 //   and the CLI say the same; they are not in this file.
 // - Edit, then rebuild (or reopen the window in `npm run dev` after touching src-tauri/src/main.rs).
@@ -115,7 +115,9 @@ window.STRINGS = {
   },
 
   // The lock methods, as chosen on a block's tile. `describe` is the tile's line for a block that
-  // is not running; `confirm*` is the question before starting a locked block.
+  // is not running; `confirm*` is the question before starting a locked block. A confirmAction is
+  // the modal's button: keep it to a few words without placeholders, as Carbon's modal buttons
+  // have one fixed height and a long label runs out of them.
   locks: {
     none: {
       label: "No lock",
@@ -130,7 +132,7 @@ window.STRINGS = {
       describe: "Locked for {duration} once started",
       confirmHeading: "Start {name} for {duration}?",
       confirmBody: "It cannot be stopped, changed or deleted for {duration}. Only the unlock password in Settings ends it early.",
-      confirmAction: "Start for {duration}",
+      confirmAction: "Start locked",
     },
     // {when}: the end written out (Tuesday 6 October 2026, 18:00); {left}: how long from now.
     until: {

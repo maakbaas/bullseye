@@ -110,7 +110,7 @@ bullseye-cli schedule edit "Work hours" --times "Mon-Fri 08:00-17:00; Sat 10:00-
 ```
 > bullseye-cli status
 Blocks:
-  Work     Running · inactive by its schedule, active in 15 hours 0 minutes 0 seconds · can be stopped, locked again in 15 hours 0 minutes 0 seconds
+  Work     Running · inactive by its schedule, active in 15 hours · can be stopped, locked again in 15 hours
   Evening  Running · blocking now · locked, 1 hour 2 minutes 3 seconds left
 Block lists:
   Social media  used by Work
@@ -164,7 +164,7 @@ A running block reads its schedule in the time zone Windows had when the block s
 
 ## Durations
 
-`30s`, `10m`, `2h`, `1d`, or several parts together: `2h 30m`, `2h30m`, `1d 12h`. Words work too: `2 hours 30 minutes`. Everything the CLI and the window show is written out: `2 hours 30 minutes 0 seconds`.
+`30s`, `10m`, `2h`, `1d`, or several parts together: `2h 30m`, `2h30m`, `1d 12h`. Words work too: `2 hours 30 minutes`. Everything the CLI and the window show is written out, leaving out units that are zero: `2 hours and 30 minutes`, `2 hours and 5 seconds`, `1 day, 2 hours and 1 minute`.
 
 ## For developers
 

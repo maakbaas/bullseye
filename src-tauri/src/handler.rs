@@ -535,9 +535,9 @@ mod tests {
         assert!(running.enforcing && running.schedule.is_some());
         assert_eq!(policies(&context).len(), 1);
         let Response::Failed(why) = handle(&context, 0, Request::Stop { id: "w".into(), password: None }).0 else { panic!("stopped") };
-        assert!(why.contains("2 hours 4 minutes") || why.contains("2 hours 5 minutes"), "{why}");
+        assert!(why.contains("2 hours, 4 minutes and") || why.contains("2 hours and 5 minutes"), "{why}");
         let Response::Refused(why) = handle(&context, 0, Request::PrepareUninstall).0 else { panic!("not refused") };
-        assert!(why.contains("2 hours") && why.contains("seconds"), "{why}");
+        assert!(why.contains("2 hours"), "{why}");
         // A weekly schedule with no time in it is never active: not even saved.
         let never = NamedSchedule { id: "n".into(), name: "N".into(), week: crate::schedule::Week::default() };
         assert!(matches!(handle(&context, 0, Request::SaveSchedule { schedule: never }).0, Response::Failed(why) if why.contains("never be active")));
