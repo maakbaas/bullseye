@@ -873,9 +873,10 @@ mod tests {
         assert!(!blocks_site(&active, "https://google.com/search?q=a"));
         assert!(!blocks_site(&active, "https://www.google.com/"));
         assert!(!blocks_site(&active, "https://nl.wikipedia.org/wiki/Rust"));
-        // An allowed entry is exactly as wide as it is written: not the sites around it.
-        assert!(blocks_site(&active, "https://accounts.google.com/"));
+        // A domain allows its subdomains too; an entry with a `*` is exactly as wide as written.
+        assert!(!blocks_site(&active, "https://accounts.google.com/"));
         assert!(blocks_site(&active, "https://wikipedia.org/"));
+        assert!(blocks_site(&active, "https://notgoogle.com/"));
 
         // A specific block and an exception inside it: the exception wins.
         let active = with_allowed(&["youtube.com"], &["youtube.com/watch*"]);
