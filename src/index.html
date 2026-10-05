@@ -38,6 +38,9 @@
          and is centred beyond it, so the margins grow evenly instead of jumping. */
       main { padding: calc(3rem + var(--cds-spacing-07)) 0 var(--cds-spacing-09); max-inline-size: 66rem; margin-inline: auto; }
       [hidden] { display: none !important; }
+      /* In a Windows 11 window nothing sets the header off from the title bar above it (a browser
+         has its tab strip there), so it gets the same line on top as Carbon gives it below. */
+      cds-header { border-block-start: 1px solid var(--cds-border-subtle); }
 
       /* A page: its header (title, description, main action), then its content. */
       .page-header {
@@ -159,7 +162,7 @@
           <div class="form">
             <div id="form" class="form"></div>
             <div class="form-actions">
-              <cds-button id="delete" kind="danger--ghost" size="md" hidden data-t="common.delete"></cds-button>
+              <cds-button id="delete" kind="danger-tertiary" size="md" hidden data-t="common.delete"></cds-button>
               <div class="end">
                 <cds-button id="cancel" kind="secondary" size="md" href="#/" data-t="common.cancel"></cds-button>
                 <cds-button id="save" kind="primary" size="md" data-t="common.save"></cds-button>
