@@ -14,9 +14,9 @@ main { padding: var(--cds-spacing-07) 0 var(--cds-spacing-09); max-inline-size: 
 /* The tabs: a band at the top on the first layer (white on light, a step up from the background on
    dark), so menu and content stand apart, that stays in place when the page scrolls. As nothing
    sets it off from a Windows 11 title bar (a browser has its tab strip there), it has a line on
-   top, room above the tabs, and a line below, where the tiles scroll under it. An icon before a
-   tab's label, as Carbon's tabs with icons. */
-.pages { position: sticky; inset-block-start: 0; z-index: 1; padding: var(--cds-spacing-04) var(--cds-spacing-05) 0; background-color: var(--cds-layer-01); border-block: 1px solid var(--cds-border-subtle); }
+   top, and one below, where the tiles scroll under it. An icon before a tab's label, as Carbon's
+   tabs with icons. */
+.pages { position: sticky; inset-block-start: 0; z-index: 1; padding-inline: var(--cds-spacing-05); background-color: var(--cds-layer-01); border-block: 1px solid var(--cds-border-subtle); }
 #pages cds-tab svg { flex: none; fill: currentColor; margin-inline-end: var(--cds-spacing-03); vertical-align: text-bottom; }
 /* Below Carbon's md breakpoint the tabs are Carbon's icon-only tabs (`icon-only`, set by main.js),
    so all four fit; each names itself in a tooltip and to screen readers (its aria-label). */
