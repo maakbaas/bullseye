@@ -168,15 +168,17 @@
       </div>
     </main>
 
-    <cds-modal id="confirm-delete" size="xs" prevent-close-on-click-outside>
+    <!-- Asks before anything that cannot be taken back (`ask` in the script). -->
+    <cds-modal id="confirm" size="xs" prevent-close-on-click-outside>
       <cds-modal-header>
         <cds-modal-close-button></cds-modal-close-button>
-        <cds-modal-heading id="confirm-heading">Delete block?</cds-modal-heading>
+        <cds-modal-heading id="confirm-heading"></cds-modal-heading>
       </cds-modal-header>
-      <cds-modal-body><cds-modal-body-content>The block and its settings are removed. This cannot be undone.</cds-modal-body-content></cds-modal-body>
+      <cds-modal-body><cds-modal-body-content id="confirm-body"></cds-modal-body-content></cds-modal-body>
       <cds-modal-footer>
-        <cds-modal-footer-button kind="secondary" data-modal-close>Cancel</cds-modal-footer-button>
-        <cds-modal-footer-button kind="danger" id="confirm-delete-button">Delete</cds-modal-footer-button>
+        <!-- Focus starts on Cancel, so a stray Enter or Space never confirms. -->
+        <cds-modal-footer-button kind="secondary" data-modal-close data-modal-primary-focus>Cancel</cds-modal-footer-button>
+        <cds-modal-footer-button id="confirm-action"></cds-modal-footer-button>
       </cds-modal-footer>
     </cds-modal>
 
@@ -248,6 +250,9 @@
             },
           ],
           describe: (s) => (s.duration ? `Runs for ${s.duration}, cannot be stopped early` : "Runs until stopped"),
+          // How long a started block cannot be stopped, in words; null when it can be stopped at any
+          // time. Starting a block that locks asks first.
+          locks: (s) => (s.duration ? s.duration : null),
         },
       };
 
@@ -434,6 +439,18 @@
         const parts = tiles.get(id);
         const running = runningOf(id);
         const block = overview.blocks.find((b) => b.id === id) || running;
+        // A block that cannot be stopped is only started after a second, deliberate click.
+        const schedule = !running && block && block.schedule && SCHEDULES[block.schedule.kind];
+        const locks = schedule && schedule.locks(block.schedule);
+        if (locks) {
+          const sure = await ask({
+            heading: `Start “${block.name}” for ${locks}?`,
+            body: `It cannot be stopped, changed or deleted for ${locks}. Only the unlock password in Settings ends it early.`,
+            action: `Start for ${locks}`,
+            kind: "primary",
+          });
+          if (!sure) return;
+        }
         parts.toggle.dataset.busy = "1";
         parts.toggle.disabled = true;
         try {
@@ -446,17 +463,38 @@
         await refresh();
       }
 
-      let deleting = null;
-      function confirmDelete(id) {
+      // The confirmation dialog: resolves true for the action, false for Cancel, the X or Escape.
+      let answer = null;
+      function ask({ heading, body, action, kind }) {
+        if (answer) answer(false);
+        $("confirm-heading").textContent = heading;
+        $("confirm-body").textContent = body;
+        $("confirm-action").textContent = action;
+        $("confirm-action").setAttribute("kind", kind);
+        $("confirm").open = true;
+        return new Promise((resolve) => (answer = resolve));
+      }
+      function answered(yes) {
+        const resolve = answer;
+        answer = null;
+        if (resolve) resolve(yes);
+      }
+      $("confirm-action").addEventListener("click", () => {
+        $("confirm").open = false;
+        answered(true);
+      });
+      $("confirm").addEventListener("cds-modal-closed", () => answered(false));
+
+      async function confirmDelete(id) {
         const block = overview.blocks.find((b) => b.id === id);
         if (!block) return;
-        deleting = id;
-        $("confirm-heading").textContent = `Delete “${block.name}”?`;
-        $("confirm-delete").open = true;
-      }
-      $("confirm-delete-button").addEventListener("click", async () => {
-        const id = deleting;
-        $("confirm-delete").open = false;
+        const sure = await ask({
+          heading: `Delete “${block.name}”?`,
+          body: "The block and its settings are removed. This cannot be undone.",
+          action: "Delete",
+          kind: "danger",
+        });
+        if (!sure) return;
         try {
           await invoke("delete_block", { id });
           notify("blocks-notices");
@@ -465,7 +503,7 @@
           notify(location.hash.startsWith("#/edit/") ? "editor-notices" : "blocks-notices", "error", "Could not delete the block", String(e));
         }
         await refresh();
-      });
+      }
 
       // ---- The editor, built once from the tables; filled in for each block that is opened.
 
