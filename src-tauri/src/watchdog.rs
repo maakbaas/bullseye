@@ -67,7 +67,7 @@ const STARTUP_GRACE: Duration = Duration::from_secs(20);
 const RESUME_GAP: Duration = Duration::from_secs(3);
 
 /// Set at logon (and when the service starts): the app is wanted even without a block.
-/// Cleared once an app is there, so quitting it with the unlock password sticks.
+/// Cleared once an app is there: without a block, one that has ended is not started again.
 pub static LAUNCH_APP: AtomicBool = AtomicBool::new(true);
 
 /// Whether this process is the service, which only decides where `note` writes.

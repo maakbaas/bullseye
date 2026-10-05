@@ -34,7 +34,7 @@ use proto::{Overview, Request, Response};
 use schedule::Week;
 use tauri::{
     tray::{MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, RunEvent, State, WindowEvent,
+    RunEvent, State, WindowEvent,
 };
 
 // The page's commands. **Each one has a CLI command that does the same** (`cli::GUI_COMMANDS`, which a
@@ -118,13 +118,12 @@ fn describe_until(text: String) -> Result<localtime::Until, String> {
     localtime::until(&text)
 }
 
-/// Ends every block for good, if the unlock password is right, and quits the app. The service
-/// stays; with no block left it has nothing to do, and starts the app again at the next logon.
+/// Ends every running block, locked or not, if the unlock password is right. The app stays open,
+/// with nothing to enforce; the definitions stay too.
 #[tauri::command]
-fn force_exit(password: String, app: AppHandle, remote: State<Remote>) -> Result<(), String> {
+fn unlock_all(password: String, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::Unlock { password })?;
-    watchdog::note("app", "stopped by the unlock password");
-    app.exit(0);
+    watchdog::note("app", "every block ended with the unlock password");
     Ok(())
 }
 
@@ -182,13 +181,13 @@ pub fn run() {
             delete_schedule,
             start_block,
             stop_block,
-            force_exit,
+            unlock_all,
             describe_schedule,
             describe_duration,
             describe_until,
             ui::window_ready
         ])
-        // The window's X hides it (it is destroyed after a while, `ui.rs`); only the unlock password quits.
+        // The window's X hides it (it is destroyed after a while, `ui.rs`); the app keeps running.
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
@@ -205,10 +204,6 @@ pub fn run() {
                 })
                 .build(app)?;
             ui::spawn_reaper(app.handle().clone());
-            // The blocks can also be unlocked from the CLI; the service then tells the app to quit,
-            // and it does as after the window's Unlock.
-            let handle = app.handle().clone();
-            app.state::<Remote>().when_told_to_quit(move || handle.exit(0));
             #[cfg(debug_assertions)]
             ui::debug_aids(app.handle());
 

@@ -4535,8 +4535,8 @@ Build with `npm run build` (installer in `src-tauri\target\release\bundle\nsis\`
 | 9 | Boot into safe mode with networking during the block | service runs (check `sc query bullseye`) |
 | 10 | (Removed: there is no update path. Bullseye is only installed on a clean machine; to try a new build, uninstall first.) | |
 | 11 | Uninstall during the timed block | refused (exit code 2), message shown |
-| 12 | Wrong unlock password, then the right one | the wrong one is refused with "Wrong password" at once (there is no slowdown); the right one ends every block and the app quits |
-| 13 | After unlocking: log off and on | the app returns (idle) |
+| 12 | Wrong unlock password, then the right one | the wrong one is refused with "Wrong password" at once (there is no slowdown); the right one ends every block; the app stays open with nothing blocked |
+| 13 | After unlocking: log off and on | the app is there (idle) |
 | 14 | End the block, uninstall, install a new build | installer succeeds; service runs the new exe |
 | 15 | Uninstall without a block | service, `%ProgramData%\bullseye` and the safe-mode keys are gone |
 | 16 | Open the pipe with a script and send garbage / a huge length / nothing | service keeps answering the app |
@@ -4569,7 +4569,7 @@ Build with `npm run build` (installer in `src-tauri\target\release\bundle\nsis\`
 | 43 | In the schedule editor, drag from Monday 08:00 to Friday 16:30, then start a drag on a marked cell | the drag marks the rectangle and the line under the grid says `Active Mon-Fri 08:00-17:00`; the second drag clears what it covers |
 | 44 | Lock: Password on a tile; type a password and a different one under Repeat password; then the same | with different ones "The passwords differ" and Start says the lock is not saved; with the same the lock is saved and the fields empty. Start, then Stop: a modal asks for the password; a wrong one is refused, the right one stops it |
 | 45 | In a terminal: `bullseye-cli list new T --site example.com`, `bullseye-cli new T --list T`, `bullseye-cli start T --lock-duration 10m` (answer y), `bullseye-cli status`, `bullseye-cli stop T` | everything appears in the window; status shows "locked, 9 minutes … left"; stop is refused with the time left (exit code 1) |
-| 46 | `bullseye-cli unlock`, type the password | not echoed; "Unlocked: every block has ended, and Bullseye closes." (exit code 0); within about a second the tray icon is gone and `app.log` says "stopped by the unlock password"; it comes back at the next sign-in |
+| 46 | `bullseye-cli unlock`, type the password | not echoed; "Unlocked: every block has ended." (exit code 0); the app stays, with nothing blocked, and its window shows no running block |
 | 47 | `bullseye-cli list new X --program explorer` | refused with "Would close programs Windows or this app needs" (exit code 1); `bullseye-cli new X --colour red` is exit code 2 |
 | 48 | Lock: Until, today a few minutes from now; Start | the start says the time written out and how far away; Stop is greyed out; the block ends at that minute. A time that has passed is refused in the form, and at Start |
 | 49 | Lock: Until restart; Start; then sign out and in, and end the service with a SYSTEM shell | the block stays and stays locked; uninstall is refused |
@@ -4679,4 +4679,6 @@ The three layers of section 12 became three kinds of things with lists and pages
 **Making a block list or schedule from a block.** The block editor can make a block list or schedule without leaving the block: the block as edited so far is kept (`detour`), the new item's editor opens one level deeper in the breadcrumb ("Blocks / Evening / New block list"), and Save comes back to the block with the new item ticked or chosen. A Carbon modal was considered and not used: a block list's text areas and a schedule's week grid are a page's worth of form, and Carbon keeps modals for short tasks. The same detour makes a schedule for a Schedule lock when there is none yet. A new schedule starts empty.
 
 **Deleting what blocks use.** A block list or schedule that no running block uses can be deleted; it is taken out of the blocks that use it. A block left without a block list is deleted with it (it could not start anyway), a block that loses its schedule is always active, and one that loses its lock schedule has no lock. `Library::fallout` says which, and both the window and the CLI ask with that in the question, so nothing changes unannounced.
+
+**Unlock keeps the app open.** Unlocking ends every running block and leaves the app running with nothing to enforce, from the window and from the CLI alike. It used to quit the app (and the service told the app to quit after a CLI unlock, `Response::Quit`); the user preferred the app to stay, so that is gone.
 

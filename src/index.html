@@ -1372,8 +1372,10 @@
         if (!password) return;
         $("unlock").disabled = true;
         try {
-          // The app exits on success, so only a wrong password (or a failure) comes back here.
-          await invoke("force_exit", { password });
+          // Every block ends; the app stays, with nothing to enforce.
+          await invoke("unlock_all", { password });
+          notify("settings-notices", "success", t("settings.unlocked"));
+          await refresh();
         } catch (e) {
           notify("settings-notices", "error", t("settings.failed"), String(e));
         }

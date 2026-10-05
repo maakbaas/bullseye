@@ -67,9 +67,6 @@ pub enum Response {
     Status(Overview),
     /// One per running block; none when nothing runs.
     Policy(Vec<Policy>),
-    /// To the app, in place of its policy: the blocks were just ended with the unlock password
-    /// (by the CLI, say), so quit, as the window's Unlock makes it do.
-    Quit,
 }
 
 /// What the UI shows.

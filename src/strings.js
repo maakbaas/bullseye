@@ -296,9 +296,10 @@ window.STRINGS = {
   settings: {
     title: "Settings",
     unlockTitle: "Unlock",
-    unlockText: "Ends every running block, locked ones included, and quits Bullseye. The service stays installed and starts the app again at your next sign-in. This is the only way to end a locked block early.",
+    unlockText: "Ends every running block, locked ones included. Bullseye stays open, and your blocks, block lists and schedules stay as they are. This is the only way to end a locked block early.",
     passwordLabel: "Unlock password",
     unlock: "Unlock",
     failed: "Not unlocked",
+    unlocked: "Unlocked: every block has ended",
   },
 };

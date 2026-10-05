@@ -4,7 +4,6 @@
 //! (`service::local_handler`), so the rules cannot differ between the two.
 
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use crate::block::{Blocklist, Locks, Part};
 use crate::definitions::Definitions;
@@ -23,22 +22,14 @@ pub struct Context {
     definitions: Definitions,
     /// Which process is the app (`watchdog.rs`).
     slot: Arc<AppSlot>,
-    /// Until when the app is told to quit when it asks for its policy: set by the unlock password,
-    /// so the app quits however the blocks were unlocked (the window or the CLI). Only for a short
-    /// while, so an app started later (at the next logon) is not sent away, and cleared when a block
-    /// starts.
-    quit_app_until: Mutex<Option<Instant>>,
     /// Held while the definitions change or a block starts, so a block cannot start while a list or
     /// schedule it uses is being changed (the check and the change are one step).
     editing: Mutex<()>,
 }
 
-/// How long after an unlock the app is told to quit; it asks every second.
-const QUIT_WINDOW: Duration = Duration::from_secs(10);
-
 impl Context {
     pub fn new(blocklist: Blocklist, definitions: Definitions, slot: Arc<AppSlot>) -> Context {
-        Context { blocklist, definitions, slot, quit_app_until: Mutex::default(), editing: Mutex::default() }
+        Context { blocklist, definitions, slot, editing: Mutex::default() }
     }
 }
 
@@ -74,9 +65,6 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
             // This request comes from the thread that closes tabs: hearing it is how the service
             // knows that is going on. It counts only from the process taken in as the app.
             context.slot.heard(caller);
-            if context.quit_app_until.locked().is_some_and(|until| Instant::now() < until) {
-                return (Response::Quit, None);
-            }
             let policies = blocklist
                 .active()
                 .map(|active| active.blocks)
@@ -99,14 +87,7 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
         Request::DeleteList { id } => (done(edit(context, &id, |d| d.delete_list(&id))), None),
         Request::SaveSchedule { schedule } => (done(edit(context, &schedule.id.clone(), |d| d.save_schedule(schedule))), None),
         Request::DeleteSchedule { id } => (done(edit(context, &id, |d| d.delete_schedule(&id))), None),
-        Request::Start { id } => {
-            let started = start(context, &id);
-            // A block wants the app: it is not to be sent away by an unlock just before.
-            if started.is_ok() {
-                *context.quit_app_until.locked() = None;
-            }
-            (done(started), None)
-        }
+        Request::Start { id } => (done(start(context, &id)), None),
         // A password lock stops with its own password; the others take none.
         Request::Stop { id, password } => {
             let given = password.is_some_and(|password| blocklist.password_matches(&id, &password));
@@ -166,13 +147,12 @@ fn start(context: &Context, id: &str) -> Result<(), String> {
     context.blocklist.start(id, &resolved.block.name, parts, resolved.week, locks)
 }
 
-/// Ends every block for the unlock password.
+/// Ends every block for the unlock password. The app stays: it has nothing to enforce then.
 fn unlock(context: &Context, password: &str) -> Result<(), String> {
     if !unlock::check(password) {
         return Err("Wrong password".into());
     }
     context.blocklist.reset();
-    *context.quit_app_until.locked() = Some(Instant::now() + QUIT_WINDOW);
     Ok(())
 }
 
@@ -545,20 +525,11 @@ mod tests {
     }
 
     #[test]
-    fn after_an_unlock_the_app_is_told_to_quit_until_a_block_starts() {
-        let context = context("quit");
+    fn after_an_unlock_the_app_stays_and_enforces_nothing() {
+        let context = context("unlocked");
         assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
-        assert!(matches!(handle(&context, 0, Request::Policy).0, Response::Policy(_)));
-        // Unlocked from anywhere (the CLI, say): the app's next policy request is answered with Quit.
-        assert_eq!(handle(&context, 0, Request::Unlock { password: "test1234".into() }).0, Response::Done);
-        assert_eq!(handle(&context, 0, Request::Policy).0, Response::Quit);
-        assert_eq!(handle(&context, 0, Request::Policy).0, Response::Quit, "until it has quit");
-        // A block started again wants the app, so it is not sent away.
-        assert_eq!(handle(&context, 0, Request::Start { id: "a".into() }).0, Response::Done);
         assert!(matches!(handle(&context, 0, Request::Policy).0, Response::Policy(p) if p.len() == 1));
-        // And only for a short while: an app started at the next logon gets its policy.
         assert_eq!(handle(&context, 0, Request::Unlock { password: "test1234".into() }).0, Response::Done);
-        *context.quit_app_until.locked() = Some(Instant::now());
         assert_eq!(handle(&context, 0, Request::Policy).0, Response::Policy(Vec::new()));
     }
 }

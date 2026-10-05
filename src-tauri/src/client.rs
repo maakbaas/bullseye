@@ -10,7 +10,7 @@
 //! builds do not contain that.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::block::{Active, Enforced};
@@ -42,10 +42,6 @@ pub struct Remote {
     last_start: Arc<Mutex<Option<Instant>>>,
     /// Set in development: the service's logic, in this process.
     local: Option<Local>,
-    /// What quits the app when the service says so (`Response::Quit`); set once the app is up.
-    on_quit: Arc<OnceLock<Box<dyn Fn() + Send + Sync>>>,
-    /// Whether that has been done, so it is done once.
-    quitting: Arc<AtomicBool>,
     /// For the CLI: a request that finds the service registered but not running starts it and
     /// waits for it, rather than failing (the app tries again a second later anyway).
     patient: bool,
@@ -74,29 +70,6 @@ impl Remote {
     #[cfg(any(debug_assertions, test))]
     pub fn local(handler: Local) -> Remote {
         Remote { local: Some(handler), ..Remote::default() }
-    }
-
-    /// How to quit the app when the service says so: the same exit as the window's Unlock.
-    pub fn when_told_to_quit(&self, quit: impl Fn() + Send + Sync + 'static) {
-        let _ = self.on_quit.set(Box::new(quit));
-    }
-
-    /// The blocks were ended with the unlock password, from the CLI say: quit, as after the
-    /// window's Unlock. Before the app is up there is nothing to close but the process.
-    fn quit(&self) {
-        *self.cache.locked() = None;
-        if self.quitting.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        note("app", "stopped by the unlock password");
-        match self.on_quit.get() {
-            Some(quit) => quit(),
-            // In a test, ending the process would end every test with it, and with exit code 0.
-            #[cfg(test)]
-            None => panic!("told to quit without `when_told_to_quit`"),
-            #[cfg(not(test))]
-            None => std::process::exit(0),
-        }
     }
 
     /// Whether this is its own service, so there is nobody to register with or to start.
@@ -152,7 +125,6 @@ impl Remote {
                 self.failing.store(false, Ordering::Relaxed);
                 self.apply(policy);
             }
-            Ok(Response::Quit) => self.quit(),
             Ok(other) => self.fail(&format!("unexpected answer: {other:?}")),
             Err(e) => {
                 self.fail(&e);
@@ -292,11 +264,7 @@ mod tests {
         assert!(remote.command(Request::Stop { id: "a".into(), password: None }).is_err());
         assert!(remote.command(Request::Unlock { password: "wrong".into() }).is_err());
         remote.command(Request::Unlock { password: "test1234".into() }).unwrap();
-        // The next policy request is told to quit, as the app is after an unlock.
-        let quit = Arc::new(AtomicBool::new(false));
-        let told = quit.clone();
-        remote.when_told_to_quit(move || told.store(true, Ordering::SeqCst));
+        // The app stays, with nothing to enforce.
         assert!(remote.active().is_none());
-        assert!(quit.load(Ordering::SeqCst));
     }
 }

@@ -48,7 +48,7 @@ A running block keeps what it was started with: while it runs, it cannot be chan
 | `bullseye-cli schedule edit <schedule> [--name <name>] [--times <times>]` | **Edit** a schedule, then **Save** |
 | `bullseye-cli schedule delete <schedule> [--yes]` | **Delete** a schedule |
 | `bullseye-cli schedule check <times>` | the schedule written out under the week grid in the schedule editor |
-| `bullseye-cli unlock [--password <pw>]` | **Unlock** in Settings (also closes the app) |
+| `bullseye-cli unlock [--password <pw>]` | **Unlock** in Settings |
 | `bullseye-cli help` | |
 | `bullseye-cli version` | |
 
@@ -127,14 +127,14 @@ Schedules:
 
 ### `unlock`
 
-Ends every running block, locked or not, with the unlock password, and closes the tray app, exactly as the window's Unlock does: the block lists, schedules and blocks stay, and the service stays installed and starts the app again at your next sign-in. Without `--password` it asks for the password without showing it, or reads it from standard input when that is not a terminal:
+Ends every running block, locked or not, with the unlock password, exactly as the window's Unlock does: the block lists, schedules and blocks stay, and so does the app, with nothing to enforce. Without `--password` it asks for the password without showing it, or reads it from standard input when that is not a terminal:
 
 ```powershell
 bullseye-cli unlock
 "my password" | bullseye-cli unlock
 ```
 
-(A password given with `--password` ends up in your shell history.) The app is closed by the service: after an unlock it answers the app's next request for what to enforce, within a second, with "quit", for 10 seconds or until a block is started again.
+(A password given with `--password` ends up in your shell history.)
 
 ### `schedule check`
 

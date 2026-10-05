@@ -36,7 +36,7 @@ pub const GUI_COMMANDS: [(&str, &[&str]); 14] = [
     ("delete_schedule", &["schedule delete"]),
     ("start_block", &["start"]),
     ("stop_block", &["stop"]),
-    ("force_exit", &["unlock"]),
+    ("unlock_all", &["unlock"]),
     ("describe_schedule", &["schedule check"]),
     // A lock's length or end in words: what `show` and `start` say of a duration or until lock.
     ("describe_duration", &["show"]),
@@ -571,7 +571,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             };
             send(Request::Unlock { password })?;
             // The service tells the app to quit at its next policy request, within a second.
-            println!("Unlocked: every block has ended, and Bullseye closes. It starts again at your next sign-in.");
+            println!("Unlocked: every block has ended.");
         }
     }
     Ok(())
