@@ -56,6 +56,8 @@
       .blocks.cds--subgrid { display: grid; row-gap: var(--cds-spacing-07); }
       .block-tile.cds--css-grid-column { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
       .block-tile .top { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--cds-spacing-03); }
+      /* The size of the overflow menu's button it stands in for. */
+      .block-tile .lock { display: flex; align-items: center; justify-content: center; flex: none; inline-size: var(--cds-spacing-08); block-size: var(--cds-spacing-08); fill: var(--cds-icon-secondary); }
       .block-tile h2 { overflow-wrap: anywhere; padding-top: var(--cds-spacing-02); }
       .block-tile .summary { display: flex; flex-direction: column; gap: var(--cds-spacing-02); color: var(--cds-text-secondary); flex: 1; }
       .block-tile .actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--cds-spacing-04); }
@@ -365,6 +367,8 @@
             el("cds-overflow-menu-item", { "data-action": "delete", danger: true }, "Delete"),
           ),
         );
+        // In the menu's place while the block runs: a running block cannot be changed or deleted.
+        const lock = el("span", { class: "lock", role: "img", "aria-label": "Locked while running", title: "Locked while running" }, carbonIcon("locked"));
         const name = el("h2", { class: "cds--type-productive-heading-03" });
         const tag = el("cds-tag", { size: "md" });
         const summary = el("div", { class: "summary cds--type-body-compact-01" });
@@ -373,7 +377,7 @@
         const tile = el(
           "cds-tile",
           { class: "block-tile cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-4 cds--lg:col-span-8 cds--max:col-span-4" },
-          el("div", { class: "top" }, el("div", {}, name), menu),
+          el("div", { class: "top" }, el("div", {}, name), menu, lock),
           el("div", {}, tag),
           summary,
           el("div", { class: "actions" }, toggle, note),
@@ -381,13 +385,12 @@
         // On the items themselves: Carbon moves the open menu out of the tile.
         for (const item of menu.querySelectorAll("[data-action]")) {
           item.addEventListener("click", () => {
-            if (item.disabled) return;
             if (item.dataset.action === "edit") location.hash = `#/edit/${encodeURIComponent(id)}`;
             if (item.dataset.action === "delete") confirmDelete(id);
           });
         }
         toggle.addEventListener("click", () => startOrStop(id));
-        const parts = { tile, name, tag, summary, toggle, note, items: [...menu.querySelectorAll("[data-action]")] };
+        const parts = { tile, name, tag, summary, toggle, note, menu, lock };
         tiles.set(id, parts);
         return parts;
       }
@@ -430,7 +433,9 @@
           }
           parts.toggle.disabled = busy || timed || !reachable;
           parts.note.textContent = timed ? "A timed block cannot be stopped early" : "";
-          for (const item of parts.items) item.disabled = !!running || !defined;
+          // A block left from an older version has no definition to edit, but always runs.
+          parts.menu.hidden = !!running || !defined;
+          parts.lock.hidden = !parts.menu.hidden;
         });
         $("empty").hidden = shown.length > 0;
       }
