@@ -7,10 +7,11 @@ use std::sync::{Arc, Mutex};
 
 use crate::block::{Blocklist, Part, StartLock};
 use crate::definitions::{Definitions, Library};
+use crate::duration;
 use crate::lock::Lock;
-use crate::proto::{Overview, Policy, Request, Response};
+use crate::proto::{Overview, Policy, Request, Response, UnlockStatus};
 use crate::sync::LockExt;
-use crate::unlock;
+use crate::unlock::{self, UnlockDelay};
 use crate::watchdog::AppSlot;
 
 /// The installer asked the service to end, and to remove itself and everything it keeps.
@@ -22,6 +23,8 @@ pub struct Context {
     definitions: Definitions,
     /// Which process is the app (`watchdog.rs`).
     slot: Arc<AppSlot>,
+    /// How long unlocking takes: none to begin with, so unlock is free until a delay is set.
+    unlock: UnlockDelay,
     /// Held while the definitions change or a block starts, so a block cannot start while a list or
     /// condition it uses is being changed (the check and the change are one step).
     editing: Mutex<()>,
@@ -29,7 +32,13 @@ pub struct Context {
 
 impl Context {
     pub fn new(blocklist: Blocklist, definitions: Definitions, slot: Arc<AppSlot>) -> Context {
-        Context { blocklist, definitions, slot, editing: Mutex::default() }
+        Context { blocklist, definitions, slot, unlock: UnlockDelay::default(), editing: Mutex::default() }
+    }
+
+    /// With the unlock delay kept in its own file (the service's, `UnlockDelay::new`).
+    pub fn with_unlock(mut self, unlock: UnlockDelay) -> Context {
+        self.unlock = unlock;
+        self
     }
 }
 
@@ -52,6 +61,7 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
                 conditions: library.conditions,
                 blocks: library.blocks,
                 running: status.running,
+                unlock: unlock_status(context),
                 clock_synced: status.clock_synced,
             };
             (Response::Status(overview), None)
@@ -96,7 +106,10 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
                 || text.is_some_and(|text| blocklist.text_matches(&id, &text));
             (done(blocklist.stop(&id, given)), None)
         }
-        Request::Unlock { password } => (done(unlock(context, &password)), None),
+        Request::Unlock => (done(unlock(context)), None),
+        Request::RequestUnlock => (done(context.unlock.request(blocklist.now())), None),
+        Request::AbortUnlock => (done(context.unlock.abort()), None),
+        Request::SetUnlockDelay { delay } => (done(set_unlock_delay(context, &delay)), None),
         // Refused while a block cannot be stopped, judged by internet time, like the block itself.
         Request::PrepareUninstall => match blocklist.locked() {
             Some(why) => (Response::Refused(why), None),
@@ -159,13 +172,28 @@ fn start(context: &Context, id: &str) -> Result<(), String> {
     context.blocklist.start(id, &resolved.block.name, parts, resolved.condition, lock)
 }
 
-/// Ends every block for the unlock password. The app stays: it has nothing to enforce then.
-fn unlock(context: &Context, password: &str) -> Result<(), String> {
-    if !unlock::check(password) {
-        return Err("Wrong password".into());
+/// Where unlocking stands now.
+fn unlock_status(context: &Context) -> UnlockStatus {
+    let delay = context.unlock.delay();
+    let remaining = context.unlock.remaining(context.blocklist.now());
+    UnlockStatus { delay, delay_words: duration::words(delay), remaining, remaining_words: remaining.map(duration::words) }
+}
+
+/// Sets how long unlocking takes, from text.
+fn set_unlock_delay(context: &Context, text: &str) -> Result<(), String> {
+    context.unlock.set_delay(unlock::parse_delay(text)?, context.blocklist.now())
+}
+
+/// Ends every block, once unlocking is ready: always with no delay, else when the countdown is
+/// over. The app stays: it has nothing to enforce then. **The escape hatch**: nothing but the
+/// countdown stands in its way, whatever the blocks are locked with. Unlocking uses up the
+/// request: the next time starts again.
+fn unlock(context: &Context) -> Result<(), String> {
+    if context.unlock.remaining(context.blocklist.now()) != Some(0) {
+        return Err("Unlocking is not ready yet: ask for it, and wait for the countdown".into());
     }
     context.blocklist.reset();
-    Ok(())
+    context.unlock.abort()
 }
 
 #[cfg(test)]
@@ -175,6 +203,7 @@ mod tests {
     use crate::definitions::{BlockList, Condition, Definition, Kind};
     use crate::state::{Enforcers, Store};
     use std::fs;
+    use std::time::Duration;
 
     fn context(name: &str) -> Context {
         let dir = std::env::temp_dir().join(format!("service-{}-{name}", std::process::id()));
@@ -492,7 +521,9 @@ mod tests {
         // no stop, no uninstall.
         assert_eq!(handle(&context, 0, Request::SaveCondition { condition: weekly("daily", "daily") }).0, Response::Done);
         assert_eq!(run(&context, definition("a", &["a.com"]).lock(Lock::Condition { condition: "daily".into() })), Response::Done);
-        let Response::Failed(why) = handle(&context, 0, Request::Stop { id: "a".into(), password: None, text: None }).0 else { panic!("stopped") };
+        let Response::Failed(why) = handle(&context, 0, Request::Stop { id: "a".into(), password: None, text: None }).0 else {
+            panic!("stopped")
+        };
         assert!(why.contains("locked by its lock schedule"), "{why}");
         assert!(matches!(handle(&context, 0, Request::PrepareUninstall).0, Response::Refused(_)));
         let running = &overview(&context).running[0];
@@ -535,19 +566,165 @@ mod tests {
         assert!(handle(&context, 0, Request::PrepareUninstall).1.is_some());
     }
 
+    // ---- The escape hatch (`unlock.rs`): it must never break, whatever the blocks are locked with.
+
+    /// Every way of locking a block that a test can start (a restart lock needs Windows' boot id).
+    fn every_lock() -> Vec<(&'static str, One)> {
+        vec![
+            ("duration", timed("d", &["d.com"], "1h")),
+            ("until", definition("u", &["u.com"]).lock(Lock::Until { until: "2040-06-01 00:00".into() })),
+            ("condition", definition("c", &["c.com"]).week("daily").lock(Lock::Condition { condition: "c-schedule".into() })),
+            ("text", definition("t", &["t.com"]).lock(Lock::Text { text: "Write this out".into() })),
+            ("password", definition("p", &["p.com"]).lock(Lock::Password { password: Some("secret".into()), hash: None })),
+        ]
+    }
+
     #[test]
-    fn the_password_ends_every_block() {
-        let context = context("unlock");
+    fn with_no_delay_unlocking_ends_every_block_whatever_its_lock() {
+        let context = context("hatch-free");
+        // A clean install: no delay, nothing asked for, ready.
+        let status = overview(&context).unlock;
+        assert_eq!((status.delay, status.remaining), (0, Some(0)));
+        for (kind, one) in every_lock() {
+            assert_eq!(run(&context, one), Response::Done, "{kind}");
+        }
+        assert_eq!(overview(&context).running.len(), 5);
+        assert!(overview(&context).running.iter().all(|running| running.locked));
+        // Each of them refuses to be stopped...
+        for id in ["d", "u", "c", "t", "p"] {
+            assert!(failed(handle(&context, 0, Request::Stop { id: id.into(), password: None, text: None }).0), "{id}");
+        }
+        // ...and unlocking ends them all at once; what was defined stays.
+        assert_eq!(handle(&context, 0, Request::Unlock).0, Response::Done);
+        assert!(!context.blocklist.is_running() && policies(&context).is_empty());
+        assert_eq!(overview(&context).blocks.len(), 5);
+    }
+
+    #[test]
+    fn unlocking_with_nothing_running_is_fine_and_can_be_repeated() {
+        let context = context("hatch-idle");
+        for _ in 0..3 {
+            assert_eq!(handle(&context, 0, Request::Unlock).0, Response::Done);
+        }
+    }
+
+    #[test]
+    fn with_a_delay_unlocking_is_a_countdown_that_can_be_aborted() {
+        let context = context("hatch-countdown");
+        let ask = |request: Request| handle(&context, 0, request).0;
+        let status = || overview(&context).unlock;
         assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
-        assert_eq!(run(&context, timed("b", &["b.com"], "2h")), Response::Done);
-        let wrong = Request::Unlock { password: "nope".into() };
-        assert_eq!(handle(&context, 0, wrong).0, Response::Failed("Wrong password".into()));
-        assert!(context.blocklist.is_running());
-        // The right one ends them all; the definitions stay.
-        let right = Request::Unlock { password: "test1234".into() };
-        assert_eq!(handle(&context, 0, right).0, Response::Done);
+        assert_eq!(ask(Request::SetUnlockDelay { delay: "1s".into() }), Response::Done);
+        assert_eq!((status().delay, status().remaining), (1, None));
+        // Not asked for: refused, and the block stays.
+        assert!(failed(ask(Request::Unlock)) && context.blocklist.is_running());
+        // Asked for: counting down, and still refused.
+        assert_eq!(ask(Request::RequestUnlock), Response::Done);
+        assert_eq!(status().remaining, Some(1));
+        assert!(status().remaining_words.is_some());
+        assert!(failed(ask(Request::Unlock)) && context.blocklist.is_running());
+        // Aborted: back to locked, as if never asked.
+        assert_eq!(ask(Request::AbortUnlock), Response::Done);
+        assert_eq!(status().remaining, None);
+        assert!(failed(ask(Request::Unlock)));
+        // Asked again, and waited for: ready.
+        assert_eq!(ask(Request::RequestUnlock), Response::Done);
+        std::thread::sleep(Duration::from_millis(1100));
+        assert_eq!(status().remaining, Some(0));
+        // Ready, it can still be aborted instead: locked again.
+        assert_eq!(ask(Request::AbortUnlock), Response::Done);
+        assert_eq!(status().remaining, None);
+        assert!(failed(ask(Request::Unlock)) && context.blocklist.is_running());
+        // Or used: every block ends, and the request is used up: the next time starts again.
+        assert_eq!(ask(Request::RequestUnlock), Response::Done);
+        std::thread::sleep(Duration::from_millis(1100));
+        assert_eq!(ask(Request::Unlock), Response::Done);
         assert!(!context.blocklist.is_running());
-        assert_eq!(overview(&context).blocks.len(), 2);
+        assert_eq!(status().remaining, None);
+        assert!(failed(ask(Request::Unlock)));
+    }
+
+    #[test]
+    fn the_delay_cannot_be_shortened_to_get_around_it() {
+        let context = context("hatch-shorten");
+        let ask = |request: Request| handle(&context, 0, request).0;
+        let delay = |text: &str| Request::SetUnlockDelay { delay: text.into() };
+        assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
+        assert_eq!(ask(delay("1h")), Response::Done);
+        // Shorter, none: refused while unlocking is not ready; the block stays locked.
+        for shorter in ["0", "none", "", "30m", "59m 59s"] {
+            assert!(failed(ask(delay(shorter))), "{shorter:?}");
+        }
+        assert_eq!(overview(&context).unlock.delay, 3600);
+        // Longer is free; past a day, or not a time, is refused.
+        assert_eq!(ask(delay("2h")), Response::Done);
+        for wrong in ["25h", "2d", "soon", "-1"] {
+            assert!(failed(ask(delay(wrong))), "{wrong:?}");
+        }
+        assert_eq!(overview(&context).unlock.delay, 7200);
+        assert_eq!(ask(delay("24h")), Response::Done);
+        assert_eq!(overview(&context).unlock.delay, 86_400);
+        // Asking for unlocking does not shorten the wait, and unlocking stays refused.
+        assert_eq!(ask(Request::RequestUnlock), Response::Done);
+        assert!(failed(ask(delay("1h"))) && failed(ask(Request::Unlock)));
+        assert!(context.blocklist.is_running());
+    }
+
+    #[test]
+    fn once_unlocking_is_ready_the_delay_can_be_shortened_down_to_none() {
+        let context = context("hatch-shorten-ready");
+        let ask = |request: Request| handle(&context, 0, request).0;
+        let delay = |text: &str| Request::SetUnlockDelay { delay: text.into() };
+        assert_eq!(ask(delay("1s")), Response::Done);
+        assert_eq!(ask(Request::RequestUnlock), Response::Done);
+        std::thread::sleep(Duration::from_millis(1100));
+        assert_eq!(ask(delay("0")), Response::Done);
+        let status = overview(&context).unlock;
+        assert_eq!((status.delay, status.remaining), (0, Some(0)));
+    }
+
+    #[test]
+    fn the_countdown_survives_a_restart_and_a_bad_file_opens_the_hatch() {
+        let dir = std::env::temp_dir().join(format!("hatch-{}-restart", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let file = dir.join("unlock.json");
+        // A service starting up over the same file.
+        let service = |name: &str| -> Context {
+            let blocklist = Blocklist::with_store(Store::new(dir.join(format!("{name}.json"))));
+            Context::new(blocklist, Definitions::at(None), Arc::new(AppSlot::new(false))).with_unlock(UnlockDelay::at(Some(file.clone())))
+        };
+        let first = service("one");
+        assert_eq!(handle(&first, 0, Request::SetUnlockDelay { delay: "1s".into() }).0, Response::Done);
+        assert_eq!(handle(&first, 0, Request::RequestUnlock).0, Response::Done);
+        // A restart: another service over the same file counts on.
+        let second = service("two");
+        let status = overview(&second).unlock;
+        assert_eq!((status.delay, status.remaining), (1, Some(1)));
+        std::thread::sleep(Duration::from_millis(1100));
+        assert_eq!(overview(&second).unlock.remaining, Some(0));
+        assert_eq!(handle(&second, 0, Request::Unlock).0, Response::Done);
+        // Unlocking used the request up, and that is remembered too.
+        assert_eq!(overview(&service("three")).unlock.remaining, None);
+        // Whatever is wrong with the file, unlocking is open: no delay, ready.
+        for garbage in ["", "{ nope", "null", "{\"delay\": \"soon\"}", "{\"delay\": -1}"] {
+            fs::write(&file, garbage).unwrap();
+            let status = overview(&service("garbage")).unlock;
+            assert_eq!((status.delay, status.remaining), (0, Some(0)), "{garbage:?}");
+        }
+        assert_eq!(handle(&service("garbage"), 0, Request::Unlock).0, Response::Done);
+    }
+
+    #[test]
+    fn the_status_says_where_unlocking_stands_in_words() {
+        let context = context("hatch-words");
+        let status = overview(&context).unlock;
+        assert_eq!((status.delay, status.delay_words.as_str(), status.remaining), (0, "0 seconds", Some(0)));
+        assert_eq!(handle(&context, 0, Request::SetUnlockDelay { delay: "1h 30m".into() }).0, Response::Done);
+        let status = overview(&context).unlock;
+        assert_eq!((status.delay, status.delay_words.as_str(), status.remaining), (5400, "1 hour and 30 minutes", None));
+        assert_eq!(handle(&context, 0, Request::RequestUnlock).0, Response::Done);
+        let status = overview(&context).unlock;
+        assert_eq!((status.remaining, status.remaining_words.as_deref()), (Some(5400), Some("1 hour and 30 minutes")));
     }
 
     #[test]
@@ -580,7 +757,9 @@ mod tests {
         let running = &overview(&context).running[0];
         assert!(running.enforcing && running.condition.is_some());
         assert_eq!(policies(&context).len(), 1);
-        let Response::Failed(why) = handle(&context, 0, Request::Stop { id: "w".into(), password: None, text: None }).0 else { panic!("stopped") };
+        let Response::Failed(why) = handle(&context, 0, Request::Stop { id: "w".into(), password: None, text: None }).0 else {
+            panic!("stopped")
+        };
         assert!(why.contains("2 hours, 4 minutes and") || why.contains("2 hours and 5 minutes"), "{why}");
         let Response::Refused(why) = handle(&context, 0, Request::PrepareUninstall).0 else { panic!("not refused") };
         assert!(why.contains("2 hours"), "{why}");
@@ -600,7 +779,7 @@ mod tests {
         let context = context("unlocked");
         assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
         assert!(matches!(handle(&context, 0, Request::Policy).0, Response::Policy(p) if p.len() == 1));
-        assert_eq!(handle(&context, 0, Request::Unlock { password: "test1234".into() }).0, Response::Done);
+        assert_eq!(handle(&context, 0, Request::Unlock).0, Response::Done);
         assert_eq!(handle(&context, 0, Request::Policy).0, Response::Policy(Vec::new()));
     }
 

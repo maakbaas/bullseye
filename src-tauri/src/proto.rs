@@ -58,9 +58,22 @@ pub enum Request {
     Start { id: String },
     /// Stops the running block `id`, unless it is locked right now. `password`: the password of its
     /// password lock, which stops that one; `text`: the text of its text lock, likewise.
-    Stop { id: String, password: Option<String>, #[serde(default)] text: Option<String> },
-    /// Ends every block, whatever its time.
-    Unlock { password: String },
+    Stop {
+        id: String,
+        password: Option<String>,
+        #[serde(default)]
+        text: Option<String>,
+    },
+    /// Ends every block, whatever its time, once unlocking is ready: at once with no delay,
+    /// otherwise when the countdown of `RequestUnlock` is over (`unlock::UnlockDelay`).
+    Unlock,
+    /// Starts the countdown to unlocking. It can be aborted.
+    RequestUnlock,
+    /// Stops the countdown, or ends the readiness: back to locked.
+    AbortUnlock,
+    /// Sets how long unlocking takes, as typed (`2h 30m`, `0`; at most 24 hours). A longer delay is
+    /// free; a shorter one needs unlocking to be ready.
+    SetUnlockDelay { delay: String },
     /// From the installer: end the service and remove it. Refused while a block is locked.
     PrepareUninstall,
 }
@@ -77,6 +90,17 @@ pub enum Response {
     Policy(Vec<Policy>),
 }
 
+/// Where unlocking stands: how long it takes, and whether it is being waited for.
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Default)]
+pub struct UnlockStatus {
+    /// How long unlocking takes, in seconds (0: no delay, so it is ready at any time), and in words.
+    pub delay: u64,
+    pub delay_words: String,
+    /// Seconds until unlocking is ready: `None`: not asked for; `Some(0)`: ready now.
+    pub remaining: Option<u64>,
+    pub remaining_words: Option<String>,
+}
+
 /// What the UI shows.
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Overview {
@@ -86,6 +110,8 @@ pub struct Overview {
     pub blocks: Vec<Definition>,
     /// The blocks that run, as they were started (`Running::id` is the definition's).
     pub running: Vec<Running>,
+    /// Where unlocking stands (a clean install has no delay: unlock is free).
+    pub unlock: UnlockStatus,
     /// Whether the time comes from the internet yet; until then, time with the service not
     /// running does not count.
     pub clock_synced: bool,

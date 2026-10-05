@@ -508,6 +508,11 @@ impl Blocklist {
         (!blocks.is_empty()).then_some(Active { blocks })
     }
 
+    /// The time the service goes by (internet time, `clock.rs`).
+    pub fn now(&self) -> SystemTime {
+        self.clock.now()
+    }
+
     /// Whether any block runs, also one that its condition has inactive right now: it is still
     /// there and maybe locked, so the app is kept running and the exe is not replaced.
     pub fn is_running(&self) -> bool {
@@ -588,7 +593,7 @@ impl Blocklist {
         Status { running, clock_synced: self.clock.synced() }
     }
 
-    /// Ends every block whatever its lock, and forgets them. Only for the unlock password
+    /// Ends every block whatever its lock, and forgets them. Only for unlocking
     /// (`handler::unlock`): everything else goes through `stop`, which keeps a locked block.
     pub fn reset(&self) {
         let mut inner = self.inner.locked();

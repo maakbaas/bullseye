@@ -253,11 +253,10 @@ mod tests {
         remote.command(Request::Start { id: "a".into() }).unwrap();
         assert!(remote.active().unwrap().blocks_page("https://a.com/x", false));
         assert!(remote.status().unwrap().running[0].remaining.is_some());
-        // The same rules as with the real service: a timed block cannot be stopped early, the
-        // password ends it.
-        assert!(remote.command(Request::Stop { id: "a".into(), password: None }).is_err());
-        assert!(remote.command(Request::Unlock { password: "wrong".into() }).is_err());
-        remote.command(Request::Unlock { password: "test1234".into() }).unwrap();
+        // The same rules as with the real service: a timed block cannot be stopped early, unlocking
+        // (free until a delay is set) ends it.
+        assert!(remote.command(Request::Stop { id: "a".into(), password: None, text: None }).is_err());
+        remote.command(Request::Unlock).unwrap();
         // The app stays, with nothing to enforce.
         assert!(remote.active().is_none());
     }

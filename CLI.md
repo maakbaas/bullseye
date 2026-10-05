@@ -1,6 +1,6 @@
 # Bullseye command line
 
-`bullseye-cli.exe` does everything the window does, from a terminal or a script: make, change and delete block lists, conditions and blocks, start and stop blocks, and end them all with the unlock password. The installer puts it next to the app, in `C:\Program Files\Bullseye\`. To call it by name from anywhere, add that folder to your `PATH` (Settings > System > About > Advanced system settings > Environment Variables), or call it by its full path:
+`bullseye-cli.exe` does everything the window does, from a terminal or a script: make, change and delete block lists, conditions and blocks, start and stop blocks, and and end them all by unlocking (a countdown you set, none to begin with). The installer puts it next to the app, in `C:\Program Files\Bullseye\`. To call it by name from anywhere, add that folder to your `PATH` (Settings > System > About > Advanced system settings > Environment Variables), or call it by its full path:
 
 ```powershell
 & "C:\Program Files\Bullseye\bullseye-cli.exe" status
@@ -23,7 +23,7 @@ As in the window, which has a page for each:
   - `until restart`: locked until Windows restarts, and it ends then. A shut down with Fast Startup on is not a restart.
   - `condition`: locked while a condition of its choosing is active. Otherwise it can be stopped; it runs until stopped. With the block's own condition, it is locked exactly while the block is active. With a flash drive condition the drive is the key: the block can only be stopped while the drive is plugged in.
   - `text`: locked until a text of your own is typed in exactly. To stop the block, the window shows the text above an input that refuses pasting (and dropping text into it), and only an exact match stops it; the service compares them again. The CLI cannot stop such a block (a terminal cannot refuse a paste), so it says to use the window.
-  - `password`: locked with a password, for someone else to set. It runs until stopped with that password (or the unlock password). Only a salted hash of it is kept, and it is never shown again.
+  - `password`: locked with a password, for someone else to set. It runs until stopped with that password (or by unlocking). Only a salted hash of it is kept, and it is never shown again.
 
 While its condition is not active a running block keeps running, but enforces nothing. For example, with a schedule condition of `daily 08:00-17:00`, a block started at 16:00 with a 2-hour duration lock blocks until 17:00; from then on everything is accessible again, and at 18:00 the lock ends the block. With a lock condition of `daily 08:00-17:00` instead (say the same schedule), it blocks every day from 8 to 5 and cannot be stopped then, until you stop it some evening.
 
@@ -56,7 +56,8 @@ A running block keeps what it was started with: while it runs, it cannot be chan
 | `bullseye-cli export <file>` | **Export** in Settings |
 | `bullseye-cli import <file> [--yes]` | **Import** in Settings |
 | `bullseye-cli drives [--json]` | the flash drives the **Flash drive** type of a condition offers, by name and serial number |
-| `bullseye-cli unlock [--password <pw>]` | **Unlock** in Settings |
+| `bullseye-cli unlock [--abort]` | **Request unlock**, **Unlock** and **Abort** in Settings |
+| `bullseye-cli unlock-delay [<time>]` | **Unlock delay** in Settings: show it, or set it |
 | `bullseye-cli help` | |
 | `bullseye-cli version` | |
 
@@ -73,7 +74,7 @@ Exit codes: `0` done, `1` failed, refused or cancelled (the reason is printed), 
 | `--lock-until-restart` | Lock: until Windows restarts. | |
 | `--lock-condition <condition>` | Lock: while this condition is active. A schedule locks at its times; a flash drive locks while it is not connected. | |
 | `--lock-password <pw>` | Lock: with this password. Only a hash of it is kept. | |
-| `--lock-text <text>` | Lock: until this text is typed in exactly. The window shows it above an input that cannot be pasted into; that is the only place to stop such a block (or with the unlock password). The text is no secret: anyone who can see the block sees it. | |
+| `--lock-text <text>` | Lock: until this text is typed in exactly. The window shows it above an input that cannot be pasted into; that is the only place to stop such a block (or by unlocking). The text is no secret: anyone who can see the block sees it. | |
 | `--no-lock` | Not locked. | yes |
 | `--name <name>` | (`edit` only) A new name. | |
 
@@ -146,7 +147,7 @@ Make a copy, as **Duplicate** in a tile's menu does: named after the original wi
 
 ### `export`, `import`
 
-To move to another computer: `export <file>` writes every block list, condition and block to a settings file (JSON), the same file the window's **Export** saves. `import <file>` replaces all of them with what is in such a file, after asking (or with `--yes`); it is refused while any block runs. A password lock is not in the file, so a block that has one comes without a lock: the question names them. The unlock password is part of Bullseye itself, not of the file.
+To move to another computer: `export <file>` writes every block list, condition and block to a settings file (JSON), the same file the window's **Export** saves. `import <file>` replaces all of them with what is in such a file, after asking (or with `--yes`); it is refused while any block runs. A password lock is not in the file, so a block that has one comes without a lock: the question names them. The unlock delay is a setting of Bullseye itself, not of the file.
 
 ```powershell
 bullseye-cli export D:\bullseye.json
@@ -155,14 +156,26 @@ bullseye-cli import D:\bullseye.json
 
 ### `unlock`
 
-Ends every running block, locked or not, with the unlock password, exactly as the window's Unlock does: the block lists, conditions and blocks stay, and so does the app, with nothing to enforce. Without `--password` it asks for the password without showing it, or reads it from standard input when that is not a terminal:
+Ends every running block, locked or not, exactly as the window's Unlock does: the block lists, conditions and blocks stay, and so does the app, with nothing to enforce. **Unlocking is free until you set an unlock delay** (see `unlock-delay` below), so on a clean install `bullseye-cli unlock` ends everything at once. With a delay it is a countdown, in steps you run again:
 
 ```powershell
-bullseye-cli unlock
-"my password" | bullseye-cli unlock
+bullseye-cli unlock           # starts the countdown: "ready in 1 hour"
+bullseye-cli unlock           # while it counts down: says how long is left
+bullseye-cli unlock           # once it is over: ends every block
+bullseye-cli unlock --abort   # at any time: stop the countdown, everything stays locked
 ```
 
-(A password given with `--password` ends up in your shell history.)
+Ready, you can still `--abort` instead. Unlocking uses the request up: the next time starts again.
+
+### `unlock-delay`
+
+Shows how long unlocking takes, or sets it: `0` (none, the default) to `24h`, typed like a duration (`30m`, `2h 30m`). A longer delay can be set at any time; a shorter one only once unlocking is ready, because setting it low would be a way around the wait. At most 24 hours is enough to sleep on it and to abort with a fresh mind.
+
+```powershell
+bullseye-cli unlock-delay
+bullseye-cli unlock-delay 2h
+bullseye-cli unlock-delay 0
+```
 
 ### `condition check`
 

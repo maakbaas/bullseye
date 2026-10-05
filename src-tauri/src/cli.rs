@@ -29,7 +29,7 @@ use crate::state::Enforcers;
 
 /// Each command the window can invoke, and the CLI commands that do the same. Empty: it is about
 /// the window itself.
-pub const GUI_COMMANDS: [(&str, &[&str]); 21] = [
+pub const GUI_COMMANDS: [(&str, &[&str]); 24] = [
     ("block_status", &["status", "show", "list show", "condition show"]),
     ("save_block", &["new", "edit"]),
     ("delete_block", &["delete"]),
@@ -45,6 +45,9 @@ pub const GUI_COMMANDS: [(&str, &[&str]); 21] = [
     ("start_block", &["start"]),
     ("stop_block", &["stop"]),
     ("unlock_all", &["unlock"]),
+    ("request_unlock", &["unlock"]),
+    ("abort_unlock", &["unlock"]),
+    ("set_unlock_delay", &["unlock-delay"]),
     ("describe_schedule", &["condition check"]),
     // A lock's length or end in words: what `show` and `start` say of a duration or until lock.
     ("describe_duration", &["show"]),
@@ -87,10 +90,10 @@ Blocks:
                                and runs until stopped otherwise. With the block's own condition,
                                it is locked exactly while it is active.
       --lock-password <pw>     Locked with a password: it runs until stopped with that password
-                               (or the unlock password). Only a hash of it is kept.
+                               (or by unlocking). Only a hash of it is kept.
       --lock-text <text>       Locked until the text is typed in exactly: the window shows it
                                above an input that cannot be pasted into, and that is the only
-                               place to stop such a block (or the unlock password).
+                               place to stop such a block (or by unlocking).
       --no-lock                Not locked: it can be stopped at any time (the default).
   edit <block> [options]   Change a block that is not running: the options of new, which replace
                            what they name (--list replaces all its lists), and --name <name>.
@@ -154,9 +157,13 @@ Moving to another computer:
 Other:
   drives [--json]          The flash drives connected, by name and serial number, for
                            'condition new --drive'.
-  unlock [--password <pw>] End every running block with the unlock password, as the window's
-                           Unlock does. Asks for the password when not given (or reads standard
-                           input when that is not a terminal).
+  unlock [--abort]         End every running block, as the window's Unlock does. By default
+                           unlocking is free. With an unlock delay it is a countdown: the first
+                           'unlock' starts it, a later one ends every block once it is over, and
+                           --abort stops it (back to locked).
+  unlock-delay [<time>]    Show how long unlocking takes, or set it: 0 to 24 hours, e.g. 30m
+                           or 2h 30m, or 0 for none. A longer delay is free; a shorter one needs
+                           unlocking to be ready.
   help                     Show this.
   version                  Show the version.
 
@@ -250,7 +257,10 @@ enum Command {
         item: String,
     },
     Unlock {
-        password: Option<String>,
+        abort: bool,
+    },
+    UnlockDelay {
+        delay: Option<String>,
     },
 }
 
@@ -394,7 +404,8 @@ fn parse(args: &[String]) -> Result<Command, String> {
         "condition check" => {
             Command::ConditionCheck { times: options.positional().ok_or("Give the times to check, e.g. \"Mon-Fri 08:00-17:00\"")? }
         }
-        "unlock" => Command::Unlock { password: options.value("--password")? },
+        "unlock" => Command::Unlock { abort: options.flag("--abort") },
+        "unlock-delay" => Command::UnlockDelay { delay: options.positional() },
         other => return Err(format!("Unknown command \"{other}\"")),
     };
     options.finish()?;
@@ -416,11 +427,10 @@ fn parse_lock(options: &mut Options) -> Result<Option<Lock>, String> {
     let lock = match given.len() {
         0 => return Ok(None),
         1 => given.remove(0),
-        _ => {
-            return Err(
-                "Give one of --lock-duration, --lock-until, --lock-until-restart, --lock-condition, --lock-password, --lock-text and --no-lock".into()
-            )
-        }
+        _ => return Err(
+            "Give one of --lock-duration, --lock-until, --lock-until-restart, --lock-condition, --lock-password, --lock-text and --no-lock"
+                .into(),
+        ),
     };
     // The service checks it again; this is for a clear message before anything is sent.
     lock.check()?;
@@ -626,7 +636,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             }
             // As in the window: a block that cannot be stopped is only started after a second yes.
             if let Some(how) = lock_warning(&overview, &block) {
-                let question = format!("Start \"{}\"? {how} Only the unlock password ends it early.", block.name);
+                let question = format!("Start \"{}\"? {how} Only unlocking ends it early.", block.name);
                 if !confirm(&question, yes)? {
                     return Err(failed("Not started."));
                 }
@@ -795,15 +805,47 @@ fn execute(command: Command) -> Result<(), Failure> {
             let copy = names(&overview()?).into_iter().find(|(id, _)| *id == new_id).map(|(_, name)| name).unwrap_or_default();
             println!("Made \"{copy}\", a copy of the {noun} \"{name}\".");
         }
-        Command::Unlock { password } => {
-            let password = match password {
-                Some(password) => password,
-                None => read_password("Unlock password: ").map_err(Failure::Failed)?,
-            };
-            send(Request::Unlock { password })?;
-            // The service tells the app to quit at its next policy request, within a second.
-            println!("Unlocked: every block has ended.");
+        Command::Unlock { abort } => {
+            let status = overview()?.unlock;
+            if abort {
+                send(Request::AbortUnlock)?;
+                println!("Unlocking aborted: back to locked.");
+            } else if status.remaining == Some(0) {
+                send(Request::Unlock)?;
+                // The service tells the app to quit at its next policy request, within a second.
+                println!("Unlocked: every block has ended.");
+            } else if let Some(left) = status.remaining_words {
+                println!("Unlocking is not ready yet: {left} to go. Run `bullseye-cli unlock` again then, or `bullseye-cli unlock --abort` to stop.");
+            } else {
+                send(Request::RequestUnlock)?;
+                println!(
+                    "Unlocking was asked for: ready in {}. Run `bullseye-cli unlock` again then, or `bullseye-cli unlock --abort` to stop.",
+                    status.delay_words
+                );
+            }
         }
+        Command::UnlockDelay { delay } => match delay {
+            None => {
+                let status = overview()?.unlock;
+                if status.delay == 0 {
+                    println!("Unlocking takes no time: it is free.");
+                } else {
+                    println!("Unlocking takes {}.", status.delay_words);
+                }
+            }
+            Some(delay) => {
+                send(Request::SetUnlockDelay { delay })?;
+                let status = overview()?.unlock;
+                println!(
+                    "{}",
+                    if status.delay == 0 {
+                        "Unlocking is free again.".to_string()
+                    } else {
+                        format!("Unlocking now takes {}.", status.delay_words)
+                    }
+                );
+            }
+        },
     }
     Ok(())
 }
@@ -1168,6 +1210,7 @@ mod tests {
     use super::*;
     use crate::block::RunningList;
     use crate::definitions::tests::{block, block_list, weekly};
+    use crate::proto::UnlockStatus;
 
     fn args(line: &[&str]) -> Vec<String> {
         line.iter().map(|arg| arg.to_string()).collect()
@@ -1182,7 +1225,14 @@ mod tests {
         b.name = "Work".into();
         b.condition = Some("s1".into());
         b.lock = Lock::Condition { condition: "s1".into() };
-        Overview { lists: vec![social], conditions: vec![work], blocks: vec![b], running: vec![], clock_synced: true }
+        Overview {
+            lists: vec![social],
+            conditions: vec![work],
+            blocks: vec![b],
+            running: vec![],
+            unlock: UnlockStatus::default(),
+            clock_synced: true,
+        }
     }
 
     /// Every command the window can invoke has CLI commands that do the same, in the help and in
@@ -1417,7 +1467,12 @@ mod tests {
             Ok(Command::ConditionDelete { condition: "Work hours".into(), yes: false })
         );
         assert_eq!(parse(&args(&["condition", "check", "weekdays 9-5pm"])), Ok(Command::ConditionCheck { times: "weekdays 9-5pm".into() }));
-        assert_eq!(parse(&args(&["unlock", "--password", "pw"])), Ok(Command::Unlock { password: Some("pw".into()) }));
+        assert_eq!(parse(&args(&["unlock"])), Ok(Command::Unlock { abort: false }));
+        assert_eq!(parse(&args(&["unlock", "--abort"])), Ok(Command::Unlock { abort: true }));
+        assert_eq!(parse(&args(&["unlock-delay"])), Ok(Command::UnlockDelay { delay: None }));
+        assert_eq!(parse(&args(&["unlock-delay", "2h 30m"])), Ok(Command::UnlockDelay { delay: Some("2h 30m".into()) }));
+        assert_eq!(parse(&args(&["unlock-delay", "0"])), Ok(Command::UnlockDelay { delay: Some("0".into()) }));
+        assert!(parse(&args(&["unlock", "--password", "pw"])).is_err());
     }
 
     #[test]
@@ -1447,7 +1502,14 @@ mod tests {
 
     #[test]
     fn the_status_reads_like_the_pages() {
-        let empty = Overview { lists: vec![], conditions: vec![], blocks: vec![], running: vec![], clock_synced: true };
+        let empty = Overview {
+            lists: vec![],
+            conditions: vec![],
+            blocks: vec![],
+            running: vec![],
+            unlock: UnlockStatus::default(),
+            clock_synced: true,
+        };
         assert!(describe_overview(&empty).contains("Blocks:\n  None yet"));
         let mut overview = library();
         overview.running.push(Running {

@@ -1,6 +1,6 @@
 //! The Windows service: the root of everything. It runs as SYSTEM, started by Windows at boot
 //! and started again by Windows if it ever fails, and it holds what must not be in the user's
-//! reach: the block definitions, the running blocks, internet time, the unlock hash.
+//! reach: the block definitions, the running blocks, internet time, the unlock delay and countdown.
 //!
 //! It cannot close tabs itself (a service has no desktop), so the app does that, and this keeps
 //! the app running (`watchdog.rs`) and tells it what to enforce, over a named pipe (`pipe.rs`).
@@ -43,6 +43,7 @@ use crate::handler::{handle, Context, Shutdown};
 use crate::registration::{self, CREATE_NO_WINDOW, NAME};
 use crate::state;
 use crate::sync::spawn_critical;
+use crate::unlock::UnlockDelay;
 use crate::watchdog::{self, note, AppSlot};
 use crate::{clock, pipe, wake};
 
@@ -133,7 +134,7 @@ fn start_engine(for_real: bool) -> Result<mpsc::Receiver<Shutdown>, String> {
         wake::spawn_process_watch(blocklist.clone());
     }
     let (quit, quit_rx) = mpsc::channel();
-    let context = Arc::new(Context::new(blocklist, Definitions::new(), slot));
+    let context = Arc::new(Context::new(blocklist, Definitions::new(), slot).with_unlock(UnlockDelay::new()));
     pipe::serve(move |caller, request| handle(&context, caller, request), quit)?;
     Ok(quit_rx)
 }
@@ -159,7 +160,7 @@ fn start_blocklist() -> Blocklist {
 /// app (`AppSlot::new(false)`).
 #[cfg(any(debug_assertions, test))]
 pub fn local_handler(blocklist: Blocklist, definitions: Definitions) -> Local {
-    let context = Context::new(blocklist, definitions, Arc::new(AppSlot::new(false)));
+    let context = Context::new(blocklist, definitions, Arc::new(AppSlot::new(false))).with_unlock(UnlockDelay::new());
     Arc::new(move |request| handle(&context, 0, request).0)
 }
 
@@ -242,7 +243,7 @@ mod tests {
         assert_eq!(client::call(&Request::Start { id: "a".into() }), Ok(Response::Done));
         let Ok(Response::Policy(policies)) = client::call(&Request::Policy) else { panic!("no policy") };
         assert_eq!(policies[0].entries.filters, vec!["a.com"]);
-        assert!(matches!(client::call(&Request::Stop { id: "a".into(), password: None }), Ok(Response::Failed(_))));
+        assert!(matches!(client::call(&Request::Stop { id: "a".into(), password: None, text: None }), Ok(Response::Failed(_))));
         assert!(matches!(client::call(&Request::PrepareUninstall), Ok(Response::Refused(_))));
 
         // A length far beyond the limit gets an error back, not an allocation.
@@ -265,9 +266,8 @@ mod tests {
         // What it gets is a refusal, or a closed pipe; never an answer to a request it did not make.
         assert!(matches!(proto::read_message::<Response>(&mut silent), Ok(Response::Failed(_)) | Err(_)));
 
-        // The password ends the block; then the installer may uninstall, and the service says so.
-        let unlock = Request::Unlock { password: "test1234".into() };
-        assert_eq!(client::call(&unlock), Ok(Response::Done));
+        // Unlocking (free, with no delay set) ends the block; then the installer may uninstall, and the service says so.
+        assert_eq!(client::call(&Request::Unlock), Ok(Response::Done));
         assert_eq!(client::call(&Request::PrepareUninstall), Ok(Response::Done));
         assert!(matches!(quit.recv_timeout(Duration::from_secs(5)), Ok(Shutdown)));
     }

@@ -90,7 +90,7 @@ function whenRefreshed(draw) {
   redraw = draw;
 }
 
-let overview = { lists: [], conditions: [], blocks: [], running: [], clock_synced: true };
+let overview = { lists: [], conditions: [], blocks: [], running: [], unlock: { delay: 0, delay_words: "", remaining: 0, remaining_words: "" }, clock_synced: true };
 let reachable = true;
 
 async function refresh() {

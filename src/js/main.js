@@ -1,6 +1,6 @@
 // The page: which view the address shows (`route`), the tabs, Settings, and starting up.
 
-import { $, applyStrings, ask, invoke, notify, quoted, refresh, t, whenRefreshed } from "./core.js";
+import { $, applyStrings, ask, invoke, notify, overview, quoted, refresh, t, whenRefreshed } from "./core.js";
 import { KINDS } from "./kinds.js";
 import { renderTiles, tiles } from "./tiles.js";
 import { closeEditor, openEditor, renderEditorLock } from "./editor.js";
@@ -12,28 +12,92 @@ whenRefreshed(render);
 let page = "blocks"; // the kind whose page or editor is shown
 
 function render() {
+  if (!$("view-settings").hidden) renderSettings();
   if (!$("view-list").hidden) renderTiles(page);
   renderEditorLock();
 }
 
-// ---- Settings: the unlock password.
+// ---- Settings: unlocking.
+
+// What Settings shows follows where unlocking stands (`overview.unlock`): with no delay (a clean
+// install) it is one click; with one it is a countdown that is asked for, that can be aborted,
+// and that ends in Unlock or Abort.
+function renderSettings() {
+  const { delay, delay_words: delayWords, remaining, remaining_words: left } = overview.unlock;
+  const free = delay === 0;
+  const requested = remaining !== null;
+  const ready = remaining === 0;
+  $("unlock-text").textContent = t(free ? "settings.unlockFree" : "settings.unlockText");
+  $("unlock-state").hidden = free;
+  $("unlock-state").textContent = !requested ? t("settings.unlockAsk", { delay: delayWords }) : ready ? t("settings.unlockReady") : t("settings.unlockWait", { left });
+  $("unlock").replaceChildren(t(free || ready ? "settings.unlock" : "settings.request"));
+  // Counting down: nothing to press but Abort.
+  $("unlock").disabled = requested && !ready;
+  $("abort-unlock").hidden = free || !requested;
+}
+
+// A delay in seconds as it is typed (`1d`, `2h 30m`), to start the field from: the words the
+// backend writes (`2 hours and 30 minutes`) are not what it reads.
+function typedDelay(seconds) {
+  const units = [["d", 86400], ["h", 3600], ["m", 60], ["s", 1]];
+  const parts = [];
+  for (const [unit, size] of units) {
+    const n = Math.floor(seconds / size);
+    seconds -= n * size;
+    if (n) parts.push(`${n}${unit}`);
+  }
+  return parts.join(" ");
+}
 
 async function unlock() {
-  const password = $("password").value;
-  if (!password) return;
-  $("unlock").disabled = true;
+  const { delay, remaining } = overview.unlock;
   try {
-    // Every block ends; the app stays, with nothing to enforce.
-    await invoke("unlock_all", { password });
-    notify("settings-notices", "success", t("settings.unlocked"));
-    await refresh();
+    if (delay === 0 || remaining === 0) {
+      // The last step, which cannot be taken back: asked once more.
+      const sure = await ask({ heading: t("settings.confirmHeading"), body: t("settings.confirmBody"), action: t("settings.unlock"), kind: "danger" });
+      if (!sure) return;
+      // Every block ends; the app stays, with nothing to enforce.
+      await invoke("unlock_all");
+      notify("settings-notices", "success", t("settings.unlocked"));
+    } else {
+      await invoke("request_unlock");
+      notify("settings-notices");
+    }
   } catch (e) {
     notify("settings-notices", "error", t("settings.failed"), String(e));
   }
-  $("password").value = "";
-  $("password").focus();
+  await refresh();
+  renderSettings();
 }
 $("unlock").addEventListener("click", unlock);
+
+// Aborting: back to locked, as if it had not been asked for.
+$("abort-unlock").addEventListener("click", async () => {
+  try {
+    await invoke("abort_unlock");
+    notify("settings-notices", "success", t("settings.aborted"));
+  } catch (e) {
+    notify("settings-notices", "error", t("settings.failed"), String(e));
+  }
+  await refresh();
+  renderSettings();
+});
+
+// How long unlocking takes, typed like a duration (0 for none, at most 24 hours). A longer delay is
+// free; the service refuses a shorter one until unlocking is ready.
+$("set-delay").addEventListener("click", async () => {
+  notify("delay-notices");
+  try {
+    await invoke("set_unlock_delay", { delay: $("delay").value });
+    await refresh();
+    const { delay, delay_words: words } = overview.unlock;
+    notify("delay-notices", "success", t(delay === 0 ? "settings.delayFree" : "settings.delaySet", { delay: words }));
+  } catch (e) {
+    notify("delay-notices", "error", t("settings.delayFailed"), String(e));
+  }
+  renderSettings();
+});
+$("delay").addEventListener("keydown", (event) => { if (event.key === "Enter") $("set-delay").click(); });
 
 // Export and Import: the dialogs, the file and its reading are the app's (`export_settings`,
 // `open_settings`); the service replaces everything on Import.
@@ -70,12 +134,6 @@ $("import").addEventListener("click", async () => {
     notify("transfer-notices", "error", t("settings.importFailed"), String(e));
   }
 });
-$("password").addEventListener("input", () => {
-  $("unlock").disabled = !$("password").value;
-  notify("settings-notices");
-});
-$("password").addEventListener("keydown", (event) => { if (event.key === "Enter") unlock(); });
-
 // ---- Pages, by the address after #: #/ (blocks), #/new, #/edit/<id>, the same under
 // #/lists and #/conditions, and #/settings.
 
@@ -137,8 +195,9 @@ function route() {
   if (view === "editor") openEditor(kind, edit || null, { draft: kind === "blocks" ? resumed : null });
   else closeEditor();
   if (view === "settings") {
-    $("password").value = "";
-    $("unlock").disabled = true;
+    $("delay").value = typedDelay(overview.unlock.delay);
+    notify("delay-notices");
+    renderSettings();
     notify("settings-notices");
   }
   window.scrollTo(0, 0);

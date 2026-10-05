@@ -190,12 +190,31 @@ fn import_settings(path: String, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::Import { library })
 }
 
-/// Ends every running block, locked or not, if the unlock password is right. The app stays open,
-/// with nothing to enforce; the definitions stay too.
+/// Starts the countdown to unlocking (`unlock.rs`); it can be aborted.
 #[tauri::command]
-fn unlock_all(password: String, remote: State<Remote>) -> Result<(), String> {
-    remote.command(Request::Unlock { password })?;
-    watchdog::note("app", "every block ended with the unlock password");
+fn request_unlock(remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::RequestUnlock)
+}
+
+/// Stops the countdown, or ends the readiness: back to locked.
+#[tauri::command]
+fn abort_unlock(remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::AbortUnlock)
+}
+
+/// Sets how long unlocking takes, as typed (`2h 30m`, `0`; at most 24 hours).
+#[tauri::command]
+fn set_unlock_delay(delay: String, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::SetUnlockDelay { delay })
+}
+
+/// Ends every running block, locked or not, once unlocking is ready (`unlock.rs`: at once with no
+/// delay, else after the countdown). The app stays open, with nothing to enforce; the definitions
+/// stay too.
+#[tauri::command]
+fn unlock_all(remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::Unlock)?;
+    watchdog::note("app", "every block ended by unlocking");
     Ok(())
 }
 
@@ -257,6 +276,9 @@ pub fn run() {
             start_block,
             stop_block,
             unlock_all,
+            request_unlock,
+            abort_unlock,
+            set_unlock_delay,
             describe_schedule,
             describe_duration,
             describe_until,
@@ -294,7 +316,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|_app, event| {
             // With no window the app has nothing to show but must not end: an exit that nobody asked
-            // for (the last window going away) is refused, while the unlock password's is allowed.
+            // for (the last window going away) is refused, while unlocking's is allowed.
             if let RunEvent::ExitRequested { api, code, .. } = event {
                 if code.is_none() {
                     api.prevent_exit();

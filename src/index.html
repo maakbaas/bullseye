@@ -90,7 +90,7 @@
         </div>
       </div>
 
-      <!-- Settings: the unlock password, kept apart from the blocks. -->
+      <!-- Settings: unlocking, kept apart from the blocks. -->
       <div id="view-settings" class="cds--css-grid" hidden>
         <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
           <div class="page-header">
@@ -98,11 +98,22 @@
           </div>
           <div class="setting">
             <h2 class="cds--type-productive-heading-03" data-t="settings.unlockTitle"></h2>
-            <p class="cds--type-body-01" data-t="settings.unlockText"></p>
+            <p class="cds--type-body-01" id="unlock-text"></p>
             <div class="notices" id="settings-notices"></div>
+            <p class="cds--type-body-01" id="unlock-state"></p>
             <div class="row">
-              <cds-password-input id="password" data-t-label="settings.passwordLabel" autocomplete="off"></cds-password-input>
-              <cds-button id="unlock" kind="danger" size="md" disabled data-t="settings.unlock"></cds-button>
+              <cds-button id="unlock" kind="danger" size="md"></cds-button>
+              <cds-button id="abort-unlock" kind="tertiary" size="md" data-t="settings.abort"></cds-button>
+            </div>
+          </div>
+          <!-- How long unlocking takes: none to begin with, so unlock is free until a delay is set. -->
+          <div class="setting">
+            <h2 class="cds--type-productive-heading-03" data-t="settings.delayTitle"></h2>
+            <p class="cds--type-body-01" data-t="settings.delayText"></p>
+            <div class="notices" id="delay-notices"></div>
+            <div class="row">
+              <cds-text-input id="delay" data-t-label="settings.delayLabel" data-t-placeholder="settings.delayPlaceholder"></cds-text-input>
+              <cds-button id="set-delay" kind="tertiary" size="md" data-t="settings.setDelay"></cds-button>
             </div>
           </div>
           <!-- Everything defined, to a file and back: to move to another computer. -->
