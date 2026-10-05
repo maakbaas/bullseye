@@ -12,7 +12,7 @@ use regex::RegexSet;
 
 /// Programs that are never closed: Windows' own, and this app's (the tray app, its WebView2 and
 /// the service). Lower case, as the names are compared.
-const PROTECTED: [&str; 24] = [
+const PROTECTED: [&str; 25] = [
     "explorer.exe",
     "winlogon.exe",
     "wininit.exe",
@@ -33,6 +33,7 @@ const PROTECTED: [&str; 24] = [
     "shellexperiencehost.exe",
     "msedgewebview2.exe",
     "bullseye.exe",
+    "bullseye-cli.exe",
     "system",
     "registry",
     "memory compression",

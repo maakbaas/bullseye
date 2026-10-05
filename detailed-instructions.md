@@ -4479,7 +4479,9 @@ rmdir /s /q "%ProgramData%\bullseye"
 ```
 
   (`sc delete` comes first: it marks the service for deletion, so Windows does not start it again when the `taskkill` ends the process.)
-- No PsExec? As administrator you can borrow Task Scheduler to get a SYSTEM shell: save the five lines above as `C:ecover.cmd`, then run `schtasks /create /tn recover /sc once /st 00:00 /ru SYSTEM /tr C:ecover.cmd /f`, `schtasks /run /tn recover`, and afterwards `schtasks /delete /tn recover /f`.
+- No PsExec? As administrator you can borrow Task Scheduler to get a SYSTEM shell: save the five lines above as `C:
+ecover.cmd`, then run `schtasks /create /tn recover /sc once /st 00:00 /ru SYSTEM /tr C:
+ecover.cmd /f`, `schtasks /run /tn recover`, and afterwards `schtasks /delete /tn recover /f`.
 - Last resort: boot into the Windows recovery environment's command prompt (which runs as SYSTEM) and delete the registry keys / files there.
 
 ### 8.3 Behaviour changes the user will notice
@@ -4558,6 +4560,15 @@ Build with `npm run build` (installer in `src-tauri\target\release\bundle\nsis\`
 | 34 | Start the app and look at Task Manager > Details | only `bullseye.exe`, about 20 MB, and no `msedgewebview2.exe` of its own; click the tray icon: the window opens in about half a second and the web view processes appear |
 | 35 | Close the window with the X, wait 5 minutes | the `msedgewebview2.exe` processes are gone; clicking the tray icon makes the window again; closing and reopening within 5 minutes is instant |
 | 36 | During a site block, watch `bullseye.exe` CPU in Task Manager | a few percent of one core at most (it was about 10% with two browser windows) |
+| 37 | A block with a weekly schedule where the current hour is marked and the next is not, lock: timer `2h`, block `example.com`; start | the tab closes now; once the marked hour is over the tile says "Inactive by schedule", `example.com` stays open, Stop stays greyed out; after 2 hours the block is gone |
+| 38 | During test 37, change Windows' time zone (Settings > Time & language) by several hours | nothing changes: the running block keeps the time zone it started with |
+| 39 | During test 37, restart the PC | the block is back with its schedule and the same time left |
+| 40 | In the editor, choose Weekly schedule, drag from Monday 08:00 to Friday 16:30, then type `sat 10-12` in Times | the drag marks the rectangle and Times says `Mon-Fri 08:00-17:00`; the typed text replaces the week with Saturday 10:00-12:00 |
+| 41 | Lock: Timer, `2h 5m`; Start | the confirmation says "2 hours 5 minutes 0 seconds"; the tile says "Locked: 2 hours 4 minutes 59 seconds left", counting down; `soon` is refused on Save |
+| 42 | A `blocks.json` from before lock methods (a block with `"schedule":{"kind":"duration","duration":"1h"}`) | after the update the block shows Always and a 1-hour timer lock |
+| 43 | In a terminal: `bullseye-cli new Test --site example.com --lock-timer 10m`, `bullseye-cli start Test` (answer y), `bullseye-cli status`, `bullseye-cli stop Test` | the block appears in the window, starts after the question, status shows "locked, 9 minutes … left", stop is refused with the time left (exit code 1) |
+| 44 | `bullseye-cli unlock`, type the password | not echoed; "Unlocked: every block has ended." (exit code 0); the tray app stays, idle |
+| 45 | `bullseye-cli new X --program explorer`, then `bullseye-cli start X` | refused with "Would close programs Windows or this app needs" (exit code 1); `bullseye-cli new X --colour red` is exit code 2 |
 
 If test 1 fails: read `%ProgramData%\bullseye\service.log` (administrators can read it) and the installer's error message; `%LOCALAPPDATA%\bullseye\app.log` has the `--install` output.
 
@@ -4593,3 +4604,19 @@ Sections 1 to 10 describe one block at a time. Since then the app keeps any numb
   update while any block runs.
 - The UI is Carbon web components (see `CLAUDE.md`, "Design system"), vendored in `src/vendor/`; the
   window is resizable and the page responsive. Unlock moved to a Settings page.
+
+## 12. Schedules, lock methods and the command line (later change)
+
+The code is the reference; this is the reasoning.
+
+**Three layers.** A block is now *what* it enforces (lists and enforcers), *when* it is active (its schedule, `definitions::Schedule`: `always` or `weekly`) and *how* it is locked (its lock method, `lock::Lock`: `none` or `timer`). The old duration "schedule" was really a lock: it kept a block from being stopped and ended it when the time was up. It is now `Lock::Timer`; a definition that still has `{"kind":"duration"}` (an older `blocks.json`, or an older client) is turned into a timer lock as it is read or saved (`Definition::upgraded`). The schedule is independent of the lock, so any lock works with any schedule, and both are fixed while the block runs, like the enforcers, because changing either would be a way around a lock.
+
+**What a schedule does.** Outside its schedule a running block is still there: still locked, the service still keeps the app alive (`Blocklist::is_running`), and an update is still refused. Only its part of the policy is left out (`Blocklist::active` filters by `Block::in_schedule`), so other blocks go on. A timer lock that ends outside the schedule ends the block as before. The user's example: schedule 08:00-17:00, block started at 16:00 with a 2-hour timer: blocking until 17:00, everything accessible from 17:00, block gone at 18:00 (a unit test does exactly this).
+
+**Time.** Schedules are evaluated on the service's internet clock, converted to local time with `SystemTimeToTzSpecificLocalTimeEx` in the time zone Windows had when the block started. That zone is stored by its key name (`state.json` `zone`) and looked up again after a restart (`EnumDynamicTimeZoneInformation`). Following Windows' current zone would let a standard user, who may change the time zone, move the schedule out of the way. If local time cannot be computed the block enforces (it errs on the side of blocking). Tests use a fixed UTC zone and a test clock set with `Clock::at_least`.
+
+**Format.** A week is per weekday, Monday first, spans `[start, end)` in minutes since midnight, merged and sorted by `Week::normalized` (which also refuses a week with no time in it). The text form (`Mon-Fri 08:00-17:00; Sat 10:00-12:00`) is parsed and written in Rust only; the page asks for it through two local commands (`parse_schedule`, `describe_schedule`), so the week grid, the Times field, the tile summaries and the CLI cannot disagree. The grid works in half hours; dragging rewrites only the days it covers, so a typed schedule with finer minutes survives on the other days. Carbon has no calendar or time-grid component, so the grid is the one hand-made control (layout in Carbon tokens, `aria-hidden`; the Times text field is the accessible equivalent).
+
+**Durations and words.** Input stays short and may be combined (`2h 5m`, `1d12h`, or words). Everything shown, in the window, in the service's messages and in the CLI, is written out (`2 hours 5 minutes 0 seconds`) by `duration::words` and the page's `formatDuration`, which follow the same rules. The page also mirrors `duration::parse` (`durationSeconds`) only to show a lock's length in words; the service's parse is what counts.
+
+**The CLI.** `bullseye-cli.exe` is a second binary of the package (console subsystem; the tray exe is a GUI-subsystem program and cannot print to a terminal). To share the code, the crate became a library (`lib.rs`, named `bullseye_core` because a library and a binary of the same name collide on Windows) with two thin binaries. Tauri's bundler installs every binary of the package next to the main one, and `default-run` keeps `tauri dev` on the tray app. The CLI talks to the service over the pipe like the app does, so the service's checks apply unchanged; it may start a registered service that is not running, like the app. `cli::GUI_COMMANDS` maps every command in `generate_handler!` to the CLI commands that do the same, and a test reads `lib.rs` and fails when the window gains a command the CLI does not have, or when the help or `CLI.md` miss one. See `CLI.md` for its use.

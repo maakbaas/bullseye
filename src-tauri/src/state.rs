@@ -13,6 +13,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::schedule::Week;
+
 /// A running block as written to disk.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Saved {
@@ -42,6 +44,14 @@ pub struct Saved {
     /// `filters`. Missing in files from older versions, which had none.
     #[serde(default)]
     pub allowed: Vec<String>,
+    /// When the block is active (`schedule.rs`); `None` is always. Missing in files from older
+    /// versions, whose blocks were always active.
+    #[serde(default)]
+    pub schedule: Option<Week>,
+    /// The time zone the schedule is read in, by name (`localtime::Zone::named`), fixed when the
+    /// block started. Missing in files from older versions.
+    #[serde(default)]
+    pub zone: Option<String>,
 }
 
 /// The ways a block is enforced, chosen when it starts and fixed while it runs, so turning one
@@ -127,7 +137,7 @@ pub fn from_unix(seconds: u64) -> SystemTime {
 #[serde(untagged)]
 enum OnDisk {
     Many { blocks: Vec<Saved> },
-    One(Saved),
+    One(Box<Saved>),
 }
 
 #[derive(Serialize)]
@@ -155,7 +165,7 @@ impl Store {
     pub fn load(&self) -> Vec<Saved> {
         match self.read() {
             Some(OnDisk::Many { blocks }) => blocks,
-            Some(OnDisk::One(saved)) => vec![saved],
+            Some(OnDisk::One(saved)) => vec![*saved],
             None => Vec::new(),
         }
     }
@@ -245,7 +255,7 @@ mod tests {
     }
 
     fn timed(until: Option<u64>) -> Saved {
-        Saved { id: "a".into(), name: "A".into(), filters: vec!["tweakers.net".to_string()], until, seen: None, enforcers: Enforcers::default(), programs: Vec::new(), allowed: Vec::new() }
+        Saved { id: "a".into(), name: "A".into(), filters: vec!["tweakers.net".to_string()], until, seen: None, enforcers: Enforcers::default(), programs: Vec::new(), allowed: Vec::new(), schedule: None, zone: None }
     }
 
     #[test]
@@ -317,6 +327,8 @@ mod tests {
             enforcers: Enforcers::default(),
             programs: Vec::new(),
             allowed: Vec::new(),
+            schedule: None,
+            zone: None,
         };
         assert_eq!(store.load(), vec![old]);
         store.clear();

@@ -22,6 +22,9 @@ const MAX_MESSAGE: usize = 1024 * 1024;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 #[serde(tag = "cmd", content = "args", rename_all = "snake_case")]
+// A saved block is larger than the rest (its weekly schedule); a request lives only as long as it is
+// answered.
+#[allow(clippy::large_enum_variant)]
 pub enum Request {
     /// What the UI shows: the blocks, and which of them run.
     Status,

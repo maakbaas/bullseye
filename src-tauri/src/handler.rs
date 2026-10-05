@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use crate::block::Blocklist;
 use crate::definitions::{Definition, Definitions};
+use crate::duration;
 use crate::proto::{Overview, Policy, Request, Response};
 use crate::sync::LockExt;
 use crate::unlock;
@@ -90,7 +91,7 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
         Request::Unlock { password } => (done(unlock(context, &password)), None),
         // Refused during a timed block, judged by internet time, like the block itself.
         Request::PrepareUninstall => match blocklist.longest_remaining() {
-            Some(left) => (Response::Refused(format!("a timed block has {left}s left")), None),
+            Some(left) => (Response::Refused(format!("a locked block has {} left", duration::words(left))), None),
             None => (Response::Done, Some(Shutdown::Remove)),
         },
         // Stricter: replacing the exe is also a way to end the service, so no block at all.
@@ -112,7 +113,8 @@ fn unless_running(blocklist: &Blocklist, id: &str) -> Result<(), String> {
 fn start(context: &Context, id: &str) -> Result<(), String> {
     let definition: Definition = context.definitions.get(id).ok_or("No such block")?;
     definition.check()?;
-    let duration = definition.schedule.duration()?;
+    let schedule = definition.schedule.week()?;
+    let locked_for = definition.lock.duration()?;
     let lists = definition.lists()?;
     let enforcers = definition.enforcers;
     if !enforcers.any() {
@@ -123,7 +125,7 @@ fn start(context: &Context, id: &str) -> Result<(), String> {
     if !enforcers.can_run(|uses| lists.has(uses)) {
         return Err("Enter at least one site or program to block, or turn on an enforcer that needs no list".into());
     }
-    context.blocklist.start(id, &definition.name, lists, duration, enforcers)
+    context.blocklist.start(id, &definition.name, lists, enforcers, schedule, locked_for)
 }
 
 /// Ends every block for the unlock password. After three wrong guesses in a row, guesses are
@@ -132,7 +134,7 @@ fn start(context: &Context, id: &str) -> Result<(), String> {
 fn unlock(context: &Context, password: &str) -> Result<(), String> {
     let mut lockout = context.lockout.locked();
     if let Some(left) = lockout.until.and_then(|until| until.checked_duration_since(Instant::now())) {
-        return Err(format!("Too many wrong passwords; wait {}s", left.as_secs() + 1));
+        return Err(format!("Too many wrong passwords; wait {}", duration::words(left.as_secs() + 1)));
     }
     if !unlock::check(password) {
         lockout.failures += 1;
@@ -152,6 +154,8 @@ mod tests {
     use super::*;
     use crate::definitions::tests::definition;
     use crate::definitions::Schedule;
+    use crate::lock::Lock;
+    use crate::schedule::Week;
     use crate::state::{Enforcers, Store};
     use std::fs;
 
@@ -163,7 +167,7 @@ mod tests {
     }
 
     fn timed(id: &str, filters: &[&str], duration: &str) -> Definition {
-        Definition { schedule: Schedule::Duration { duration: duration.into() }, ..definition(id, filters) }
+        Definition { lock: Lock::Timer { duration: duration.into() }, ..definition(id, filters) }
     }
 
     /// Saves the definition and starts it.
@@ -370,5 +374,23 @@ mod tests {
         assert_eq!(handle(&context, 0, right).0, Response::Done);
         assert!(!context.blocklist.is_running());
         assert_eq!(overview(&context).blocks.len(), 2);
+    }
+
+    #[test]
+    fn a_weekly_block_runs_by_its_schedule_and_messages_say_minutes_and_hours() {
+        let context = context("weekly");
+        // Every day all day: active now, whatever the day.
+        let daily = Definition { schedule: Schedule::Weekly(Week::parse("daily").unwrap().unwrap()), ..timed("w", &["a.com"], "2h 5m") };
+        assert_eq!(run(&context, daily), Response::Done);
+        let running = &overview(&context).running[0];
+        assert!(running.enforcing && running.schedule.is_some());
+        assert_eq!(policies(&context).len(), 1);
+        let Response::Failed(why) = handle(&context, 0, Request::Stop { id: "w".into() }).0 else { panic!("stopped") };
+        assert!(why.contains("2 hours 4 minutes") || why.contains("2 hours 5 minutes"), "{why}");
+        let Response::Refused(why) = handle(&context, 0, Request::PrepareUninstall).0 else { panic!("not refused") };
+        assert!(why.contains("2 hours") && why.ends_with("seconds left"), "{why}");
+        // A weekly schedule with no time in it is never active: not even saved.
+        let never = Definition { schedule: Schedule::Weekly(Week::default()), ..definition("n", &["a.com"]) };
+        assert!(matches!(handle(&context, 0, Request::Save { block: never }).0, Response::Failed(why) if why.contains("never be active")));
     }
 }

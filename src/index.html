@@ -76,10 +76,22 @@
       .form { display: flex; flex-direction: column; gap: var(--cds-spacing-07); }
       .form section { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
       .form section > p { color: var(--cds-text-secondary); margin-top: calc(-1 * var(--cds-spacing-03)); }
-      .form section + section, #schedule { padding-top: var(--cds-spacing-07); border-top: 1px solid var(--cds-border-subtle-01); }
+      .form section + section, #schedule, #lock { padding-top: var(--cds-spacing-07); border-top: 1px solid var(--cds-border-subtle-01); }
       /* Top-aligned: a row stretched to the longer helper text would make one textarea taller. */
       .lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); align-items: start; gap: var(--cds-spacing-05); }
       .lists:empty { display: none; }
+      .choice-fields { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
+      .choice-fields:empty { display: none; }
+      /* The weekly schedule: a column per day and a row per half hour, labelled every two hours.
+         Carbon has no calendar grid, so this is layout in Carbon's tokens (see `weekEditor`). */
+      .week { display: grid; grid-template-columns: var(--cds-spacing-10) repeat(7, minmax(0, 1fr)); grid-auto-rows: var(--cds-spacing-03); max-inline-size: 40rem; touch-action: none; user-select: none; }
+      .week .day { align-self: center; text-align: center; color: var(--cds-text-secondary); }
+      .week .hour { color: var(--cds-text-secondary); }
+      .week .cell { background: var(--cds-layer-01); border-inline-start: 1px solid var(--cds-border-subtle-01); cursor: pointer; }
+      .week .cell.hour-start { border-block-start: 1px solid var(--cds-border-subtle-01); }
+      .week .cell.on { background: var(--cds-interactive); }
+      .week.disabled .cell { cursor: default; }
+      .week.disabled .cell.on { background: var(--cds-border-disabled); }
       .form-actions { display: flex; flex-wrap: wrap; gap: var(--cds-spacing-05); justify-content: space-between; }
       .form-actions .end { display: flex; flex-wrap: wrap; gap: var(--cds-spacing-05); margin-left: auto; }
 
@@ -116,7 +128,7 @@
         <div id="blocks"></div>
         <cds-tile class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16 empty" id="empty" hidden>
           <h2 class="cds--type-productive-heading-03">No blocks yet</h2>
-          <p class="cds--type-body-01">A block is a list of sites and programs to close, the ways to close them, and how long it runs. Use New block to make one.</p>
+          <p class="cds--type-body-01">A block is a list of sites and programs to close, the ways to close them, when it is active and how it is locked. Use New block to make one.</p>
         </cds-tile>
       </div>
 
@@ -142,9 +154,15 @@
             <div id="sections" class="form"></div>
             <section id="schedule">
               <h2 class="cds--type-productive-heading-03">Schedule</h2>
-              <p class="cds--type-body-01">How long the block runs once you start it.</p>
-              <cds-select id="schedule-kind" label-text="Kind"></cds-select>
-              <div id="schedule-fields" class="lists"></div>
+              <p class="cds--type-body-01">When the block is active once you start it. Outside its schedule a running block blocks nothing, but keeps running and stays locked.</p>
+              <cds-select id="schedule-kind" label-text="Active"></cds-select>
+              <div id="schedule-fields" class="choice-fields"></div>
+            </section>
+            <section id="lock">
+              <h2 class="cds--type-productive-heading-03">Lock</h2>
+              <p class="cds--type-body-01">How a started block is kept from being stopped.</p>
+              <cds-select id="lock-method" label-text="Lock"></cds-select>
+              <div id="lock-fields" class="choice-fields"></div>
             </section>
             <div class="form-actions">
               <cds-button id="delete" kind="danger--ghost" size="md" hidden>Delete</cds-button>
@@ -165,7 +183,7 @@
           </div>
           <div class="setting">
             <h2 class="cds--type-productive-heading-03">Unlock</h2>
-            <p class="cds--type-body-01">Ends every running block, timed ones included, and quits Bullseye. The service stays installed and starts the app again at your next sign-in. This is the only way to end a timed block early.</p>
+            <p class="cds--type-body-01">Ends every running block, locked ones included, and quits Bullseye. The service stays installed and starts the app again at your next sign-in. This is the only way to end a locked block early.</p>
             <div class="notices" id="settings-notices"></div>
             <div class="row">
               <cds-password-input id="password" label="Unlock password" autocomplete="off"></cds-password-input>
@@ -245,37 +263,71 @@
         },
       ];
 
-      // The ways a block's time is decided (`definitions::Schedule`), by `kind`.
+      // A block is three layers: what it enforces (LISTS and SECTIONS), when it is active once started
+      // (SCHEDULES) and how it is kept from being stopped (LOCKS). Both of the last two are a choice of
+      // kind, each with its own fields: text inputs (`fields`) or an editor of its own (`editor`).
+
+      // When a running block is active (`definitions::Schedule`), by `kind`.
       const SCHEDULES = {
-        duration: {
-          label: "For a set time",
+        always: {
+          label: "Always",
+          fields: [],
+          describe: () => "Active whenever it runs",
+        },
+        weekly: {
+          label: "Weekly schedule",
+          editor: () => weekEditor(),
+          // Monday to Friday, 08:00 to 17:00, until the user says otherwise.
+          defaults: () => ({ days: [0, 1, 2, 3, 4, 5, 6].map((day) => (day < 5 ? [[480, 1020]] : [])) }),
+          describe: (s) => `Active ${weekText(s)}`,
+        },
+      };
+
+      // How a started block is kept from being stopped (`lock::Lock`), by `method`.
+      const LOCKS = {
+        none: {
+          label: "No lock",
+          fields: [],
+          describe: () => "Can be stopped at any time",
+          // How long a started block cannot be stopped, in words; null when it can be stopped at any
+          // time. Starting a block that locks asks first.
+          locks: () => null,
+        },
+        timer: {
+          label: "Timer",
           fields: [
             {
               key: "duration",
-              label: "Duration",
-              placeholder: "e.g. 1h",
-              helper: "Empty: runs until you stop it. 5s, 10m, 3h or 1d: runs that long and cannot be stopped early.",
+              label: "Locked for",
+              placeholder: "e.g. 2h 30m",
+              helper: "How long a started block cannot be stopped, changed or deleted: 30s, 10m, 2h, 1d, or together, e.g. 2h 30m. It ends by itself then.",
             },
           ],
-          describe: (s) => (s.duration ? `Runs for ${s.duration}, cannot be stopped early` : "Runs until stopped"),
-          // How long a started block cannot be stopped, in words; null when it can be stopped at any
-          // time. Starting a block that locks asks first.
-          locks: (s) => (s.duration ? s.duration : null),
+          describe: (l) => `Locked for ${durationWords(l.duration) || l.duration} once started`,
+          locks: (l) => durationWords(l.duration) || l.duration || null,
         },
       };
 
       const ENFORCERS = SECTIONS.flatMap((section) => section.enforcers);
 
+      // A schedule or lock of the table's first kind, with its fields empty.
+      function firstOf(table, tag) {
+        const kind = Object.keys(table)[0];
+        return { [tag]: kind, ...defaultsOf(table[kind]) };
+      }
+      function defaultsOf(entry) {
+        if (entry.defaults) return entry.defaults();
+        return Object.fromEntries(entry.fields.map((field) => [field.key, ""]));
+      }
+
       function newBlock() {
-        const kind = Object.keys(SCHEDULES)[0];
-        const schedule = { kind };
-        for (const field of SCHEDULES[kind].fields) schedule[field.key] = "";
         return {
           id: crypto.randomUUID ? crypto.randomUUID() : `b${Date.now()}${Math.random().toString(36).slice(2)}`,
           name: "",
           ...Object.fromEntries(Object.keys(LISTS).map((key) => [key, []])),
           enforcers: Object.fromEntries(ENFORCERS.map((e) => [e.key, true])),
-          schedule,
+          schedule: firstOf(SCHEDULES, "kind"),
+          lock: firstOf(LOCKS, "method"),
         };
       }
 
@@ -291,13 +343,52 @@
         return node;
       }
 
-      function formatRemaining(seconds) {
+      // Seconds in words, to the three largest units that matter: the same rules as `duration::words`.
+      function formatDuration(seconds) {
         const d = Math.floor(seconds / 86400);
         const h = Math.floor((seconds % 86400) / 3600);
         const m = Math.floor((seconds % 3600) / 60);
         const s = seconds % 60;
-        const parts = d ? [`${d}d`, `${h}h`, `${m}m`] : h ? [`${h}h`, `${m}m`, `${s}s`] : m ? [`${m}m`, `${s}s`] : [`${s}s`];
-        return parts.join(" ");
+        const parts = d
+          ? [[d, "day"], [h, "hour"], [m, "minute"]]
+          : h ? [[h, "hour"], [m, "minute"], [s, "second"]] : m ? [[m, "minute"], [s, "second"]] : [[s, "second"]];
+        return parts.map(([n, unit]) => `${n} ${unit}${n === 1 ? "" : "s"}`).join(" ");
+      }
+
+      // A typed duration (`2h 30m`, `90m`, `1 day`) in seconds, or null if it is not one. The same
+      // rules as `duration::parse`, which is what counts; this is only for showing it in words.
+      function durationSeconds(text) {
+        const units = { s: 1, sec: 1, secs: 1, second: 1, seconds: 1, m: 60, min: 60, mins: 60, minute: 60, minutes: 60, h: 3600, hr: 3600, hrs: 3600, hour: 3600, hours: 3600, d: 86400, day: 86400, days: 86400 };
+        const rest = String(text || "").trim().toLowerCase();
+        if (!rest) return null;
+        let total = 0;
+        let matched = "";
+        for (const part of rest.matchAll(/(\d+)\s*([a-z]+)[\s,]*/g)) {
+          if (!(part[2] in units)) return null;
+          total += Number(part[1]) * units[part[2]];
+          matched += part[0];
+        }
+        return matched === rest && total > 0 ? total : null;
+      }
+
+      function durationWords(text) {
+        const seconds = durationSeconds(text);
+        return seconds == null ? null : formatDuration(seconds);
+      }
+
+      // A weekly schedule as text (`Mon-Fri 08:00-17:00`), from the backend so it reads exactly as the
+      // CLI and the text field write it. Asked once per schedule; until the answer is in, a stand-in.
+      const weekTexts = new Map();
+      function weekText(week) {
+        const key = JSON.stringify(week.days);
+        if (!weekTexts.has(key)) {
+          weekTexts.set(key, "by a weekly schedule");
+          invoke("describe_schedule", { week: { days: week.days } })
+            .then((text) => weekTexts.set(key, text))
+            .catch((e) => weekTexts.set(key, String(e)))
+            .finally(render);
+        }
+        return weekTexts.get(key);
       }
 
       function lines(text) {
@@ -354,7 +445,19 @@
           const schedule = SCHEDULES[block.schedule.kind];
           parts.push(schedule ? schedule.describe(block.schedule) : "Unknown schedule");
         }
+        if (block.lock) {
+          const lock = LOCKS[block.lock.method];
+          parts.push(lock ? lock.describe(block.lock) : "Unknown lock");
+        }
         return parts;
+      }
+
+      // The schedule of a running block, as it is now: what its tag and its last summary line say.
+      function scheduleNow(running) {
+        if (running.enforcing) {
+          return running.schedule_change != null ? `Active now; inactive in ${formatDuration(running.schedule_change)}` : null;
+        }
+        return running.schedule_change != null ? `Inactive by its schedule; active again in ${formatDuration(running.schedule_change)}` : "Inactive by its schedule";
       }
 
       function makeTile(id) {
@@ -418,11 +521,19 @@
           if (container.children[index] !== parts.tile) container.insertBefore(parts.tile, container.children[index] || null);
           parts.name.textContent = block.name;
           const timed = running && running.remaining != null;
-          parts.tag.setAttribute("type", running ? (timed ? "green" : "blue") : "gray");
-          parts.tag.textContent = running
-            ? timed ? `Running · ${formatRemaining(running.remaining)} left` : "Running until stopped"
-            : "Not running";
-          const summary = summaryOf(running ? { ...block, ...running, schedule: block.schedule } : block);
+          // Running but outside its schedule: still there and still locked, blocking nothing for now.
+          const quiet = running && running.enforcing === false;
+          parts.tag.setAttribute("type", running ? (quiet ? "cool-gray" : timed ? "green" : "blue") : "gray");
+          parts.tag.textContent = running ? (quiet ? "Inactive by schedule" : timed ? "Running · locked" : "Running until stopped") : "Not running";
+          // A running block shows what it was started with; its schedule as a week, from the backend.
+          const shownBlock = running
+            ? { ...block, ...running, schedule: running.schedule ? { kind: "weekly", days: running.schedule.days } : block.schedule, lock: block.lock }
+            : block;
+          const summary = summaryOf(shownBlock);
+          // While it runs, the lock says how long is left rather than how long it was.
+          if (timed) summary[summary.length - 1] = `Locked: ${formatDuration(running.remaining)} left`;
+          const now = running && scheduleNow(running);
+          if (now) summary.push(now);
           if (parts.summary.dataset.text !== summary.join("\n")) {
             parts.summary.dataset.text = summary.join("\n");
             parts.summary.replaceChildren(...summary.map((line) => el("span", {}, line)));
@@ -447,8 +558,8 @@
         const running = runningOf(id);
         const block = overview.blocks.find((b) => b.id === id) || running;
         // A block that cannot be stopped is only started after a second, deliberate click.
-        const schedule = !running && block && block.schedule && SCHEDULES[block.schedule.kind];
-        const locks = schedule && schedule.locks(block.schedule);
+        const lock = !running && block && block.lock && LOCKS[block.lock.method];
+        const locks = lock && lock.locks(block.lock);
         if (locks) {
           const sure = await ask({
             heading: `Start “${block.name}” for ${locks}?`,
@@ -514,7 +625,14 @@
 
       // ---- The editor, built once from the tables; filled in for each block that is opened.
 
-      const fields = { lists: {}, enforcers: {}, schedule: {} };
+      const fields = { lists: {}, enforcers: {} };
+
+      // The schedule and the lock: a kind chosen in a select, then that kind's fields. `tag` is the key
+      // the kind goes by in the block (`schedule.kind`, `lock.method`); `editor` is the shown kind's.
+      const choices = {
+        schedule: { table: SCHEDULES, tag: "kind", select: "schedule-kind", box: "schedule-fields", editor: null },
+        lock: { table: LOCKS, tag: "method", select: "lock-method", box: "lock-fields", editor: null },
+      };
 
       function buildEditor() {
         const sections = $("sections");
@@ -543,22 +661,194 @@
             ),
           );
         }
-        const kinds = Object.entries(SCHEDULES);
-        for (const [kind, schedule] of kinds) $("schedule-kind").append(el("cds-select-item", { value: kind, label: schedule.label }, schedule.label));
-        // With only one kind there is nothing to choose.
-        $("schedule-kind").hidden = kinds.length < 2;
-        $("schedule-kind").addEventListener("cds-select-selected", () => showScheduleFields($("schedule-kind").value, {}));
+        for (const choice of Object.values(choices)) {
+          const kinds = Object.entries(choice.table);
+          for (const [kind, entry] of kinds) $(choice.select).append(el("cds-select-item", { value: kind, label: entry.label }, entry.label));
+          // With only one kind there is nothing to choose.
+          $(choice.select).hidden = kinds.length < 2;
+          $(choice.select).addEventListener("cds-select-selected", () => showChoice(choice, $(choice.select).value, null));
+        }
       }
 
-      function showScheduleFields(kind, values) {
-        $("schedule-fields").replaceChildren();
-        fields.schedule = {};
-        for (const field of SCHEDULES[kind].fields) {
-          const input = el("cds-text-input", { label: field.label, placeholder: field.placeholder, "helper-text": field.helper });
-          input.value = values[field.key] || "";
-          fields.schedule[field.key] = input;
-          $("schedule-fields").append(input);
+      // The fields of one kind, as an editor: text inputs from its `fields`, or an editor of its own.
+      // Every editor has `nodes`, `read()`, `fill(values)`, `disable(off)`, `settle()` (finish what is
+      // being typed) and `error()` (what is wrong, or null).
+      function textFields(defs) {
+        const inputs = defs.map((field) => [field.key, el("cds-text-input", { label: field.label, placeholder: field.placeholder, "helper-text": field.helper })]);
+        return {
+          nodes: inputs.map(([, input]) => input),
+          read: () => Object.fromEntries(inputs.map(([key, input]) => [key, input.value.trim()])),
+          fill: (values) => { for (const [key, input] of inputs) input.value = values[key] || ""; },
+          disable: (off) => { for (const [, input] of inputs) input.disabled = off; },
+          settle: async () => {},
+          error: () => null,
+        };
+      }
+
+      function showChoice(choice, kind, values) {
+        const entry = choice.table[kind];
+        choice.editor = entry.editor ? entry.editor() : textFields(entry.fields);
+        $(choice.box).replaceChildren(...choice.editor.nodes);
+        choice.editor.fill(values || defaultsOf(entry));
+        renderEditorLock();
+      }
+
+      // The weekly schedule: as text (what the CLI takes too) and as the week, a column per day and a
+      // cell per half hour, that can be dragged over. Carbon has no calendar or time-grid component, so
+      // the week is plain layout in Carbon's tokens; the text field is the accessible way to set it,
+      // and the week mirrors it.
+      const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+      const SLOT = 30; // minutes per cell
+
+      function weekEditor() {
+        const text = el("cds-text-input", {
+          label: "Times",
+          placeholder: "e.g. Mon-Fri 08:00-17:00",
+          "helper-text": "Days and times, e.g. Mon-Fri 08:00-17:00; Sat 10:00-12:00. Or drag over the week below to mark times, or to clear them by starting on a marked one.",
+        });
+        const grid = el("div", { class: "week", "aria-hidden": "true" });
+        const cells = DAY_NAMES.map(() => []);
+        let days = DAY_NAMES.map(() => []);
+        let disabled = false;
+        let problem = null;
+        let typing = 0;
+
+        const place = (node, column, row, rows) => {
+          node.style.gridColumn = String(column);
+          node.style.gridRow = `${row} / span ${rows}`;
+          grid.append(node);
+        };
+        DAY_NAMES.forEach((name, day) => place(el("div", { class: "day cds--type-label-01" }, name), day + 2, 1, 3));
+        for (let slot = 0; slot < (24 * 60) / SLOT; slot++) {
+          if (slot % 4 === 0) place(el("div", { class: "hour cds--type-label-01" }, `${String(slot / 2).padStart(2, "0")}:00`), 1, slot + 4, 4);
+          DAY_NAMES.forEach((_, day) => {
+            const cell = el("div", { class: slot % 2 === 0 ? "cell hour-start" : "cell", "data-day": day, "data-slot": slot });
+            cells[day].push(cell);
+            place(cell, day + 2, slot + 4, 1);
+          });
         }
+
+        // A cell is marked when any of its half hour is in the schedule (a typed one can be finer).
+        function draw() {
+          cells.forEach((column, day) =>
+            column.forEach((cell, slot) => {
+              const [start, end] = [slot * SLOT, slot * SLOT + SLOT];
+              cell.classList.toggle("on", days[day].some(([from, to]) => from < end && to > start));
+            }),
+          );
+          grid.classList.toggle("disabled", disabled);
+        }
+
+        function wrong(why) {
+          problem = why;
+          text.invalid = !!why;
+          if (why) text.setAttribute("invalid-text", why);
+        }
+
+        // The week as text, from the backend, so it reads exactly as the CLI writes it.
+        async function describe() {
+          try {
+            text.value = await invoke("describe_schedule", { week: { days } });
+            wrong(null);
+          } catch (e) {
+            wrong(String(e));
+          }
+        }
+
+        async function parseText() {
+          typing = 0;
+          try {
+            const parsed = await invoke("parse_schedule", { text: text.value });
+            if (!parsed) return wrong("Type the days and times, or choose Always above");
+            days = parsed.days;
+            wrong(null);
+            draw();
+          } catch (e) {
+            wrong(String(e));
+          }
+        }
+        text.addEventListener("input", () => {
+          clearTimeout(typing);
+          typing = setTimeout(parseText, 400);
+        });
+
+        // Dragging from one cell to another marks the rectangle between them (those days, those
+        // times), or clears it when the drag starts on a marked cell. Only the days it covers are
+        // rewritten, so a typed schedule keeps its exact minutes on the others.
+        let painting = null;
+        const cellAt = (event) => {
+          const node = document.elementFromPoint(event.clientX, event.clientY);
+          return node && node.classList.contains("cell") && grid.contains(node) ? node : null;
+        };
+        const position = (cell) => ({ day: Number(cell.dataset.day), slot: Number(cell.dataset.slot) });
+        function paint(to) {
+          const from = painting.from;
+          const [firstDay, lastDay] = [Math.min(from.day, to.day), Math.max(from.day, to.day)];
+          const [firstSlot, lastSlot] = [Math.min(from.slot, to.slot), Math.max(from.slot, to.slot)];
+          cells.forEach((column, day) =>
+            column.forEach((cell, slot) => {
+              const inside = day >= firstDay && day <= lastDay && slot >= firstSlot && slot <= lastSlot;
+              cell.classList.toggle("on", inside ? painting.on : painting.before[day][slot]);
+            }),
+          );
+          for (let day = firstDay; day <= lastDay; day++) painting.days.add(day);
+        }
+        function spansOf(day) {
+          const spans = [];
+          cells[day].forEach((cell, slot) => {
+            if (!cell.classList.contains("on")) return;
+            const last = spans[spans.length - 1];
+            if (last && last[1] === slot * SLOT) last[1] += SLOT;
+            else spans.push([slot * SLOT, slot * SLOT + SLOT]);
+          });
+          return spans;
+        }
+        grid.addEventListener("pointerdown", (event) => {
+          const cell = cellAt(event);
+          if (disabled || !cell) return;
+          event.preventDefault();
+          grid.setPointerCapture(event.pointerId);
+          const before = cells.map((column) => column.map((c) => c.classList.contains("on")));
+          painting = { from: position(cell), on: !cell.classList.contains("on"), before, days: new Set() };
+          paint(position(cell));
+        });
+        grid.addEventListener("pointermove", (event) => {
+          const cell = painting && cellAt(event);
+          if (cell) paint(position(cell));
+        });
+        const finish = () => {
+          if (!painting) return;
+          for (const day of painting.days) days[day] = spansOf(day);
+          painting = null;
+          draw();
+          describe();
+        };
+        grid.addEventListener("pointerup", finish);
+        grid.addEventListener("pointercancel", finish);
+
+        return {
+          nodes: [text, grid],
+          read: () => ({ days: days.map((spans) => spans.map((span) => [...span])) }),
+          fill: (values) => {
+            days = (values.days || SCHEDULES.weekly.defaults().days).map((spans) => spans.map((span) => [...span]));
+            draw();
+            describe();
+          },
+          // Asked every second; only a change redraws, so a drag in progress is left alone.
+          disable: (off) => {
+            if (off === disabled) return;
+            disabled = off;
+            text.disabled = off;
+            draw();
+          },
+          settle: async () => {
+            if (typing) {
+              clearTimeout(typing);
+              await parseText();
+            }
+          },
+          error: () => problem,
+        };
       }
 
       let editing = null; // the block being edited, as it was opened
@@ -578,11 +868,14 @@
         $("name").value = block.name;
         for (const [key, area] of Object.entries(fields.lists)) area.value = (block[key] || []).join("\n");
         for (const [key, box] of Object.entries(fields.enforcers)) box.checked = !!(block.enforcers && block.enforcers[key]);
-        const kind = SCHEDULES[block.schedule && block.schedule.kind] ? block.schedule.kind : Object.keys(SCHEDULES)[0];
-        $("schedule-kind").value = kind;
-        showScheduleFields(kind, block.schedule || {});
         notify("editor-notices");
-        renderEditorLock();
+        for (const [name, choice] of Object.entries(choices)) {
+          const value = block[name] || {};
+          const known = !!choice.table[value[choice.tag]];
+          const kind = known ? value[choice.tag] : Object.keys(choice.table)[0];
+          $(choice.select).value = kind;
+          showChoice(choice, kind, known ? value : null);
+        }
         if (isNew) setTimeout(() => $("name").focus(), 0);
       }
 
@@ -590,7 +883,11 @@
       function renderEditorLock() {
         if ($("view-editor").hidden || !editing) return;
         const running = !isNew && runningOf(editing.id);
-        const controls = [$("name"), $("schedule-kind"), $("save"), $("delete"), ...Object.values(fields.lists), ...Object.values(fields.enforcers), ...Object.values(fields.schedule)];
+        const controls = [$("name"), $("save"), $("delete"), ...Object.values(fields.lists), ...Object.values(fields.enforcers)];
+        for (const choice of Object.values(choices)) {
+          controls.push($(choice.select));
+          if (choice.editor) choice.editor.disable(!!running);
+        }
         for (const control of controls) control.disabled = !!running;
         const box = $("editor-notices");
         const shown = box.dataset.lock === "1";
@@ -609,12 +906,22 @@
         for (const [key, area] of Object.entries(fields.lists)) block[key] = lines(area.value);
         block.enforcers = { ...block.enforcers };
         for (const [key, box] of Object.entries(fields.enforcers)) block.enforcers[key] = box.checked;
-        block.schedule = { kind: $("schedule-kind").value || Object.keys(SCHEDULES)[0] };
-        for (const [key, input] of Object.entries(fields.schedule)) block.schedule[key] = input.value.trim();
+        for (const [name, choice] of Object.entries(choices)) {
+          const kind = $(choice.select).value || Object.keys(choice.table)[0];
+          block[name] = { [choice.tag]: kind, ...choice.editor.read() };
+        }
         return block;
       }
 
       $("save").addEventListener("click", async () => {
+        // What is still being typed counts, and what cannot be read is said here, at its field.
+        for (const choice of Object.values(choices)) await choice.editor.settle();
+        const problem = Object.values(choices).map((choice) => choice.editor.error()).find(Boolean);
+        if (problem) {
+          notify("editor-notices", "error", "Could not save the block", problem);
+          $("editor-notices").dataset.lock = "";
+          return;
+        }
         const block = readEditor();
         if (!block.name) {
           $("name").invalid = true;

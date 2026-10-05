@@ -1,4 +1,5 @@
-//! The blocks the user has defined: each a name, its lists, its enforcers and its schedule. They are
+//! The blocks the user has defined: each a name, its lists and enforcers (what it enforces), its
+//! schedule (when it is active) and its lock (how it is kept from being stopped). They are
 //! kept by the service (`%ProgramData%\bullseye\blocks.json`), so they survive restarts like
 //! everything else, and are only templates: starting one copies it into a running block
 //! (`block.rs`), which is then fixed until it ends. That is why a running block's definition cannot
@@ -10,9 +11,11 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::block::{parse_duration, Lists};
+use crate::block::Lists;
 use crate::filters::FilterList;
+use crate::lock::Lock;
 use crate::programs::ProgramList;
+use crate::schedule::Week;
 use crate::state::{self, Enforcers};
 use crate::sync::LockExt;
 
@@ -38,39 +41,58 @@ pub struct Definition {
     pub programs: Vec<String>,
     #[serde(default)]
     pub enforcers: Enforcers,
+    /// When the block is active while it runs.
     #[serde(default)]
     pub schedule: Schedule,
+    /// How a started block is kept from being stopped (`lock.rs`).
+    #[serde(default)]
+    pub lock: Lock,
 }
 
-/// When a block runs. **A new kind of schedule goes here**, with an arm in `Schedule::duration`
-/// (or whatever replaces it once a schedule is more than a length of time) and an entry in the UI's
+/// When a running block is active. **A new kind of schedule goes here**, with an arm in
+/// `Schedule::week` (or a new way for `block::Block` to decide) and an entry in the UI's
 /// `SCHEDULES` table.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Schedule {
-    /// From when it is started, for `duration` (`5s`, `10m`, `3h`, `1d`); until stopped when empty.
+    /// All the time it runs.
+    #[default]
+    Always,
+    /// At the times of a weekly schedule (`schedule.rs`); outside them it still runs and stays
+    /// locked, but enforces nothing.
+    Weekly(Week),
+    /// From before lock methods: the time a block ran was its schedule. Only ever read from an older
+    /// `blocks.json` or client, and turned into a timer lock at once (`Definition::upgraded`).
     Duration {
         #[serde(default)]
         duration: String,
     },
 }
 
-impl Default for Schedule {
-    fn default() -> Schedule {
-        Schedule::Duration { duration: String::new() }
-    }
-}
-
 impl Schedule {
-    /// How long a started block runs; `None` until it is stopped.
-    pub fn duration(&self) -> Result<Option<std::time::Duration>, String> {
+    /// The weekly schedule, checked; `None` is always active.
+    pub fn week(&self) -> Result<Option<Week>, String> {
         match self {
-            Schedule::Duration { duration } => parse_duration(duration),
+            Schedule::Always | Schedule::Duration { .. } => Ok(None),
+            Schedule::Weekly(week) => week.clone().normalized().map(Some),
         }
     }
 }
 
 impl Definition {
+    /// The same block in today's terms: an old duration "schedule" is a timer lock now, and the
+    /// block is always active.
+    pub fn upgraded(mut self) -> Definition {
+        if let Schedule::Duration { duration } = &self.schedule {
+            self.lock = match duration.trim() {
+                "" => Lock::None,
+                duration => Lock::Timer { duration: duration.to_string() },
+            };
+            self.schedule = Schedule::Always;
+        }
+        self
+    }
+
     /// The lists, read and checked. Also refuses programs Windows needs (`programs.rs`).
     pub fn lists(&self) -> Result<Lists, String> {
         let sites = FilterList::parse(&self.filters).map_err(|_| "Invalid block list syntax".to_string())?;
@@ -94,7 +116,8 @@ impl Definition {
             return Err(format!("Keep the name under {MAX_NAME} characters"));
         }
         self.lists()?;
-        self.schedule.duration()?;
+        self.schedule.week()?;
+        self.lock.duration()?;
         Ok(())
     }
 }
@@ -126,8 +149,13 @@ impl Definitions {
     }
 
     /// Adds a definition, or replaces the one with its id. Checked first (`Definition::check`).
-    pub fn save(&self, mut definition: Definition) -> Result<(), String> {
+    pub fn save(&self, definition: Definition) -> Result<(), String> {
+        let mut definition = definition.upgraded();
         definition.check()?;
+        // Kept sorted and merged, as it is compared and shown.
+        if let Schedule::Weekly(week) = &definition.schedule {
+            definition.schedule = Schedule::Weekly(week.clone().normalized()?);
+        }
         definition.name = definition.name.trim().to_string();
         let mut list = self.list.locked();
         let mut new = list.clone();
@@ -172,8 +200,8 @@ fn load(path: &PathBuf) -> Option<Vec<Definition>> {
     if bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
         bytes.drain(..3);
     }
-    match serde_json::from_slice(&bytes) {
-        Ok(list) => Some(list),
+    match serde_json::from_slice::<Vec<Definition>>(&bytes) {
+        Ok(list) => Some(list.into_iter().map(Definition::upgraded).collect()),
         Err(e) => {
             eprintln!("definitions: cannot read {}: {e}", path.display());
             None
@@ -195,6 +223,7 @@ pub mod tests {
             programs: Vec::new(),
             enforcers: Enforcers::default(),
             schedule: Schedule::default(),
+            lock: Lock::default(),
         }
     }
 
@@ -212,7 +241,7 @@ pub mod tests {
         definitions.save(definition("b", &["b.com"])).unwrap();
         // Saving one with the same id replaces it, in its place.
         let mut changed = definition("a", &["c.com"]);
-        changed.schedule = Schedule::Duration { duration: "1h".into() };
+        changed.lock = Lock::Timer { duration: "1h".into() };
         definitions.save(changed.clone()).unwrap();
 
         let again = Definitions::at(Some(path));
@@ -238,7 +267,9 @@ pub mod tests {
             with(|d| d.id = "../x".into()),
             with(|d| d.filters = vec!["has space.com".into()]),
             with(|d| d.programs = vec!["explorer.exe".into()]),
-            with(|d| d.schedule = Schedule::Duration { duration: "soon".into() }),
+            with(|d| d.lock = Lock::Timer { duration: "soon".into() }),
+            with(|d| d.lock = Lock::Timer { duration: "".into() }),
+            with(|d| d.schedule = Schedule::Weekly(Week::default())),
         ];
         for definition in bad {
             assert!(definitions.save(definition.clone()).is_err(), "{definition:?}");
@@ -249,10 +280,42 @@ pub mod tests {
     }
 
     #[test]
-    fn a_schedule_reads_with_or_without_its_fields() {
+    fn a_schedule_and_a_lock_read_with_or_without_their_fields() {
         let d: Definition = serde_json::from_str(r#"{"id":"a","name":"A"}"#).unwrap();
-        assert_eq!(d.schedule, Schedule::default());
-        let d: Definition = serde_json::from_str(r#"{"id":"a","name":"A","schedule":{"kind":"duration","duration":"2h"}}"#).unwrap();
-        assert_eq!(d.schedule.duration(), Ok(Some(std::time::Duration::from_secs(7200))));
+        assert_eq!((d.schedule, d.lock), (Schedule::Always, Lock::None));
+        let json = r#"{"id":"a","name":"A","schedule":{"kind":"weekly","days":[[[480,1020]],[],[],[],[],[],[]]},"lock":{"method":"timer","duration":"2h 30m"}}"#;
+        let d: Definition = serde_json::from_str(json).unwrap();
+        assert_eq!(d.schedule.week().unwrap().unwrap().describe(), "Mon 08:00-17:00");
+        assert_eq!(d.lock.duration(), Ok(Some(std::time::Duration::from_secs(9000))));
+    }
+
+    #[test]
+    fn a_duration_from_before_locks_becomes_a_timer_lock() {
+        let old = |duration: &str| -> Definition {
+            serde_json::from_str(&format!(r#"{{"id":"a","name":"A","schedule":{{"kind":"duration","duration":"{duration}"}}}}"#)).unwrap()
+        };
+        let d = old("2h").upgraded();
+        assert_eq!((d.schedule, d.lock), (Schedule::Always, Lock::Timer { duration: "2h".into() }));
+        let d = old("").upgraded();
+        assert_eq!((d.schedule, d.lock), (Schedule::Always, Lock::None));
+
+        // In a file from before, and from a client that still sends one.
+        let path = path("upgrade");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"[{"id":"a","name":"A","filters":["a.com"],"schedule":{"kind":"duration","duration":"1h"}}]"#).unwrap();
+        let definitions = Definitions::at(Some(path));
+        assert_eq!(definitions.get("a").unwrap().lock, Lock::Timer { duration: "1h".into() });
+        definitions.save(Definition { schedule: Schedule::Duration { duration: "5m".into() }, ..definition("b", &[]) }).unwrap();
+        let b = definitions.get("b").unwrap();
+        assert_eq!((b.schedule, b.lock), (Schedule::Always, Lock::Timer { duration: "5m".into() }));
+    }
+
+    #[test]
+    fn a_weekly_schedule_is_kept_sorted_and_merged() {
+        let definitions = Definitions::at(None);
+        let mut week = Week::default();
+        week.days[0] = vec![crate::schedule::Span(600, 700), crate::schedule::Span(480, 620)];
+        definitions.save(Definition { schedule: Schedule::Weekly(week), ..definition("a", &[]) }).unwrap();
+        assert_eq!(definitions.get("a").unwrap().schedule.week().unwrap().unwrap().describe(), "Mon 08:00-11:40");
     }
 }

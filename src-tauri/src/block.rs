@@ -1,7 +1,8 @@
-//! The running blocks: for each, its lists, its enforcers and, for a timed block, when it ends.
-//! Each block is started from a definition (`definitions.rs`) and runs on its own: several can run
-//! at once, and what is enforced is all of them together. A timed block cannot be stopped early
-//! and stops by itself once its time is up.
+//! The running blocks: for each, its lists, its enforcers, its weekly schedule if it has one, and,
+//! for a block with a timer lock (`lock.rs`), when it ends. Each block is started from a definition
+//! (`definitions.rs`) and runs on its own: several can run at once, and what is enforced is all of
+//! them together. A locked block cannot be stopped early and stops by itself once its time is up.
+//! Outside its schedule a block keeps running, and stays locked, but enforces nothing.
 //!
 //! The running blocks are also kept on disk (`state.rs`), so ending the app, or restarting
 //! Windows, does not end them: the next run picks them up again while their time is not up.
@@ -15,8 +16,11 @@ use std::time::{Duration, Instant, SystemTime};
 use serde::{Deserialize, Serialize};
 
 use crate::clock::{self, Clock};
+use crate::duration;
 use crate::filters::FilterList;
+use crate::localtime::Zone;
 use crate::programs::ProgramList;
+use crate::schedule::Week;
 use crate::state::{self, Enforcers, Store, Uses};
 use crate::sync::LockExt;
 
@@ -31,6 +35,9 @@ pub struct Blocklist {
     store: Option<Arc<Store>>,
     /// The app's internet clock; tests have their own.
     clock: &'static Clock,
+    /// The time zone a new block's schedule is read in; `None` is Windows' own (`localtime.rs`).
+    /// Tests use a fixed one.
+    zone: Option<Zone>,
 }
 
 struct Inner {
@@ -135,11 +142,28 @@ struct Block {
     /// When a timed block ends, in internet time; `None` blocks until stopped.
     until: Option<SystemTime>,
     enforcers: Enforcers,
+    /// When the block is active; `None` is always.
+    schedule: Option<Week>,
+    /// The time zone the schedule is read in: Windows' when the block started, kept until it ends,
+    /// so changing the time zone does not move the schedule.
+    zone: Zone,
 }
 
 impl Block {
     fn enforced(&self) -> Enforced {
         Enforced { filters: self.filters.clone(), allowed: self.allowed.clone(), programs: self.programs.clone(), enforcers: self.enforcers }
+    }
+
+    /// Whether its schedule has the block active at `now`. If the local time cannot be known, it
+    /// is: a block errs on the side of blocking.
+    fn in_schedule(&self, now: SystemTime) -> bool {
+        let Some(week) = &self.schedule else { return true };
+        self.zone.local(now).is_none_or(|local| week.is_on(local))
+    }
+
+    /// Seconds until the schedule turns the block on or off.
+    fn schedule_change(&self, now: SystemTime) -> Option<u64> {
+        self.schedule.as_ref()?.next_change(self.zone.local(now)?)
     }
 }
 
@@ -156,6 +180,19 @@ pub struct Running {
     pub allowed: Vec<String>,
     pub programs: Vec<String>,
     pub enforcers: Enforcers,
+    /// Its weekly schedule; `None` is always active.
+    #[serde(default)]
+    pub schedule: Option<Week>,
+    /// Whether it enforces anything right now: always, unless its schedule has it inactive.
+    #[serde(default = "yes")]
+    pub enforcing: bool,
+    /// Seconds until its schedule turns it on or off, if it has one that ever does.
+    #[serde(default)]
+    pub schedule_change: Option<u64>,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -169,19 +206,20 @@ pub struct Status {
 impl Blocklist {
     /// The service's block list, over the real store in its data folder.
     pub fn new() -> Blocklist {
-        Blocklist { inner: Arc::default(), store: state::store().map(Arc::new), clock: clock::global() }
+        Blocklist { inner: Arc::default(), store: state::store().map(Arc::new), clock: clock::global(), zone: None }
     }
 
     /// A block list over a store of its own and a clock of its own, for other modules' tests.
     #[cfg(test)]
     pub fn with_store(store: Store) -> Blocklist {
-        Blocklist { inner: Arc::default(), store: Some(Arc::new(store)), clock: Box::leak(Box::default()) }
+        Blocklist { inner: Arc::default(), store: Some(Arc::new(store)), clock: Box::leak(Box::default()), zone: Some(Zone::fixed(0)) }
     }
 
     /// Starts a block from the definition `id`, unless that one is running: checked here rather
     /// than only in the UI, so a timed block cannot be swapped for a shorter or untimed one.
-    /// Other blocks are not affected.
-    pub fn start(&self, id: &str, name: &str, lists: Lists, duration: Option<Duration>, enforcers: Enforcers) -> Result<(), String> {
+    /// `schedule` says when it is active (`None`: always), `locked_for` how long it cannot be
+    /// stopped (`None`: it can be at any time). Other blocks are not affected.
+    pub fn start(&self, id: &str, name: &str, lists: Lists, enforcers: Enforcers, schedule: Option<Week>, locked_for: Option<Duration>) -> Result<(), String> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
         if inner.blocks.iter().any(|b| b.id == id) {
@@ -193,8 +231,10 @@ impl Blocklist {
             filters: Arc::new(lists.sites),
             allowed: Arc::new(lists.allowed),
             programs: Arc::new(lists.programs),
-            until: duration.map(|d| self.clock.now() + d),
+            until: locked_for.map(|d| self.clock.now() + d),
             enforcers,
+            schedule,
+            zone: self.zone.clone().unwrap_or_else(Zone::current),
         };
         // Written before the block goes live, so a block cannot be missed after a restart. A
         // block that cannot be written would not survive the service ending, so it does not start.
@@ -214,7 +254,7 @@ impl Blocklist {
             return Err("This block is not running".into());
         };
         if let Some(left) = remaining(&inner.blocks[at], self.clock.now()) {
-            return Err(format!("A timed block cannot be stopped early ({left}s left)"));
+            return Err(format!("This block is locked for another {}, so it cannot be stopped yet", duration::words(left)));
         }
         inner.blocks.remove(at);
         self.save_all(&mut inner);
@@ -236,8 +276,9 @@ impl Blocklist {
         }
         for saved in saved {
             // A block list we cannot read is dropped rather than resumed as something unknown.
-            let (Ok(filters), Ok(allowed), Ok(programs)) =
-                (FilterList::parse(&saved.filters), FilterList::parse(&saved.allowed), ProgramList::parse(&saved.programs))
+            let schedule = saved.schedule.clone().map(Week::normalized).transpose();
+            let (Ok(filters), Ok(allowed), Ok(programs), Ok(schedule)) =
+                (FilterList::parse(&saved.filters), FilterList::parse(&saved.allowed), ProgramList::parse(&saved.programs), schedule)
             else {
                 eprintln!("block: dropping an unreadable saved block");
                 continue;
@@ -254,6 +295,12 @@ impl Blocklist {
                 programs: Arc::new(programs),
                 until,
                 enforcers: saved.enforcers,
+                schedule,
+                // A block from before schedules is read in Windows' own zone (it has no schedule).
+                zone: match &saved.zone {
+                    Some(name) => Zone::named(name),
+                    None => self.zone.clone().unwrap_or_else(Zone::current),
+                },
             });
         }
         let mut inner = self.inner.locked();
@@ -262,7 +309,8 @@ impl Blocklist {
         self.save_all(&mut inner);
     }
 
-    /// What is to be enforced, ending timed blocks whose time is up. `Some` while any block runs.
+    /// What is to be enforced right now: every running block that its schedule has active. Ends
+    /// timed blocks whose time is up. `None` when nothing is to be enforced.
     pub fn active(&self) -> Option<Active> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
@@ -270,12 +318,17 @@ impl Blocklist {
         if inner.blocks.iter().any(|b| b.until.is_some()) && inner.saved_at.elapsed() >= CHECKPOINT {
             self.save_all(&mut inner);
         }
-        (!inner.blocks.is_empty()).then(|| Active { blocks: inner.blocks.iter().map(Block::enforced).collect() })
+        let now = self.clock.now();
+        let blocks: Vec<Enforced> = inner.blocks.iter().filter(|b| b.in_schedule(now)).map(Block::enforced).collect();
+        (!blocks.is_empty()).then_some(Active { blocks })
     }
 
-    /// Whether any block runs.
+    /// Whether any block runs, also one that its schedule has inactive right now: it is still
+    /// there and still locked, so the app is kept running and the exe is not replaced.
     pub fn is_running(&self) -> bool {
-        self.active().is_some()
+        let mut inner = self.inner.locked();
+        self.expire(&mut inner);
+        !inner.blocks.is_empty()
     }
 
     /// Whether the block `id` runs.
@@ -308,6 +361,9 @@ impl Blocklist {
                 allowed: b.allowed.entries(),
                 programs: b.programs.entries(),
                 enforcers: b.enforcers,
+                schedule: b.schedule.clone(),
+                enforcing: b.in_schedule(now),
+                schedule_change: b.schedule_change(now),
             })
             .collect();
         Status { running, clock_synced: self.clock.synced() }
@@ -352,6 +408,8 @@ impl Blocklist {
                 enforcers: b.enforcers,
                 programs: b.programs.entries(),
                 allowed: b.allowed.entries(),
+                schedule: b.schedule.clone(),
+                zone: Some(b.zone.name().to_string()),
             })
             .collect();
         store.save(&saved)
@@ -361,28 +419,6 @@ impl Blocklist {
 fn remaining(block: &Block, now: SystemTime) -> Option<u64> {
     let left = block.until?.duration_since(now).ok()?;
     Some(left.as_secs_f64().ceil() as u64)
-}
-
-/// Parses `5s`, `10m`, `3h` or `1d`; an empty string means no time limit.
-pub fn parse_duration(text: &str) -> Result<Option<Duration>, String> {
-    let text = text.trim().to_lowercase();
-    if text.is_empty() {
-        return Ok(None);
-    }
-    let invalid = || format!("Invalid duration \"{text}\"; use e.g. 5s, 10m, 3h or 1d");
-    let (number, unit) = text.split_at(text.len() - 1);
-    let seconds = match unit {
-        "s" => 1,
-        "m" => 60,
-        "h" => 3600,
-        "d" => 86400,
-        _ => return Err(invalid()),
-    };
-    let n: u64 = number.trim().parse().map_err(|_| invalid())?;
-    if n == 0 {
-        return Err(invalid());
-    }
-    Ok(Some(Duration::from_secs(n.checked_mul(seconds).ok_or_else(invalid)?)))
 }
 
 #[cfg(test)]
@@ -402,7 +438,7 @@ mod tests {
         if wiped {
             let _ = std::fs::remove_dir_all(&dir);
         }
-        Blocklist { inner: Arc::default(), clock: test_clock(), store: Some(Arc::new(Store::new(dir.join("state.json")))) }
+        Blocklist { inner: Arc::default(), clock: test_clock(), zone: Some(Zone::fixed(0)), store: Some(Arc::new(Store::new(dir.join("state.json")))) }
     }
 
     fn blocklist(name: &str) -> Blocklist {
@@ -420,23 +456,11 @@ mod tests {
     }
 
     fn start(list: &Blocklist, id: &str, lists: Lists, duration: Option<Duration>) -> Result<(), String> {
-        list.start(id, &format!("Block {id}"), lists, duration, Enforcers::default())
+        list.start(id, &format!("Block {id}"), lists, Enforcers::default(), None, duration)
     }
 
     fn running(list: &Blocklist, id: &str) -> Running {
         list.status().running.into_iter().find(|r| r.id == id).expect("not running")
-    }
-
-    #[test]
-    fn durations() {
-        assert_eq!(parse_duration(""), Ok(None));
-        assert_eq!(parse_duration("5s"), Ok(Some(Duration::from_secs(5))));
-        assert_eq!(parse_duration(" 10M "), Ok(Some(Duration::from_secs(600))));
-        assert_eq!(parse_duration("3h"), Ok(Some(Duration::from_secs(10800))));
-        assert_eq!(parse_duration("1d"), Ok(Some(Duration::from_secs(86400))));
-        for bad in ["5", "m", "0m", "5x", "1.5h", "-1h", "5 minutes"] {
-            assert!(parse_duration(bad).is_err(), "{bad}");
-        }
     }
 
     #[test]
@@ -500,8 +524,8 @@ mod tests {
         let tabs_only = Enforcers { chromium_tabs: true, chromium_split_view: false, obsidian_web_viewer: false, exe_names: false };
         let split_only = Enforcers { chromium_tabs: false, chromium_split_view: true, obsidian_web_viewer: false, exe_names: false };
         let everything_but_google = Lists { sites: FilterList::parse(&["*"]).unwrap(), allowed: FilterList::parse(&["google.com"]).unwrap(), programs: ProgramList::default() };
-        list.start("tabs", "Tabs", everything_but_google, None, tabs_only).unwrap();
-        list.start("split", "Split", sites(&["google.com"]), None, split_only).unwrap();
+        list.start("tabs", "Tabs", everything_but_google, tabs_only, None, None).unwrap();
+        list.start("split", "Split", sites(&["google.com"]), split_only, None, None).unwrap();
         let active = list.active().unwrap();
         // One block's allowed site is not an exception to another block's list.
         assert!(!active.blocks_page("https://google.com/", false));
@@ -518,7 +542,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("not-a-folder"), "").unwrap();
-        let list = Blocklist { inner: Arc::default(), clock: test_clock(), store: Some(Arc::new(Store::new(dir.join("not-a-folder").join("state.json")))) };
+        let list = Blocklist { inner: Arc::default(), clock: test_clock(), zone: Some(Zone::fixed(0)), store: Some(Arc::new(Store::new(dir.join("not-a-folder").join("state.json")))) };
         assert!(start(&list, "a", sites(&["a.com"]), Some(Duration::from_secs(60))).is_err());
         assert!(!list.is_running());
     }
@@ -668,11 +692,69 @@ mod tests {
     fn a_resumed_block_keeps_its_enforcers() {
         let only_obsidian = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: true, exe_names: false };
         let list = blocklist("enforcers");
-        list.start("a", "A", sites(&[]), Some(Duration::from_secs(3600)), only_obsidian).unwrap();
+        list.start("a", "A", sites(&[]), only_obsidian, None, Some(Duration::from_secs(3600))).unwrap();
         let resumed = reopened("enforcers");
         resumed.restore();
         assert_eq!(resumed.active().map(|active| active.blocks[0].enforcers), Some(only_obsidian));
         assert_eq!(running(&resumed, "a").enforcers, only_obsidian);
+    }
+
+    /// 2030-01-07 00:00:00 UTC, a Monday; the tests' time zone is UTC.
+    const MONDAY: u64 = 1_893_974_400;
+
+    #[test]
+    fn outside_its_schedule_a_block_runs_and_stays_locked_but_enforces_nothing() {
+        let list = blocklist("schedule");
+        // Monday 16:00, office hours until 17:00, locked for two hours: the user's own example.
+        list.clock.at_least(MONDAY + 16 * 3600);
+        let office = Week::parse("mon-fri 08:00-17:00").unwrap();
+        list.start("a", "A", sites(&["a.com"]), Enforcers::default(), office.clone(), Some(Duration::from_secs(2 * 3600))).unwrap();
+        // An always-active block next to it, to show the other one going quiet on its own.
+        start(&list, "b", sites(&["b.com"]), None).unwrap();
+        assert!(list.active().unwrap().blocks_page("https://a.com/", false));
+        let a = running(&list, "a");
+        assert!(a.enforcing && a.schedule == office);
+        // The test runs on a real clock as well, so a few seconds may pass along the way.
+        assert!(a.schedule_change.is_some_and(|left| (3590..=3600).contains(&left)));
+        assert!(running(&list, "b").enforcing && running(&list, "b").schedule_change.is_none());
+
+        // 17:00: the schedule has it inactive, so nothing of it is enforced; it still runs and is
+        // still locked.
+        list.clock.at_least(MONDAY + 17 * 3600);
+        let active = list.active().unwrap();
+        assert!(!active.blocks_page("https://a.com/", false) && active.blocks_page("https://b.com/", false));
+        assert!(list.runs("a") && list.stop("a").is_err());
+        let a = running(&list, "a");
+        assert!(!a.enforcing);
+        // Rounded up, and the start took a moment of the clock: a little over the hour.
+        assert!(a.remaining.is_some_and(|left| (3590..=3610).contains(&left)));
+        // Active again on Tuesday at 08:00.
+        assert!(a.schedule_change.is_some_and(|left| (15 * 3600 - 10..=15 * 3600).contains(&left)));
+        // With only it running, nothing is enforced, but a block still runs (the app is kept alive).
+        list.stop("b").unwrap();
+        assert!(list.active().is_none() && list.is_running());
+
+        // Just after 18:00 (the lock started a moment after 16:00): the lock is over, and with it
+        // the block.
+        list.clock.at_least(MONDAY + 18 * 3600 + 30);
+        assert!(!list.runs("a") && !list.is_running());
+    }
+
+    #[test]
+    fn a_resumed_block_keeps_its_schedule_and_time_zone() {
+        let list = blocklist("schedule-resume");
+        list.clock.at_least(MONDAY + 12 * 3600);
+        let weekend = Week::parse("weekends").unwrap();
+        list.start("a", "A", sites(&["a.com"]), Enforcers::default(), weekend.clone(), None).unwrap();
+        assert!(list.is_running() && list.active().is_none(), "Monday is not in the weekend");
+        let saved = list.store.clone().unwrap().load().remove(0);
+        assert_eq!((saved.schedule, saved.zone.as_deref()), (weekend.clone(), Some("fixed:+0")));
+
+        let resumed = reopened("schedule-resume");
+        resumed.clock.at_least(MONDAY + 5 * 86400 + 3600);
+        resumed.restore();
+        assert_eq!(running(&resumed, "a").schedule, weekend);
+        assert!(resumed.active().is_some(), "Saturday is");
     }
 
     #[test]
@@ -691,6 +773,8 @@ mod tests {
             enforcers: Enforcers::default(),
             programs: Vec::new(),
             allowed: Vec::new(),
+            schedule: None,
+            zone: None,
         };
         store.save(&[saved("old", Some(state::now().unwrap().as_secs() - 3600)), saved("new", None)]).unwrap();
 
@@ -730,7 +814,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("state.json");
 
-        let list = Blocklist { inner: Arc::default(), clock: test_clock(), store: None };
+        let list = Blocklist { inner: Arc::default(), clock: test_clock(), zone: Some(Zone::fixed(0)), store: None };
         start(&list, "a", sites(&["a.com"]), Some(Duration::from_secs(60))).unwrap();
         assert!(list.is_running());
         list.restore();

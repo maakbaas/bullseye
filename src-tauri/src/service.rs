@@ -208,7 +208,8 @@ fn lock_down_data_dir() {
 mod tests {
     use super::*;
     use crate::definitions::tests::definition;
-    use crate::definitions::{Definition, Schedule};
+    use crate::definitions::Definition;
+    use crate::lock::Lock;
     use crate::proto::{Request, Response};
     use std::time::Duration;
 
@@ -237,7 +238,7 @@ mod tests {
         assert_eq!(client::call(&Request::Register), Ok(Response::Done));
         let Ok(Response::Status(status)) = client::call(&Request::Status) else { panic!("no status") };
         assert!(status.running.is_empty());
-        let block = Definition { schedule: Schedule::Duration { duration: "1h".into() }, ..definition("a", &["a.com"]) };
+        let block = Definition { lock: Lock::Timer { duration: "1h".into() }, ..definition("a", &["a.com"]) };
         assert_eq!(client::call(&Request::Save { block }), Ok(Response::Done));
         assert_eq!(client::call(&Request::Start { id: "a".into() }), Ok(Response::Done));
         let Ok(Response::Policy(policies)) = client::call(&Request::Policy) else { panic!("no policy") };
