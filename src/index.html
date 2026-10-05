@@ -4,6 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Bullseye</title>
+    <!-- Every text the window shows (src/strings.js): edit the copy there. -->
+    <script src="strings.js"></script>
     <!-- The Carbon design system, vendored (scripts/vendor-carbon.mjs): IBM Plex, the themes and
          tokens, and the cds-* web components. Nothing is loaded from the network. -->
     <link rel="stylesheet" href="vendor/fonts.css" />
@@ -109,13 +111,14 @@
   <body>
     <!-- The pages are header actions on the right, as icons: blocks (home), block lists, schedules,
          settings. -->
-    <cds-header aria-label="Bullseye">
-      <cds-header-name href="#/" prefix="">Bullseye</cds-header-name>
+    <!-- Texts: data-t is an element's text, data-t-<attribute> an attribute's (`applyStrings`). -->
+    <cds-header data-t-aria-label="app.name">
+      <cds-header-name href="#/" prefix="" data-t="app.name"></cds-header-name>
       <div class="cds--header__global">
-        <cds-header-global-action data-page="blocks" data-icon="home" aria-label="Blocks" tooltip-text="Blocks"></cds-header-global-action>
-        <cds-header-global-action data-page="lists" data-icon="list-checked" aria-label="Block lists" tooltip-text="Block lists"></cds-header-global-action>
-        <cds-header-global-action data-page="schedules" data-icon="calendar" aria-label="Schedules" tooltip-text="Schedules"></cds-header-global-action>
-        <cds-header-global-action data-page="settings" data-icon="settings" aria-label="Settings" tooltip-text="Settings" tooltip-alignment="right"></cds-header-global-action>
+        <cds-header-global-action data-page="blocks" data-icon="home" data-t-aria-label="nav.blocks" data-t-tooltip-text="nav.blocks"></cds-header-global-action>
+        <cds-header-global-action data-page="lists" data-icon="list-checked" data-t-aria-label="nav.lists" data-t-tooltip-text="nav.lists"></cds-header-global-action>
+        <cds-header-global-action data-page="schedules" data-icon="calendar" data-t-aria-label="nav.schedules" data-t-tooltip-text="nav.schedules"></cds-header-global-action>
+        <cds-header-global-action data-page="settings" data-icon="settings" data-t-aria-label="nav.settings" data-t-tooltip-text="nav.settings" tooltip-alignment="right"></cds-header-global-action>
       </div>
     </cds-header>
 
@@ -156,10 +159,10 @@
           <div class="form">
             <div id="form" class="form"></div>
             <div class="form-actions">
-              <cds-button id="delete" kind="danger--ghost" size="md" hidden>Delete</cds-button>
+              <cds-button id="delete" kind="danger--ghost" size="md" hidden data-t="common.delete"></cds-button>
               <div class="end">
-                <cds-button id="cancel" kind="secondary" size="md" href="#/">Cancel</cds-button>
-                <cds-button id="save" kind="primary" size="md">Save</cds-button>
+                <cds-button id="cancel" kind="secondary" size="md" href="#/" data-t="common.cancel"></cds-button>
+                <cds-button id="save" kind="primary" size="md" data-t="common.save"></cds-button>
               </div>
             </div>
           </div>
@@ -170,15 +173,15 @@
       <div id="view-settings" class="cds--css-grid" hidden>
         <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
           <div class="page-header">
-            <h1 class="cds--type-productive-heading-05">Settings</h1>
+            <h1 class="cds--type-productive-heading-05" data-t="settings.title"></h1>
           </div>
           <div class="setting">
-            <h2 class="cds--type-productive-heading-03">Unlock</h2>
-            <p class="cds--type-body-01">Ends every running block, locked ones included, and quits Bullseye. The service stays installed and starts the app again at your next sign-in. This is the only way to end a locked block early.</p>
+            <h2 class="cds--type-productive-heading-03" data-t="settings.unlockTitle"></h2>
+            <p class="cds--type-body-01" data-t="settings.unlockText"></p>
             <div class="notices" id="settings-notices"></div>
             <div class="row">
-              <cds-password-input id="password" label="Unlock password" autocomplete="off"></cds-password-input>
-              <cds-button id="unlock" kind="danger" size="md" disabled>Unlock</cds-button>
+              <cds-password-input id="password" data-t-label="settings.passwordLabel" autocomplete="off"></cds-password-input>
+              <cds-button id="unlock" kind="danger" size="md" disabled data-t="settings.unlock"></cds-button>
             </div>
           </div>
         </div>
@@ -198,7 +201,7 @@
       </cds-modal-body>
       <cds-modal-footer>
         <!-- Focus starts on Cancel, so a stray Enter or Space never confirms. -->
-        <cds-modal-footer-button kind="secondary" data-modal-close data-modal-primary-focus>Cancel</cds-modal-footer-button>
+        <cds-modal-footer-button kind="secondary" data-modal-close data-modal-primary-focus data-t="common.cancel"></cds-modal-footer-button>
         <cds-modal-footer-button id="confirm-action"></cds-modal-footer-button>
       </cds-modal-footer>
     </cds-modal>
@@ -207,71 +210,72 @@
       const { invoke } = window.__TAURI__.core;
       const $ = (id) => document.getElementById(id);
 
+      // A text of src/strings.js by its path, with its {placeholders} filled from `values`; one with
+      // `one` and `other` is chosen by `values.n`. A missing one shows as its path.
+      function t(path, values = {}) {
+        let text = path.split(".").reduce((node, key) => (node == null ? node : node[key]), window.STRINGS);
+        if (text && typeof text === "object" && "other" in text) text = values.n === 1 ? text.one : text.other;
+        if (typeof text !== "string") {
+          console.error(`strings.js has no text "${path}"`);
+          return path;
+        }
+        return text.replace(/\{(\w+)\}/g, (whole, key) => (key in values ? String(values[key]) : whole));
+      }
+      // A name inside a sentence, and several of them.
+      const quoted = (name) => t("common.quoted", { name });
+      const names = (blocks) => blocks.map((b) => quoted(b.name)).join(t("common.separator"));
+
+      // The markup's texts: data-t sets an element's text, data-t-<attribute> an attribute.
+      function applyStrings() {
+        document.title = t("app.name");
+        for (const node of document.querySelectorAll("*")) {
+          for (const { name, value } of [...node.attributes]) {
+            if (name === "data-t") node.textContent = t(value);
+            else if (name.startsWith("data-t-")) node.setAttribute(name.slice("data-t-".length), t(value));
+          }
+        }
+      }
+      applyStrings();
+
       // ---- What things are made of. Three kinds, each a list of its own: block lists (what to
       // block), schedules (when) and blocks (one or more block lists, a schedule and a lock: what is
       // started). The editors, tiles and summaries are built from these tables, so a new kind of
       // list, enforcer or lock method is an entry here (plus its backend side, see CLAUDE.md).
 
       // The lists a block list can have (`definitions::BlockList`), by field name.
-      const LISTS = {
-        filters: {
-          label: "Sites to block",
-          placeholder: "youtube.com",
-          helper: "One per line: a site and everything under it. * matches any part; a lone * blocks every site.",
-          count: (n) => `${n} ${n === 1 ? "site" : "sites"} blocked`,
-        },
-        allowed: {
-          label: "Always allowed",
-          placeholder: "google.com",
-          helper: "Exceptions to this list's sites. These always win.",
-          count: (n) => `${n} always allowed`,
-        },
-        programs: {
-          label: "Programs to close",
-          placeholder: "steam.exe",
-          helper: "One program per line, e.g. steam.exe; * matches any part. Windows' own programs cannot be listed.",
-          count: (n) => `${n} ${n === 1 ? "program" : "programs"} closed`,
-        },
-      };
+      const LISTS = Object.fromEntries(
+        ["filters", "allowed", "programs"].map((key) => [
+          key,
+          {
+            label: t(`lists.${key}.label`),
+            placeholder: t(`lists.${key}.placeholder`),
+            helper: t(`lists.${key}.helper`),
+            count: (n) => t(`lists.${key}.count`, { n }),
+          },
+        ]),
+      );
 
       // The enforcers (`state::Enforcers`), grouped into the block list editor's sections with the
       // lists they use.
+      const enforcer = (key) => ({ key, label: t(`lists.enforcers.${key}.label`), short: window.STRINGS.lists.enforcers[key].short });
       const SECTIONS = [
-        {
-          title: "Websites",
-          description: "Closes pages on the list in Chrome, Edge and Brave.",
-          lists: ["filters", "allowed"],
-          enforcers: [
-            { key: "chromium_tabs", label: "Close blocked tabs" },
-            { key: "chromium_split_view", label: "Close blocked pages in split view" },
-          ],
-        },
-        {
-          title: "Programs",
-          description: "Asks the programs on the list to close, and ends them after 3 seconds.",
-          lists: ["programs"],
-          enforcers: [{ key: "exe_names", label: "Close these programs" }],
-        },
-        {
-          title: "Apps",
-          description: "Need no list.",
-          lists: [],
-          enforcers: [{ key: "obsidian_web_viewer", label: "Close Obsidian when it shows web pages", short: "Closes Obsidian's web viewer" }],
-        },
-      ];
+        { key: "websites", lists: ["filters", "allowed"], enforcers: [enforcer("chromium_tabs"), enforcer("chromium_split_view")] },
+        { key: "programs", lists: ["programs"], enforcers: [enforcer("exe_names")] },
+        { key: "apps", lists: [], enforcers: [enforcer("obsidian_web_viewer")] },
+      ].map((section) => ({ ...section, title: t(`lists.sections.${section.key}.title`), description: t(`lists.sections.${section.key}.description`) }));
 
       // How a started block is kept from being stopped (`lock::Lock`), by `method`. Set on the
       // block's tile, next to Start. `confirm` says what starting it asks first (null: nothing).
       const LOCKS = {
         none: {
-          label: "No lock",
-          describe: () => "Not locked: can be stopped at any time",
+          label: t("locks.none.label"),
+          describe: () => t("locks.none.describe"),
           confirm: async () => null,
         },
         timer: {
-          label: "Timer",
+          label: t("locks.timer.label"),
           form: (block) => {
-            const input = el("cds-text-input", { label: "Locked for", placeholder: "e.g. 2h 30m", "helper-text": "Combine as you like: 30m, 2h 30m, 1d" });
+            const input = el("cds-text-input", { label: t("locks.timer.field"), placeholder: t("locks.timer.placeholder"), "helper-text": t("locks.timer.helper") });
             input.value = (block.lock.method === "timer" && block.lock.duration) || "";
             return {
               fields: [input],
@@ -282,66 +286,68 @@
               },
             };
           },
-          describe: (lock) => `Locked for ${durationText(lock.duration)} once started`,
+          describe: (lock) => t("locks.timer.describe", { duration: durationText(lock.duration) }),
           confirm: async (block) => {
-            const words = await invoke("describe_duration", { text: block.lock.duration || "" }).catch(() => block.lock.duration);
+            const duration = await invoke("describe_duration", { text: block.lock.duration || "" }).catch(() => block.lock.duration);
+            const values = { name: quoted(block.name), duration };
             return {
-              heading: `Start “${block.name}” for ${words}?`,
-              body: `It cannot be stopped, changed or deleted for ${words}. Only the unlock password in Settings ends it early.`,
-              action: `Start for ${words}`,
+              heading: t("locks.timer.confirmHeading", values),
+              body: t("locks.timer.confirmBody", values),
+              action: t("locks.timer.confirmAction", values),
             };
           },
         },
         scheduled: {
-          label: "Schedule",
+          label: t("locks.scheduled.label"),
           // A schedule of its own: with the block's own schedule, it is locked exactly while active.
           // Only with a schedule to choose (`renderBlockControls` disables it otherwise).
           form: (block) => {
-            const select = el("cds-select", { "label-text": "Locked during", "helper-text": "It cannot be stopped while this schedule is active" });
+            const select = el("cds-select", { "label-text": t("locks.scheduled.field"), "helper-text": t("locks.scheduled.helper") });
             select.append(...overview.schedules.map((s) => el("cds-select-item", { value: s.id, label: s.name }, s.name)));
             // The block's own schedule first: then it is locked exactly while it is active.
             const chosen = block.lock.method === "scheduled" ? block.lock.schedule : block.schedule;
             select.value = overview.schedules.some((s) => s.id === chosen) ? chosen : (overview.schedules[0] || {}).id || "";
-            return { fields: [select], read: async () => (invalid(select, select.value ? null : "Choose a schedule") ? null : { method: "scheduled", schedule: select.value }) };
+            return { fields: [select], read: async () => (invalid(select, select.value ? null : t("locks.scheduled.missing")) ? null : { method: "scheduled", schedule: select.value }) };
           },
           describe: (lock) => {
             const schedule = overview.schedules.find((s) => s.id === lock.schedule);
-            return schedule ? `Locked while “${schedule.name}” is active (${weekText(schedule.days)})` : "Locked by a schedule that is gone";
+            return schedule ? t("locks.scheduled.describe", { schedule: quoted(schedule.name), times: weekText(schedule.days) }) : t("locks.scheduled.describeGone");
           },
           confirm: async (block) => {
+            // Without its schedule the service refuses the start, and says why.
             const schedule = overview.schedules.find((s) => s.id === block.lock.schedule);
-            const name = schedule ? schedule.name : "its lock schedule";
-            const when = schedule ? await invoke("describe_schedule", { week: { days: schedule.days } }).catch(() => "") : "";
+            if (!schedule) return null;
+            const times = await invoke("describe_schedule", { week: { days: schedule.days } }).catch(() => t("common.weeklyStandIn"));
+            const values = { name: quoted(block.name), schedule: quoted(schedule.name), times };
             return {
-              heading: `Start “${block.name}” locked during “${name}”?`,
-              body: `It cannot be stopped while “${name}” is active${when ? ` (${when})` : ""}. Outside those times you can stop it. Only the unlock password in Settings ends it early.`,
-              action: "Start locked",
+              heading: t("locks.scheduled.confirmHeading", values),
+              body: t("locks.scheduled.confirmBody", values),
+              action: t("locks.scheduled.confirmAction", values),
             };
           },
         },
         password: {
-          label: "Password",
-          // Typed on the tile and sent once; the service keeps only a salted hash and never sends
-          // either back, so a block that has one just says so.
-          // Typed twice, as nothing ever shows it again: a typo would leave a lock only the unlock
+          label: t("locks.password.label"),
+          // Sent once; the service keeps only a salted hash and never sends either back, so a block
+          // that has one just says so. Typed twice, as nothing ever shows it again: a typo would leave a lock only the unlock
           // password opens.
           form: () => {
-            const password = el("cds-password-input", { label: "Password", autocomplete: "new-password", "helper-text": "Best chosen by someone else. Only a hash of it is kept." });
-            const repeat = el("cds-password-input", { label: "Repeat password", autocomplete: "new-password" });
+            const password = el("cds-password-input", { label: t("locks.password.field"), autocomplete: "new-password", "helper-text": t("locks.password.helper") });
+            const repeat = el("cds-password-input", { label: t("locks.password.repeat"), autocomplete: "new-password" });
             return {
               fields: [password, repeat],
               read: async () => {
-                if (invalid(password, password.value ? null : "Type a password")) return null;
-                if (invalid(repeat, repeat.value === password.value ? null : "The passwords differ")) return null;
+                if (invalid(password, password.value ? null : t("locks.password.missing"))) return null;
+                if (invalid(repeat, repeat.value === password.value ? null : t("locks.password.differ"))) return null;
                 return { method: "password", password: password.value };
               },
             };
           },
-          describe: () => "Locked with a password once started",
+          describe: () => t("locks.password.describe"),
           confirm: async (block) => ({
-            heading: `Start “${block.name}” locked with a password?`,
-            body: "It can only be stopped with its password, or with the unlock password in Settings.",
-            action: "Start locked",
+            heading: t("locks.password.confirmHeading", { name: quoted(block.name) }),
+            body: t("locks.password.confirmBody", { name: quoted(block.name) }),
+            action: t("locks.password.confirmAction", { name: quoted(block.name) }),
           }),
         },
       };
@@ -375,7 +381,7 @@
         }
         return texts.get(key);
       }
-      const weekText = (days) => described("describe_schedule", { week: { days } }, "a weekly schedule");
+      const weekText = (days) => described("describe_schedule", { week: { days } }, t("common.weeklyStandIn"));
       const durationText = (text) => described("describe_duration", { text: text || "" }, text || "");
 
       function lines(text) {
@@ -405,49 +411,50 @@
         } catch (e) {
           // The service did not answer: say so, and leave the rest as it was.
           reachable = false;
-          notify("list-notices", "error", "The Bullseye service does not answer", String(e));
+          notify("list-notices", "error", t("common.serviceDown"), String(e));
         }
         render();
       }
 
       const runningOf = (id) => overview.running.find((r) => r.id === id);
       const scheduleOf = (block) => overview.schedules.find((s) => s.id === block.schedule);
-      const listName = (id) => (overview.lists.find((l) => l.id === id) || { name: "(gone)" }).name;
+      const listName = (id) => (overview.lists.find((l) => l.id === id) || { name: t("common.gone") }).name;
       // The blocks that use a block list or schedule, and those of them that run (which hold it).
       const usersOf = (id) => overview.blocks.filter((b) => b.lists.includes(id) || b.schedule === id || (b.lock && b.lock.schedule === id));
       const holdersOf = (id) => usersOf(id).filter((b) => runningOf(b.id));
-      const names = (blocks) => blocks.map((b) => `“${b.name}”`).join(", ");
 
       // ---- The three kinds. Each has a page of tiles and an editor.
+
+      // A kind's texts in strings.js: its page, its editor and its empty state.
+      const kindTexts = (kind) => ({
+        title: t(`${kind}.title`),
+        noun: t(`${kind}.noun`),
+        description: t(`${kind}.description`),
+        newLabel: t(`${kind}.newLabel`),
+        editTitle: t(`${kind}.editTitle`),
+        empty: [t(`${kind}.emptyTitle`), t(`${kind}.emptyText`)],
+        editorDescription: t(`${kind}.editorDescription`),
+      });
 
       const KINDS = {
         blocks: {
           path: "#/",
           editPath: "#/edit/",
           newPath: "#/new",
-          title: "Blocks",
-          noun: "block",
-          description: "A block is what you start: one or more block lists, a schedule and a lock. Start any of them; they run independently.",
-          newLabel: "New block",
-          empty: ["No blocks yet", "A block combines block lists (what to block) with a schedule (when). Make block lists first, then use New block."],
+          ...kindTexts("blocks"),
           items: () => overview.blocks,
           create: () => ({ id: newId(), name: "", lists: [], schedule: null, lock: { method: "none" } }),
           save: (block) => invoke("save_block", { block }),
           remove: (id) => invoke("delete_block", { id }),
           // Why it cannot be changed now, or null.
-          held: (block) => (runningOf(block.id) ? "This block is running. Its settings can be changed once it ends." : null),
-          editorDescription: "A block enforces its block lists, when its schedule has it active. Its lock is set on its tile, next to Start.",
+          held: (block) => (runningOf(block.id) ? t("blocks.held") : null),
           form: () => blockForm(),
         },
         lists: {
           path: "#/lists",
           editPath: "#/lists/edit/",
           newPath: "#/lists/new",
-          title: "Block lists",
-          noun: "block list",
-          description: "What to block: sites, programs and apps, and how to close them. Blocks use them; one list can be in several blocks.",
-          newLabel: "New block list",
-          empty: ["No block lists yet", "A block list holds sites and programs to close, and the ways to close them. Use New block list to make one."],
+          ...kindTexts("lists"),
           items: () => overview.lists,
           create: () => ({
             id: newId(),
@@ -459,29 +466,23 @@
           remove: (id) => invoke("delete_list", { id }),
           held: (list) => {
             const holders = holdersOf(list.id);
-            return holders.length ? `${names(holders)} uses it and is running. It can be changed once that has ended.` : null;
+            return holders.length ? t("lists.held", { names: names(holders) }) : null;
           },
-          editorDescription: "Kept by the Bullseye service. A running block keeps the lists it was started with.",
           form: () => listForm(),
         },
         schedules: {
           path: "#/schedules",
           editPath: "#/schedules/edit/",
           newPath: "#/schedules/new",
-          title: "Schedules",
-          noun: "schedule",
-          description: "When a block is active, as a weekly schedule. A block without one is always active. Outside its schedule a running block blocks nothing.",
-          newLabel: "New schedule",
-          empty: ["No schedules yet", "Blocks without a schedule are always active. Use New schedule to make one, e.g. work hours."],
+          ...kindTexts("schedules"),
           items: () => overview.schedules,
           create: () => ({ id: newId(), name: "", days: [0, 1, 2, 3, 4, 5, 6].map((day) => (day < 5 ? [[480, 1020]] : [])) }),
           save: (schedule) => invoke("save_schedule", { schedule }),
           remove: (id) => invoke("delete_schedule", { id }),
           held: (schedule) => {
             const holders = holdersOf(schedule.id);
-            return holders.length ? `${names(holders)} uses it and is running. It can be changed once that has ended.` : null;
+            return holders.length ? t("schedules.held", { names: names(holders) }) : null;
           },
-          editorDescription: "Kept by the Bullseye service. A running block keeps the schedule it was started with.",
           form: () => scheduleForm(),
         },
       };
@@ -493,38 +494,39 @@
           for (const [key, list] of Object.entries(LISTS)) if (item[key] && item[key].length) parts.push(list.count(item[key].length));
           const on = ENFORCERS.filter((e) => item.enforcers && item.enforcers[e.key]);
           for (const e of on.filter((e) => !SECTIONS.find((s) => s.enforcers.includes(e)).lists.length)) parts.push(e.short || e.label);
-          if (!parts.length) parts.push("Nothing to block yet");
+          if (!parts.length) parts.push(t("lists.nothing"));
           const users = usersOf(item.id);
-          parts.push(users.length ? `Used by ${names(users)}` : "Not in a block yet");
+          parts.push(users.length ? t("common.usedBy", { names: names(users) }) : t("lists.notUsed"));
           return parts;
         }
         if (kind === "schedules") {
           const users = usersOf(item.id);
-          return [`Active ${weekText(item.days)}`, users.length ? `Used by ${names(users)}` : "Not used by a block yet"];
+          return [t("schedules.active", { times: weekText(item.days) }), users.length ? t("common.usedBy", { names: names(users) }) : t("schedules.notUsed")];
         }
         // A block: what it runs with while it runs, else what it is defined as.
         const running = runningOf(item.id);
         const parts = [];
         const lists = running ? running.lists.map((l) => l.name) : item.lists.map(listName);
-        parts.push(lists.length ? lists.join(", ") : "No block lists yet");
+        parts.push(lists.length ? lists.join(t("common.separator")) : t("blocks.tile.noLists"));
         const schedule = scheduleOf(item);
         const days = running ? running.schedule && running.schedule.days : schedule && schedule.days;
-        parts.push(days ? `Active ${weekText(days)}${schedule ? ` (${schedule.name})` : ""}` : "Always active");
+        if (!days) parts.push(t("blocks.tile.always"));
+        else if (schedule) parts.push(t("blocks.tile.activeNamed", { times: weekText(days), schedule: schedule.name }));
+        else parts.push(t("blocks.tile.active", { times: weekText(days) }));
         if (!running) {
           const lock = LOCKS[item.lock && item.lock.method];
-          parts.push(lock ? lock.describe(item.lock) : "Unknown lock");
+          parts.push(lock ? lock.describe(item.lock) : t("blocks.tile.unknownLock"));
           return parts;
         }
-        if (running.password) parts.push("Locked with a password: stop it with its password");
-        else if (running.remaining_words) parts.push(`Locked: ${running.remaining_words} left`);
-        else if (running.lock_schedule) {
-          const change = running.lock_change_words;
-          if (running.locked) parts.push(change ? `Locked by its lock schedule, for another ${change}` : "Locked by its lock schedule");
-          else parts.push(change ? `Not locked now: can be stopped; locked again in ${change}` : "Not locked now: can be stopped");
-        }
-        else parts.push("Not locked: can be stopped at any time");
-        if (running.enforcing && running.schedule_change_words) parts.push(`Active now; inactive in ${running.schedule_change_words}`);
-        if (!running.enforcing) parts.push(running.schedule_change_words ? `Inactive by its schedule; active again in ${running.schedule_change_words}` : "Inactive by its schedule");
+        const change = running.lock_change_words;
+        if (running.password) parts.push(t("blocks.tile.lockedPassword"));
+        else if (running.remaining_words) parts.push(t("blocks.tile.lockedTimer", { left: running.remaining_words }));
+        else if (running.lock_schedule && running.locked) parts.push(change ? t("blocks.tile.lockedSchedule", { left: change }) : t("blocks.tile.lockedScheduleOpen"));
+        else if (running.lock_schedule) parts.push(change ? t("blocks.tile.freeSchedule", { change }) : t("blocks.tile.freeScheduleOpen"));
+        else parts.push(t("blocks.tile.notLocked"));
+        const next = running.schedule_change_words;
+        if (running.enforcing && next) parts.push(t("blocks.tile.activeNow", { change: next }));
+        if (!running.enforcing) parts.push(next ? t("blocks.tile.inactiveUntil", { change: next }) : t("blocks.tile.inactive"));
         return parts;
       }
 
@@ -540,18 +542,18 @@
         menuIcon.classList.add("cds--overflow-menu__icon");
         const menu = el(
           "cds-overflow-menu",
-          { "aria-label": "Options", "menu-alignment": "bottom-end" },
+          { "aria-label": t("common.options"), "menu-alignment": "bottom-end" },
           menuIcon,
-          el("span", { slot: "tooltip-content" }, "Options"),
+          el("span", { slot: "tooltip-content" }, t("common.options")),
           el(
             "cds-overflow-menu-body",
             { flipped: true },
-            el("cds-overflow-menu-item", { "data-action": "edit" }, "Edit"),
-            el("cds-overflow-menu-item", { "data-action": "delete", danger: true }, "Delete"),
+            el("cds-overflow-menu-item", { "data-action": "edit" }, t("common.edit")),
+            el("cds-overflow-menu-item", { "data-action": "delete", danger: true }, t("common.delete")),
           ),
         );
         // In the menu's place while it cannot be changed: a running block, or a list or schedule one uses.
-        const lock = el("span", { class: "lock", role: "img", "aria-label": "Locked", title: "Locked" }, carbonIcon("locked"));
+        const lock = el("span", { class: "lock", role: "img", "aria-label": t("common.locked"), title: t("common.locked") }, carbonIcon("locked"));
         const name = el("h2", { class: "cds--type-productive-heading-03" });
         const tag = el("cds-tag", { size: "md" });
         const summary = el("div", { class: "summary cds--type-body-compact-01" });
@@ -607,7 +609,7 @@
           else {
             parts.tag.hidden = !held;
             parts.tag.setAttribute("type", "blue");
-            parts.tag.textContent = "In use by a running block";
+            parts.tag.textContent = t("common.inUse");
           }
         });
         $("empty").hidden = shown.length > 0;
@@ -616,9 +618,9 @@
       // ---- A block's tile: its state, its lock (set here, next to Start) and Start / Stop.
 
       function addBlockControls(parts, id) {
-        const method = el("cds-select", { "label-text": "Lock", size: "sm", class: "lock-method" });
+        const method = el("cds-select", { "label-text": t("blocks.lockLabel"), size: "sm", class: "lock-method" });
         for (const [key, lock] of Object.entries(LOCKS)) method.append(el("cds-select-item", { value: key, label: lock.label }, lock.label));
-        const change = el("cds-button", { kind: "ghost", size: "sm", "tooltip-text": "Change the lock", "tooltip-position": "top" }, carbonIcon("edit", "icon"));
+        const change = el("cds-button", { kind: "ghost", size: "sm", "tooltip-text": t("blocks.changeLock"), "tooltip-position": "top" }, carbonIcon("edit", "icon"));
         const toggle = el("cds-button", { kind: "primary", size: "sm" });
         const controls = el("div", { class: "lock-controls" }, method, change);
         parts.actions.append(controls, toggle);
@@ -639,14 +641,15 @@
         if (form) {
           // Kept on the tile while the dialog is open, though the block has the old lock still.
           parts.choosing = true;
-          lock = await ask({ heading: `${LOCKS[method].label} lock for “${block.name}”`, action: "Save", kind: "primary", fields: form.fields, read: form.read });
+          const heading = t("blocks.lockHeading", { method: LOCKS[method].label, name: quoted(block.name) });
+          lock = await ask({ heading, action: t("common.save"), kind: "primary", fields: form.fields, read: form.read });
         }
         if (lock) {
           try {
             await invoke("save_block", { block: { ...block, lock } });
             notify("list-notices");
           } catch (e) {
-            notify("list-notices", "error", `Could not set the lock of “${block.name}”`, String(e));
+            notify("list-notices", "error", t("blocks.lockFailed", { name: quoted(block.name) }), String(e));
           }
         }
         // Cancelled or refused: the tile shows the lock the block has.
@@ -667,7 +670,7 @@
         const quiet = running && running.enforcing === false;
         parts.tag.hidden = false;
         parts.tag.setAttribute("type", running ? (quiet ? "cool-gray" : running.locked ? "green" : "blue") : "gray");
-        parts.tag.textContent = running ? (quiet ? "Inactive by schedule" : running.locked ? "Running · locked" : "Running") : "Not running";
+        parts.tag.textContent = t(`blocks.state.${running ? (quiet ? "inactive" : running.locked ? "runningLocked" : "running") : "notRunning"}`);
         // The lock is set while the block is stopped; a running block's is in its summary.
         parts.controls.hidden = !!running;
         if (block.lock && !parts.choosing && parts.method.value !== block.lock.method) parts.method.value = block.lock.method;
@@ -681,7 +684,7 @@
         if (parts.toggle.dataset.action !== action) {
           parts.toggle.dataset.action = action;
           parts.toggle.setAttribute("kind", running ? "secondary" : "primary");
-          parts.toggle.replaceChildren(running ? "Stop" : "Start", carbonIcon(running ? "stop" : "play", "icon"));
+          parts.toggle.replaceChildren(t(running ? "blocks.stop" : "blocks.start"), carbonIcon(running ? "stop" : "play", "icon"));
         }
         // A block locked with a password stops with it (asked for on Stop).
         parts.toggle.disabled = busy || (running && running.locked && !running.password) || !reachable;
@@ -698,14 +701,14 @@
         // A block locked with a password stops with it.
         let password = null;
         if (running && running.password) {
-          const field = el("cds-password-input", { label: "Password", autocomplete: "off" });
+          const field = el("cds-password-input", { label: t("blocks.stopPassword"), autocomplete: "off" });
           const given = await ask({
-            heading: `Stop “${block.name}”?`,
-            body: "It is locked with a password. Enter it to stop the block.",
-            action: "Stop",
+            heading: t("blocks.stopHeading", { name: quoted(block.name) }),
+            body: t("blocks.stopBody"),
+            action: t("blocks.stop"),
             kind: "danger",
             fields: [field],
-            read: async () => (invalid(field, field.value ? null : "Type its password") ? null : field.value),
+            read: async () => (invalid(field, field.value ? null : t("blocks.stopPasswordMissing")) ? null : field.value),
           });
           if (!given) return;
           password = given;
@@ -717,7 +720,7 @@
           else await invoke("start_block", { id });
           notify("list-notices");
         } catch (e) {
-          notify("list-notices", "error", `Could not ${running ? "stop" : "start"} “${block ? block.name : "the block"}”`, String(e));
+          notify("list-notices", "error", t(running ? "blocks.stopFailed" : "blocks.startFailed", { name: quoted(block.name) }), String(e));
         }
         parts.toggle.dataset.busy = "";
         await refresh();
@@ -766,9 +769,9 @@
         const item = kindOf.items().find((i) => i.id === id);
         if (!item) return;
         const sure = await ask({
-          heading: `Delete “${item.name}”?`,
-          body: `The ${kindOf.noun} is removed. This cannot be undone.`,
-          action: "Delete",
+          heading: t("delete.heading", { name: quoted(item.name), noun: kindOf.noun }),
+          body: t("delete.body", { name: quoted(item.name), noun: kindOf.noun }),
+          action: t("common.delete"),
           kind: "danger",
         });
         if (!sure) return;
@@ -778,7 +781,7 @@
           notify("list-notices");
           if (inEditor) location.hash = kindOf.path;
         } catch (e) {
-          notify(inEditor ? "editor-notices" : "list-notices", "error", `Could not delete the ${kindOf.noun}`, String(e));
+          notify(inEditor ? "editor-notices" : "list-notices", "error", t("delete.failed", { noun: kindOf.noun }), String(e));
         }
         await refresh();
       }
@@ -788,7 +791,7 @@
       // (finish what is being typed) and `error()` (what is wrong, or null).
 
       function nameField(placeholder) {
-        const input = el("cds-text-input", { label: "Name", placeholder, "max-count": "60" });
+        const input = el("cds-text-input", { label: t("common.name"), placeholder, "max-count": "60" });
         input.addEventListener("input", () => (input.invalid = false));
         return input;
       }
@@ -797,23 +800,23 @@
       const ALWAYS = "always";
 
       function blockForm() {
-        const name = nameField("e.g. Work hours");
-        const lists = el("cds-checkbox-group", { "legend-text": "Block lists" });
+        const name = nameField(t("blocks.namePlaceholder"));
+        const lists = el("cds-checkbox-group", { "legend-text": t("blocks.listsLegend") });
         const noLists = el(
           "div",
           { class: "inline-action" },
-          el("p", { class: "cds--type-body-01" }, "No block lists yet: a block needs at least one."),
-          el("cds-button", { kind: "tertiary", size: "md", href: "#/lists/new" }, "New block list"),
+          el("p", { class: "cds--type-body-01" }, t("blocks.noLists")),
+          el("cds-button", { kind: "tertiary", size: "md", href: "#/lists/new" }, t("blocks.newList")),
         );
-        const schedule = el("cds-select", { "label-text": "Schedule", "helper-text": "When it is active once started. Schedules are made on the Schedules page." });
+        const schedule = el("cds-select", { "label-text": t("blocks.scheduleLabel"), "helper-text": t("blocks.scheduleHelper") });
         let boxes = {};
         const section = (title, text, ...content) =>
           el("section", {}, el("h2", { class: "cds--type-productive-heading-03" }, title), el("p", { class: "cds--type-body-01" }, text), ...content);
         return {
           nodes: [
             el("section", {}, name),
-            section("What", "The block lists it enforces, each by its own enforcers and allowed sites.", lists, noLists),
-            section("When", "Outside its schedule a running block blocks nothing, but keeps running.", schedule),
+            section(t("blocks.whatTitle"), t("blocks.whatText"), lists, noLists),
+            section(t("blocks.whenTitle"), t("blocks.whenText"), schedule),
           ],
           fill(block) {
             name.value = block.name;
@@ -829,7 +832,7 @@
             lists.hidden = !overview.lists.length;
             noLists.hidden = !!overview.lists.length;
             schedule.replaceChildren(
-              el("cds-select-item", { value: ALWAYS, label: "Always" }, "Always"),
+              el("cds-select-item", { value: ALWAYS, label: t("blocks.always") }, t("blocks.always")),
               ...overview.schedules.map((s) => el("cds-select-item", { value: s.id, label: s.name }, s.name)),
             );
             schedule.value = block.schedule || ALWAYS;
@@ -844,7 +847,7 @@
             for (const control of [name, schedule, ...Object.values(boxes)]) control.disabled = off;
           },
           settle: async () => {},
-          error: () => (name.value.trim() ? null : "Give the block a name"),
+          error: () => (name.value.trim() ? null : t("blocks.nameMissing")),
           name,
         };
       }
@@ -878,7 +881,7 @@
       }
 
       function listForm() {
-        const name = nameField("e.g. Social media");
+        const name = nameField(t("lists.namePlaceholder"));
         const areas = {};
         const checks = {};
         const nodes = [el("section", {}, name)];
@@ -890,7 +893,7 @@
             lists.append(areas[key]);
           }
           sameHeight(section.lists.map((key) => areas[key]));
-          const group = el("cds-checkbox-group", { "legend-text": section.lists.length ? "How" : "Enforcers" });
+          const group = el("cds-checkbox-group", { "legend-text": t(section.lists.length ? "lists.howLegend" : "lists.enforcersLegend") });
           for (const enforcer of section.enforcers) {
             checks[enforcer.key] = el("cds-checkbox", { "label-text": enforcer.label });
             group.append(checks[enforcer.key]);
@@ -923,13 +926,13 @@
             for (const control of [name, ...Object.values(areas), ...Object.values(checks)]) control.disabled = off;
           },
           settle: async () => {},
-          error: () => (name.value.trim() ? null : "Give the block list a name"),
+          error: () => (name.value.trim() ? null : t("lists.nameMissing")),
           name,
         };
       }
 
       function scheduleForm() {
-        const name = nameField("e.g. Work hours");
+        const name = nameField(t("schedules.namePlaceholder"));
         const week = weekEditor();
         return {
           nodes: [el("section", {}, name), el("section", {}, ...week.nodes)],
@@ -943,7 +946,7 @@
             week.disable(off);
           },
           settle: () => week.settle(),
-          error: () => (name.value.trim() ? week.error() : "Give the schedule a name"),
+          error: () => (name.value.trim() ? week.error() : t("schedules.nameMissing")),
           name,
         };
       }
@@ -952,14 +955,14 @@
       // cell per half hour, that can be dragged over. Carbon has no calendar or time-grid component, so
       // the week is plain layout in Carbon's tokens; the text field is the accessible way to set it,
       // and the week mirrors it.
-      const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+      const DAY_NAMES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"].map((day) => t(`schedules.days.${day}`));
       const SLOT = 30; // minutes per cell
 
       function weekEditor() {
         const text = el("cds-text-input", {
-          label: "Times",
-          placeholder: "e.g. Mon-Fri 08:00-17:00",
-          "helper-text": "Days and times, e.g. Mon-Fri 08:00-17:00; Sat 10:00-12:00. Or drag over the week below to mark times, or to clear them by starting on a marked one.",
+          label: t("schedules.timesLabel"),
+          placeholder: t("schedules.timesPlaceholder"),
+          "helper-text": t("schedules.timesHelper"),
         });
         const grid = el("div", { class: "week", "aria-hidden": "true" });
         const cells = DAY_NAMES.map(() => []);
@@ -1014,7 +1017,7 @@
           typing = 0;
           try {
             const parsed = await invoke("parse_schedule", { text: text.value });
-            if (!parsed) return wrong("Type the days and times; a block that is always active needs no schedule");
+            if (!parsed) return wrong(t("schedules.timesMissing"));
             days = parsed.days;
             wrong(null);
             draw();
@@ -1123,7 +1126,7 @@
         $("editor-section").textContent = kindOf.title;
         $("editor-section").setAttribute("href", kindOf.path);
         $("editor-crumb").textContent = id ? item.name : kindOf.newLabel;
-        $("editor-title").textContent = id ? `Edit ${kindOf.noun}` : kindOf.newLabel;
+        $("editor-title").textContent = id ? kindOf.editTitle : kindOf.newLabel;
         $("editor-description").textContent = kindOf.editorDescription;
         $("cancel").setAttribute("href", kindOf.path);
         $("delete").hidden = !id;
@@ -1143,7 +1146,7 @@
         const box = $("editor-notices");
         const shown = box.dataset.lock === "1";
         if (held && !shown) {
-          notify("editor-notices", "info", "Locked while running", held, { closable: false });
+          notify("editor-notices", "info", t("editor.lockedTitle"), held, { closable: false });
           box.dataset.lock = "1";
         } else if (!held && shown) {
           notify("editor-notices");
@@ -1158,7 +1161,7 @@
         await form.settle();
         const problem = form.error();
         if (problem) {
-          notify("editor-notices", "error", `Could not save the ${KINDS[kind].noun}`, problem);
+          notify("editor-notices", "error", t("editor.saveFailed", { noun: KINDS[kind].noun }), problem);
           $("editor-notices").dataset.lock = "";
           return;
         }
@@ -1167,7 +1170,7 @@
           await KINDS[kind].save(form.read(editing.item));
           location.hash = KINDS[kind].path;
         } catch (e) {
-          notify("editor-notices", "error", `Could not save the ${KINDS[kind].noun}`, String(e));
+          notify("editor-notices", "error", t("editor.saveFailed", { noun: KINDS[kind].noun }), String(e));
           $("editor-notices").dataset.lock = "";
         }
         $("save").disabled = false;
@@ -1185,7 +1188,7 @@
           // The app exits on success, so only a wrong password (or a failure) comes back here.
           await invoke("force_exit", { password });
         } catch (e) {
-          notify("settings-notices", "error", "Not unlocked", String(e));
+          notify("settings-notices", "error", t("settings.failed"), String(e));
         }
         $("password").value = "";
         $("password").focus();
