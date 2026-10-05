@@ -26,7 +26,7 @@ As in the window, which has a page for each:
 
 Outside its schedule a running block keeps running, but enforces nothing. For example, with a schedule of `daily 08:00-17:00`, a block started at 16:00 with a 2-hour duration lock blocks until 17:00; from then on everything is accessible again, and at 18:00 the lock ends the block. With a lock schedule of `daily 08:00-17:00` instead (say the same schedule), it blocks every day from 8 to 5 and cannot be stopped then, until you stop it some evening.
 
-A running block keeps what it was started with: while it runs, it cannot be changed or deleted, and neither can the block lists and the schedules it uses (for when it is active and for its lock). A block list or schedule that any block uses cannot be deleted either; the message says which blocks.
+A running block keeps what it was started with: while it runs, it cannot be changed or deleted, and neither can the block lists and the schedules it uses (for when it is active and for its lock). Deleting a block list or schedule that blocks use takes it out of them, as in the window: a block left without a block list is deleted too, one that loses its schedule is always active, and one that loses its lock schedule has no lock. The question before it says which. A block list or schedule that any block uses cannot be deleted either; the message says which blocks.
 
 ## Commands
 
@@ -123,7 +123,7 @@ Schedules:
 
 ### `stop`, `delete`, `list delete`, `schedule delete`
 
-`stop <block>` stops a running block that is not locked right now; a locked one is refused, and the message says why and for how long. A block locked with a password stops with it: give it with `--password`, or the CLI asks for it without showing it. Deleting asks first (`[y/N]`), or goes ahead with `--yes`, which is also needed when there is no terminal to ask in (a script). A running block, and a block list or schedule that a block uses, cannot be deleted.
+`stop <block>` stops a running block that is not locked right now; a locked one is refused, and the message says why and for how long. A block locked with a password stops with it: give it with `--password`, or the CLI asks for it without showing it. Deleting asks first (`[y/N]`), or goes ahead with `--yes`, which is also needed when there is no terminal to ask in (a script). A running block, and a block list or schedule that a running block uses, cannot be deleted; the question before deleting a block list or schedule says what it does to the blocks that use it.
 
 ### `unlock`
 

@@ -345,11 +345,12 @@ mod tests {
         // A block that is not running and uses the list can still be changed, as long as the list is not.
         assert_eq!(handle(&context, 0, Request::SaveBlock { block: block("work", &["social", "games"]) }).0, Response::Done);
 
-        // Once it ends, the list can change; deleting it is still refused while blocks use it.
+        // Once it ends, the list can change, and be deleted: the blocks keep their other list.
         assert_eq!(handle(&context, 0, Request::Stop { id: "evening".into(), password: None }).0, Response::Done);
         assert_eq!(handle(&context, 0, Request::SaveList { list: block_list("social", &["reddit.com"]) }).0, Response::Done);
-        let Response::Failed(why) = handle(&context, 0, Request::DeleteList { id: "social".into() }).0 else { panic!("deleted") };
-        assert!(why.contains("Block evening") && why.contains("Block work"), "{why}");
+        assert_eq!(handle(&context, 0, Request::DeleteList { id: "social".into() }).0, Response::Done);
+        let blocks = overview(&context).blocks;
+        assert!(blocks.iter().all(|b| b.lists == vec!["games".to_string()]), "{blocks:?}");
     }
 
     #[test]

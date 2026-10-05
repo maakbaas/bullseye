@@ -4672,3 +4672,11 @@ The three layers of section 12 became three kinds of things with lists and pages
 
 **No browser menu.** Right-click in WebView2 shows the browser's menu (Back, Refresh, Print, …), which has no place in an app; the page cancels the `contextmenu` event except in text fields, where cut, copy and paste are useful.
 
+## 16. Tabs, making things from a block, deleting what blocks use (later change)
+
+**Tabs for the pages.** Carbon's header global actions are for tools and panels (search, notifications, a switcher), not for pages. Its header links disappear below 1056 px and its side nav folds into a hamburger there, neither of which suits a window that is often 960 px wide. Tabs are Carbon's component for switching between related views and stay usable at any width: with an icon before the label, and icons only below 672 px so all four fit at 360 px.
+
+**Making a block list or schedule from a block.** The block editor can make a block list or schedule without leaving the block: the block as edited so far is kept (`detour`), the new item's editor opens one level deeper in the breadcrumb ("Blocks / Evening / New block list"), and Save comes back to the block with the new item ticked or chosen. A Carbon modal was considered and not used: a block list's text areas and a schedule's week grid are a page's worth of form, and Carbon keeps modals for short tasks. The same detour makes a schedule for a Schedule lock when there is none yet. A new schedule starts empty.
+
+**Deleting what blocks use.** A block list or schedule that no running block uses can be deleted; it is taken out of the blocks that use it. A block left without a block list is deleted with it (it could not start anyway), a block that loses its schedule is always active, and one that loses its lock schedule has no lock. `Library::fallout` says which, and both the window and the CLI ask with that in the question, so nothing changes unannounced.
+

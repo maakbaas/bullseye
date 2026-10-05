@@ -14,8 +14,10 @@ window.STRINGS = {
     name: "Bullseye",
   },
 
-  // The header's icons, one per page.
+  // The tabs under the header, one per page.
   nav: {
+    // What a screen reader calls the tabs.
+    label: "Pages",
     blocks: "Blocks",
     lists: "Block lists",
     schedules: "Schedules",
@@ -63,7 +65,9 @@ window.STRINGS = {
     whatText: "The block lists it enforces, each by its own enforcers and allowed sites.",
     listsLegend: "Block lists",
     noLists: "No block lists yet: a block needs at least one.",
+    // Under the block lists and the schedule in the block editor: made there, added to this block.
     newList: "New block list",
+    newSchedule: "New schedule",
     whenTitle: "When",
     whenText: "Outside its schedule a running block blocks nothing, but keeps running.",
     scheduleLabel: "Schedule",
@@ -160,6 +164,10 @@ window.STRINGS = {
       field: "Locked during",
       helper: "It cannot be stopped while this schedule is active",
       missing: "Choose a schedule",
+      // Chosen when there is no schedule yet: offers to make one, which the lock is then set to.
+      noneHeading: "No schedules yet",
+      noneBody: "A schedule lock needs a schedule to lock by. Make one now? Once it is saved, the lock is set to it.",
+      noneAction: "New schedule",
       // {schedule}: the lock schedule's name; {times}: its times in words.
       describe: "Locked while {schedule} is active ({times})",
       describeGone: "Locked by a schedule that is gone",
@@ -262,6 +270,7 @@ window.STRINGS = {
     active: "Active {times}",
     notUsed: "Not used by a block yet",
     // Above the week grid.
+    nothingMarked: "Nothing marked yet: mark when blocks are active.",
     gridHelp: "Drag over the week to mark when blocks are active. Start on a marked time to clear it instead.",
     // The week grid's column heads, Monday first.
     days: { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" },
@@ -271,6 +280,11 @@ window.STRINGS = {
   delete: {
     heading: "Delete {name}?",
     body: "The {noun} is removed. This cannot be undone.",
+    // What it does to the blocks that use a block list or schedule; {names}: those blocks, quoted.
+    deletesToo: "{names} is deleted too, as it has no other block list.",
+    keepsOthers: "{names} keeps its other block lists.",
+    becomesAlways: "{names} is always active from then on.",
+    losesLock: "{names} has no lock from then on.",
     failed: "Could not delete the {noun}",
   },
 

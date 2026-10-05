@@ -520,7 +520,7 @@ fn execute(command: Command) -> Result<(), Failure> {
         Command::ListDelete { list, yes } => {
             let overview = overview()?;
             let list = find(&overview.lists, &list, "block list", |l| (&l.id, &l.name))?;
-            if !confirm(&format!("Delete the block list \"{}\"? This cannot be undone.", list.name), yes)? {
+            if !confirm(&format!("Delete the block list \"{}\"?{} This cannot be undone.", list.name, fallout(&overview, &list.id)), yes)? {
                 return Err(failed("Not deleted."));
             }
             send(Request::DeleteList { id: list.id.clone() })?;
@@ -554,7 +554,7 @@ fn execute(command: Command) -> Result<(), Failure> {
         Command::ScheduleDelete { schedule, yes } => {
             let overview = overview()?;
             let schedule = find(&overview.schedules, &schedule, "schedule", |s| (&s.id, &s.name))?;
-            if !confirm(&format!("Delete the schedule \"{}\"? This cannot be undone.", schedule.name), yes)? {
+            if !confirm(&format!("Delete the schedule \"{}\"?{} This cannot be undone.", schedule.name, fallout(&overview, &schedule.id)), yes)? {
                 return Err(failed("Not deleted."));
             }
             send(Request::DeleteSchedule { id: schedule.id.clone() })?;
@@ -758,6 +758,26 @@ fn users(overview: &Overview, id: &str) -> String {
     let library = Library { blocks: overview.blocks.clone(), ..Library::default() };
     let names: Vec<&str> = library.users_of(id).iter().map(|b| b.name.as_str()).collect();
     if names.is_empty() { "(no block)".into() } else { names.join(", ") }
+}
+
+/// What deleting a block list or schedule does to the blocks that use it, in sentences each with a
+/// space in front, as the window's question says it; empty when no block uses it.
+fn fallout(overview: &Overview, id: &str) -> String {
+    let library = Library { blocks: overview.blocks.clone(), ..Library::default() };
+    let fallout = library.fallout(id);
+    let quoted = |names: &[String]| names.iter().map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ");
+    let mut text = String::new();
+    for (names, what) in [
+        (&fallout.deleted, "is deleted too, as it has no other block list"),
+        (&fallout.without_it, "keeps its other block lists"),
+        (&fallout.always, "is always active from then on"),
+        (&fallout.unlocked, "has no lock from then on"),
+    ] {
+        if !names.is_empty() {
+            text.push_str(&format!(" {} {what}.", quoted(names)));
+        }
+    }
+    text
 }
 
 /// Everything, as the window's pages show it: the blocks, the block lists, the schedules.
@@ -1053,6 +1073,14 @@ mod tests {
         assert_eq!(parse(&args(&["schedule", "delete", "Work hours"])), Ok(Command::ScheduleDelete { schedule: "Work hours".into(), yes: false }));
         assert_eq!(parse(&args(&["schedule", "check", "weekdays 9-5pm"])), Ok(Command::ScheduleCheck { times: "weekdays 9-5pm".into() }));
         assert_eq!(parse(&args(&["unlock", "--password", "pw"])), Ok(Command::Unlock { password: Some("pw".into()) }));
+    }
+
+    #[test]
+    fn deleting_says_what_it_does_to_the_blocks() {
+        let overview = library();
+        assert_eq!(fallout(&overview, "l1"), " \"Work\" is deleted too, as it has no other block list.");
+        assert_eq!(fallout(&overview, "s1"), " \"Work\" is always active from then on. \"Work\" has no lock from then on.");
+        assert_eq!(fallout(&overview, "other"), "");
     }
 
     #[test]

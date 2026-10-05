@@ -296,11 +296,18 @@ impl Definitions {
         })
     }
 
+    /// Deletes a block list, and takes it out of the blocks that use it; a block that had no
+    /// other block list is deleted with it (`Library::fallout`). Whether a running block uses it
+    /// is the handler's to refuse (`handler::edit`).
     pub fn delete_list(&self, id: &str) -> Result<(), String> {
         self.change(|library| {
             library.list(id).ok_or("No such block list")?;
-            refuse_if_used(library, id, "block list")?;
             library.lists.retain(|l| l.id != id);
+            library.blocks.retain_mut(|block| {
+                let had = block.lists.len();
+                block.lists.retain(|l| l != id);
+                !(had > 0 && block.lists.is_empty())
+            });
             Ok(())
         })
     }
@@ -317,8 +324,17 @@ impl Definitions {
     pub fn delete_schedule(&self, id: &str) -> Result<(), String> {
         self.change(|library| {
             library.schedule(id).ok_or("No such schedule")?;
-            refuse_if_used(library, id, "schedule")?;
             library.schedules.retain(|s| s.id != id);
+            // The blocks it was the schedule of are always active; one it was the lock schedule of
+            // has no lock (`Library::fallout`).
+            for block in &mut library.blocks {
+                if block.schedule.as_deref() == Some(id) {
+                    block.schedule = None;
+                }
+                if block.lock.schedule() == Some(id) {
+                    block.lock = Lock::None;
+                }
+            }
             // A block may have kept it as the schedule of a lock it no longer has: forgotten too.
             for block in &mut library.blocks {
                 block.kept_locks.retain(|lock| lock.schedule() != Some(id));
@@ -343,11 +359,30 @@ impl Definitions {
 }
 
 /// A block list or schedule that blocks use cannot be deleted; the message says which blocks.
-fn refuse_if_used(library: &Library, id: &str, kind: &str) -> Result<(), String> {
-    let users: Vec<&str> = library.users_of(id).iter().map(|b| b.name.as_str()).collect();
-    match users.as_slice() {
-        [] => Ok(()),
-        names => Err(format!("This {kind} is used by {}; take it out of them first", names.join(", "))),
+/// What deleting a block list or schedule does to the blocks that use it, by their names.
+#[derive(Default, Debug, PartialEq)]
+pub struct Fallout {
+    /// Blocks that had only this block list: deleted with it.
+    pub deleted: Vec<String>,
+    /// Blocks that keep their other block lists.
+    pub without_it: Vec<String>,
+    /// Blocks it was the schedule of: always active from then on.
+    pub always: Vec<String>,
+    /// Blocks it was the lock schedule of: no lock from then on.
+    pub unlocked: Vec<String>,
+}
+
+impl Library {
+    /// What deleting the block list or schedule `id` does (`Definitions::delete_list`,
+    /// `delete_schedule`), for the question before it.
+    pub fn fallout(&self, id: &str) -> Fallout {
+        let names = |keep: &dyn Fn(&Definition) -> bool| self.blocks.iter().filter(|b| keep(b)).map(|b| b.name.clone()).collect();
+        Fallout {
+            deleted: names(&|b| b.lists.iter().all(|l| l == id) && !b.lists.is_empty()),
+            without_it: names(&|b| b.lists.iter().any(|l| l == id) && b.lists.iter().any(|l| l != id)),
+            always: names(&|b| b.schedule.as_deref() == Some(id)),
+            unlocked: names(&|b| b.lock.schedule() == Some(id)),
+        }
     }
 }
 
@@ -449,27 +484,45 @@ pub mod tests {
     }
 
     #[test]
-    fn a_list_or_schedule_in_use_cannot_be_deleted() {
+    fn deleting_a_list_or_schedule_takes_it_out_of_its_blocks() {
         let definitions = Definitions::at(None);
         definitions.save_list(block_list("l", &["a.com"])).unwrap();
+        definitions.save_list(block_list("l2", &["b.com"])).unwrap();
         definitions.save_schedule(weekly("s", "weekends")).unwrap();
         definitions.save_schedule(weekly("s2", "weekdays")).unwrap();
-        definitions.save_block(Definition { schedule: Some("s".into()), lock: Lock::Scheduled { schedule: "s2".into() }, ..block("b", &["l"]) }).unwrap();
-        let why = definitions.delete_list("l").unwrap_err();
-        assert!(why.contains("Block b"), "{why}");
-        assert!(definitions.delete_schedule("s").is_err());
-        // A schedule used by a lock is in use too.
-        assert!(definitions.delete_schedule("s2").is_err());
-        // Kept by a lock the block no longer has, it is not in use: it can be deleted, and the
-        // block forgets it.
-        definitions.save_block(Definition { schedule: Some("s".into()), lock: Lock::None, ..block("b", &["l"]) }).unwrap();
+        // "a" has only l; "b" has l and l2, schedule s and lock schedule s2.
+        definitions.save_block(block("a", &["l"])).unwrap();
+        definitions.save_block(Definition { schedule: Some("s".into()), lock: Lock::Scheduled { schedule: "s2".into() }, ..block("b", &["l", "l2"]) }).unwrap();
+        let library = definitions.library();
+        let fallout = library.fallout("l");
+        assert_eq!((fallout.deleted, fallout.without_it), (vec!["Block a".to_string()], vec!["Block b".to_string()]));
+        assert_eq!((library.fallout("s").always, library.fallout("s2").unlocked), (vec!["Block b".to_string()], vec!["Block b".to_string()]));
+        assert_eq!(library.fallout("nothing"), Fallout::default());
+
+        // The block list: "a" goes with it, "b" keeps l2.
+        definitions.delete_list("l").unwrap();
+        let library = definitions.library();
+        assert!(library.block("a").is_none());
+        assert_eq!(library.block("b").unwrap().lists, vec!["l2"]);
+        // The schedules: "b" is always active, and has no lock.
+        definitions.delete_schedule("s").unwrap();
+        definitions.delete_schedule("s2").unwrap();
+        let b = definitions.library().block("b").unwrap().clone();
+        assert_eq!((b.schedule, b.lock), (None, Lock::None));
+        assert!(b.kept_locks.is_empty(), "nor is it kept: {:?}", b.kept_locks);
+        assert!(definitions.delete_list("l").is_err(), "gone already");
+    }
+
+    #[test]
+    fn a_kept_lock_schedule_is_forgotten_with_it() {
+        let definitions = Definitions::at(None);
+        definitions.save_list(block_list("l", &["a.com"])).unwrap();
+        definitions.save_schedule(weekly("s2", "weekdays")).unwrap();
+        definitions.save_block(Definition { lock: Lock::Scheduled { schedule: "s2".into() }, ..block("b", &["l"]) }).unwrap();
+        definitions.save_block(block("b", &["l"])).unwrap();
         assert_eq!(definitions.library().block("b").unwrap().kept_locks, vec![Lock::Scheduled { schedule: "s2".into() }]);
         definitions.delete_schedule("s2").unwrap();
         assert!(definitions.library().block("b").unwrap().kept_locks.is_empty());
-        definitions.delete_block("b").unwrap();
-        definitions.delete_list("l").unwrap();
-        definitions.delete_schedule("s").unwrap();
-        assert!(definitions.delete_list("l").is_err(), "gone already");
     }
 
     #[test]

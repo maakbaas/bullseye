@@ -36,7 +36,16 @@
       body:not(.ready) { visibility: hidden; }
       /* Room for the header above. Every view fills the width up to Carbon's lg breakpoint (66rem)
          and is centred beyond it, so the margins grow evenly instead of jumping. */
-      main { padding: calc(3rem + var(--cds-spacing-07)) 0 var(--cds-spacing-09); max-inline-size: 66rem; margin-inline: auto; }
+      main { padding: calc(3rem + var(--cds-spacing-05)) 0 var(--cds-spacing-09); max-inline-size: 66rem; margin-inline: auto; }
+      /* The tabs, then the page. An icon before a tab's label, as Carbon's tabs with icons. */
+      #pages { margin-block-end: var(--cds-spacing-07); }
+      #pages cds-tab svg { flex: none; fill: currentColor; margin-inline-end: var(--cds-spacing-03); vertical-align: text-bottom; }
+      /* Below Carbon's md breakpoint the tabs are icons only, as Carbon's icon tabs, so all four fit;
+         the label stays for screen readers. */
+      @media (max-width: 41.99rem) {
+        #pages cds-tab svg { margin-inline-end: 0; }
+        #pages cds-tab .label { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+      }
       [hidden] { display: none !important; }
       /* In a Windows 11 window nothing sets the header off from the title bar above it (a browser
          has its tab strip there), so it gets the same line on top as Carbon gives it below. */
@@ -123,20 +132,25 @@
     </style>
   </head>
   <body>
-    <!-- The pages are header actions on the right, as icons: blocks (home), block lists, schedules,
-         settings. -->
     <!-- Texts: data-t is an element's text, data-t-<attribute> an attribute's (`applyStrings`). -->
     <cds-header data-t-aria-label="app.name">
       <cds-header-name href="#/" prefix="" data-t="app.name"></cds-header-name>
-      <div class="cds--header__global">
-        <cds-header-global-action data-page="blocks" data-icon="home" data-t-aria-label="nav.blocks" data-t-tooltip-text="nav.blocks"></cds-header-global-action>
-        <cds-header-global-action data-page="lists" data-icon="list-checked" data-t-aria-label="nav.lists" data-t-tooltip-text="nav.lists"></cds-header-global-action>
-        <cds-header-global-action data-page="schedules" data-icon="calendar" data-t-aria-label="nav.schedules" data-t-tooltip-text="nav.schedules"></cds-header-global-action>
-        <cds-header-global-action data-page="settings" data-icon="settings" data-t-aria-label="nav.settings" data-t-tooltip-text="nav.settings" tooltip-alignment="right"></cds-header-global-action>
-      </div>
     </cds-header>
 
     <main>
+      <!-- The pages, as tabs with an icon before the label (`markPage`, `PAGES`). An editor belongs
+           to its kind's tab. -->
+      <div class="cds--css-grid">
+        <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
+          <cds-tabs id="pages" data-t-aria-label="nav.label">
+            <cds-tab value="blocks" data-icon="locked"><span class="label" data-t="nav.blocks"></span></cds-tab>
+            <cds-tab value="lists" data-icon="list-checked-16"><span class="label" data-t="nav.lists"></span></cds-tab>
+            <cds-tab value="schedules" data-icon="calendar-16"><span class="label" data-t="nav.schedules"></span></cds-tab>
+            <cds-tab value="settings" data-icon="settings"><span class="label" data-t="nav.settings"></span></cds-tab>
+          </cds-tabs>
+        </div>
+      </div>
+
       <!-- One page per kind (blocks, block lists, schedules): a tile each. Built from KINDS. -->
       <div id="view-list" class="cds--css-grid" hidden>
         <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
@@ -159,10 +173,8 @@
       <!-- Making or changing a block, a block list or a schedule: the kind's form goes in #form. -->
       <div id="view-editor" class="cds--css-grid" hidden>
         <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
-          <cds-breadcrumb class="trail" no-trailing-slash>
-            <cds-breadcrumb-item><cds-breadcrumb-link id="editor-section"></cds-breadcrumb-link></cds-breadcrumb-item>
-            <cds-breadcrumb-item><cds-breadcrumb-link is-currentpage id="editor-crumb"></cds-breadcrumb-link></cds-breadcrumb-item>
-          </cds-breadcrumb>
+          <!-- Filled by `openEditor`: the page, then a block being made, then what is made for it. -->
+          <cds-breadcrumb class="trail" id="trail" no-trailing-slash></cds-breadcrumb>
           <div class="page-header">
             <div>
               <h1 class="cds--type-productive-heading-05" id="editor-title"></h1>
@@ -577,7 +589,7 @@
           newPath: "#/schedules/new",
           ...kindTexts("schedules"),
           items: () => overview.schedules,
-          create: () => ({ id: newId(), name: "", days: [0, 1, 2, 3, 4, 5, 6].map((day) => (day < 5 ? [[480, 1020]] : [])) }),
+          create: () => ({ id: newId(), name: "", days: [0, 1, 2, 3, 4, 5, 6].map(() => []) }),
           save: (schedule) => invoke("save_schedule", { schedule }),
           remove: (id) => invoke("delete_schedule", { id }),
           held: (schedule) => {
@@ -745,6 +757,33 @@
         const parts = tiles.get(`blocks:${id}`);
         const block = overview.blocks.find((b) => b.id === id);
         if (!block) return;
+        // A lock schedule needs a schedule: without one, it offers to make one, and the lock is then
+        // set to it; otherwise the lock stays as it was.
+        if (method === "scheduled" && !overview.schedules.length) {
+          parts.choosing = true;
+          const make = await ask({
+            heading: t("locks.scheduled.noneHeading"),
+            body: t("locks.scheduled.noneBody"),
+            action: t("locks.scheduled.noneAction"),
+            kind: "primary",
+          });
+          parts.choosing = false;
+          parts.method.value = block.lock.method;
+          if (make) {
+            detour = {
+              back: KINDS.blocks.path,
+              crumbs: [{ label: KINDS.blocks.title, href: KINDS.blocks.path }, { label: block.name, href: KINDS.blocks.path }],
+              onSaved: async (schedule) => {
+                const now = overview.blocks.find((b) => b.id === id) || block;
+                await invoke("save_block", { block: { ...now, lock: { method: "scheduled", schedule: schedule.id } } }).catch((e) =>
+                  notify("list-notices", "error", t("blocks.lockFailed", { name: quoted(block.name) }), String(e)),
+                );
+              },
+            };
+            location.hash = `#/lock/${encodeURIComponent(id)}/schedules/new`;
+          }
+          return;
+        }
         const form = LOCKS[method].form && LOCKS[method].form(block);
         let lock = { method };
         if (form) {
@@ -785,9 +824,6 @@
         if (block.lock && !parts.choosing && parts.method.value !== block.lock.method) parts.method.value = block.lock.method;
         // Settings to change (in the menu): all locks but No lock.
         parts.lockItem.hidden = !LOCKS[parts.method.value] || !LOCKS[parts.method.value].form;
-        // A lock schedule needs a schedule to choose.
-        const scheduled = parts.method.querySelector('[value="scheduled"]');
-        if (scheduled) scheduled.disabled = overview.schedules.length === 0 && parts.method.value !== "scheduled";
         const busy = parts.toggle.dataset.busy === "1";
         const action = running ? "stop" : "start";
         if (parts.toggle.dataset.action !== action) {
@@ -874,13 +910,26 @@
       });
       $("confirm").addEventListener("cds-modal-closed", () => answered(false));
 
+      // What deleting a block list or schedule does to the blocks that use it, as the service
+      // does it (`Library::fallout`): one sentence per kind of change.
+      function fallout(id) {
+        const named = (keep) => names(overview.blocks.filter(keep));
+        const sentences = [
+          ["deletesToo", (b) => b.lists.length > 0 && b.lists.every((l) => l === id)],
+          ["keepsOthers", (b) => b.lists.includes(id) && b.lists.some((l) => l !== id)],
+          ["becomesAlways", (b) => b.schedule === id],
+          ["losesLock", (b) => b.lock && b.lock.schedule === id],
+        ];
+        return sentences.map(([key, keep]) => [key, named(keep)]).filter(([, who]) => who).map(([key, who]) => t(`delete.${key}`, { names: who }));
+      }
+
       async function confirmDelete(kind, id) {
         const kindOf = KINDS[kind];
         const item = kindOf.items().find((i) => i.id === id);
         if (!item) return;
         const sure = await ask({
           heading: t("delete.heading", { name: quoted(item.name), noun: kindOf.noun }),
-          body: t("delete.body", { name: quoted(item.name), noun: kindOf.noun }),
+          body: [t("delete.body", { name: quoted(item.name), noun: kindOf.noun }), ...fallout(id)].join(" "),
           action: t("common.delete"),
           kind: "danger",
         });
@@ -912,21 +961,21 @@
       function blockForm() {
         const name = nameField(t("blocks.namePlaceholder"));
         const lists = el("cds-checkbox-group", { "legend-text": t("blocks.listsLegend") });
-        const noLists = el(
-          "div",
-          { class: "inline-action" },
-          el("p", { class: "cds--type-body-01" }, t("blocks.noLists")),
-          el("cds-button", { kind: "tertiary", size: "md", href: "#/lists/new" }, t("blocks.newList")),
-        );
+        const noLists = el("p", { class: "cds--type-body-01" }, t("blocks.noLists"));
         const schedule = el("cds-select", { "label-text": t("blocks.scheduleLabel"), "helper-text": t("blocks.scheduleHelper") });
+        // Made here and added to this block: the editor comes back with it (`detourFor`).
+        const newList = el("cds-button", { kind: "tertiary", size: "md" }, t("blocks.newList"), carbonIcon("add", "icon"));
+        const newSchedule = el("cds-button", { kind: "tertiary", size: "md" }, t("blocks.newSchedule"), carbonIcon("add", "icon"));
+        newList.addEventListener("click", () => detourFor("lists"));
+        newSchedule.addEventListener("click", () => detourFor("schedules"));
         let boxes = {};
         const section = (title, text, ...content) =>
           el("section", {}, el("h2", { class: "cds--type-productive-heading-03" }, title), el("p", { class: "cds--type-body-01" }, text), ...content);
         return {
           nodes: [
             el("section", {}, name),
-            section(t("blocks.whatTitle"), t("blocks.whatText"), lists, noLists),
-            section(t("blocks.whenTitle"), t("blocks.whenText"), schedule),
+            section(t("blocks.whatTitle"), t("blocks.whatText"), lists, noLists, el("div", { class: "inline-action" }, newList)),
+            section(t("blocks.whenTitle"), t("blocks.whenText"), schedule, el("div", { class: "inline-action" }, newSchedule)),
           ],
           fill(block) {
             name.value = block.name;
@@ -954,7 +1003,7 @@
             schedule: schedule.value && schedule.value !== ALWAYS ? schedule.value : null,
           }),
           disable(off) {
-            for (const control of [name, schedule, ...Object.values(boxes)]) control.disabled = off;
+            for (const control of [name, schedule, newList, newSchedule, ...Object.values(boxes)]) control.disabled = off;
           },
           settle: async () => {},
           error: () => (name.value.trim() ? null : t("blocks.nameMissing")),
@@ -1112,6 +1161,14 @@
         // The week written out by the backend, as the CLI and the block tiles say it; or why it
         // cannot be saved (nothing marked).
         async function describe() {
+          // Nothing marked yet (a new schedule): said plainly, not as an error, though it cannot be
+          // saved like this.
+          if (days.every((spans) => !spans.length)) {
+            problem = t("schedules.nothingMarked");
+            summary.textContent = problem;
+            summary.classList.remove("problem");
+            return;
+          }
           try {
             summary.textContent = t("schedules.active", { times: await invoke("describe_schedule", { week: { days } }) });
             problem = null;
@@ -1201,23 +1258,57 @@
       const forms = {};
       let editing = null; // { kind, item (as opened), isNew }
 
-      function openEditor(kind, id) {
+      // Making a block list or schedule on the way to something else: from the block editor, for
+      // the block being made or changed, or for a block's lock schedule. It remembers where to go
+      // back (`back`), the breadcrumb up to there, the block as it was being edited (`draft`), and
+      // what to do with the new item once saved (`onSaved`). Used up when its editor is left.
+      let detour = null;
+
+      // From the block editor: the block as it is now is kept, and gets the new item when it is saved.
+      function detourFor(kind) {
+        const draft = forms.blocks.read(editing.item);
+        const back = location.hash || KINDS.blocks.path;
+        detour = {
+          back,
+          draft,
+          crumbs: [
+            { label: KINDS.blocks.title, href: KINDS.blocks.path },
+            { label: draft.name || (editing.isNew ? KINDS.blocks.newLabel : editing.item.name), href: back },
+          ],
+          onSaved: async (item) => {
+            if (kind === "lists" && !draft.lists.includes(item.id)) draft.lists.push(item.id);
+            if (kind === "schedules") draft.schedule = item.id;
+          },
+        };
+        location.hash = `${back}/${kind}/new`;
+      }
+
+      // The breadcrumb: links up to the last, which is this page.
+      function setCrumbs(crumbs) {
+        $("trail").replaceChildren(
+          ...crumbs.map((crumb, i) =>
+            el("cds-breadcrumb-item", {}, el("cds-breadcrumb-link", i === crumbs.length - 1 ? { "is-currentpage": true } : { href: crumb.href }, crumb.label)),
+          ),
+        );
+      }
+
+      // `via`: the detour this item is made on; `draft`: a block as it was being edited before one.
+      function openEditor(kind, id, { via = null, draft = null } = {}) {
         const kindOf = KINDS[kind];
-        const item = id ? kindOf.items().find((i) => i.id === id) : kindOf.create();
+        const item = draft || (id ? kindOf.items().find((i) => i.id === id) : kindOf.create());
         if (!item) {
           location.hash = kindOf.path;
           return;
         }
-        editing = { kind, item: structuredClone(item), isNew: !id };
+        editing = { kind, item: structuredClone(item), isNew: !id, via };
         const form = (forms[kind] = kindOf.form());
         $("form").replaceChildren(...form.nodes);
         form.fill(editing.item);
-        $("editor-section").textContent = kindOf.title;
-        $("editor-section").setAttribute("href", kindOf.path);
-        $("editor-crumb").textContent = id ? item.name : kindOf.newLabel;
+        const here = id ? (kindOf.items().find((i) => i.id === id) || item).name : kindOf.newLabel;
+        setCrumbs(via ? [...via.crumbs, { label: here }] : [{ label: kindOf.title, href: kindOf.path }, { label: here }]);
         $("editor-title").textContent = id ? kindOf.editTitle : kindOf.newLabel;
         $("editor-description").textContent = kindOf.editorDescription;
-        $("cancel").setAttribute("href", kindOf.path);
+        $("cancel").setAttribute("href", via ? via.back : kindOf.path);
         $("delete").hidden = !id;
         notify("editor-notices");
         $("editor-notices").dataset.lock = "";
@@ -1256,8 +1347,15 @@
         }
         $("save").disabled = true;
         try {
-          await KINDS[kind].save(form.read(editing.item));
-          location.hash = KINDS[kind].path;
+          const saved = form.read(editing.item);
+          await KINDS[kind].save(saved);
+          const { via } = editing;
+          if (via) {
+            // Back where it was made from, with it: the service's view first, so it is there.
+            await via.onSaved(saved);
+            await refresh();
+            location.hash = via.back;
+          } else location.hash = KINDS[kind].path;
         } catch (e) {
           notify("editor-notices", "error", t("editor.saveFailed", { noun: KINDS[kind].noun }), String(e));
           $("editor-notices").dataset.lock = "";
@@ -1292,11 +1390,39 @@
       // ---- Pages, by the address after #: #/ (blocks), #/new, #/edit/<id>, the same under
       // #/lists and #/schedules, and #/settings.
 
+      // The tab of the page shown; an editor is its kind's.
+      function markPage(page) {
+        $("pages").value = page;
+        // On a narrow window the row of tabs scrolls: the current one is brought into sight.
+        const tab = document.querySelector(`#pages cds-tab[value="${page}"]`);
+        requestAnimationFrame(() => tab && tab.scrollIntoView({ block: "nearest", inline: "nearest" }));
+      }
+
       function route() {
         const hash = location.hash || "#/";
         let view = "list";
         let kind = "blocks";
         let edit = null;
+        // A block list or schedule made on a detour (`detour`): from the block editor, or for a
+        // lock. Without its detour (the page was reloaded), back to where it came from.
+        const nested = hash.match(/^#\/((?:new|edit\/[^/]+|lock\/[^/]+))\/(lists|schedules)\/new$/);
+        if (nested) {
+          const back = nested[1].startsWith("lock/") ? KINDS.blocks.path : `#/${nested[1]}`;
+          if (!detour || detour.back !== back) {
+            location.hash = back;
+            return;
+          }
+          page = nested[2];
+          for (const name of ["list", "editor", "settings"]) $(`view-${name}`).hidden = name !== "editor";
+          // Still within the block it is made for.
+          markPage("blocks");
+          openEditor(nested[2], null, { via: detour });
+          window.scrollTo(0, 0);
+          return;
+        }
+        // Back from a detour: the block as it was being edited, with what was made on it.
+        const resumed = detour && detour.back === hash ? detour.draft : null;
+        detour = null;
         const match = hash.match(/^#\/(?:(lists|schedules)(?:\/|$))?(new|edit\/(.+))?$/);
         if (hash === "#/settings") view = "settings";
         else if (match) {
@@ -1309,8 +1435,7 @@
         page = kind;
         for (const name of ["list", "editor", "settings"]) $(`view-${name}`).hidden = name !== view;
         // The editor belongs to its kind's page.
-        const current = view === "settings" ? "settings" : kind;
-        for (const action of document.querySelectorAll("cds-header-global-action")) action.active = action.dataset.page === current;
+        markPage(view === "settings" ? "settings" : kind);
         if (view === "list") {
           const kindOf = KINDS[kind];
           $("list-title").textContent = kindOf.title;
@@ -1323,7 +1448,7 @@
           tiles.clear();
           renderTiles(kind);
         }
-        if (view === "editor") openEditor(kind, edit || null);
+        if (view === "editor") openEditor(kind, edit || null, { draft: kind === "blocks" ? resumed : null });
         else editing = null;
         if (view === "settings") {
           $("password").value = "";
@@ -1335,10 +1460,11 @@
       window.addEventListener("hashchange", route);
       $("new-item").addEventListener("click", () => (location.hash = KINDS[page].newPath));
       const PAGES = { blocks: "#/", lists: "#/lists", schedules: "#/schedules", settings: "#/settings" };
-      for (const action of document.querySelectorAll("cds-header-global-action")) {
-        action.append(carbonIcon(action.dataset.icon, "icon"));
-        action.addEventListener("click", () => (location.hash = PAGES[action.dataset.page]));
-      }
+      for (const tab of document.querySelectorAll("#pages cds-tab")) tab.prepend(carbonIcon(tab.dataset.icon));
+      $("pages").addEventListener("cds-tabs-selected", (event) => {
+        const page = event.detail.item.value;
+        if (location.hash !== PAGES[page]) location.hash = PAGES[page];
+      });
       $("delete").append(carbonIcon("trash-can", "icon"));
 
       // No browser menu on right-click (Back, Refresh, …: WebView2's own, which make no sense in an
