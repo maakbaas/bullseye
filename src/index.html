@@ -46,6 +46,7 @@
         margin-bottom: var(--cds-spacing-07);
       }
       .page-header p { margin-top: var(--cds-spacing-03); color: var(--cds-text-secondary); max-width: 40rem; }
+      .trail { display: block; margin-bottom: var(--cds-spacing-03); }
       .notices:empty { display: none; }
       .notices { margin-bottom: var(--cds-spacing-05); }
       .notices cds-inline-notification { max-width: none; }
@@ -114,6 +115,11 @@
       <!-- Making or changing a block. Built from the tables in the script (LISTS, SECTIONS, SCHEDULES). -->
       <div id="view-editor" class="cds--css-grid" hidden>
         <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-12 cds--lg:col-start-3 cds--xlg:col-span-10 cds--xlg:col-start-4">
+          <!-- Where the editor sits: under the blocks (the side nav says which section). -->
+          <cds-breadcrumb class="trail" no-trailing-slash>
+            <cds-breadcrumb-item><cds-breadcrumb-link href="#/">Blocks</cds-breadcrumb-link></cds-breadcrumb-item>
+            <cds-breadcrumb-item><cds-breadcrumb-link is-currentpage id="editor-crumb">New block</cds-breadcrumb-link></cds-breadcrumb-item>
+          </cds-breadcrumb>
           <div class="page-header">
             <div>
               <h1 class="cds--type-productive-heading-05" id="editor-title">New block</h1>
@@ -519,6 +525,7 @@
         }
         editing = structuredClone(block);
         $("editor-title").textContent = isNew ? "New block" : "Edit block";
+        $("editor-crumb").textContent = isNew ? "New block" : block.name;
         $("delete").hidden = isNew;
         $("name").value = block.name;
         for (const [key, area] of Object.entries(fields.lists)) area.value = (block[key] || []).join("\n");
