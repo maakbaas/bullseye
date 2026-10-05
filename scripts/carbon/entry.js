@@ -1,7 +1,9 @@
 // The Carbon web components the page uses, bundled into src/vendor/carbon.js by
 // scripts/vendor-carbon.mjs. Importing a component registers its `cds-*` element. A component the
 // page starts using must be added here, and the vendor files rebuilt (`npm run vendor`).
-// The pages, as tabs at the top.
+import '@carbon/web-components/es/components/ui-shell/header.js';
+import '@carbon/web-components/es/components/ui-shell/header-name.js';
+// The pages, as tabs under the header.
 import '@carbon/web-components/es/components/tabs/tabs.js';
 import '@carbon/web-components/es/components/tabs/tab.js';
 // An icon-only tab (narrow window) names itself in a tooltip.

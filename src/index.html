@@ -28,19 +28,24 @@
   </head>
   <body>
     <!-- Texts: data-t is an element's text, data-t-<attribute> an attribute's (`applyStrings`). -->
-    <!-- The pages, as tabs with an icon before the label (`markPage`, `PAGES`), in a band at the top
-         that sets them apart from the content. An editor belongs to its kind's tab. No header: the
-         window's title already names the app. -->
-    <nav class="pages">
-      <cds-tabs id="pages" data-t-aria-label="nav.label">
-        <cds-tab value="blocks" data-icon="locked"><span class="label" data-t="nav.blocks"></span></cds-tab>
-        <cds-tab value="lists" data-icon="list-checked-16"><span class="label" data-t="nav.lists"></span></cds-tab>
-        <cds-tab value="schedules" data-icon="calendar-16"><span class="label" data-t="nav.schedules"></span></cds-tab>
-        <cds-tab value="settings" data-icon="settings"><span class="label" data-t="nav.settings"></span></cds-tab>
-      </cds-tabs>
-    </nav>
+    <cds-header data-t-aria-label="app.name">
+      <cds-header-name href="#/" prefix="" data-t="app.name"></cds-header-name>
+    </cds-header>
 
     <main>
+      <!-- The pages, as tabs with an icon before the label (`markPage`, `PAGES`). An editor belongs
+           to its kind's tab. -->
+      <div class="cds--css-grid">
+        <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
+          <cds-tabs id="pages" data-t-aria-label="nav.label">
+            <cds-tab value="blocks" data-icon="locked"><span class="label" data-t="nav.blocks"></span></cds-tab>
+            <cds-tab value="lists" data-icon="list-checked-16"><span class="label" data-t="nav.lists"></span></cds-tab>
+            <cds-tab value="schedules" data-icon="calendar-16"><span class="label" data-t="nav.schedules"></span></cds-tab>
+            <cds-tab value="settings" data-icon="settings"><span class="label" data-t="nav.settings"></span></cds-tab>
+          </cds-tabs>
+        </div>
+      </div>
+
       <!-- One page per kind (blocks, block lists, schedules): a tile each. Built from KINDS. -->
       <div id="view-list" class="cds--css-grid" hidden>
         <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
