@@ -9,19 +9,21 @@ use std::io::{Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::block::Status;
+use crate::block::Running;
+use crate::definitions::Definition;
 use crate::state::Enforcers;
 
 /// The pipe the service listens on.
-pub const PIPE: &str = r"\\.\pipe\SiteBlocker";
+pub const PIPE: &str = r"\\.\pipe\bullseye";
 
 /// Larger messages are refused, so a request cannot make the service allocate without limit.
-const MAX_MESSAGE: usize = 64 * 1024;
+/// Room for the status of every block (`definitions::MAX_BLOCKS`) with long lists.
+const MAX_MESSAGE: usize = 1024 * 1024;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 #[serde(tag = "cmd", content = "args", rename_all = "snake_case")]
 pub enum Request {
-    /// What the UI shows: time left, entries, enforcers.
+    /// What the UI shows: the blocks, and which of them run.
     Status,
     /// What the app enforces: asked every second, from the thread that closes tabs, which is how
     /// the service knows the closing is going on (`watchdog::AppSlot`).
@@ -29,18 +31,15 @@ pub enum Request {
     /// The app, when it starts: asks the service to take it in as the app. Refused if another app
     /// is running or this is not the installed exe, and then the app ends itself.
     Register,
-    Start {
-        filters: Vec<String>,
-        /// Sites that are always allowed, which win over `filters`.
-        #[serde(default)]
-        allowed: Vec<String>,
-        /// Programs to close, one exe name per line (`programs.rs`).
-        #[serde(default)]
-        programs: Vec<String>,
-        duration: String,
-        enforcers: Enforcers,
-    },
-    Stop,
+    /// Adds a block definition, or replaces the one with its id. Refused while that block runs.
+    Save { block: Definition },
+    /// Removes a block definition. Refused while that block runs.
+    Delete { id: String },
+    /// Starts the block defined as `id`, as it is defined now.
+    Start { id: String },
+    /// Stops the running block `id`, unless it is timed.
+    Stop { id: String },
+    /// Ends every block, whatever its time.
     Unlock { password: String },
     /// From the installer: end the service and remove it. Refused during a timed block.
     PrepareUninstall,
@@ -55,11 +54,24 @@ pub enum Response {
     Failed(String),
     /// A block is running that does not allow this (uninstall, update).
     Refused(String),
-    Status(Status),
-    Policy(Option<Policy>),
+    Status(Overview),
+    /// One per running block; none when nothing runs.
+    Policy(Vec<Policy>),
 }
 
-/// What the app has to enforce right now.
+/// What the UI shows.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct Overview {
+    /// Every block the user has defined, in the order they were made.
+    pub blocks: Vec<Definition>,
+    /// The blocks that run, as they were started (`Running::id` is the definition's).
+    pub running: Vec<Running>,
+    /// Whether the time comes from the internet yet; until then, time with the service not
+    /// running does not count.
+    pub clock_synced: bool,
+}
+
+/// What the app has to enforce for one running block.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Policy {
     pub filters: Vec<String>,
@@ -100,16 +112,14 @@ mod tests {
 
     #[test]
     fn a_request_survives_the_wire() {
-        let request = Request::Start {
-            filters: vec!["tweakers.net".into()],
-            allowed: vec!["gathering.tweakers.net".into()],
-            programs: vec!["steam*".into()],
-            duration: "10m".into(),
-            enforcers: Enforcers::default(),
-        };
-        let mut wire = Vec::new();
-        write_message(&mut wire, &request).unwrap();
-        assert_eq!(read_message::<Request>(&mut Cursor::new(wire)), Ok(request));
+        let mut definition = crate::definitions::tests::definition("a", &["tweakers.net"]);
+        definition.allowed = vec!["gathering.tweakers.net".into()];
+        definition.programs = vec!["steam*".into()];
+        for request in [Request::Save { block: definition }, Request::Start { id: "a".into() }, Request::Delete { id: "a".into() }] {
+            let mut wire = Vec::new();
+            write_message(&mut wire, &request).unwrap();
+            assert_eq!(read_message::<Request>(&mut Cursor::new(wire)), Ok(request));
+        }
 
         let mut wire = Vec::new();
         write_message(&mut wire, &Request::Policy).unwrap();
@@ -118,27 +128,27 @@ mod tests {
 
     #[test]
     fn a_policy_survives_the_wire() {
-        let response = Response::Policy(Some(Policy {
+        let response = Response::Policy(vec![Policy {
             filters: vec!["a.com".into()],
             allowed: vec!["b.com".into()],
             programs: vec!["game.exe".into()],
             enforcers: Enforcers::default(),
-        }));
+        }]);
         let mut wire = Vec::new();
         write_message(&mut wire, &response).unwrap();
         assert_eq!(read_message::<Response>(&mut Cursor::new(wire)), Ok(response));
         let mut wire = Vec::new();
-        write_message(&mut wire, &Response::Policy(None)).unwrap();
-        assert_eq!(read_message::<Response>(&mut Cursor::new(wire)), Ok(Response::Policy(None)));
+        write_message(&mut wire, &Response::Policy(Vec::new())).unwrap();
+        assert_eq!(read_message::<Response>(&mut Cursor::new(wire)), Ok(Response::Policy(Vec::new())));
     }
 
     #[test]
-    fn a_start_without_programs_still_reads() {
-        let body = br#"{"cmd":"start","args":{"filters":["a.com"],"duration":"1h","enforcers":{}}}"#;
+    fn a_saved_block_without_lists_still_reads() {
+        let body = br#"{"cmd":"save","args":{"block":{"id":"a","name":"A","filters":["a.com"]}}}"#;
         let mut wire = (body.len() as u32).to_le_bytes().to_vec();
         wire.extend_from_slice(body);
-        let Ok(Request::Start { programs, allowed, .. }) = read_message::<Request>(&mut Cursor::new(wire)) else { panic!("not read") };
-        assert!(programs.is_empty() && allowed.is_empty());
+        let Ok(Request::Save { block }) = read_message::<Request>(&mut Cursor::new(wire)) else { panic!("not read") };
+        assert!(block.programs.is_empty() && block.allowed.is_empty() && block.enforcers == Enforcers::default());
     }
 
     #[test]

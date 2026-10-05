@@ -1,9 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Site Blocker",
-  "mainBinaryName": "SiteBlocker",
+  "productName": "Bullseye",
+  "mainBinaryName": "bullseye",
   "version": "0.1.0",
-  "identifier": "com.siteblocker.desktop",
+  "identifier": "com.bullseye.desktop",
   "build": {
     "frontendDist": "../src"
   },
@@ -17,7 +17,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "publisher": "Site Blocker",
+    "publisher": "Bullseye",
     "shortDescription": "Blocks distracting sites in Chromium browsers and Obsidian",
     "windows": {
       "nsis": {

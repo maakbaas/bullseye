@@ -179,6 +179,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "bullseye"
+version = "0.1.0"
+dependencies = [
+ "pbkdf2",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sysinfo",
+ "tauri",
+ "tauri-build",
+ "uiautomation",
+ "windows-service",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3594,23 +3611,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
-]
-
-[[package]]
-name = "tray-app"
-version = "0.1.0"
-dependencies = [
- "pbkdf2",
- "regex",
- "serde",
- "serde_json",
- "sha2",
- "sysinfo",
- "tauri",
- "tauri-build",
- "uiautomation",
- "windows-service",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -12,11 +12,11 @@
   ${If} ${FileExists} "$INSTDIR\${MAINBINARYNAME}.exe"
     ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" --prepare-update' $0
     ${If} $0 = 2
-      MessageBox MB_ICONSTOP "A block is running, so Site Blocker cannot be updated now.$\n$\nWait for the block to end, or end it with the unlock password in the app, then run the installer again." /SD IDOK
+      MessageBox MB_ICONSTOP "A block is running, so Bullseye cannot be updated now.$\n$\nWait for the block to end, or end it with the unlock password in the app, then run the installer again." /SD IDOK
       SetErrorLevel 2
       Quit
     ${ElseIf} $0 <> 0
-      MessageBox MB_ICONSTOP "Site Blocker could not be stopped for the update. See C:\ProgramData\SiteBlocker\service.log." /SD IDOK
+      MessageBox MB_ICONSTOP "Bullseye could not be stopped for the update. See C:\ProgramData\bullseye\service.log." /SD IDOK
       SetErrorLevel 1
       Quit
     ${EndIf}
@@ -27,7 +27,7 @@
   ; Registers the service, locks it down and starts it; it starts the app for whoever is logged on.
   ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" --install' $0
   ${If} $0 <> 0
-    MessageBox MB_ICONEXCLAMATION "Site Blocker is installed, but its service could not be set up, so it will not block anything. See %LOCALAPPDATA%\SiteBlocker\app.log." /SD IDOK
+    MessageBox MB_ICONEXCLAMATION "Bullseye is installed, but its service could not be set up, so it will not block anything. See %LOCALAPPDATA%\bullseye\app.log." /SD IDOK
   ${EndIf}
 !macroend
 
@@ -36,14 +36,14 @@
   ${If} $UpdateMode <> 1
     ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" --uninstall' $0
     ${If} $0 = 2
-      MessageBox MB_ICONSTOP "A timed block is still running, so Site Blocker cannot be uninstalled now.$\n$\nWait for the block to end, or end it with the unlock password in the app, then uninstall again." /SD IDOK
+      MessageBox MB_ICONSTOP "A timed block is still running, so Bullseye cannot be uninstalled now.$\n$\nWait for the block to end, or end it with the unlock password in the app, then uninstall again." /SD IDOK
       SetErrorLevel 2
       Quit
     ${ElseIf} $0 <> 0
       ; The service is registered but did not answer or did not end. Stopping here, rather than
       ; deleting files under a service that may still be running, avoids a half-removed install.
       ; (No service at all is exit code 0, so that case goes on.)
-      MessageBox MB_ICONSTOP "Site Blocker's service did not respond, so nothing was removed.$\n$\nSee C:\ProgramData\SiteBlocker\service.log, or use the recovery steps in detailed-instructions.md." /SD IDOK
+      MessageBox MB_ICONSTOP "Bullseye's service did not respond, so nothing was removed.$\n$\nSee C:\ProgramData\bullseye\service.log, or use the recovery steps in detailed-instructions.md." /SD IDOK
       SetErrorLevel 1
       Quit
     ${EndIf}

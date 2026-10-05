@@ -185,10 +185,10 @@ pub fn connect() -> Result<File, String> {
                 return Ok(pipe);
             }
             Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => thread::sleep(Duration::from_millis(50)),
-            Err(e) => return Err(format!("the Site Blocker service is not running ({e})")),
+            Err(e) => return Err(format!("the Bullseye service is not running ({e})")),
         }
     }
-    Err("the Site Blocker service is busy".into())
+    Err("the Bullseye service is busy".into())
 }
 
 /// Checks that the pipe is served from session 0, the session of services. Only SYSTEM and other
@@ -200,7 +200,7 @@ pub fn connect() -> Result<File, String> {
 fn verify_server(pipe: &File) -> Result<(), String> {
     // Only the pipe test, which serves from the test's own process, in the user's session. No
     // other build can skip the check.
-    if cfg!(test) && std::env::var_os("SITEBLOCKER_DEV").is_some() {
+    if cfg!(test) && std::env::var_os("BULLSEYE_DEV").is_some() {
         return Ok(());
     }
     let mut session = u32::MAX;

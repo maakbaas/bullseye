@@ -1,7 +1,6 @@
-//! The running block on disk, so it survives the app ending and the machine restarting.
+//! The running blocks on disk, so they survive the app ending and the machine restarting.
 //!
-//! The file is written when a block starts and deleted when one ends, which doubles as how
-//! the watchdog (`watchdog.rs`) knows there is a timed block to keep alive.
+//! The file is written when a block starts or ends, and deleted when the last one ends.
 //!
 //! The end time is a timestamp in internet time (`clock.rs`) rather than a running stopwatch,
 //! because a stopwatch cannot be carried across a restart. Moving the Windows clock does not
@@ -14,9 +13,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-/// A block as written to disk.
+/// A running block as written to disk.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Saved {
+    /// Which definition it was started from (`definitions.rs`). Empty in files from before there
+    /// were several blocks.
+    #[serde(default)]
+    pub id: String,
+    /// The definition's name when it started, so the block can be shown if the definition is gone.
+    #[serde(default)]
+    pub name: String,
     /// One blocked entry per line, as typed in the UI.
     pub filters: Vec<String>,
     /// Seconds since the Unix epoch at which the block ends; `None` blocks until stopped.
@@ -116,6 +122,19 @@ pub fn from_unix(seconds: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(seconds)
 }
 
+/// The file: the running blocks, or, from before there were several, one block on its own.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum OnDisk {
+    Many { blocks: Vec<Saved> },
+    One(Saved),
+}
+
+#[derive(Serialize)]
+struct ToDisk<'a> {
+    blocks: &'a [Saved],
+}
+
 /// One state file, so tests can work in a directory of their own.
 pub struct Store {
     path: PathBuf,
@@ -132,8 +151,16 @@ impl Store {
         &self.path
     }
 
-    /// The saved block, or `None` if there is none, it is unreadable, or it is not ours.
-    pub fn load(&self) -> Option<Saved> {
+    /// The saved blocks; none if there is no file, it is unreadable, or it is not ours.
+    pub fn load(&self) -> Vec<Saved> {
+        match self.read() {
+            Some(OnDisk::Many { blocks }) => blocks,
+            Some(OnDisk::One(saved)) => vec![saved],
+            None => Vec::new(),
+        }
+    }
+
+    fn read(&self) -> Option<OnDisk> {
         let mut bytes = fs::read(&self.path).ok()?;
         // Windows tools write a UTF-8 byte order mark, which serde_json rejects as part of the
         // JSON. Skipping it means such a file still resumes rather than silently reading as no
@@ -144,24 +171,28 @@ impl Store {
         serde_json::from_slice(&bytes).ok()
     }
 
-    /// Writes the block, replacing any previous one. Through a temporary file, so that a crash
-    /// or a power cut can never leave a half-written block behind that then fails to parse.
-    pub fn save(&self, saved: &Saved) -> Result<(), String> {
-        let json = serde_json::to_string(saved).map_err(|e| e.to_string())?;
+    /// Writes the running blocks, replacing what was there; none at all removes the file. Through a
+    /// temporary file, so that a crash or a power cut can never leave a half-written file behind
+    /// that then fails to parse.
+    pub fn save(&self, blocks: &[Saved]) -> Result<(), String> {
+        if blocks.is_empty() {
+            self.clear();
+            return Ok(());
+        }
+        let json = serde_json::to_string(&ToDisk { blocks }).map_err(|e| e.to_string())?;
         let dir = self.path.parent().ok_or_else(|| format!("no folder for {}", self.path.display()))?;
         fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
         let temporary = self.path.with_extension("new");
         fs::write(&temporary, json).map_err(|e| format!("cannot write {}: {e}", temporary.display()))?;
         // `rename` replaces an existing file in one step, on Windows too, so the file is only
-        // ever the old block or the new one: never partly written, and never briefly absent
-        // (which the launcher would read as "no block left to watch").
+        // ever the old blocks or the new ones: never partly written, and never briefly absent.
         fs::rename(&temporary, &self.path).map_err(|e| {
             let _ = fs::remove_file(&temporary);
             format!("cannot replace {}: {e}", self.path.display())
         })
     }
 
-    /// Deletes the saved block, which is what tells the watchdog there is nothing to keep alive.
+    /// Deletes the saved blocks: there are none left to resume.
     pub fn clear(&self) {
         if let Err(e) = fs::remove_file(&self.path) {
             if e.kind() != std::io::ErrorKind::NotFound {
@@ -179,9 +210,9 @@ pub fn use_dir(dir: PathBuf) {
     let _ = DIR_OVERRIDE.set(dir);
 }
 
-/// The folder the service keeps its files in: `%ProgramData%\SiteBlocker`, which the service
-/// locks down to SYSTEM (`service::lock_down_data_dir`). The saved block lives here, so the user
-/// whose block it is cannot edit or delete it.
+/// The folder the service keeps its files in: `%ProgramData%\bullseye`, which the service
+/// locks down to SYSTEM (`service::lock_down_data_dir`). The running blocks and the definitions
+/// live here, so the user whose blocks they are cannot edit or delete them.
 ///
 /// `None` only if there is no such folder, in which case the service still blocks for as long as
 /// it runs, it just does not survive a restart.
@@ -189,15 +220,15 @@ pub fn dir() -> Option<PathBuf> {
     if let Some(dir) = DIR_OVERRIDE.get() {
         return Some(dir.clone());
     }
-    Some(PathBuf::from(std::env::var_os("ProgramData")?).join("SiteBlocker"))
+    Some(PathBuf::from(std::env::var_os("ProgramData")?).join("bullseye"))
 }
 
-/// The app's own folder, for its log: `%LOCALAPPDATA%\SiteBlocker`. Nothing in it matters to a block.
+/// The app's own folder, for its log: `%LOCALAPPDATA%\bullseye`. Nothing in it matters to a block.
 pub fn user_dir() -> Option<PathBuf> {
-    Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("SiteBlocker"))
+    Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("bullseye"))
 }
 
-/// The store the service uses: `%ProgramData%\SiteBlocker\state.json`.
+/// The store the service uses: `%ProgramData%\bullseye\state.json`.
 pub fn store() -> Option<Store> {
     Some(Store::new(dir()?.join("state.json")))
 }
@@ -214,13 +245,13 @@ mod tests {
     }
 
     fn timed(until: Option<u64>) -> Saved {
-        Saved { filters: vec!["tweakers.net".to_string()], until, seen: None, enforcers: Enforcers::default(), programs: Vec::new(), allowed: Vec::new() }
+        Saved { id: "a".into(), name: "A".into(), filters: vec!["tweakers.net".to_string()], until, seen: None, enforcers: Enforcers::default(), programs: Vec::new(), allowed: Vec::new() }
     }
 
     #[test]
     fn no_file_is_no_block() {
         let store = store("absent");
-        assert_eq!(store.load(), None);
+        assert!(store.load().is_empty());
         // Clearing something that is not there is not an error.
         store.clear();
     }
@@ -229,52 +260,65 @@ mod tests {
     fn saved_block_comes_back() {
         let store = store("roundtrip");
         let saved = timed(Some(now().unwrap().as_secs() + 600));
-        store.save(&saved).unwrap();
-        assert_eq!(store.load().as_ref(), Some(&saved));
+        store.save(std::slice::from_ref(&saved)).unwrap();
+        assert_eq!(store.load(), vec![saved.clone()]);
         // Saving again replaces rather than appends.
         let mut shorter = saved.clone();
         shorter.until = Some(now().unwrap().as_secs() + 60);
-        store.save(&shorter).unwrap();
-        assert_eq!(store.load().as_ref(), Some(&shorter));
-        store.clear();
-        assert_eq!(store.load(), None);
+        let other = Saved { id: "b".into(), ..timed(None) };
+        store.save(&[shorter.clone(), other.clone()]).unwrap();
+        assert_eq!(store.load(), vec![shorter, other]);
+        // None left removes the file.
+        store.save(&[]).unwrap();
+        assert!(!store.path().exists());
+        assert!(store.load().is_empty());
     }
 
     #[test]
     fn a_byte_order_mark_does_not_hide_the_block() {
         let store = store("bom");
         let saved = timed(Some(now().unwrap().as_secs() + 600));
-        store.save(&saved).unwrap();
+        store.save(std::slice::from_ref(&saved)).unwrap();
         // PowerShell's `Set-Content -Encoding utf8` and other Windows tools add one.
         let mut with_bom = vec![0xef, 0xbb, 0xbf];
-        with_bom.extend_from_slice(serde_json::to_string(&saved).unwrap().as_bytes());
+        with_bom.extend_from_slice(serde_json::to_string(&ToDisk { blocks: std::slice::from_ref(&saved) }).unwrap().as_bytes());
         fs::write(store.path(), with_bom).unwrap();
-        assert_eq!(store.load().as_ref(), Some(&saved));
+        assert_eq!(store.load(), vec![saved]);
         store.clear();
     }
 
     #[test]
     fn leftovers_are_cleaned_up() {
         let store = store("leftovers");
-        store.save(&timed(Some(now().unwrap().as_secs() + 600))).unwrap();
+        store.save(&[timed(Some(now().unwrap().as_secs() + 600))]).unwrap();
         // A power cut during the write, or a file edited by hand: unreadable, and must not
         // keep the app from starting.
         fs::write(store.path(), "{ not json").unwrap();
-        assert_eq!(store.load(), None);
+        assert!(store.load().is_empty());
         store.clear();
         // The temporary file the save goes through must not outlive it either.
-        store.save(&timed(None)).unwrap();
+        store.save(&[timed(None)]).unwrap();
         assert!(!store.path().with_extension("new").exists());
         store.clear();
     }
 
 
     #[test]
-    fn files_from_before_seen_still_load() {
+    fn files_from_before_several_blocks_still_load() {
         let store = store("old");
         fs::create_dir_all(store.path().parent().unwrap()).unwrap();
         fs::write(store.path(), r#"{"filters":["a.com"],"until":1800000000}"#).unwrap();
-        assert_eq!(store.load(), Some(Saved { filters: vec!["a.com".into()], until: Some(1_800_000_000), seen: None, enforcers: Enforcers::default(), programs: Vec::new(), allowed: Vec::new() }));
+        let old = Saved {
+            id: String::new(),
+            name: String::new(),
+            filters: vec!["a.com".into()],
+            until: Some(1_800_000_000),
+            seen: None,
+            enforcers: Enforcers::default(),
+            programs: Vec::new(),
+            allowed: Vec::new(),
+        };
+        assert_eq!(store.load(), vec![old]);
         store.clear();
     }
 

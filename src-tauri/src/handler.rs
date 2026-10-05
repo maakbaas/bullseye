@@ -6,11 +6,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::block::{parse_duration, Blocklist, Lists};
-use crate::filters::FilterList;
-use crate::programs::ProgramList;
-use crate::proto::{Policy, Request, Response};
-use crate::state::Enforcers;
+use crate::block::Blocklist;
+use crate::definitions::{Definition, Definitions};
+use crate::proto::{Overview, Policy, Request, Response};
 use crate::sync::LockExt;
 use crate::unlock;
 use crate::watchdog::AppSlot;
@@ -26,14 +24,15 @@ pub enum Shutdown {
 /// What `handle` works with.
 pub struct Context {
     blocklist: Blocklist,
+    definitions: Definitions,
     lockout: Mutex<Lockout>,
     /// Which process is the app (`watchdog.rs`).
     slot: Arc<AppSlot>,
 }
 
 impl Context {
-    pub fn new(blocklist: Blocklist, slot: Arc<AppSlot>) -> Context {
-        Context { blocklist, lockout: Mutex::default(), slot }
+    pub fn new(blocklist: Blocklist, definitions: Definitions, slot: Arc<AppSlot>) -> Context {
+        Context { blocklist, definitions, lockout: Mutex::default(), slot }
     }
 }
 
@@ -54,7 +53,11 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
         Err(why) => Response::Failed(why),
     };
     match request {
-        Request::Status => (Response::Status(blocklist.status()), None),
+        Request::Status => {
+            let status = blocklist.status();
+            let overview = Overview { blocks: context.definitions.all(), running: status.running, clock_synced: status.clock_synced };
+            (Response::Status(overview), None)
+        }
         // The app asks to be taken in; anyone else is refused, and the app then ends itself.
         Request::Register => match context.slot.register(caller) {
             Ok(()) => (Response::Done, None),
@@ -64,59 +67,66 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
             // This request comes from the thread that closes tabs: hearing it is how the service
             // knows that is going on. It counts only from the process taken in as the app.
             context.slot.heard(caller);
-            let policy = blocklist.active().map(|active| Policy {
-                filters: active.filters.entries(),
-                allowed: active.allowed.entries(),
-                programs: active.programs.entries(),
-                enforcers: active.enforcers,
-            });
-            (Response::Policy(policy), None)
+            let policies = blocklist
+                .active()
+                .map(|active| active.blocks)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|block| Policy {
+                    filters: block.filters.entries(),
+                    allowed: block.allowed.entries(),
+                    programs: block.programs.entries(),
+                    enforcers: block.enforcers,
+                })
+                .collect();
+            (Response::Policy(policies), None)
         }
-        Request::Start { filters, allowed, programs, duration, enforcers } => {
-            (done(start(blocklist, filters, allowed, programs, &duration, enforcers)), None)
-        }
-        Request::Stop => (done(blocklist.stop().map_err(|_| "A timed block cannot be stopped early".to_string())), None),
+        // A running block is a copy of its definition, so changing the definition would not change
+        // the block; refusing it keeps what the UI shows and what runs the same.
+        Request::Save { block } => (done(unless_running(blocklist, &block.id).and_then(|()| context.definitions.save(block))), None),
+        Request::Delete { id } => (done(unless_running(blocklist, &id).and_then(|()| context.definitions.delete(&id))), None),
+        Request::Start { id } => (done(start(context, &id)), None),
+        Request::Stop { id } => (done(blocklist.stop(&id)), None),
         Request::Unlock { password } => (done(unlock(context, &password)), None),
         // Refused during a timed block, judged by internet time, like the block itself.
-        Request::PrepareUninstall => match blocklist.status().remaining {
+        Request::PrepareUninstall => match blocklist.longest_remaining() {
             Some(left) => (Response::Refused(format!("a timed block has {left}s left")), None),
             None => (Response::Done, Some(Shutdown::Remove)),
         },
         // Stricter: replacing the exe is also a way to end the service, so no block at all.
-        Request::PrepareUpdate => match blocklist.filters() {
-            Some(_) => (Response::Refused("a block is running".into()), None),
-            None => (Response::Done, Some(Shutdown::Update)),
+        Request::PrepareUpdate => match blocklist.is_running() {
+            true => (Response::Refused("a block is running".into()), None),
+            false => (Response::Done, Some(Shutdown::Update)),
         },
     }
 }
 
-/// What `start_block` in the app used to check, now checked where it counts.
-fn start(
-    blocklist: &Blocklist,
-    filters: Vec<String>,
-    allowed: Vec<String>,
-    programs: Vec<String>,
-    duration: &str,
-    enforcers: Enforcers,
-) -> Result<(), String> {
-    let duration = parse_duration(duration)?;
-    let sites = FilterList::parse(&filters).map_err(|_| "Invalid block list syntax".to_string())?;
-    let allowed = FilterList::parse(&allowed).map_err(|_| "Invalid syntax in the list of allowed sites".to_string())?;
-    // Also refuses what would close programs Windows needs (`programs.rs`), with the reason.
-    let programs = ProgramList::parse(&programs)?;
+fn unless_running(blocklist: &Blocklist, id: &str) -> Result<(), String> {
+    match blocklist.runs(id) {
+        true => Err("A running block cannot be changed or deleted".into()),
+        false => Ok(()),
+    }
+}
+
+/// Starts a block as it is defined now, checked again where it counts.
+fn start(context: &Context, id: &str) -> Result<(), String> {
+    let definition: Definition = context.definitions.get(id).ok_or("No such block")?;
+    definition.check()?;
+    let duration = definition.schedule.duration()?;
+    let lists = definition.lists()?;
+    let enforcers = definition.enforcers;
     if !enforcers.any() {
         return Err("Choose at least one enforcer".into());
     }
     // An enforcer has nothing to do with an empty list of its own kind, while one that needs no
     // list (Obsidian's) always does. What matters is that something can run.
-    let lists = Lists { sites, allowed, programs };
     if !enforcers.can_run(|uses| lists.has(uses)) {
         return Err("Enter at least one site or program to block, or turn on an enforcer that needs no list".into());
     }
-    blocklist.start(lists, duration, enforcers)
+    context.blocklist.start(id, &definition.name, lists, duration, enforcers)
 }
 
-/// Ends the block for the unlock password. After three wrong guesses in a row, guesses are
+/// Ends every block for the unlock password. After three wrong guesses in a row, guesses are
 /// refused for longer each time. The lock is held while the hash is computed, so guesses cannot
 /// be made in parallel either.
 fn unlock(context: &Context, password: &str) -> Result<(), String> {
@@ -140,58 +150,95 @@ fn unlock(context: &Context, password: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::Store;
+    use crate::definitions::tests::definition;
+    use crate::definitions::Schedule;
+    use crate::state::{Enforcers, Store};
     use std::fs;
 
     fn context(name: &str) -> Context {
         let dir = std::env::temp_dir().join(format!("service-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let blocklist = Blocklist::with_store(Store::new(dir.join("state.json")));
-        Context { blocklist, lockout: Mutex::default(), slot: Arc::new(AppSlot::new(false)) }
+        Context::new(blocklist, Definitions::at(Some(dir.join("blocks.json"))), Arc::new(AppSlot::new(false)))
     }
 
-    fn start_request(duration: &str) -> Request {
-        Request::Start { programs: vec![], allowed: vec![], filters: vec!["a.com".into()], duration: duration.into(), enforcers: Enforcers::default() }
+    fn timed(id: &str, filters: &[&str], duration: &str) -> Definition {
+        Definition { schedule: Schedule::Duration { duration: duration.into() }, ..definition(id, filters) }
+    }
+
+    /// Saves the definition and starts it.
+    fn run(context: &Context, block: Definition) -> Response {
+        let id = block.id.clone();
+        assert_eq!(handle(context, 0, Request::Save { block }).0, Response::Done);
+        handle(context, 0, Request::Start { id }).0
+    }
+
+    fn policies(context: &Context) -> Vec<Policy> {
+        let Response::Policy(policies) = handle(context, 0, Request::Policy).0 else { panic!("no policy") };
+        policies
+    }
+
+    fn overview(context: &Context) -> Overview {
+        let Response::Status(overview) = handle(context, 0, Request::Status).0 else { panic!("no status") };
+        overview
     }
 
     #[test]
     fn requests_are_checked_again_by_the_service() {
         let context = context("checked");
-        // An empty list with only enforcers that go by it, nothing chosen, a bad duration, and an
-        // address that cannot match.
+        // An empty list with only enforcers that go by it, and nothing chosen.
         let only_the_list = Enforcers { chromium_tabs: true, chromium_split_view: true, obsidian_web_viewer: false, exe_names: false };
-        let bad = [
-            Request::Start { programs: vec![], allowed: vec![], filters: vec![], duration: "1h".into(), enforcers: only_the_list },
-            Request::Start {
-                filters: vec!["a.com".into()],
-                programs: vec![],
-                allowed: vec![],
-                duration: "1h".into(),
-                enforcers: Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: false, exe_names: false },
-            },
-            start_request("soon"),
-            Request::Start { programs: vec![], allowed: vec![], filters: vec!["has space.com".into()], duration: "1h".into(), enforcers: Enforcers::default() },
-        ];
-        for request in bad {
-            assert!(matches!(handle(&context, 0, request).0, Response::Failed(_)));
+        let none = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: false, exe_names: false };
+        for block in [Definition { enforcers: only_the_list, ..definition("a", &[]) }, Definition { enforcers: none, ..definition("b", &["a.com"]) }] {
+            assert!(matches!(run(&context, block), Response::Failed(_)));
         }
-        assert!(context.blocklist.filters().is_none());
+        // A bad duration, and an address that cannot match, are not even saved.
+        for block in [timed("c", &["a.com"], "soon"), definition("d", &["has space.com"])] {
+            assert!(matches!(handle(&context, 0, Request::Save { block }).0, Response::Failed(_)));
+        }
+        // A block that is not defined.
+        assert!(matches!(handle(&context, 0, Request::Start { id: "nope".into() }).0, Response::Failed(_)));
+        assert!(policies(&context).is_empty());
+        assert_eq!(overview(&context).blocks.len(), 2);
     }
 
     #[test]
     fn an_empty_list_starts_a_block_when_an_enforcer_without_the_list_is_on() {
-        let first = context("empty-list");
+        let context = context("empty-list");
         let obsidian_only = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: true, exe_names: false };
-        let request = |enforcers| Request::Start { programs: vec![], allowed: vec![], filters: vec![], duration: "1h".into(), enforcers };
-        assert_eq!(handle(&first, 0, request(obsidian_only)).0, Response::Done);
+        assert_eq!(run(&context, Definition { enforcers: obsidian_only, ..definition("a", &[]) }), Response::Done);
         // The block keeps what it was started with: no entries, and Obsidian's enforcer only.
-        let Response::Policy(Some(policy)) = handle(&first, 0, Request::Policy).0 else { panic!("no policy") };
+        let policy = &policies(&context)[0];
         assert!(policy.filters.is_empty());
         assert_eq!(policy.enforcers, obsidian_only);
 
         // With all enforcers on (the default), an empty list is fine too: Obsidian's can run.
-        let other = context("empty-list-default");
-        assert_eq!(handle(&other, 0, request(Enforcers::default())).0, Response::Done);
+        assert_eq!(run(&context, definition("b", &[])), Response::Done);
+    }
+
+    #[test]
+    fn blocks_are_defined_started_and_stopped_on_their_own() {
+        let context = context("several");
+        assert_eq!(run(&context, timed("work", &["a.com"], "1h")), Response::Done);
+        assert_eq!(run(&context, definition("evening", &["b.com"])), Response::Done);
+        assert_eq!(handle(&context, 0, Request::Save { block: definition("idle", &["c.com"]) }).0, Response::Done);
+        let overview = overview(&context);
+        assert_eq!(overview.blocks.iter().map(|b| b.id.as_str()).collect::<Vec<_>>(), vec!["work", "evening", "idle"]);
+        assert_eq!(overview.running.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["work", "evening"]);
+        assert_eq!(policies(&context).len(), 2);
+
+        // A running block cannot be changed, deleted or started again; an idle one can.
+        let changed = definition("work", &["z.com"]);
+        assert!(matches!(handle(&context, 0, Request::Save { block: changed }).0, Response::Failed(_)));
+        assert!(matches!(handle(&context, 0, Request::Delete { id: "evening".into() }).0, Response::Failed(_)));
+        assert!(matches!(handle(&context, 0, Request::Start { id: "work".into() }).0, Response::Failed(_)));
+        assert_eq!(handle(&context, 0, Request::Delete { id: "idle".into() }).0, Response::Done);
+
+        // The untimed one stops, and can then be changed; the timed one cannot stop.
+        assert_eq!(handle(&context, 0, Request::Stop { id: "evening".into() }).0, Response::Done);
+        assert!(matches!(handle(&context, 0, Request::Stop { id: "work".into() }).0, Response::Failed(_)));
+        assert_eq!(handle(&context, 0, Request::Save { block: definition("evening", &["d.com"]) }).0, Response::Done);
+        assert_eq!(policies(&context).iter().map(|p| p.filters.clone()).collect::<Vec<_>>(), vec![vec!["a.com".to_string()]]);
     }
 
     #[test]
@@ -206,7 +253,7 @@ mod tests {
         assert!(matches!(response, Response::Refused(why) if why.contains("not the installed")));
         assert!(matches!(handle(&context, 0, Request::Register).0, Response::Refused(_)));
         // It may ask for the policy all the same; that is just information, and counts for nothing.
-        assert_eq!(handle(&context, stranger.id(), Request::Policy).0, Response::Policy(None));
+        assert_eq!(handle(&context, stranger.id(), Request::Policy).0, Response::Policy(Vec::new()));
         assert!(context.slot.supervise(true, false), "no app should have been taken in");
 
         // This test process is the installed exe as far as the service can tell. Only if it runs
@@ -224,27 +271,25 @@ mod tests {
     #[test]
     fn programs_alone_can_start_a_block_and_what_windows_needs_is_refused() {
         let programs_only = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: false, exe_names: true };
-        let request = |programs: &[&str]| Request::Start {
-            filters: vec![],
-            allowed: vec![],
+        let block = |programs: &[&str]| Definition {
             programs: programs.iter().map(|p| p.to_string()).collect(),
-            duration: "1h".into(),
             enforcers: programs_only,
+            ..timed("p", &[], "1h")
         };
         let context = context("programs");
 
         // The programs enforcer alone, with nothing listed, has nothing to do.
-        assert!(matches!(handle(&context, 0, request(&[])).0, Response::Failed(_)));
+        assert!(matches!(run(&context, block(&[])), Response::Failed(_)));
         // Entries that would close what Windows or this app needs, or are not names.
         for bad in ["*", "explorer.exe", "s*", r"C:\Games\game.exe"] {
-            let Response::Failed(why) = handle(&context, 0, request(&[bad])).0 else { panic!("{bad} was accepted") };
+            let Response::Failed(why) = handle(&context, 0, Request::Save { block: block(&[bad]) }).0 else { panic!("{bad} was accepted") };
             assert!(why.contains("needs") || why.contains("Not a program name"), "{bad}: {why}");
         }
-        assert!(context.blocklist.filters().is_none());
+        assert!(policies(&context).is_empty());
 
         // A real one starts, and is what the app is told to close.
-        assert_eq!(handle(&context, 0, request(&["Steam*", "game"])).0, Response::Done);
-        let Response::Policy(Some(policy)) = handle(&context, 0, Request::Policy).0 else { panic!("no policy") };
+        assert_eq!(run(&context, block(&["Steam*", "game"])), Response::Done);
+        let policy = &policies(&context)[0];
         assert_eq!(policy.programs, vec!["steam*.exe", "game.exe"]);
         assert!(policy.filters.is_empty());
         assert_eq!(policy.enforcers, programs_only);
@@ -253,24 +298,16 @@ mod tests {
     #[test]
     fn allowed_sites_travel_with_the_block_and_must_be_valid() {
         let context = context("allowed");
-        let request = |filters: &[&str], allowed: &[&str]| Request::Start {
-            filters: filters.iter().map(|f| f.to_string()).collect(),
-            allowed: allowed.iter().map(|f| f.to_string()).collect(),
-            programs: vec![],
-            duration: "1h".into(),
-            enforcers: Enforcers::default(),
-        };
+        let block = |allowed: &[&str]| Definition { allowed: allowed.iter().map(|f| f.to_string()).collect(), ..timed("a", &["*"], "1h") };
         // An allowed entry that cannot match is refused like a bad block entry.
-        assert!(matches!(handle(&context, 0, request(&["*"], &["has space.com"])).0, Response::Failed(_)));
-        assert!(context.blocklist.filters().is_none());
+        assert!(matches!(handle(&context, 0, Request::Save { block: block(&["has space.com"]) }).0, Response::Failed(_)));
 
         // Everything blocked but one site: the app is told about both.
-        assert_eq!(handle(&context, 0, request(&["*"], &["Google.com"])).0, Response::Done);
-        let Response::Policy(Some(policy)) = handle(&context, 0, Request::Policy).0 else { panic!("no policy") };
+        assert_eq!(run(&context, block(&["Google.com"])), Response::Done);
+        let policy = &policies(&context)[0];
         assert_eq!(policy.filters, vec!["*"]);
         assert_eq!(policy.allowed, vec!["google.com"]);
-        let Response::Status(status) = handle(&context, 0, Request::Status).0 else { panic!("no status") };
-        assert_eq!(status.allowed, vec!["google.com"]);
+        assert_eq!(overview(&context).running[0].allowed, vec!["google.com"]);
     }
 
     #[test]
@@ -278,33 +315,25 @@ mod tests {
         let context = context("allowed-alone");
         // Only the tab enforcers, no sites to block and only an allowed one: nothing to do.
         let tabs_only = Enforcers { chromium_tabs: true, chromium_split_view: true, obsidian_web_viewer: false, exe_names: false };
-        let request = Request::Start {
-            filters: vec![],
-            allowed: vec!["google.com".into()],
-            programs: vec![],
-            duration: "1h".into(),
-            enforcers: tabs_only,
-        };
-        assert!(matches!(handle(&context, 0, request).0, Response::Failed(_)));
-        assert!(context.blocklist.filters().is_none());
+        let block = Definition { allowed: vec!["google.com".into()], enforcers: tabs_only, ..timed("a", &[], "1h") };
+        assert!(matches!(run(&context, block), Response::Failed(_)));
+        assert!(policies(&context).is_empty());
     }
 
     #[test]
     fn a_timed_block_cannot_be_shortened_stopped_or_uninstalled() {
         let context = context("timed");
-        assert_eq!(handle(&context, 0, start_request("1h")).0, Response::Done);
-        // Not replaced by a shorter or an untimed one, not stopped.
-        assert!(matches!(handle(&context, 0, start_request("1s")).0, Response::Failed(_)));
-        assert!(matches!(handle(&context, 0, start_request("")).0, Response::Failed(_)));
-        assert!(matches!(handle(&context, 0, Request::Stop).0, Response::Failed(_)));
+        assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
+        // Not shortened through its definition, not stopped.
+        assert!(matches!(handle(&context, 0, Request::Save { block: timed("a", &["a.com"], "1s") }).0, Response::Failed(_)));
+        assert!(matches!(handle(&context, 0, Request::Stop { id: "a".into() }).0, Response::Failed(_)));
         // Neither uninstalling nor updating gets through, and the service keeps running.
         let (response, shutdown) = handle(&context, 0, Request::PrepareUninstall);
         assert!(matches!(response, Response::Refused(_)) && shutdown.is_none());
         let (response, shutdown) = handle(&context, 0, Request::PrepareUpdate);
         assert!(matches!(response, Response::Refused(_)) && shutdown.is_none());
         // The policy is what the app enforces.
-        let Response::Policy(Some(policy)) = handle(&context, 0, Request::Policy).0 else { panic!("no policy") };
-        assert_eq!(policy.filters, vec!["a.com"]);
+        assert_eq!(policies(&context)[0].filters, vec!["a.com"]);
     }
 
     #[test]
@@ -317,15 +346,16 @@ mod tests {
         assert_eq!(response, Response::Done);
         assert!(matches!(shutdown, Some(Shutdown::Update)));
         // An untimed block does not stop an uninstall, but does stop an update.
-        assert_eq!(handle(&context, 0, start_request("")).0, Response::Done);
+        assert_eq!(run(&context, definition("a", &["a.com"])), Response::Done);
         assert!(matches!(handle(&context, 0, Request::PrepareUninstall).1, Some(Shutdown::Remove)));
         assert!(matches!(handle(&context, 0, Request::PrepareUpdate).0, Response::Refused(_)));
     }
 
     #[test]
-    fn the_password_ends_a_timed_block_and_wrong_ones_are_slowed_down() {
+    fn the_password_ends_every_block_and_wrong_ones_are_slowed_down() {
         let context = context("unlock");
-        assert_eq!(handle(&context, 0, start_request("1h")).0, Response::Done);
+        assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
+        assert_eq!(run(&context, timed("b", &["b.com"], "2h")), Response::Done);
         for _ in 0..3 {
             let wrong = Request::Unlock { password: "nope".into() };
             assert_eq!(handle(&context, 0, wrong).0, Response::Failed("Wrong password".into()));
@@ -333,11 +363,12 @@ mod tests {
         // After the third, even the right password waits.
         let right = Request::Unlock { password: "test1234".into() };
         assert!(matches!(handle(&context, 0, right).0, Response::Failed(why) if why.starts_with("Too many")));
-        assert!(context.blocklist.filters().is_some());
-        // Once the wait is over, it works.
+        assert!(context.blocklist.is_running());
+        // Once the wait is over, it works, and ends them all; the definitions stay.
         context.lockout.locked().until = None;
         let right = Request::Unlock { password: "test1234".into() };
         assert_eq!(handle(&context, 0, right).0, Response::Done);
-        assert!(context.blocklist.filters().is_none());
+        assert!(!context.blocklist.is_running());
+        assert_eq!(overview(&context).blocks.len(), 2);
     }
 }

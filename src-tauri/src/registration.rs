@@ -20,7 +20,7 @@ use crate::state;
 use crate::watchdog::note;
 
 /// The service's name, exactly as it appears in the services list.
-pub const NAME: &str = "SiteBlocker";
+pub const NAME: &str = "bullseye";
 
 /// Who may do what with the service. SYSTEM: everything (it deletes itself on uninstall).
 /// Administrators and interactive users: query, enumerate, read the list and start, but not stop,
@@ -32,8 +32,8 @@ const SDDL: &str = "D:(A;;CCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCLCSWRPLOCRRC;;;BA)
 
 /// The service is started in safe mode too, when these keys exist.
 const SAFE_BOOT: [&str; 2] = [
-    r"HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Minimal\SiteBlocker",
-    r"HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Network\SiteBlocker",
+    r"HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Minimal\bullseye",
+    r"HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Network\bullseye",
 ];
 
 /// `CREATE_NO_WINDOW`: the tools below are console programs, which would flash a window.
@@ -57,7 +57,7 @@ pub fn install(exe: &Path) -> Result<(), String> {
     let manager = manager(ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE)?;
     let info = ServiceInfo {
         name: NAME.into(),
-        display_name: "Site Blocker".into(),
+        display_name: "Bullseye".into(),
         service_type: ServiceType::OWN_PROCESS,
         start_type: ServiceStartType::AutoStart,
         error_control: ServiceErrorControl::Normal,

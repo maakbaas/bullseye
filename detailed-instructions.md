@@ -12,15 +12,15 @@ The new design has two parts:
 
 | Part | Runs as | Where | Job |
 |---|---|---|---|
-| **Service** (`SiteBlocker.exe --service`) | `SYSTEM` | session 0 (no desktop), started by Windows at boot | Owns the block, the unlock hash and internet time. Restarts the app. Answers the app over a named pipe. |
-| **App** (`SiteBlocker.exe`, no arguments) | the logged-on user | the user's desktop | Tray icon, UI, and closing tabs (`tab_closer.rs`). Holds **no** authoritative state: it asks the service every second what to enforce. |
+| **Service** (`bullseye.exe --service`) | `SYSTEM` | session 0 (no desktop), started by Windows at boot | Owns the block, the unlock hash and internet time. Restarts the app. Answers the app over a named pipe. |
+| **App** (`bullseye.exe`, no arguments) | the logged-on user | the user's desktop | Tray icon, UI, and closing tabs (`tab_closer.rs`). Holds **no** authoritative state: it asks the service every second what to enforce. |
 
 Vocabulary you need:
 
 - **SYSTEM** is the account Windows itself runs its core services as. A process running as SYSTEM cannot be killed from Task Manager by an ordinary administrator ("Access denied"), and files owned by SYSTEM can be hidden from administrators.
 - **SCM** (Service Control Manager) starts services at boot, restarts them when they fail, and decides who may stop them. That decision is a security descriptor written in a string format called **SDDL**.
 - **Session 0 isolation**: services run in session 0, which has no desktop. A service cannot see or click anything in the user's browser. That is why the app has to stay a user-level process: UI Automation only works on the user's own desktop. The service's job is to keep that app alive and to be the one place the truth lives.
-- **Named pipe**: a local, Windows-only socket (`\\.\pipe\SiteBlocker`). Any local program can try to connect to it, so the service has to treat every request as hostile input.
+- **Named pipe**: a local, Windows-only socket (`\\.\pipe\bullseye`). Any local program can try to connect to it, so the service has to treat every request as hostile input.
 
 How the old pieces map to the new ones:
 
@@ -28,7 +28,7 @@ How the old pieces map to the new ones:
 |---|---|
 | `task.rs` (logon task) | **Deleted.** Windows starts the service at boot; the service starts the app at logon. |
 | `watchdog.rs` launcher + app mutex dance | Rewritten: the service keeps a handle to the one process it takes for the app (one it started with `CreateProcessAsUserW`, or the installed exe registering itself), restarts it, and ends it if it stops asking for its policy. The single-instance mutex is gone. |
-| `state.json` in `%LOCALAPPDATA%` | Moved to `%ProgramData%\SiteBlocker`, owned by SYSTEM, administrators read-only. |
+| `state.json` in `%LOCALAPPDATA%` | Moved to `%ProgramData%\bullseye`, owned by SYSTEM, administrators read-only. |
 | `Blocklist`, `clock.rs`, `unlock.rs` in the app | Run in the service. **`block.rs`, `clock.rs`, `unlock.rs`, `filters.rs`, `tab_closer.rs` are almost untouched** (see the diffs). |
 | Tauri commands did the work | They forward to the service over the pipe (`client.rs`). |
 | `--install` / `--uninstall` registered the task | They register / remove the service, by asking the service over the pipe. New: `--prepare-update`. |
@@ -129,7 +129,7 @@ use crate::block::Status;
 use crate::state::Enforcers;
 
 /// The pipe the service listens on.
-pub const PIPE: &str = r"\\.\pipe\SiteBlocker";
+pub const PIPE: &str = r"\\.\pipe\bullseye";
 
 /// Larger messages are refused, so a request cannot make the service allocate without limit.
 const MAX_MESSAGE: usize = 64 * 1024;
@@ -475,10 +475,10 @@ pub fn connect() -> Result<File, String> {
                 return Ok(pipe);
             }
             Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => thread::sleep(Duration::from_millis(50)),
-            Err(e) => return Err(format!("the Site Blocker service is not running ({e})")),
+            Err(e) => return Err(format!("the Bullseye service is not running ({e})")),
         }
     }
-    Err("the Site Blocker service is busy".into())
+    Err("the Bullseye service is busy".into())
 }
 
 /// Checks that the pipe is served from session 0, the session of services. Only SYSTEM and other
@@ -490,7 +490,7 @@ pub fn connect() -> Result<File, String> {
 fn verify_server(pipe: &File) -> Result<(), String> {
     // Only the pipe test, which serves from the test's own process, in the user's session. No
     // other build can skip the check.
-    if cfg!(test) && std::env::var_os("SITEBLOCKER_DEV").is_some() {
+    if cfg!(test) && std::env::var_os("BULLSEYE_DEV").is_some() {
         return Ok(());
     }
     let mut session = u32::MAX;
@@ -1318,7 +1318,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
 
 `Enforcers` also gets `can_run(...)`: a block may start when at least one enforcer that is turned on can do something. Each enforcer says what it needs (`Uses::Nothing`, `Sites` or `Programs`), and it can run when the list it needs has an entry. So an empty site list is fine as long as e.g. the Obsidian enforcer is on, and refused when only enforcers whose list is empty are on. **To add an enforcer, see the checklist in section 6.4.**
 
-`dir()` is now the service's folder (`%ProgramData%\SiteBlocker`). The app's own log goes in `user_dir()`. `use_dir` lets development (the in-process service, section 8.1) and the pipe test use another folder, so you do not need admin rights to develop.
+`dir()` is now the service's folder (`%ProgramData%\bullseye`). The app's own log goes in `user_dir()`. `use_dir` lets development (the in-process service, section 8.1) and the pipe test use another folder, so you do not need admin rights to develop.
 
 ```diff
 --- a/src-tauri/src/state.rs
@@ -1411,7 +1411,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
      }
  }
  
--/// The folder the app keeps its files in: `%LOCALAPPDATA%\SiteBlocker`.
+-/// The folder the app keeps its files in: `%LOCALAPPDATA%\bullseye`.
 +/// A folder to use instead of the real one: development and the pipe test (`service.rs`).
 +static DIR_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
 +
@@ -1420,7 +1420,7 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
 +    let _ = DIR_OVERRIDE.set(dir);
 +}
 +
-+/// The folder the service keeps its files in: `%ProgramData%\SiteBlocker`, which the service
++/// The folder the service keeps its files in: `%ProgramData%\bullseye`, which the service
 +/// locks down to SYSTEM (`service::lock_down_data_dir`). The saved block lives here, so the user
 +/// whose block it is cannot edit or delete it.
  ///
@@ -1432,16 +1432,16 @@ Three small things: `Status` now travels over the pipe in both directions, `rese
 +    if let Some(dir) = DIR_OVERRIDE.get() {
 +        return Some(dir.clone());
 +    }
-+    Some(PathBuf::from(std::env::var_os("ProgramData")?).join("SiteBlocker"))
++    Some(PathBuf::from(std::env::var_os("ProgramData")?).join("bullseye"))
 +}
 +
-+/// The app's own folder, for its log: `%LOCALAPPDATA%\SiteBlocker`. Nothing in it matters to a block.
++/// The app's own folder, for its log: `%LOCALAPPDATA%\bullseye`. Nothing in it matters to a block.
 +pub fn user_dir() -> Option<PathBuf> {
-     Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("SiteBlocker"))
+     Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("bullseye"))
  }
  
--/// The store the app uses: `%LOCALAPPDATA%\SiteBlocker\state.json`.
-+/// The store the service uses: `%ProgramData%\SiteBlocker\state.json`.
+-/// The store the app uses: `%LOCALAPPDATA%\bullseye\state.json`.
++/// The store the service uses: `%ProgramData%\bullseye\state.json`.
  pub fn store() -> Option<Store> {
      Some(Store::new(dir()?.join("state.json")))
  }
@@ -1837,8 +1837,8 @@ What changed here, with measurements (release build, 341 running programs, real 
 +    fn a_listed_program_is_asked_to_close_then_ended_and_others_are_left_alone() {
 +        let Ok(automation) = UIAutomation::new() else { return eprintln!("skipping: no UI Automation here") };
 +        let mut closer = Closer { automation, windows: HashMap::new(), system: System::new(), asked: HashMap::new() };
-+        let (mut listed, mut other) = (copy_of_ping("siteblocker-test-listed"), copy_of_ping("siteblocker-test-other"));
-+        let programs = ProgramList::parse(&["siteblocker-test-l*"]).unwrap();
++        let (mut listed, mut other) = (copy_of_ping("bullseye-test-listed"), copy_of_ping("bullseye-test-other"));
++        let programs = ProgramList::parse(&["bullseye-test-l*"]).unwrap();
 +
 +        // The first pass asks. This program has no window to ask, so it carries on for now.
 +        pass(&mut closer, &programs);
@@ -2227,9 +2227,9 @@ pub fn local_handler(blocklist: Blocklist) -> Local {
 }
 
 /// For `npm run dev`: the service inside the app, with no service installed, no pipe and no
-/// administrator rights. **Debug builds only**, and not used with `SITEBLOCKER_USE_SERVICE` set.
+/// administrator rights. **Debug builds only**, and not used with `BULLSEYE_USE_SERVICE` set.
 /// Ending the app ends the enforcing, which is fine while developing. The block is kept in
-/// `%LOCALAPPDATA%\SiteBlocker-dev`, so a timed block is still there the next time; delete that
+/// `%LOCALAPPDATA%\bullseye-dev`, so a timed block is still there the next time; delete that
 /// folder to forget it.
 #[cfg(debug_assertions)]
 pub fn embedded() -> Local {
@@ -2237,11 +2237,11 @@ pub fn embedded() -> Local {
     local_handler(start_blocklist())
 }
 
-/// Development keeps its files apart from a real install's: `%LOCALAPPDATA%\SiteBlocker-dev`.
+/// Development keeps its files apart from a real install's: `%LOCALAPPDATA%\bullseye-dev`.
 #[cfg(debug_assertions)]
 fn use_dev_dir() {
     if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        state::use_dir(Path::new(&local).join("SiteBlocker-dev"));
+        state::use_dir(Path::new(&local).join("bullseye-dev"));
     }
 }
 
@@ -2298,11 +2298,11 @@ mod tests {
         let quit = start_engine(false).unwrap();
 
         // This server runs in the user's session, not in session 0: the app refuses to talk to it.
-        std::env::remove_var("SITEBLOCKER_DEV");
+        std::env::remove_var("BULLSEYE_DEV");
         let refused = client::call(&Request::Status).unwrap_err();
         assert!(refused.contains("not by the service"), "{refused}");
         // The test lets the app talk to it anyway, which only a test build allows (`pipe::verify_server`).
-        std::env::set_var("SITEBLOCKER_DEV", "1");
+        std::env::set_var("BULLSEYE_DEV", "1");
 
         // This engine looks after no app, so taking one in is always fine.
         assert_eq!(client::call(&Request::Register), Ok(Response::Done));
@@ -2700,7 +2700,7 @@ mod tests {
 
 - **The SDDL** gives SYSTEM everything (it needs delete to remove itself on uninstall), administrators **and interactive users** query/enumerate/**start**/read-the-list only, and service accounts query only. Administrators keep *start* on purpose: the installer has to be able to start the service again after an update. Interactive users get *start* because the app, which runs as one, starts the service again when it is not running (`client::Remote::revive_service`, at most every 5 s). Starting is harmless: starting a running service does nothing, and a stopped one only goes back to blocking. Nobody but SYSTEM gets stop, pause, change-config, delete, write-DACL or write-owner. **Never widen what interactive users may do beyond start**: the app runs as the user, so anything the app may do, the user may do. `sc sdset` is the **last** step of the install: after it, an administrator can no longer change the service (the handle the installer already holds keeps its rights).
 - **Failure actions** are "restart immediately", three times over, and the last one repeats forever. `set_failure_actions_on_non_crash_failures(true)` makes that apply also when the process ends with a failure *exit code*, not just when it is killed. A clean exit code 0 is **not** restarted: the installer relies on that.
-- **Safe mode**: the installer creates `SafeBoot\Minimal\SiteBlocker` and `SafeBoot\Network\SiteBlocker` registry keys so Windows starts the service in safe mode as well.
+- **Safe mode**: the installer creates `SafeBoot\Minimal\bullseye` and `SafeBoot\Network\bullseye` registry keys so Windows starts the service in safe mode as well.
 
 ```rust
 //! The service's registration with Windows: installing it (locked down, restarting itself if it
@@ -2725,7 +2725,7 @@ use crate::state;
 use crate::watchdog::note;
 
 /// The service's name, exactly as it appears in the services list.
-pub const NAME: &str = "SiteBlocker";
+pub const NAME: &str = "bullseye";
 
 /// Who may do what with the service. SYSTEM: everything (it deletes itself on uninstall).
 /// Administrators and interactive users: query, enumerate, read the list and start, but not stop,
@@ -2737,8 +2737,8 @@ const SDDL: &str = "D:(A;;CCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCLCSWRPLOCRRC;;;BA)
 
 /// The service is started in safe mode too, when these keys exist.
 const SAFE_BOOT: [&str; 2] = [
-    r"HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Minimal\SiteBlocker",
-    r"HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Network\SiteBlocker",
+    r"HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Minimal\bullseye",
+    r"HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Network\bullseye",
 ];
 
 /// `CREATE_NO_WINDOW`: the tools below are console programs, which would flash a window.
@@ -2762,7 +2762,7 @@ pub fn install(exe: &Path) -> Result<(), String> {
     let manager = manager(ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE)?;
     let info = ServiceInfo {
         name: NAME.into(),
-        display_name: "Site Blocker".into(),
+        display_name: "Bullseye".into(),
         service_type: ServiceType::OWN_PROCESS,
         start_type: ServiceStartType::AutoStart,
         error_control: ServiceErrorControl::Normal,
@@ -2951,7 +2951,7 @@ mod tests {
 //! who can inject code into it can keep it asking while it enforces nothing.
 //!
 //! Nothing here is hidden or protected beyond that, on purpose: the service is named
-//! `SiteBlocker` in the services list, the app runs under its own name in Task Manager, and
+//! `bullseye` in the services list, the app runs under its own name in Task Manager, and
 //! uninstalling the app (Settings > Apps) removes the service. The mechanism is here to add
 //! friction at a weak moment, not to be unknowable.
 
@@ -3136,7 +3136,7 @@ fn adopt(current: &mut Option<Adopted>, pid: u32) -> Result<(), String> {
             app.heard = Some(Instant::now());
             return Ok(());
         }
-        Some(_) => return Err("Site Blocker is already running".into()),
+        Some(_) => return Err("Bullseye is already running".into()),
         None => {}
     }
     let process = Process::open(pid).ok_or("cannot look at the process that asked")?;
@@ -3145,7 +3145,7 @@ fn adopt(current: &mut Option<Adopted>, pid: u32) -> Result<(), String> {
     let installed = exe().ok_or("the service does not know its own exe")?;
     let same = process.image_path().is_some_and(|theirs| theirs.eq_ignore_ascii_case(&installed.to_string_lossy()));
     if !same {
-        return Err("not the installed Site Blocker".into());
+        return Err("not the installed Bullseye".into());
     }
     // Only the session at the screen is looked after; an app elsewhere just runs.
     if session_of(pid) != console_session() {
@@ -3303,7 +3303,7 @@ fn exe() -> Option<PathBuf> {
 }
 
 /// Writes a line to a log file as well as to stderr: `service.log` next to the saved block for
-/// the service, `app.log` in `%LOCALAPPDATA%\SiteBlocker` for the app.
+/// the service, `app.log` in `%LOCALAPPDATA%\bullseye` for the app.
 ///
 /// Neither runs with a window, so stderr goes nowhere in a release build; the file is how the
 /// user can see what they actually did.
@@ -3475,7 +3475,7 @@ mod tests {
 
         // Not the installed exe, whatever it is called: refused, and nothing is taken in.
         let slot = AppSlot::new(true);
-        assert_eq!(slot.register(child.id()), Err("not the installed Site Blocker".into()));
+        assert_eq!(slot.register(child.id()), Err("not the installed Bullseye".into()));
         slot.heard(child.id());
         assert!(slot.supervise(true, false), "nothing should have been taken in");
 
@@ -3483,7 +3483,7 @@ mod tests {
         assert_eq!(slot.register(me), Ok(()));
         assert!(!slot.supervise(true, false));
         assert_eq!(slot.register(me), Ok(()));
-        assert_eq!(slot.register(child.id()), Err("Site Blocker is already running".into()));
+        assert_eq!(slot.register(child.id()), Err("Bullseye is already running".into()));
 
         let _ = child.kill();
         let _ = child.wait();
@@ -3528,7 +3528,7 @@ mod tests {
 
 ```rust
 //! Installing and uninstalling: what the Windows installer runs (`windows/hooks.nsh`), as an
-//! administrator, as `SiteBlocker.exe --prepare-update` before replacing the app, `--install`
+//! administrator, as `bullseye.exe --prepare-update` before replacing the app, `--install`
 //! after copying it, and `--uninstall` before removing it.
 //!
 //! The installer cannot stop the service itself (nobody but SYSTEM can), so it asks it, over the
@@ -3686,11 +3686,11 @@ fn force_exit(password: String, app: AppHandle, remote: State<Remote>) -> Result
 
 /// Who the app talks to. Normally the service, over its pipe. In a debug build (`npm run dev`) the
 /// service's logic runs inside the app instead, so development needs no installed service; set
-/// `SITEBLOCKER_USE_SERVICE` to talk to a real, installed one anyway. A release build has no
+/// `BULLSEYE_USE_SERVICE` to talk to a real, installed one anyway. A release build has no
 /// such code.
 fn remote_for_this_run() -> Remote {
     #[cfg(debug_assertions)]
-    if std::env::var_os("SITEBLOCKER_USE_SERVICE").is_none() {
+    if std::env::var_os("BULLSEYE_USE_SERVICE").is_none() {
         return Remote::local(service::embedded());
     }
     Remote::new()
@@ -3921,7 +3921,7 @@ fn main() {
 -    "windows": [
 -      {
 -        "label": "main",
--        "title": "Site Blocker",
+-        "title": "Bullseye",
 -        "width": 340,
 -        "height": 560,
 -        "visible": false,
@@ -3964,11 +3964,11 @@ The exit codes of `--uninstall`: `0` done (or no service registered), `1` the se
   ${If} ${FileExists} "$INSTDIR\${MAINBINARYNAME}.exe"
     ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" --prepare-update' $0
     ${If} $0 = 2
-      MessageBox MB_ICONSTOP "A block is running, so Site Blocker cannot be updated now.$\n$\nWait for the block to end, or end it with the unlock password in the app, then run the installer again." /SD IDOK
+      MessageBox MB_ICONSTOP "A block is running, so Bullseye cannot be updated now.$\n$\nWait for the block to end, or end it with the unlock password in the app, then run the installer again." /SD IDOK
       SetErrorLevel 2
       Quit
     ${ElseIf} $0 <> 0
-      MessageBox MB_ICONSTOP "Site Blocker could not be stopped for the update. See C:\ProgramData\SiteBlocker\service.log." /SD IDOK
+      MessageBox MB_ICONSTOP "Bullseye could not be stopped for the update. See C:\ProgramData\bullseye\service.log." /SD IDOK
       SetErrorLevel 1
       Quit
     ${EndIf}
@@ -3979,7 +3979,7 @@ The exit codes of `--uninstall`: `0` done (or no service registered), `1` the se
   ; Registers the service, locks it down and starts it; it starts the app for whoever is logged on.
   ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" --install' $0
   ${If} $0 <> 0
-    MessageBox MB_ICONEXCLAMATION "Site Blocker is installed, but its service could not be set up, so it will not block anything. See %LOCALAPPDATA%\SiteBlocker\app.log." /SD IDOK
+    MessageBox MB_ICONEXCLAMATION "Bullseye is installed, but its service could not be set up, so it will not block anything. See %LOCALAPPDATA%\bullseye\app.log." /SD IDOK
   ${EndIf}
 !macroend
 
@@ -3988,14 +3988,14 @@ The exit codes of `--uninstall`: `0` done (or no service registered), `1` the se
   ${If} $UpdateMode <> 1
     ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" --uninstall' $0
     ${If} $0 = 2
-      MessageBox MB_ICONSTOP "A timed block is still running, so Site Blocker cannot be uninstalled now.$\n$\nWait for the block to end, or end it with the unlock password in the app, then uninstall again." /SD IDOK
+      MessageBox MB_ICONSTOP "A timed block is still running, so Bullseye cannot be uninstalled now.$\n$\nWait for the block to end, or end it with the unlock password in the app, then uninstall again." /SD IDOK
       SetErrorLevel 2
       Quit
     ${ElseIf} $0 <> 0
       ; The service is registered but did not answer or did not end. Stopping here, rather than
       ; deleting files under a service that may still be running, avoids a half-removed install.
       ; (No service at all is exit code 0, so that case goes on.)
-      MessageBox MB_ICONSTOP "Site Blocker's service did not respond, so nothing was removed.$\n$\nSee C:\ProgramData\SiteBlocker\service.log, or use the recovery steps in detailed-instructions.md." /SD IDOK
+      MessageBox MB_ICONSTOP "Bullseye's service did not respond, so nothing was removed.$\n$\nSee C:\ProgramData\bullseye\service.log, or use the recovery steps in detailed-instructions.md." /SD IDOK
       SetErrorLevel 1
       Quit
     ${EndIf}
@@ -4049,7 +4049,7 @@ const PROTECTED: [&str; 25] = [
     "startmenuexperiencehost.exe",
     "shellexperiencehost.exe",
     "msedgewebview2.exe",
-    "siteblocker.exe",
+    "bullseye.exe",
     "tray-app.exe",
     "system",
     "registry",
@@ -4189,7 +4189,7 @@ mod tests {
     #[test]
     fn what_windows_needs_cannot_be_listed() {
         // Directly, in any case, and by wildcards that reach one of them.
-        for bad in ["explorer.exe", "Explorer", "svchost", "*", "*.exe", "s*", "*host*", "siteblocker", "msedgewebview2.exe"] {
+        for bad in ["explorer.exe", "Explorer", "svchost", "*", "*.exe", "s*", "*host*", "bullseye", "msedgewebview2.exe"] {
             let error = ProgramList::parse(&[bad]).err().unwrap_or_default();
             assert!(error.contains("needs"), "{bad}: {error:?}");
         }
@@ -4243,7 +4243,7 @@ Measured on a release build of this branch (341 running programs, 2 browser wind
 
 **The window** (`ui.rs`): the web view behind it is almost all of the app's memory, and the blocking never needs it. So the app starts in the tray **with no window** (`"windows": []` in `tauri.conf.json`). A click on the tray icon makes the window (from a thread of its own, because making a window inside the event handler that asked for it can deadlock); it is **shown once the page has drawn** (the page calls `window_ready`), so there is no blank window. The X only **hides** it (it reopens at once); after **5 minutes hidden** it is destroyed and the memory goes back. `RunEvent::ExitRequested` without an exit code is refused, so that the last window going away does not end the app, while the unlock password's `app.exit(0)` is allowed. The page learns of hiding and showing through a `visibility` event and stops polling the service while hidden.
 
-**Trying it**: debug builds have aids, `SITEBLOCKER_SHOW=1` (open the window at start), `SITEBLOCKER_REOPEN_AFTER_SECS=n` (open it again after n seconds, like another tray click) and `SITEBLOCKER_UI_TIMEOUT_SECS=n` (a shorter keep time). With the last two set to a few seconds you can watch the web view processes appear, disappear and come back in Task Manager. This was checked with the real app: no web view at start; window visible, hidden by the X with the web view kept, destroyed after the timeout, recreated and visible within two seconds.
+**Trying it**: debug builds have aids, `BULLSEYE_SHOW=1` (open the window at start), `BULLSEYE_REOPEN_AFTER_SECS=n` (open it again after n seconds, like another tray click) and `BULLSEYE_UI_TIMEOUT_SECS=n` (a shorter keep time). With the last two set to a few seconds you can watch the web view processes appear, disappear and come back in Task Manager. This was checked with the real app: no web view at start; window visible, hidden by the X with the web view kept, destroyed after the timeout, recreated and visible within two seconds.
 
 ```rust
 //! The window: made when it is asked for, hidden (not closed) when it is dismissed so that it
@@ -4282,7 +4282,7 @@ impl Ui {
     pub fn new() -> Ui {
         // Debug builds can shorten the wait, to try the destroying and reopening.
         #[cfg(debug_assertions)]
-        let keep_hidden = env_seconds("SITEBLOCKER_UI_TIMEOUT_SECS").unwrap_or(KEEP_HIDDEN);
+        let keep_hidden = env_seconds("BULLSEYE_UI_TIMEOUT_SECS").unwrap_or(KEEP_HIDDEN);
         #[cfg(not(debug_assertions))]
         let keep_hidden = KEEP_HIDDEN;
         Ui { hidden_since: Mutex::new(None), keep_hidden }
@@ -4323,7 +4323,7 @@ pub fn show_in_background(app: AppHandle) {
 
 fn create(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("index.html".into()))
-        .title("Site Blocker")
+        .title("Bullseye")
         .inner_size(WIDTH, HEIGHT)
         .resizable(false)
         .transparent(true)
@@ -4374,16 +4374,16 @@ fn env_seconds(name: &str) -> Option<Duration> {
     std::env::var(name).ok()?.parse().ok().map(Duration::from_secs)
 }
 
-/// Development aids, debug builds only. `SITEBLOCKER_SHOW=1` opens the window at start (otherwise
-/// click the tray icon), `SITEBLOCKER_REOPEN_AFTER_SECS=n` opens it again n seconds later, as another
-/// click on the tray icon would, and `SITEBLOCKER_UI_TIMEOUT_SECS=n` shortens how long a hidden
+/// Development aids, debug builds only. `BULLSEYE_SHOW=1` opens the window at start (otherwise
+/// click the tray icon), `BULLSEYE_REOPEN_AFTER_SECS=n` opens it again n seconds later, as another
+/// click on the tray icon would, and `BULLSEYE_UI_TIMEOUT_SECS=n` shortens how long a hidden
 /// window is kept.
 #[cfg(debug_assertions)]
 pub fn debug_aids(app: &AppHandle) {
-    if std::env::var_os("SITEBLOCKER_SHOW").is_some() {
+    if std::env::var_os("BULLSEYE_SHOW").is_some() {
         show_in_background(app.clone());
     }
-    if let Some(after) = env_seconds("SITEBLOCKER_REOPEN_AFTER_SECS") {
+    if let Some(after) = env_seconds("BULLSEYE_REOPEN_AFTER_SECS") {
         let app = app.clone();
         thread::spawn(move || {
             thread::sleep(after);
@@ -4429,21 +4429,21 @@ The project notes describe the old design and are used by every future session, 
 - `src-tauri/src/ui.rs` - the window: made on demand, hidden by the X, destroyed after 5 minutes hidden (the web view is almost all of the memory)
 - `src-tauri/src/filters.rs` – site lists: plain address prefixes plus `*`, used for the block list and for the allowed list (which wins over it); only web pages are ever matched, never the browser's own pages
 - `src-tauri/src/programs.rs` – the programs to close: exe names with `*`, a protected list that is never closed
-- `src-tauri/src/pipe.rs`, `proto.rs`, `client.rs` – the named pipe `\\.\pipe\SiteBlocker`: server, messages, and the app's side (keeps the last policy in memory)
+- `src-tauri/src/pipe.rs`, `proto.rs`, `client.rs` – the named pipe `\\.\pipe\bullseye`: server, messages, and the app's side (keeps the last policy in memory)
 - `src-tauri/src/watchdog.rs` – the service's watch over the app (starts it as the logged-on user, at logon and while a block runs; decides which process is the app and ends one that stops asking for its policy)
 
 **Replace "Surviving a restart, a kill, and a reboot" with:**
 
-> The `SiteBlocker` Windows service runs as SYSTEM and starts at boot. It holds the block (`%ProgramData%\SiteBlocker\state.json`, SYSTEM-owned), internet time and the unlock hash. The tray app (user session) asks it every second what to enforce and does the tab closing; it holds no state, and keeps enforcing the last answer if the service is briefly unreachable.
+> The `bullseye` Windows service runs as SYSTEM and starts at boot. It holds the block (`%ProgramData%\bullseye\state.json`, SYSTEM-owned), internet time and the unlock hash. The tray app (user session) asks it every second what to enforce and does the tab closing; it holds no state, and keeps enforcing the last answer if the service is briefly unreachable.
 > - End the app in Task Manager while a block (timed or not) is running: the service starts it again within about a second. Suspend it, or stop its closing loop, and it is ended and started again within about 5 seconds.
 > - The service, not the process name, decides which process is the app: the installed exe, in the console session, that it started or that registered itself. A copy under another name is not the app.
 > - End the service: Windows refuses ("Access denied") for administrators; if it fails by itself, Windows restarts it at once (failure actions).
 > - Reboot mid-block: the service reads `state.json` and resumes with the time left.
 > - The service starts the app at every logon, also without a block. "Unlock" clears the block and quits the app; the service keeps running idle and starts the app again at the next logon.
 
-**Replace the "Deliberately not hidden" and "honest ceiling" paragraphs' technical content:** still nothing is hidden (service named `SiteBlocker` in the services list, app in Settings > Apps, logs in `%ProgramData%\SiteBlocker\service.log`). The honest ceiling is now: an administrator who knows how can still get around it: run a shell as SYSTEM (for example PsExec `-s`), take ownership of the service object or the data folder (administrators hold `SeTakeOwnershipPrivilege`) and rewrite its access list, delete the service from the Windows recovery environment, or boot with an offline registry edit. NTP spoofing needs admin as before. The password hash is in the binary, so a short password can be brute-forced offline. **What changed is the effort**: a normal administrator now needs one of those, instead of "End task".
+**Replace the "Deliberately not hidden" and "honest ceiling" paragraphs' technical content:** still nothing is hidden (service named `bullseye` in the services list, app in Settings > Apps, logs in `%ProgramData%\bullseye\service.log`). The honest ceiling is now: an administrator who knows how can still get around it: run a shell as SYSTEM (for example PsExec `-s`), take ownership of the service object or the data folder (administrators hold `SeTakeOwnershipPrivilege`) and rewrite its access list, delete the service from the Windows recovery environment, or boot with an offline registry edit. NTP spoofing needs admin as before. The password hash is in the binary, so a short password can be brute-forced offline. **What changed is the effort**: a normal administrator now needs one of those, instead of "End task".
 
-**Replace "Install / remove":** per-machine NSIS installer, needs admin (UAC), installs to `C:\Program Files\Site Blocker`. Hooks: `--prepare-update` (before replacing files; refused during any block), `--install` (register + lock down + start the service), `--uninstall` (service removes itself and ends the app; refused during a timed block, exit code 2; if the service is registered but does not answer or does not end, exit code 1 also stops the uninstall; with no service registered it carries on).
+**Replace "Install / remove":** per-machine NSIS installer, needs admin (UAC), installs to `C:\Program Files\Bullseye`. Hooks: `--prepare-update` (before replacing files; refused during any block), `--install` (register + lock down + start the service), `--uninstall` (service removes itself and ends the app; refused during a timed block, exit code 2; if the service is registered but does not answer or does not end, exit code 1 also stops the uninstall; with no service registered it carries on).
 
 **Dev workflow**: see section 8.1 below, and drop the sentence about `restore_task` / re-enabling the login task.
 
@@ -4455,12 +4455,12 @@ The project notes describe the old design and are used by every future session, 
 
 - The same rules apply as with the real service: the same `handle` function answers every request, so a timed block cannot be stopped early, the unlock password ends it, and starting is validated the same way. Only the transport differs (`Remote::send`).
 - What is *not* there: the SYSTEM service itself, the watchdog that restarts the app (and the heartbeat, `AppSlot`), the locked-down data folder, the pipe and its access list. Test those with a real install (section 9.2), or the ignored pipe test for the pipe itself (section 9.1).
-- The block is kept in `%LOCALAPPDATA%\SiteBlocker-dev`, apart from a real install's files. A timed block is therefore still there the next time you start the app; delete that folder to forget it.
+- The block is kept in `%LOCALAPPDATA%\bullseye-dev`, apart from a real install's files. A timed block is therefore still there the next time you start the app; delete that folder to forget it.
 - **Release builds do not contain any of this.** It is compiled in only with `debug_assertions` (`service::embedded`, `Remote::local`), and `cargo check --release` is warning-free. Keep it that way: never make a release build able to be its own service.
 - Unlocking quits the app, which ends `tauri dev`, as before.
-- **There is no window until you click the tray icon** (or set `SITEBLOCKER_SHOW=1`, section 6.6). The page itself is baked in at build time: a change to `src/index.html` alone does not relaunch `tauri dev`; touch `src-tauri/src/main.rs` to force it.
+- **There is no window until you click the tray icon** (or set `BULLSEYE_SHOW=1`, section 6.6). The page itself is baked in at build time: a change to `src/index.html` alone does not relaunch `tauri dev`; touch `src-tauri/src/main.rs` to force it.
 
-To talk to a real, installed service from a debug build (in a virtual machine), set `SITEBLOCKER_USE_SERVICE=1` before `npm run dev`. The app then uses the pipe like a release build does, including the session-0 check on who serves it. There is no separate "console service" to run: the pipe itself is covered by the ignored test `the_pipe_answers_like_the_app_expects` (`cargo test -- --ignored the_pipe`, with no service installed), which serves from the test's own process and is the only place the session-0 check can be skipped (`cfg!(test)` in `pipe::verify_server`).
+To talk to a real, installed service from a debug build (in a virtual machine), set `BULLSEYE_USE_SERVICE=1` before `npm run dev`. The app then uses the pipe like a release build does, including the session-0 check on who serves it. There is no separate "console service" to run: the pipe itself is covered by the ignored test `the_pipe_answers_like_the_app_expects` (`cargo test -- --ignored the_pipe`, with no service installed), which serves from the test's own process and is the only place the session-0 check can be skipped (`cfg!(test)` in `pipe::verify_server`).
 
 ### 8.2 Recovery: when your own test locks you out (read this before testing on a real PC)
 
@@ -4471,11 +4471,11 @@ The service you install is, by design, not stoppable by you. If you install it o
 - If it still goes wrong, as an administrator, run a shell as SYSTEM, for example with Sysinternals PsExec: `psexec -s -i cmd`. In that shell:
 
 ```bat
-sc delete SiteBlocker
-taskkill /f /im SiteBlocker.exe
-reg delete "HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Minimal\SiteBlocker" /f
-reg delete "HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Network\SiteBlocker" /f
-rmdir /s /q "%ProgramData%\SiteBlocker"
+sc delete bullseye
+taskkill /f /im bullseye.exe
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Minimal\bullseye" /f
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Network\bullseye" /f
+rmdir /s /q "%ProgramData%\bullseye"
 ```
 
   (`sc delete` comes first: it marks the service for deletion, so Windows does not start it again when the `taskkill` ends the process.)
@@ -4484,10 +4484,10 @@ rmdir /s /q "%ProgramData%\SiteBlocker"
 
 ### 8.3 Behaviour changes the user will notice
 
-- Installing and updating asks for administrator rights (UAC). The install folder is `C:\Program Files\Site Blocker`.
+- Installing and updating asks for administrator rights (UAC). The install folder is `C:\Program Files\Bullseye`.
 - **Migration:** an existing per-user install lives elsewhere and does not know `--prepare-update`: uninstall it first (Settings > Apps). Do not install the new version over it: the pre-install hook would run the *old* exe with an unknown argument, which starts the old tray app and waits for it forever.
 - The login task is gone. "Unlock" no longer disables anything: it clears the block and quits the app, and the app returns at the next logon.
-- `launcher.log` is replaced by `%ProgramData%\SiteBlocker\service.log` (readable by administrators) and `%LOCALAPPDATA%\SiteBlocker\app.log`.
+- `launcher.log` is replaced by `%ProgramData%\bullseye\service.log` (readable by administrators) and `%LOCALAPPDATA%\bullseye\app.log`.
 - Updating is refused during any block (timed or not); uninstalling during a timed block (as before), and also when the service is registered but does not answer, in which case nothing is removed (see `service.log` and section 8.2).
 
 ### 8.4 Known limits (do not hide these in the UI)
@@ -4521,30 +4521,30 @@ Build with `npm run build` (installer in `src-tauri\target\release\bundle\nsis\`
 
 | # | Test | Expected |
 |---|---|---|
-| 1 | Run the installer | UAC prompt; service `SiteBlocker` exists (`sc qc SiteBlocker`), state `RUNNING`; the tray app appears for you |
+| 1 | Run the installer | UAC prompt; service `bullseye` exists (`sc qc bullseye`), state `RUNNING`; the tray app appears for you |
 | 2 | Task Manager > Details, the app's row, "Elevated" column | `No` (see 8.4) |
-| 3 | `sc sdshow SiteBlocker` | the SDDL from `service.rs` |
-| 4 | As admin: `sc stop SiteBlocker`, and "End task" on the service in Task Manager | both fail |
-| 5 | `icacls "%ProgramData%\SiteBlocker"` and try to edit `state.json` as admin | SYSTEM full, Administrators read only; editing fails |
+| 3 | `sc sdshow bullseye` | the SDDL from `service.rs` |
+| 4 | As admin: `sc stop bullseye`, and "End task" on the service in Task Manager | both fail |
+| 5 | `icacls "%ProgramData%\bullseye"` and try to edit `state.json` as admin | SYSTEM full, Administrators read only; editing fails |
 | 6 | Start a `10m` block, then end the *app* in Task Manager | it returns within about a second, block continues |
 | 6b | Same with an *untimed* block (empty duration) | it returns within about a second too; after "Stop block" it no longer does |
 | 7 | Log off and on during the block | app returns, block continues with the remaining time |
 | 8 | Reboot during the block | block resumes after boot |
-| 9 | Boot into safe mode with networking during the block | service runs (check `sc query SiteBlocker`) |
+| 9 | Boot into safe mode with networking during the block | service runs (check `sc query bullseye`) |
 | 10 | Run the installer again during the block | refused with the message from the hook; nothing replaced |
 | 11 | Uninstall during the timed block | refused (exit code 2), message shown |
 | 12 | Wrong unlock password three times, then the right one | the right one is refused for a few seconds, then works; block ends, app quits |
 | 13 | After unlocking: log off and on | the app returns (idle) |
 | 14 | End the block, update to a new build | installer succeeds; service runs the new exe |
-| 15 | Uninstall without a block | service, `%ProgramData%\SiteBlocker` and the safe-mode keys are gone |
+| 15 | Uninstall without a block | service, `%ProgramData%\bullseye` and the safe-mode keys are gone |
 | 16 | Open the pipe with a script and send garbage / a huge length / nothing | service keeps answering the app |
 | 17 | Kill the service with a SYSTEM shell (`psexec -s`) | Windows restarts it at once; app keeps enforcing meanwhile |
 | 18 | Uninstall while the service is registered but not answering (in the VM, suspend the service process with a SYSTEM shell tool first) | the uninstall stops with "did not respond, so nothing was removed" (exit code 1); no files are deleted |
 | 19 | Uninstall after the service was deleted by hand (`sc delete`, via the recovery steps) | carries on and removes the files (no service registered is exit code 0) |
-| 20 | The app starts a stopped service. In a SYSTEM shell turn the restart off (`sc failure SiteBlocker reset= 0 actions= ""`), then `taskkill /f /im SiteBlocker.exe` the service while the app runs | within about 5 s the app log says "the service was not running; started it" and the service runs again. **Put the restart back afterwards**: `sc failure SiteBlocker reset= 86400 actions= restart/0/restart/0/restart/0` |
-| 21 | Copy `SiteBlocker.exe` to another folder under another name and run it during a block, then end the real app in Task Manager | the service still starts the real app within about a second (the copy was never taken in) |
+| 20 | The app starts a stopped service. In a SYSTEM shell turn the restart off (`sc failure bullseye reset= 0 actions= ""`), then `taskkill /f /im bullseye.exe` the service while the app runs | within about 5 s the app log says "the service was not running; started it" and the service runs again. **Put the restart back afterwards**: `sc failure bullseye reset= 86400 actions= restart/0/restart/0/restart/0` |
+| 21 | Copy `bullseye.exe` to another folder under another name and run it during a block, then end the real app in Task Manager | the service still starts the real app within about a second (the copy was never taken in) |
 | 22 | During a block, suspend the real app (Process Explorer, or `pssuspend` from Sysinternals) | within about 5 to 6 seconds `service.log` says "the app stopped asking for its policy; ending it", and a new app starts |
-| 23 | Start `SiteBlocker.exe` by hand while the app runs | the second one exits at once; `app.log` says "not starting: Site Blocker is already running" |
+| 23 | Start `bullseye.exe` by hand while the app runs | the second one exits at once; `app.log` says "not starting: Bullseye is already running" |
 | 24 | During a block, put the machine to sleep for a minute and wake it | the app is not ended because of the sleep (no "stopped asking" line in `service.log`) |
 | 25 | Put `steam*` (or a program you have open, say `notepad`) in the Programs box and start a block | the program gets a close request, and is ended about 3 seconds later if it is still running; `app.log` is not written, but the program is gone |
 | 26 | Put `*` or `explorer.exe` in the Programs box and start | refused with "Would close programs Windows or this app needs" |
@@ -4555,11 +4555,11 @@ Build with `npm run build` (installer in `src-tauri\target\release\bundle\nsis\`
 | 31 | Allowed list filled, block list empty, only the tab options ticked | refused (nothing to make exceptions to) |
 | 32 | Open a Google redirect page (a result link that goes through `google.com/url?q=https://...`) with a block entry for the target site | the redirect page itself is not closed because of the target in its query |
 | 33 | Open an Edge window on a blocked site (block entry `example.com`, `msedge --new-window https://example.com`) | the tab is closed within a second or two (this was broken before: Edge's tabs are `EdgeTab`). Chrome and Brave too |
-| 34 | Start the app and look at Task Manager > Details | only `SiteBlocker.exe`, about 20 MB, and no `msedgewebview2.exe` of its own; click the tray icon: the window opens in about half a second and the web view processes appear |
+| 34 | Start the app and look at Task Manager > Details | only `bullseye.exe`, about 20 MB, and no `msedgewebview2.exe` of its own; click the tray icon: the window opens in about half a second and the web view processes appear |
 | 35 | Close the window with the X, wait 5 minutes | the `msedgewebview2.exe` processes are gone; clicking the tray icon makes the window again; closing and reopening within 5 minutes is instant |
-| 36 | During a site block, watch `SiteBlocker.exe` CPU in Task Manager | a few percent of one core at most (it was about 10% with two browser windows) |
+| 36 | During a site block, watch `bullseye.exe` CPU in Task Manager | a few percent of one core at most (it was about 10% with two browser windows) |
 
-If test 1 fails: read `%ProgramData%\SiteBlocker\service.log` (administrators can read it) and the installer's error message; `%LOCALAPPDATA%\SiteBlocker\app.log` has the `--install` output.
+If test 1 fails: read `%ProgramData%\bullseye\service.log` (administrators can read it) and the installer's error message; `%LOCALAPPDATA%\bullseye\app.log` has the `--install` output.
 
 ## 10. Where the risk is
 
@@ -4569,3 +4569,27 @@ If you get stuck or unsure, these are the places to ask for a review before merg
 2. `watchdog::launch_app`: it hands out the user's token. It must never start the app as SYSTEM.
 3. `pipe.rs`: the access list and the checks. A hole here lets a standard user talk to a SYSTEM process.
 4. The installer hooks: this was the one part checked only by reading the generated script, not by running it.
+
+## 11. Several blocks, and the Carbon UI (later change)
+
+Sections 1 to 10 describe one block at a time. Since then the app keeps any number of named block
+**definitions** and runs each on its own; the code is the reference, this is the summary.
+
+- `definitions.rs`: `Definition { id, name, filters, allowed, programs, enforcers, schedule }`, kept by
+  the service in `%ProgramData%\bullseye\blocks.json`. `Schedule` is a tagged enum
+  (`{"kind":"duration","duration":"1h"}`), so other kinds of schedule can be added without changing
+  the file format. A definition is checked when saved (name, id, lists, schedule) and again when
+  started (something to do).
+- `block.rs`: `Blocklist` holds a list of running blocks, keyed by the definition's id. Starting copies
+  the definition; a running block cannot be started again, and its definition cannot be saved or
+  deleted until it ends. Each timed block ends by itself; `stop` refuses a timed one. The unlock
+  password ends them all. `Active` is every running block's part; `blocks_page`, `blocks_program`,
+  `closes_obsidian` combine them, each block going by its own enforcers and its own allowed sites.
+- `state.json` is now `{"blocks":[Saved…]}`; `Saved` has `id` and `name`. A file from before (one
+  block, no id) still loads, as a block with an empty id that the UI shows as "Earlier block".
+- The pipe protocol: `Save { block }`, `Delete { id }`, `Start { id }`, `Stop { id }`; `Status` answers
+  an `Overview { blocks, running, clock_synced }`; `Policy` answers one policy per running block.
+  The installer rules are unchanged in spirit: uninstall is refused while any timed block runs,
+  update while any block runs.
+- The UI is Carbon web components (see `CLAUDE.md`, "Design system"), vendored in `src/vendor/`; the
+  window is resizable and the page responsive. Unlock moved to a Settings page.

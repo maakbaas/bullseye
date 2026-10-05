@@ -1,5 +1,5 @@
 //! Installing and uninstalling: what the Windows installer runs (`windows/hooks.nsh`), as an
-//! administrator, as `SiteBlocker.exe --prepare-update` before replacing the app, `--install`
+//! administrator, as `bullseye.exe --prepare-update` before replacing the app, `--install`
 //! after copying it, and `--uninstall` before removing it.
 //!
 //! The installer cannot stop the service itself (nobody but SYSTEM can), so it asks it, over the

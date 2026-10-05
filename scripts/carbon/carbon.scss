@@ -1,0 +1,26 @@
+// The Carbon styles the page uses (built into src/vendor/carbon.css by scripts/vendor-carbon.mjs).
+// The components themselves (`cds-*` web components) bring their own styles; this adds what lives
+// outside them: the reset, the g10 / g100 themes (with the component tokens the web components
+// read), the CSS grid, the type classes, and the spacing and type tokens as custom properties.
+// The IBM Plex fonts are local files (fonts.css), so the page needs no network.
+
+@use 'sass:map';
+@use '@carbon/styles/scss/config' with (
+  $css--font-face: false
+);
+@use '@carbon/styles/scss/reset';
+@use '@carbon/styles/scss/zone';
+@use '@carbon/styles/scss/grid';
+@use '@carbon/styles/scss/spacing';
+@use '@carbon/styles/scss/type';
+@use '@carbon/styles/scss/breakpoint';
+// The UI shell's light-DOM classes, e.g. `cds--header__global` for the header's action group.
+@use '@carbon/styles/scss/components/ui-shell';
+
+@include type.type-classes();
+
+:root {
+  @each $index in ('01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13') {
+    --cds-spacing-#{$index}: #{map.get(spacing.$spacing, 'spacing-' + $index)};
+  }
+}

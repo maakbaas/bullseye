@@ -23,7 +23,7 @@
 //! who can inject code into it can keep it asking while it enforces nothing.
 //!
 //! Nothing here is hidden or protected beyond that, on purpose: the service is named
-//! `SiteBlocker` in the services list, the app runs under its own name in Task Manager, and
+//! `bullseye` in the services list, the app runs under its own name in Task Manager, and
 //! uninstalling the app (Settings > Apps) removes the service. The mechanism is here to add
 //! friction at a weak moment, not to be unknowable.
 
@@ -208,7 +208,7 @@ fn adopt(current: &mut Option<Adopted>, pid: u32) -> Result<(), String> {
             app.heard = Some(Instant::now());
             return Ok(());
         }
-        Some(_) => return Err("Site Blocker is already running".into()),
+        Some(_) => return Err("Bullseye is already running".into()),
         None => {}
     }
     let process = Process::open(pid).ok_or("cannot look at the process that asked")?;
@@ -217,7 +217,7 @@ fn adopt(current: &mut Option<Adopted>, pid: u32) -> Result<(), String> {
     let installed = exe().ok_or("the service does not know its own exe")?;
     let same = process.image_path().is_some_and(|theirs| theirs.eq_ignore_ascii_case(&installed.to_string_lossy()));
     if !same {
-        return Err("not the installed Site Blocker".into());
+        return Err("not the installed Bullseye".into());
     }
     // Only the session at the screen is looked after; an app elsewhere just runs.
     if session_of(pid) != console_session() {
@@ -262,7 +262,7 @@ pub fn spawn_supervisor(blocklist: Blocklist, slot: Arc<AppSlot>) {
             let resumed = last_round.elapsed() >= RESUME_GAP;
             last_round = Instant::now();
 
-            let block_active = blocklist.filters().is_some();
+            let block_active = blocklist.is_running();
             let no_app = slot.supervise(block_active, resumed);
             if !block_active && !LAUNCH_APP.load(Ordering::SeqCst) {
                 missed = 0;
@@ -375,7 +375,7 @@ fn exe() -> Option<PathBuf> {
 }
 
 /// Writes a line to a log file as well as to stderr: `service.log` next to the saved block for
-/// the service, `app.log` in `%LOCALAPPDATA%\SiteBlocker` for the app.
+/// the service, `app.log` in `%LOCALAPPDATA%\bullseye` for the app.
 ///
 /// Neither runs with a window, so stderr goes nowhere in a release build; the file is how the
 /// user can see what they actually did.
@@ -479,7 +479,7 @@ mod tests {
 
     #[test]
     fn file_names_match_regardless_of_path_and_case() {
-        assert_eq!(file_name(std::path::Path::new(r"C:\a\B\tray-app.EXE")), "tray-app.exe");
+        assert_eq!(file_name(std::path::Path::new(r"C:\a\B\bullseye.EXE")), "bullseye.exe");
     }
 
     #[test]
@@ -547,7 +547,7 @@ mod tests {
 
         // Not the installed exe, whatever it is called: refused, and nothing is taken in.
         let slot = AppSlot::new(true);
-        assert_eq!(slot.register(child.id()), Err("not the installed Site Blocker".into()));
+        assert_eq!(slot.register(child.id()), Err("not the installed Bullseye".into()));
         slot.heard(child.id());
         assert!(slot.supervise(true, false), "nothing should have been taken in");
 
@@ -555,7 +555,7 @@ mod tests {
         assert_eq!(slot.register(me), Ok(()));
         assert!(!slot.supervise(true, false));
         assert_eq!(slot.register(me), Ok(()));
-        assert_eq!(slot.register(child.id()), Err("Site Blocker is already running".into()));
+        assert_eq!(slot.register(child.id()), Err("Bullseye is already running".into()));
 
         let _ = child.kill();
         let _ = child.wait();

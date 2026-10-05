@@ -1,13 +1,21 @@
 {
-  "name": "tray-app",
+  "name": "bullseye",
   "private": true,
   "version": "0.1.0",
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
-    "build": "tauri build"
+    "build": "tauri build",
+    "vendor": "node scripts/vendor-carbon.mjs"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2"
+    "@carbon/icons": "^11.89.0",
+    "@carbon/styles": "^1.116.0",
+    "@carbon/web-components": "^2.64.0",
+    "@ibm/plex-mono": "^2.5.0",
+    "@ibm/plex-sans": "^1.1.0",
+    "@tauri-apps/cli": "^2",
+    "esbuild": "^0.28.2",
+    "sass": "^1.105.1"
   }
 }

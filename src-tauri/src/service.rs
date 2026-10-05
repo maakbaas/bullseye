@@ -1,6 +1,6 @@
 //! The Windows service: the root of everything. It runs as SYSTEM, started by Windows at boot
 //! and started again by Windows if it ever fails, and it holds what must not be in the user's
-//! reach: the running block, internet time, the unlock hash.
+//! reach: the block definitions, the running blocks, internet time, the unlock hash.
 //!
 //! It cannot close tabs itself (a service has no desktop), so the app does that, and this keeps
 //! the app running (`watchdog.rs`) and tells it what to enforce, over a named pipe (`pipe.rs`).
@@ -36,6 +36,7 @@ use windows_service::service_control_handler::{self, ServiceControlHandlerResult
 use windows_service::service_dispatcher;
 
 use crate::block::Blocklist;
+use crate::definitions::Definitions;
 #[cfg(any(debug_assertions, test))]
 use crate::client::Local;
 use crate::handler::{handle, Context, Shutdown};
@@ -133,13 +134,13 @@ fn start_engine(for_real: bool) -> Result<mpsc::Receiver<Shutdown>, String> {
         watchdog::spawn_supervisor(blocklist.clone(), slot.clone());
     }
     let (quit, quit_rx) = mpsc::channel();
-    let context = Arc::new(Context::new(blocklist, slot));
+    let context = Arc::new(Context::new(blocklist, Definitions::new(), slot));
     pipe::serve(move |caller, request| handle(&context, caller, request), quit)?;
     Ok(quit_rx)
 }
 
-/// The running block, as the service has it: internet time on, a block left behind by an earlier
-/// run picked up again (so a restart does not end it), and a thread that ends a timed block whose
+/// The running blocks, as the service has them: internet time on, blocks left behind by an earlier
+/// run picked up again (so a restart does not end them), and a thread that ends a timed block whose
 /// time is up and keeps the time on disk moving for a restart while offline (`Saved::seen`), even
 /// when no app is asking.
 fn start_blocklist() -> Blocklist {
@@ -158,27 +159,27 @@ fn start_blocklist() -> Blocklist {
 /// `Remote::local`. Nobody can talk to it but the app that holds it, and nothing looks after the
 /// app (`AppSlot::new(false)`).
 #[cfg(any(debug_assertions, test))]
-pub fn local_handler(blocklist: Blocklist) -> Local {
-    let context = Context::new(blocklist, Arc::new(AppSlot::new(false)));
+pub fn local_handler(blocklist: Blocklist, definitions: Definitions) -> Local {
+    let context = Context::new(blocklist, definitions, Arc::new(AppSlot::new(false)));
     Arc::new(move |request| handle(&context, 0, request).0)
 }
 
 /// For `npm run dev`: the service inside the app, with no service installed, no pipe and no
-/// administrator rights. **Debug builds only**, and not used with `SITEBLOCKER_USE_SERVICE` set.
-/// Ending the app ends the enforcing, which is fine while developing. The block is kept in
-/// `%LOCALAPPDATA%\SiteBlocker-dev`, so a timed block is still there the next time; delete that
+/// administrator rights. **Debug builds only**, and not used with `BULLSEYE_USE_SERVICE` set.
+/// Ending the app ends the enforcing, which is fine while developing. The blocks are kept in
+/// `%LOCALAPPDATA%\bullseye-dev`, so a timed block is still there the next time; delete that
 /// folder to forget it.
 #[cfg(debug_assertions)]
 pub fn embedded() -> Local {
     use_dev_dir();
-    local_handler(start_blocklist())
+    local_handler(start_blocklist(), Definitions::new())
 }
 
-/// Development keeps its files apart from a real install's: `%LOCALAPPDATA%\SiteBlocker-dev`.
+/// Development keeps its files apart from a real install's: `%LOCALAPPDATA%\bullseye-dev`.
 #[cfg(debug_assertions)]
 fn use_dev_dir() {
     if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        state::use_dir(Path::new(&local).join("SiteBlocker-dev"));
+        state::use_dir(Path::new(&local).join("bullseye-dev"));
     }
 }
 
@@ -206,19 +207,10 @@ fn lock_down_data_dir() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::definitions::tests::definition;
+    use crate::definitions::{Definition, Schedule};
     use crate::proto::{Request, Response};
-    use crate::state::Enforcers;
     use std::time::Duration;
-
-    fn start_request(duration: &str) -> Request {
-        Request::Start {
-            programs: vec![],
-            allowed: vec![],
-            filters: vec!["a.com".into()],
-            duration: duration.into(),
-            enforcers: Enforcers::default(),
-        }
-    }
 
     /// Runs the real pipe server in this process and talks to it like the app and the installer
     /// do. Needs no service installed, but no service may be running either (it would hold the
@@ -235,20 +227,22 @@ mod tests {
         let quit = start_engine(false).unwrap();
 
         // This server runs in the user's session, not in session 0: the app refuses to talk to it.
-        std::env::remove_var("SITEBLOCKER_DEV");
+        std::env::remove_var("BULLSEYE_DEV");
         let refused = client::call(&Request::Status).unwrap_err();
         assert!(refused.contains("not by the service"), "{refused}");
         // The test lets the app talk to it anyway, which only a test build allows (`pipe::verify_server`).
-        std::env::set_var("SITEBLOCKER_DEV", "1");
+        std::env::set_var("BULLSEYE_DEV", "1");
 
         // This engine looks after no app, so taking one in is always fine.
         assert_eq!(client::call(&Request::Register), Ok(Response::Done));
         let Ok(Response::Status(status)) = client::call(&Request::Status) else { panic!("no status") };
-        assert_eq!(status.remaining, None);
-        assert_eq!(client::call(&start_request("1h")), Ok(Response::Done));
-        let Ok(Response::Policy(Some(policy))) = client::call(&Request::Policy) else { panic!("no policy") };
-        assert_eq!(policy.filters, vec!["a.com"]);
-        assert!(matches!(client::call(&Request::Stop), Ok(Response::Failed(_))));
+        assert!(status.running.is_empty());
+        let block = Definition { schedule: Schedule::Duration { duration: "1h".into() }, ..definition("a", &["a.com"]) };
+        assert_eq!(client::call(&Request::Save { block }), Ok(Response::Done));
+        assert_eq!(client::call(&Request::Start { id: "a".into() }), Ok(Response::Done));
+        let Ok(Response::Policy(policies)) = client::call(&Request::Policy) else { panic!("no policy") };
+        assert_eq!(policies[0].filters, vec!["a.com"]);
+        assert!(matches!(client::call(&Request::Stop { id: "a".into() }), Ok(Response::Failed(_))));
         assert!(matches!(client::call(&Request::PrepareUninstall), Ok(Response::Refused(_))));
 
         // A length far beyond the limit gets an error back, not an allocation.

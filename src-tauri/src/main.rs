@@ -3,6 +3,7 @@
 mod block;
 mod client;
 mod clock;
+mod definitions;
 mod filters;
 mod handler;
 mod pipe;
@@ -18,43 +19,45 @@ mod ui;
 mod unlock;
 mod watchdog;
 
-use block::Status;
 use client::Remote;
-use proto::{Request, Response};
-use state::Enforcers;
+use definitions::Definition;
+use proto::{Overview, Request, Response};
 use tauri::{
     tray::{MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, RunEvent, State, WindowEvent,
 };
 
-/// Starts blocking with the given filter lines, allowed-site lines, program lines and enforcers, for `duration` (`5s`, `10m`, `3h`,
-/// `1d`) or, when empty, until stopped.
-///
-/// The service owns the block and checks all of this again (`service::start`); the answer here
-/// is only its verdict. It goes on even if this app is ended or Windows restarts.
+/// Every block, and which of them run.
 #[tauri::command]
-fn start_block(
-    filters: Vec<String>,
-    allowed: Vec<String>,
-    programs: Vec<String>,
-    duration: String,
-    enforcers: Enforcers,
-    remote: State<Remote>,
-) -> Result<(), String> {
-    remote.command(Request::Start { filters, allowed, programs, duration, enforcers })
-}
-
-#[tauri::command]
-fn stop_block(remote: State<Remote>) -> Result<(), String> {
-    remote.command(Request::Stop)
-}
-
-#[tauri::command]
-fn block_status(remote: State<Remote>) -> Result<Status, String> {
+fn block_status(remote: State<Remote>) -> Result<Overview, String> {
     remote.status()
 }
 
-/// Ends the block for good, if the unlock password is right, and quits the app. The service
+/// Adds a block, or changes the one with its id. The service checks it again (`handler.rs`) and
+/// refuses it while that block runs.
+#[tauri::command]
+fn save_block(block: Definition, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::Save { block })
+}
+
+#[tauri::command]
+fn delete_block(id: String, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::Delete { id })
+}
+
+/// Starts a block as it is defined. The service owns it from then on: it goes on even if this app
+/// is ended or Windows restarts.
+#[tauri::command]
+fn start_block(id: String, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::Start { id })
+}
+
+#[tauri::command]
+fn stop_block(id: String, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::Stop { id })
+}
+
+/// Ends every block for good, if the unlock password is right, and quits the app. The service
 /// stays; with no block left it has nothing to do, and starts the app again at the next logon.
 #[tauri::command]
 fn force_exit(password: String, app: AppHandle, remote: State<Remote>) -> Result<(), String> {
@@ -66,11 +69,11 @@ fn force_exit(password: String, app: AppHandle, remote: State<Remote>) -> Result
 
 /// Who the app talks to. Normally the service, over its pipe. In a debug build (`npm run dev`) the
 /// service's logic runs inside the app instead, so development needs no installed service; set
-/// `SITEBLOCKER_USE_SERVICE` to talk to a real, installed one anyway. A release build has no
+/// `BULLSEYE_USE_SERVICE` to talk to a real, installed one anyway. A release build has no
 /// such code.
 fn remote_for_this_run() -> Remote {
     #[cfg(debug_assertions)]
-    if std::env::var_os("SITEBLOCKER_USE_SERVICE").is_none() {
+    if std::env::var_os("BULLSEYE_USE_SERVICE").is_none() {
         return Remote::local(service::embedded());
     }
     Remote::new()
@@ -110,7 +113,7 @@ fn main() {
     tauri::Builder::default()
         .manage(remote)
         .manage(ui::Ui::new())
-        .invoke_handler(tauri::generate_handler![start_block, stop_block, block_status, force_exit, ui::window_ready])
+        .invoke_handler(tauri::generate_handler![block_status, save_block, delete_block, start_block, stop_block, force_exit, ui::window_ready])
         // The window's X hides it (it is destroyed after a while, `ui.rs`); only the unlock password quits.
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
