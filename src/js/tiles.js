@@ -11,7 +11,7 @@ import { detour } from "./detour.js";
 const ruleLine = (rule, name) =>
   rule.type === "flash_drive"
     ? ["plug-16", t("blocks.tile.activeDrive", { drive: quoted(rule.drive) })]
-    : ["calendar-16", t(name ? "blocks.tile.activeNamed" : "blocks.tile.active", { times: weekText(rule.days), name })];
+    : ["calendar-16", t(name ? "blocks.tile.activeNamed" : "blocks.tile.active", { name })];
 
 // What a tile says, per kind: lines of text.
 function summaryOf(kind, item) {

@@ -7,8 +7,12 @@
 //! - `https://`, `www.` and letter case are ignored.
 //! - An entry blocks everything that continues it at a break (`/ ? # & :`):
 //!   `tweakers.net` blocks `tweakers.net/nieuws?x=1`, not `tweakers.network`.
-//! - `*` matches any characters: within the domain it stops at `/` (`*.tweakers.net` covers
-//!   subdomains), in the path it spans folders (`tweakers.net/*/a.html` covers `/x/y/a.html`).
+//! - **A domain also covers its subdomains**: `tweakers.net` is `gathering.tweakers.net` too, so a
+//!   list needs one entry per site. An exception for one of them goes in the list of allowed
+//!   sites, which wins.
+//! - `*` matches any characters: within the domain it stops at `/`, and an entry with one in its
+//!   domain goes by what it says (`*.tweakers.net` is the subdomains only, not `tweakers.net`
+//!   itself); in the path it spans folders (`tweakers.net/*/a.html` covers `/x/y/a.html`).
 
 use regex::RegexSet;
 
@@ -89,7 +93,10 @@ fn is_website(url: &str) -> bool {
 fn to_regex(entry: &str) -> String {
     let (host, path) = entry.split_at(entry.find('/').unwrap_or(entry.len()));
     let wildcard = |part: &str, any: &str| part.split('*').map(regex::escape).collect::<Vec<_>>().join(any);
-    format!("^{}{}(?:[/?#&:].*)?$", wildcard(host, "[^/]*"), wildcard(path, ".*"))
+    // A domain without a wildcard also covers its subdomains, and only at a dot: `tweakers.net` is
+    // `gathering.tweakers.net`, not `nottweakers.net`, and nothing after a `/`, `?` or `#` counts.
+    let subdomains = if host.contains('*') { "" } else { r"(?:[^/?#&:@]*\.)?" };
+    format!("^{subdomains}{}{}(?:[/?#&:].*)?$", wildcard(host, "[^/]*"), wildcard(path, ".*"))
 }
 
 #[cfg(test)]
@@ -106,8 +113,70 @@ mod tests {
         assert!(blocks("https://www.Tweakers.net/", "https://www.tweakers.net/nieuws?x=1"));
         assert!(blocks("tweakers.net", "tweakers.net/nieuws"));
         assert!(!blocks("tweakers.net", "https://tweakers.network/"));
-        assert!(!blocks("tweakers.net", "https://gathering.tweakers.net/"));
         assert!(!blocks("tweakers.net", "https://google.com/search?q=tweakers.net"));
+    }
+
+    #[test]
+    fn a_domain_also_blocks_its_subdomains() {
+        for url in [
+            "https://gathering.tweakers.net/",
+            "https://gathering.tweakers.net/forum/list?x=1",
+            "https://a.b.tweakers.net/",
+            "https://www.gathering.tweakers.net/",
+            "gathering.tweakers.net/forum",
+            "HTTPS://Gathering.Tweakers.NET/",
+            "https://tweakers.net/",
+        ] {
+            assert!(blocks("tweakers.net", url), "{url}");
+        }
+        // Whatever is written with it: a www, a scheme, a trailing slash, other case.
+        assert!(blocks("www.Tweakers.net/", "https://gathering.tweakers.net/x"));
+        assert!(blocks("https://tweakers.net", "https://gathering.tweakers.net/x"));
+        // Only at a dot, and only in the domain.
+        for url in [
+            "https://nottweakers.net/",
+            "https://tweakers.network/",
+            "https://tweakers.net.evil.com/",
+            "https://evil-tweakers.net/",
+            "https://evil.com/gathering.tweakers.net",
+            "https://evil.com/x.tweakers.net/",
+            "https://google.com/url?q=https://gathering.tweakers.net/",
+            "google.com/url?q=gathering.tweakers.net",
+            "example.com?x=a.tweakers.net",
+            "example.com#a.tweakers.net",
+            "example.com&a.tweakers.net",
+        ] {
+            assert!(!blocks("tweakers.net", url), "{url}");
+        }
+        // A page below a domain still blocks its subdomains' pages, and nothing outside it.
+        assert!(blocks("tweakers.net/forum", "https://gathering.tweakers.net/forum/list"));
+        assert!(!blocks("tweakers.net/forum", "https://gathering.tweakers.net/nieuws"));
+        // With a port, like the address of a local server.
+        assert!(blocks("jenkins.example.com:8080", "http://jenkins.example.com:8080/job"));
+        assert!(blocks("jenkins.example.com:8080", "http://ci.jenkins.example.com:8080/job"));
+        assert!(!blocks("jenkins.example.com:8080", "http://jenkins.example.com:9090/job"));
+    }
+
+    #[test]
+    fn an_exception_for_a_subdomain_is_one_entry_in_the_list_of_allowed_sites() {
+        // `block::Enforced::blocks_site`: allowed wins, and a domain there covers its subdomains too.
+        let blocked = FilterList::parse(&["tweakers.net"]).unwrap();
+        let allowed = FilterList::parse(&["gathering.tweakers.net"]).unwrap();
+        let go = |url: &str| blocked.is_blocked(url) && !allowed.is_blocked(url);
+        assert!(go("https://tweakers.net/nieuws"));
+        assert!(go("https://www.tweakers.net/"));
+        assert!(go("https://tweakers.net/forum"));
+        assert!(!go("https://gathering.tweakers.net/forum"));
+        assert!(!go("https://a.gathering.tweakers.net/forum"));
+        assert!(go("https://pricewatch.tweakers.net/"));
+        // Everything but an allowed site: the allowed domain, and what is under it.
+        let everything = FilterList::parse(&["*"]).unwrap();
+        let google = FilterList::parse(&["google.com"]).unwrap();
+        let blocked_now = |url: &str| everything.is_blocked(url) && !google.is_blocked(url);
+        assert!(!blocked_now("https://docs.google.com/d/1"));
+        assert!(!blocked_now("https://google.com/"));
+        assert!(blocked_now("https://notgoogle.com/"));
+        assert!(blocked_now("https://google.com.evil.com/"));
     }
 
     #[test]
@@ -122,6 +191,7 @@ mod tests {
     fn wildcards() {
         assert!(blocks("*.tweakers.net", "https://gathering.tweakers.net/forum"));
         assert!(blocks("*.tweakers.net", "https://a.b.tweakers.net/"));
+        // A wildcard in the domain goes by what it says: the subdomains, not the domain itself.
         assert!(!blocks("*.tweakers.net", "https://tweakers.net/"));
         assert!(!blocks("*.tweakers.net", "https://evil.com/x.tweakers.net"));
 

@@ -108,8 +108,6 @@ async function refresh() {
 
 const runningOf = (id) => overview.running.find((r) => r.id === id);
 const conditionOf = (block) => overview.conditions.find((c) => c.id === block.condition);
-// A condition's rule in words: a weekly schedule's times (the backend's), or the drive it waits for.
-const ruleText = (rule) => (rule.type === "flash_drive" ? t("conditions.driveWhat", { drive: quoted(rule.drive) }) : weekText(rule.days));
 const listName = (id) => (overview.lists.find((l) => l.id === id) || { name: t("common.gone") }).name;
 // The blocks that use a block list or condition, and those of them that run (which hold it).
 const usersOf = (id) => overview.blocks.filter((b) => b.lists.includes(id) || b.condition === id || (b.lock && b.lock.condition === id));
@@ -161,4 +159,4 @@ $("confirm-action").addEventListener("click", async () => {
 });
 $("confirm").addEventListener("cds-modal-closed", () => answered(false));
 
-export { invoke, $, t, quoted, names, applyStrings, el, described, weekText, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, ruleText, listName, usersOf, holdersOf, invalid, ask };
+export { invoke, $, t, quoted, names, applyStrings, el, described, weekText, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, listName, usersOf, holdersOf, invalid, ask };

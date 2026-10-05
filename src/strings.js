@@ -80,12 +80,13 @@ window.STRINGS = {
     conditionHelper: "When it is active once started. Conditions are made on the Conditions page.",
     always: "Always",
 
-    // A block's tile. {times}: a weekly schedule in words; {drive}: a flash drive's name, quoted;
-    // {name}: the condition's name; {left} and {change}: times in words.
+    // A block's tile. A weekly schedule is named, never written out (its times are on the
+    // Conditions page, and only there); {drive}: a flash drive's name, quoted; {name}: the
+    // condition's name; {left} and {change}: times in words.
     tile: {
       noLists: "No block lists yet",
-      active: "Active {times}",
-      activeNamed: "Active {times} ({name})",
+      active: "Active by its schedule",
+      activeNamed: "Active during {name}",
       activeDrive: "Active while {drive} is not connected",
       always: "Always active",
       unknownLock: "Unknown lock",
@@ -183,13 +184,15 @@ window.STRINGS = {
       noneHeading: "No conditions yet",
       noneBody: "A condition lock needs a condition to lock by. Make one now? Once it is saved, the lock is set to it.",
       noneAction: "New condition",
-      // {condition}: its name, quoted; {what}: its schedule in words, or the drive it waits for.
-      describe: "Locked while {condition} is active ({what})",
+      // {condition}: its name, quoted.
+      describe: "Locked while {condition} is active",
       // {drive}: a flash drive's name, quoted: said without the condition's name, which is long enough.
       describeDrive: "Locked while {drive} is not connected",
       describeGone: "Locked by a condition that is gone",
       confirmHeading: "Start {name} locked during {condition}?",
-      confirmBody: "It cannot be stopped while {condition} is active ({what}). Otherwise you can stop it. Only unlocking in Settings ends it early.",
+      // {detail}: nothing for a schedule, the drive for a flash drive.
+      confirmBody: "It cannot be stopped while {condition} is active{detail}. Otherwise you can stop it. Only unlocking in Settings ends it early.",
+      driveDetail: " (the flash drive {drive} is not connected)",
       confirmAction: "Start locked",
     },
     text: {
@@ -242,7 +245,7 @@ window.STRINGS = {
     filters: {
       label: "Sites to block",
       placeholder: "youtube.com",
-      helper: "One per line: a site and everything under it. * matches any part; a lone * blocks every site.",
+      helper: "One per line: a site with its subdomains and everything under it. * matches any part; a lone * blocks every site.",
       count: { one: "{n} site blocked", other: "{n} sites blocked" },
     },
     allowed: {
@@ -326,8 +329,6 @@ window.STRINGS = {
     // {times}: the schedule in words; {drive}: the drive's name, quoted.
     active: "Active {times}",
     activeDrive: "Active while {drive} is not connected",
-    // What a condition lock waits for, in words; {drive}: quoted.
-    driveWhat: "the flash drive {drive} is not connected",
     notUsed: "Not used by a block yet",
     // Above the week grid.
     nothingMarked: "Nothing marked yet: mark when blocks are active.",
@@ -376,6 +377,7 @@ window.STRINGS = {
     unlockAsk: "Unlocking takes {delay}. Ask for it to start the countdown.",
     unlockWait: "Unlocking is ready in {left}. Abort to stay locked.",
     unlockReady: "Unlocking is ready. Unlock now, or abort to stay locked.",
+    unlockNothing: "Nothing is locked right now, so there is nothing to unlock.",
     unlock: "Unlock",
     request: "Request unlock",
     abort: "Abort",

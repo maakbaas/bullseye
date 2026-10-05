@@ -27,9 +27,19 @@ function renderSettings() {
   const free = delay === 0;
   const requested = remaining !== null;
   const ready = remaining === 0;
+  // Nothing locked right now: nothing to unlock, so no button to ask for it (a countdown that is
+  // still there can be aborted).
+  const locked = overview.running.some((running) => running.locked);
   $("unlock-text").textContent = t(free ? "settings.unlockFree" : "settings.unlockText");
-  $("unlock-state").hidden = free;
-  $("unlock-state").textContent = !requested ? t("settings.unlockAsk", { delay: delayWords }) : ready ? t("settings.unlockReady") : t("settings.unlockWait", { left });
+  $("unlock-state").hidden = locked && free;
+  $("unlock-state").textContent = !locked
+    ? t("settings.unlockNothing")
+    : !requested
+      ? t("settings.unlockAsk", { delay: delayWords })
+      : ready
+        ? t("settings.unlockReady")
+        : t("settings.unlockWait", { left });
+  $("unlock").hidden = !locked;
   $("unlock").replaceChildren(t(free || ready ? "settings.unlock" : "settings.request"));
   // Counting down: nothing to press but Abort.
   $("unlock").disabled = requested && !ready;

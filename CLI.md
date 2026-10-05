@@ -84,7 +84,7 @@ With `edit`, an option replaces only what it names: `--list` replaces all its bl
 
 | Option | Meaning | New list's default |
 |---|---|---|
-| `--site <entry>` | A site to block (repeatable). An address prefix with `*` as a wildcard, as in the window: `youtube.com`, `*.reddit.com`, `*` (every site). | none |
+| `--site <entry>` | A site to block (repeatable): the site, its subdomains and everything under it (`youtube.com` is `www.youtube.com` and `music.youtube.com` too), with `*` as a wildcard as in the window: `reddit.com/r/*`, `*` (every site). `*.reddit.com` is the subdomains only. An exception for one subdomain goes in `--allow`. | none |
 | `--allow <entry>` | A site that is always allowed, also when this list's sites match it (repeatable). | none |
 | `--program <name>` | A program to close, by exe name (repeatable): `steam`, `steam*.exe`. | none |
 | `--store-app <family>` | A Store app to close, by package family name (repeatable): `Microsoft.WindowsCalculator_8wekyb3d8bbwe`, with `*` as a wildcard (`Microsoft.Xbox*`). `list apps` shows the installed ones. Windows' own apps are never closed. | none |

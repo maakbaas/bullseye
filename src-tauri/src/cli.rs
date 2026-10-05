@@ -111,7 +111,8 @@ Block lists:
   list apps [--json]          The Store apps installed, by name and package family name, to
                               block with --store-app.
   list new <name> [options]   Make a block list. Options:
-      --site <entry>           A site to block (repeatable). Address prefix, * as a wildcard.
+      --site <entry>           A site to block (repeatable): the site with its subdomains and
+                               everything under it, e.g. youtube.com. * as a wildcard.
       --allow <entry>          A site that is always allowed, also when blocked (repeatable).
       --program <name>         A program to close, by exe name (repeatable), e.g. steam.exe.
       --store-app <family>     A Store app to close, by package family name (repeatable), e.g.
@@ -878,6 +879,16 @@ fn resolve_rule(choice: RuleChoice) -> Result<Rule, Failure> {
     }
 }
 
+/// What a block's lock says of its condition besides its name: nothing for a schedule (the times are
+/// on the Conditions page, and only there), and the drive for a flash drive, which is what makes
+/// "active" mean something.
+fn drive_detail(rule: &Rule) -> String {
+    match rule {
+        Rule::Schedule { .. } => String::new(),
+        Rule::FlashDrive { drive, .. } => format!(" (the flash drive \"{drive}\" is not connected)"),
+    }
+}
+
 /// A condition as words: its times, or the drive it waits for.
 fn describe_rule(rule: &Rule) -> String {
     match rule {
@@ -939,9 +950,9 @@ fn lock_warning(overview: &Overview, block: &Definition) -> Option<String> {
         Lock::Condition { condition } => {
             let condition = overview.conditions.iter().find(|c| &c.id == condition)?;
             Some(format!(
-                "It cannot be stopped while its lock condition \"{}\" is active ({}).",
+                "It cannot be stopped while its lock condition \"{}\" is active{}.",
                 condition.name,
-                describe_rule(&condition.rule)
+                drive_detail(&condition.rule)
             ))
         }
         Lock::Text { .. } => Some("It can only be stopped by typing its text in, in the window.".into()),
@@ -1145,7 +1156,7 @@ fn describe_block(overview: &Overview, block: &Definition, running: Option<&Runn
     let condition = match &block.condition {
         None => "always active".to_string(),
         Some(id) => match overview.conditions.iter().find(|c| &c.id == id) {
-            Some(c) => format!("{} ({})", c.name, describe_rule(&c.rule)),
+            Some(c) => c.name.clone(),
             None => "(gone)".into(),
         },
     };
@@ -1161,7 +1172,7 @@ fn describe_block(overview: &Overview, block: &Definition, running: Option<&Runn
         },
         Lock::UntilRestart => "until restart: cannot be stopped until Windows restarts, and ends then".into(),
         Lock::Condition { condition } => match overview.conditions.iter().find(|c| &c.id == condition) {
-            Some(c) => format!("condition: cannot be stopped while \"{}\" is active ({})", c.name, describe_rule(&c.rule)),
+            Some(c) => format!("condition: cannot be stopped while \"{}\" is active{}", c.name, drive_detail(&c.rule)),
             None => "condition: (condition gone)".into(),
         },
         Lock::Text { .. } => "text: can only be stopped by typing its text in, in the window".into(),
@@ -1357,7 +1368,8 @@ mod tests {
         // What starting asks, per lock.
         let overview = library();
         let warning = lock_warning(&overview, &overview.blocks[0]).unwrap();
-        assert!(warning.contains("while its lock condition \"Work hours\" is active (Mon-Fri 08:00-17:00)"), "{warning}");
+        assert!(warning.contains("while its lock condition \"Work hours\" is active."), "{warning}");
+        assert!(!warning.contains("08:00"), "{warning}");
         let timed = Definition { lock: Lock::Duration { duration: "2h5m".into() }, ..overview.blocks[0].clone() };
         assert!(lock_warning(&overview, &timed).unwrap().contains("for 2 hours and 5 minutes."));
         assert_eq!(lock_warning(&overview, &Definition { lock: Lock::None, ..timed }), None);
@@ -1545,7 +1557,8 @@ mod tests {
         assert!(text.contains("Waiting for internet time"), "{text}");
 
         let block = describe_block(&overview, &overview.blocks[0], overview.running.first());
-        assert!(block.contains("Block lists: Social") && block.contains("Condition:   Work hours (Mon-Fri 08:00-17:00)"), "{block}");
+        assert!(block.contains("Block lists: Social") && block.contains("Condition:   Work hours\n"), "{block}");
+        assert!(!block.contains("08:00-17:00"), "{block}");
         assert!(block.contains("Lock:        condition: cannot be stopped while \"Work hours\" is active"), "{block}");
         assert_eq!(
             resolve_lock(&overview, Lock::Condition { condition: "work HOURS".into() }).ok(),
