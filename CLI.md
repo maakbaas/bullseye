@@ -51,6 +51,8 @@ A running block keeps what it was started with: while it runs, it cannot be chan
 | `bullseye-cli schedule delete <schedule> [--yes]` | **Delete** a schedule |
 | `bullseye-cli schedule duplicate <schedule>` | **Duplicate** a schedule |
 | `bullseye-cli schedule check <times>` | the schedule written out under the week grid in the schedule editor |
+| `bullseye-cli export <file>` | **Export** in Settings |
+| `bullseye-cli import <file> [--yes]` | **Import** in Settings |
 | `bullseye-cli unlock [--password <pw>]` | **Unlock** in Settings |
 | `bullseye-cli help` | |
 | `bullseye-cli version` | |
@@ -131,6 +133,15 @@ Schedules:
 ### `duplicate`, `list duplicate`, `schedule duplicate`
 
 Make a copy, as **Duplicate** in a tile's menu does: named after the original with the next free number (a copy of `Work` or of `Work (2)` is `Work (2)`, or `Work (3)` when that is taken), with everything the original has. A block's copy uses the same block lists and schedule and has the same lock, a password lock with the same password. The CLI can also copy a running block, or what one uses (the window hides the menu of those); the copy is not running.
+
+### `export`, `import`
+
+To move to another computer: `export <file>` writes every block list, schedule and block to a settings file (JSON), the same file the window's **Export** saves. `import <file>` replaces all of them with what is in such a file, after asking (or with `--yes`); it is refused while any block runs. A password lock is not in the file, so a block that has one comes without a lock: the question names them. The unlock password is part of Bullseye itself, not of the file.
+
+```powershell
+bullseye-cli export D:\bullseye.json
+bullseye-cli import D:\bullseye.json
+```
 
 ### `unlock`
 

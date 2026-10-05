@@ -35,6 +35,8 @@ serde_json = "1.0.151"
 sha2 = "0.10"
 sysinfo = "0.39.6"
 tauri = { version = "2", features = ["tray-icon"] }
+# the Save and Open dialogs of Export and Import in Settings
+tauri-plugin-dialog = "2"
 uiautomation = "0.25.1"
 # the service (src/service.rs); install, failure actions, session notifications
 windows-service = "0.8"

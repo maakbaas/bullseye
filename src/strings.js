@@ -305,5 +305,26 @@ window.STRINGS = {
     unlock: "Unlock",
     failed: "Not unlocked",
     unlocked: "Unlocked: every block has ended",
+    transferTitle: "Move to another computer",
+    transferText: "Export saves every block list, schedule and block to a file. Import, on the other computer, replaces all of them there with what is in the file. Password locks are not in the file: a block with one comes without a lock.",
+    export: "Export",
+    import: "Import",
+    // {file}: the file's name.
+    exported: "Exported to {file}",
+    exportFailed: "Not exported",
+    importHeading: "Replace everything with this file?",
+    // {lists}, {schedules}, {blocks}: the counts below, as in the file.
+    importBody: "Its {lists}, {schedules} and {blocks} replace the block lists, schedules and blocks you have now. This cannot be undone.",
+    importLists: { one: "{n} block list", other: "{n} block lists" },
+    importSchedules: { one: "{n} schedule", other: "{n} schedules" },
+    importBlocks: { one: "{n} block", other: "{n} blocks" },
+    // {names}: the blocks, quoted; {n}: how many.
+    importUnlocked: {
+      one: "{names} had a password lock, which is not in the file: it comes without a lock.",
+      other: "{names} had a password lock, which is not in the file: they come without a lock.",
+    },
+    importAction: "Import",
+    imported: "Imported: everything is as in the file",
+    importFailed: "Not imported",
   },
 };

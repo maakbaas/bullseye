@@ -423,6 +423,42 @@ impl Definitions {
         })
     }
 
+    /// Replaces everything with `library` (Import), once all of it checks out as it would one by
+    /// one. A password lock comes without its password, so as no lock (`SettingsFile`); a lock
+    /// settings kept for a password is dropped. Whether a block runs is the handler's to refuse.
+    pub fn replace(&self, mut library: Library) -> Result<(), String> {
+        let too_many = library.lists.len().max(library.schedules.len()).max(library.blocks.len()) > MAX_ITEMS;
+        if too_many {
+            return Err(format!("At most {MAX_ITEMS} of each"));
+        }
+        for list in &mut library.lists {
+            list.name = list.name.trim().to_string();
+            list.check()?;
+        }
+        library.schedules = library.schedules.into_iter().map(NamedSchedule::checked).collect::<Result<_, _>>()?;
+        for block in &mut library.blocks {
+            block.name = block.name.trim().to_string();
+            if matches!(block.lock, Lock::Password { .. }) {
+                block.lock = Lock::None;
+            }
+            block.kept_locks.retain(|lock| !matches!(lock, Lock::Password { .. }));
+        }
+        for block in &library.blocks {
+            library.check_block(block)?;
+        }
+        let unique = |ids: Vec<&str>| ids.iter().enumerate().all(|(at, id)| !ids[..at].contains(id));
+        if !unique(library.lists.iter().map(|l| l.id.as_str()).collect())
+            || !unique(library.schedules.iter().map(|s| s.id.as_str()).collect())
+            || !unique(library.blocks.iter().map(|b| b.id.as_str()).collect())
+        {
+            return Err("Two items of one kind in the file have the same id".into());
+        }
+        self.change(|old| {
+            *old = library;
+            Ok(())
+        })
+    }
+
     /// Through a temporary file, like `state::Store::save`, so a crash leaves the old file or the new.
     fn write(&self, library: &Library) -> Result<(), String> {
         let Some(path) = &self.path else { return Ok(()) };
@@ -465,6 +501,69 @@ impl Library {
             unlocked: names(&|b| b.lock.schedule() == Some(id)),
         }
     }
+}
+
+/// The version of the settings file; another is refused rather than guessed at.
+const SETTINGS_VERSION: u32 = 1;
+
+/// The file Export writes and Import reads, to move everything the user defined to another
+/// computer: the library with a version. Password locks are in it without their hash: a password
+/// lock is for someone else to set, and a hash in a file the user has could be guessed at offline.
+#[derive(Serialize, Deserialize)]
+struct SettingsFile {
+    bullseye_settings: u32,
+    #[serde(flatten)]
+    library: Library,
+}
+
+/// What a settings file holds, for the question before importing it.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct Contents {
+    pub lists: usize,
+    pub schedules: usize,
+    pub blocks: usize,
+    /// Blocks with a password lock, which come without a lock (the file has no password).
+    pub unlocked: Vec<String>,
+}
+
+impl Library {
+    /// The settings file of this library (`SettingsFile`).
+    pub fn settings_text(self) -> Result<String, String> {
+        let file = SettingsFile { bullseye_settings: SETTINGS_VERSION, library: self.redacted() };
+        serde_json::to_string_pretty(&file).map_err(|e| e.to_string())
+    }
+
+    /// A settings file read back; whether its contents can be used is the import's to check.
+    pub fn from_settings_text(text: &str) -> Result<Library, String> {
+        let value: serde_json::Value = serde_json::from_str(text).map_err(|_| "This is not a Bullseye settings file")?;
+        match value.get("bullseye_settings").and_then(serde_json::Value::as_u64) {
+            Some(version) if version == u64::from(SETTINGS_VERSION) => {}
+            Some(_) => return Err("This settings file is from another version of Bullseye".into()),
+            None => return Err("This is not a Bullseye settings file".into()),
+        }
+        let file: SettingsFile = serde_json::from_value(value).map_err(|e| format!("This settings file cannot be read: {e}"))?;
+        Ok(file.library)
+    }
+
+    pub fn contents(&self) -> Contents {
+        Contents {
+            lists: self.lists.len(),
+            schedules: self.schedules.len(),
+            blocks: self.blocks.len(),
+            unlocked: self.blocks.iter().filter(|b| matches!(b.lock, Lock::Password { .. })).map(|b| b.name.clone()).collect(),
+        }
+    }
+}
+
+/// Writes the settings file of `library` (Export).
+pub fn write_settings(path: &std::path::Path, library: Library) -> Result<(), String> {
+    fs::write(path, library.settings_text()?).map_err(|e| format!("Cannot write {}: {e}", path.display()))
+}
+
+/// Reads a settings file (Import).
+pub fn read_settings(path: &std::path::Path) -> Result<Library, String> {
+    let text = fs::read_to_string(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
+    Library::from_settings_text(&text)
 }
 
 fn load(path: &PathBuf) -> Option<Library> {
@@ -713,6 +812,55 @@ pub mod tests {
         assert!(definitions.duplicate(Kind::Block, "b", "b2").is_err());
         assert!(definitions.duplicate(Kind::List, "nope", "x").is_err());
         assert!(definitions.duplicate(Kind::Schedule, "s", "not an id").is_err());
+    }
+
+    #[test]
+    fn everything_moves_through_a_settings_file_but_passwords() {
+        let here = Definitions::at(Some(path("export")));
+        here.save_list(block_list("l", &["a.com"])).unwrap();
+        here.save_schedule(weekly("s", "Mon 08:00-09:00")).unwrap();
+        let with = |id: &str, lock: Lock| Definition { schedule: Some("s".into()), lock, ..block(id, &["l"]) };
+        here.save_block(with("b", Lock::Password { password: Some("secret".into()), hash: None })).unwrap();
+        here.save_block(with("b", Lock::Duration { duration: "1h".into() })).unwrap();
+        here.save_block(with("p", Lock::Password { password: Some("secret".into()), hash: None })).unwrap();
+
+        let text = here.library().settings_text().unwrap();
+        let hash = here.library().block("p").unwrap().lock.password_hash().unwrap().to_string();
+        assert!(!text.contains(&hash) && !text.contains("secret"), "{text}");
+        let read = Library::from_settings_text(&text).unwrap();
+        assert_eq!(read.contents(), Contents { lists: 1, schedules: 1, blocks: 2, unlocked: vec!["Block p".into()] });
+
+        let there = Definitions::at(Some(path("import")));
+        there.save_list(block_list("other", &["b.com"])).unwrap();
+        there.replace(read).unwrap();
+        let library = there.library();
+        assert!(library.list("other").is_none(), "replaced, not added to");
+        assert_eq!(library.block("b").unwrap().lock, Lock::Duration { duration: "1h".into() });
+        // A password lock comes as no lock, and a kept password is not kept.
+        assert_eq!(library.block("p").unwrap().lock, Lock::None);
+        assert!(library.block("b").unwrap().kept_locks.is_empty());
+        assert_eq!(library.schedule("s").unwrap().week, here.library().schedule("s").unwrap().week);
+    }
+
+    #[test]
+    fn what_cannot_be_imported() {
+        let definitions = Definitions::at(None);
+        assert!(Library::from_settings_text("{}").is_err());
+        assert!(Library::from_settings_text("not json").is_err());
+        assert!(Library::from_settings_text(r#"{"bullseye_settings": 2, "lists": [], "schedules": [], "blocks": []}"#).is_err());
+        let file = |library: Library| Library::from_settings_text(&library.settings_text().unwrap()).unwrap();
+        // A block naming a list that is not in the file, two lists with one id, a list Windows needs.
+        let missing = Library { blocks: vec![block("b", &["gone"])], ..Library::default() };
+        assert!(definitions.replace(file(missing)).is_err());
+        let twice = Library { lists: vec![block_list("l", &[]), block_list("l", &[])], ..Library::default() };
+        assert!(definitions.replace(file(twice)).is_err());
+        let mut windows = block_list("w", &[]);
+        windows.programs = vec!["explorer.exe".into()];
+        assert!(definitions.replace(file(Library { lists: vec![windows], ..Library::default() })).is_err());
+        // An empty file empties everything.
+        definitions.save_list(block_list("l", &[])).unwrap();
+        definitions.replace(file(Library::default())).unwrap();
+        assert_eq!(definitions.library(), Library::default());
     }
 
     #[test]

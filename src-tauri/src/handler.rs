@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::block::{Blocklist, Part, StartLock};
-use crate::definitions::Definitions;
+use crate::definitions::{Definitions, Library};
 use crate::lock::Lock;
 use crate::proto::{Overview, Policy, Request, Response};
 use crate::sync::LockExt;
@@ -92,6 +92,7 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
             let _editing = context.editing.locked();
             (done(context.definitions.duplicate(kind, &id, &new_id)), None)
         }
+        Request::Import { library } => (done(import(context, library)), None),
         Request::Start { id } => (done(start(context, &id)), None),
         // A password lock stops with its own password; the others take none.
         Request::Stop { id, password } => {
@@ -105,6 +106,16 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
             None => (Response::Done, Some(Shutdown)),
         },
     }
+}
+
+/// Everything replaced (Import): it would replace what a running block holds, so only while none
+/// runs.
+fn import(context: &Context, library: Library) -> Result<(), String> {
+    let _editing = context.editing.locked();
+    if !context.blocklist.running_ids().is_empty() {
+        return Err("Stop every running block first: importing replaces what they use".into());
+    }
+    context.definitions.replace(library)
 }
 
 /// A change to the definitions, unless it touches a running block: the block `id` itself, or a
@@ -163,7 +174,7 @@ fn unlock(context: &Context, password: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::definitions::tests::{block, block_list, weekly};
-    use crate::definitions::{BlockList, Definition, NamedSchedule};
+    use crate::definitions::{BlockList, Definition, Kind, NamedSchedule};
     use crate::state::{Enforcers, Store};
     use std::fs;
 
@@ -539,5 +550,23 @@ mod tests {
         assert!(matches!(handle(&context, 0, Request::Policy).0, Response::Policy(p) if p.len() == 1));
         assert_eq!(handle(&context, 0, Request::Unlock { password: "test1234".into() }).0, Response::Done);
         assert_eq!(handle(&context, 0, Request::Policy).0, Response::Policy(Vec::new()));
+    }
+
+    #[test]
+    fn importing_waits_until_no_block_runs_and_copies_need_not() {
+        let context = context("import");
+        assert_eq!(run(&context, definition("a", &["a.com"])), Response::Done);
+        let library = overview(&context).library();
+        assert!(failed(handle(&context, 0, Request::Import { library: library.clone() }).0));
+        // A copy of the running block, or of its list, is not running.
+        let copy = Request::Duplicate { kind: Kind::Block, id: "a".into(), new_id: "a2".into() };
+        assert_eq!(handle(&context, 0, copy).0, Response::Done);
+        let list = library.blocks[0].lists[0].clone();
+        assert_eq!(handle(&context, 0, Request::Duplicate { kind: Kind::List, id: list, new_id: "l2".into() }).0, Response::Done);
+        assert_eq!(overview(&context).running.len(), 1);
+
+        assert_eq!(handle(&context, 0, Request::Stop { id: "a".into(), password: None }).0, Response::Done);
+        assert_eq!(handle(&context, 0, Request::Import { library }).0, Response::Done);
+        assert_eq!(overview(&context).blocks.len(), 1);
     }
 }

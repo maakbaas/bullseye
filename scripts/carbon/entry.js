@@ -45,6 +45,7 @@ import '@carbon/web-components/es/components/inline-loading/inline-loading.js';
 import { toSVG } from '@carbon/icon-helpers';
 import add16 from '@carbon/icons/es/add/16.js';
 import calendar16 from '@carbon/icons/es/calendar/16.js';
+import download16 from '@carbon/icons/es/download/16.js';
 import locked16 from '@carbon/icons/es/locked/16.js';
 import overflowMenuVertical16 from '@carbon/icons/es/overflow-menu--vertical/16.js';
 import play16 from '@carbon/icons/es/play/16.js';
@@ -54,11 +55,14 @@ import stop16 from '@carbon/icons/es/stop/16.js';
 import time16 from '@carbon/icons/es/time/16.js';
 import trashCan16 from '@carbon/icons/es/trash-can/16.js';
 import unlocked16 from '@carbon/icons/es/unlocked/16.js';
+import upload16 from '@carbon/icons/es/upload/16.js';
 
 const icons = {
   add: add16,
   // In front of a block tile's lines and the tabs' labels.
   'calendar-16': calendar16,
+  // Export and Import in Settings.
+  download: download16,
   'list-checked-16': listChecked16,
   locked: locked16,
   'overflow-menu-vertical': overflowMenuVertical16,
@@ -68,6 +72,7 @@ const icons = {
   time: time16,
   'trash-can': trashCan16,
   unlocked: unlocked16,
+  upload: upload16,
 };
 
 window.carbonIcon = (name, slot) => {

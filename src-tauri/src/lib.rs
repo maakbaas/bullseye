@@ -29,13 +29,14 @@ mod unlock;
 mod watchdog;
 
 use client::Remote;
-use definitions::{BlockList, Definition, Fallout, Kind, Library, NamedSchedule};
+use definitions::{BlockList, Contents, Definition, Fallout, Kind, Library, NamedSchedule};
 use proto::{Overview, Request, Response};
 use schedule::Week;
 use tauri::{
     tray::{MouseButtonState, TrayIconBuilder, TrayIconEvent},
     RunEvent, State, WindowEvent,
 };
+use tauri_plugin_dialog::DialogExt;
 
 // The page's commands. **Each one has a CLI command that does the same** (`cli::GUI_COMMANDS`, which a
 // test checks against the page): a new one needs one there too, and a line in `CLI.md`.
@@ -130,6 +131,46 @@ fn deletion_fallout(blocks: Vec<Definition>, id: String) -> Fallout {
     Library { blocks, ..Library::default() }.fallout(&id)
 }
 
+/// What the Save and Open dialogs of Export and Import show.
+const SETTINGS_FILTER: (&str, &[&str]) = ("Bullseye settings", &["json"]);
+
+/// Export: everything defined, to a settings file chosen in a Save dialog. The file's name, or
+/// `None` when the dialog was cancelled. Async, so the dialog does not wait on the main thread.
+#[tauri::command]
+async fn export_settings(app: tauri::AppHandle, remote: State<'_, Remote>) -> Result<Option<String>, String> {
+    let library = remote.status()?.library();
+    let chosen =
+        app.dialog().file().add_filter(SETTINGS_FILTER.0, SETTINGS_FILTER.1).set_file_name("Bullseye settings.json").blocking_save_file();
+    let Some(path) = chosen.map(|path| path.into_path().map_err(|e| e.to_string())).transpose()? else { return Ok(None) };
+    definitions::write_settings(&path, library)?;
+    Ok(path.file_name().map(|name| name.to_string_lossy().into_owned()))
+}
+
+/// A settings file chosen in an Open dialog, and what is in it, for the question before importing
+/// it; `None` when the dialog was cancelled. Needs no service.
+#[tauri::command]
+async fn open_settings(app: tauri::AppHandle) -> Result<Option<Opened>, String> {
+    let chosen = app.dialog().file().add_filter(SETTINGS_FILTER.0, SETTINGS_FILTER.1).blocking_pick_file();
+    let Some(path) = chosen.map(|path| path.into_path().map_err(|e| e.to_string())).transpose()? else { return Ok(None) };
+    let contents = definitions::read_settings(&path)?.contents();
+    Ok(Some(Opened { path: path.to_string_lossy().into_owned(), contents }))
+}
+
+/// A settings file and what is in it (`open_settings`).
+#[derive(serde::Serialize)]
+struct Opened {
+    path: String,
+    contents: Contents,
+}
+
+/// Import: replaces every block list, schedule and block with those in the settings file at
+/// `path`. Refused while a block runs.
+#[tauri::command]
+fn import_settings(path: String, remote: State<Remote>) -> Result<(), String> {
+    let library = definitions::read_settings(std::path::Path::new(&path))?;
+    remote.command(Request::Import { library })
+}
+
 /// Ends every running block, locked or not, if the unlock password is right. The app stays open,
 /// with nothing to enforce; the definitions stay too.
 #[tauri::command]
@@ -181,6 +222,7 @@ pub fn run() {
     tab_closer::spawn(remote.clone());
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(remote)
         .manage(ui::Ui::new())
         .invoke_handler(tauri::generate_handler![
@@ -199,6 +241,9 @@ pub fn run() {
             describe_duration,
             describe_until,
             deletion_fallout,
+            export_settings,
+            open_settings,
+            import_settings,
             ui::window_ready
         ])
         // The window's X hides it (it is destroyed after a while, `ui.rs`); the app keeps running.

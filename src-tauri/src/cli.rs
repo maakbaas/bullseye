@@ -16,7 +16,7 @@ use serde_json::{Map, Value};
 
 use crate::block::Running;
 use crate::client::Remote;
-use crate::definitions::{BlockList, Definition, Kind, Library, NamedSchedule};
+use crate::definitions::{self, BlockList, Definition, Kind, Library, NamedSchedule};
 use crate::duration;
 use crate::localtime;
 use crate::lock::Lock;
@@ -26,7 +26,7 @@ use crate::state::Enforcers;
 
 /// Each command the window can invoke, and the CLI commands that do the same. Empty: it is about
 /// the window itself.
-pub const GUI_COMMANDS: [(&str, &[&str]); 16] = [
+pub const GUI_COMMANDS: [(&str, &[&str]); 19] = [
     ("block_status", &["status", "show", "list show", "schedule show"]),
     ("save_block", &["new", "edit"]),
     ("delete_block", &["delete"]),
@@ -44,6 +44,10 @@ pub const GUI_COMMANDS: [(&str, &[&str]); 16] = [
     ("describe_until", &["show", "start"]),
     // What the question before a deletion says.
     ("deletion_fallout", &["list delete", "schedule delete"]),
+    ("export_settings", &["export"]),
+    // A settings file's contents: what the question before importing it says.
+    ("open_settings", &["import"]),
+    ("import_settings", &["import"]),
     ("window_ready", &[]),
 ];
 
@@ -115,6 +119,14 @@ Schedules:
                                     not locked any more.
   schedule duplicate <schedule>     Make a copy of a schedule, named after it with a number.
   schedule check <times>            Check times and show them per day, as a schedule takes them.
+
+Moving to another computer:
+  export <file>            Write every block list, schedule and block to a settings file, as
+                           Export in Settings does. Password locks are in it without their
+                           password.
+  import <file> [--yes]    Replace every block list, schedule and block with those in a settings
+                           file, as Import in Settings does; not while a block runs. A block with
+                           a password lock comes without a lock. Asks first, unless --yes.
 
 Other:
   unlock [--password <pw>] End every running block with the unlock password, as the window's
@@ -193,6 +205,13 @@ enum Command {
     },
     ScheduleCheck {
         times: String,
+    },
+    Export {
+        file: String,
+    },
+    Import {
+        file: String,
+        yes: bool,
     },
     /// `item` of the kind, by name or id.
     Duplicate {
@@ -299,6 +318,8 @@ fn parse(args: &[String]) -> Result<Command, String> {
         }
         "edit" => Command::Edit { block: named(&mut options, "block")?, changes: parse_block_changes(&mut options, true)? },
         "delete" => Command::Delete { block: named(&mut options, "block")?, yes: options.flag("--yes") },
+        "export" => Command::Export { file: options.positional().ok_or("Give the file to write, e.g. bullseye.json")? },
+        "import" => Command::Import { file: options.positional().ok_or("Give the settings file to read")?, yes: options.flag("--yes") },
         "duplicate" => Command::Duplicate { kind: Kind::Block, item: named(&mut options, "block")? },
         "list duplicate" => Command::Duplicate { kind: Kind::List, item: named(&mut options, "block list")? },
         "schedule duplicate" => Command::Duplicate { kind: Kind::Schedule, item: named(&mut options, "schedule")? },
@@ -651,6 +672,30 @@ fn execute(command: Command) -> Result<(), Failure> {
             Some(week) => print!("{}", per_day(&week)),
             None => println!("Always active: a block without a schedule"),
         },
+        Command::Export { file } => {
+            definitions::write_settings(std::path::Path::new(&file), overview()?.library()).map_err(failed)?;
+            println!("Wrote every block list, schedule and block to {file}.");
+        }
+        Command::Import { file, yes } => {
+            let library = definitions::read_settings(std::path::Path::new(&file)).map_err(failed)?;
+            let contents = library.contents();
+            let count = |n: usize, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
+            let mut question = format!(
+                "Replace every block list, schedule and block with the {}, {} and {} in {file}? This cannot be undone.",
+                count(contents.lists, "block list"),
+                count(contents.schedules, "schedule"),
+                count(contents.blocks, "block"),
+            );
+            if !contents.unlocked.is_empty() {
+                let names = contents.unlocked.iter().map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ");
+                question.push_str(&format!(" {names} had a password lock, which is not in the file: no lock once imported."));
+            }
+            if !confirm(&question, yes)? {
+                return Err(failed("Not imported."));
+            }
+            send(Request::Import { library })?;
+            println!("Imported {file}.");
+        }
         Command::Duplicate { kind, item } => {
             // The item's id and name, then the copy's name, which the service gives it.
             let names = |overview: &Overview| -> Vec<(String, String)> {
@@ -1195,6 +1240,9 @@ mod tests {
         assert_eq!(parse(&args(&["status", "--json"])), Ok(Command::Status { json: true }));
         assert_eq!(parse(&args(&["show", "Work", "--json"])), Ok(Command::Show { block: "Work".into(), json: true }));
         assert_eq!(parse(&args(&["delete", "Work", "--yes"])), Ok(Command::Delete { block: "Work".into(), yes: true }));
+        assert_eq!(parse(&args(&["export", "b.json"])), Ok(Command::Export { file: "b.json".into() }));
+        assert_eq!(parse(&args(&["import", "b.json", "--yes"])), Ok(Command::Import { file: "b.json".into(), yes: true }));
+        assert!(parse(&args(&["import"])).is_err());
         assert_eq!(parse(&args(&["duplicate", "Work"])), Ok(Command::Duplicate { kind: Kind::Block, item: "Work".into() }));
         assert_eq!(parse(&args(&["list", "duplicate", "Social"])), Ok(Command::Duplicate { kind: Kind::List, item: "Social".into() }));
         assert_eq!(

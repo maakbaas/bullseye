@@ -99,6 +99,7 @@ cds-header { border-block-start: 1px solid var(--cds-border-subtle); background-
 
 /* Settings. */
 .setting { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
+.setting + .setting { margin-block-start: var(--cds-spacing-09); }
 .setting p { color: var(--cds-text-secondary); }
 .setting .row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--cds-spacing-05); }
 .setting .row cds-password-input { flex: 1 1 14rem; }

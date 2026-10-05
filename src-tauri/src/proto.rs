@@ -10,7 +10,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::block::Running;
-use crate::definitions::{BlockList, Definition, Kind, NamedSchedule};
+use crate::definitions::{BlockList, Definition, Kind, Library, NamedSchedule};
 use crate::state::Enforcers;
 
 /// The pipe the service listens on.
@@ -50,6 +50,9 @@ pub enum Request {
     DeleteSchedule { id: String },
     /// Copies a block, block list or schedule as `new_id`, named after it with a number.
     Duplicate { kind: Kind, id: String, new_id: String },
+    /// Replaces every block list, schedule and block with these, from a settings file (Import).
+    /// Refused while a block runs.
+    Import { library: Library },
     /// Starts the block defined as `id`, as it is defined now.
     Start { id: String },
     /// Stops the running block `id`, unless it is locked right now. `password`: the password of its
@@ -85,6 +88,13 @@ pub struct Overview {
     /// Whether the time comes from the internet yet; until then, time with the service not
     /// running does not count.
     pub clock_synced: bool,
+}
+
+impl Overview {
+    /// What the user has defined, without what runs.
+    pub fn library(self) -> Library {
+        Library { lists: self.lists, schedules: self.schedules, blocks: self.blocks }
+    }
 }
 
 /// What the app has to enforce for one running block.

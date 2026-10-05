@@ -1,6 +1,6 @@
 // The page: which view the address shows (`route`), the tabs, Settings, and starting up.
 
-import { $, applyStrings, invoke, notify, refresh, t, whenRefreshed } from "./core.js";
+import { $, applyStrings, ask, invoke, notify, quoted, refresh, t, whenRefreshed } from "./core.js";
 import { KINDS } from "./kinds.js";
 import { renderTiles, tiles } from "./tiles.js";
 import { closeEditor, openEditor, renderEditorLock } from "./editor.js";
@@ -34,6 +34,42 @@ async function unlock() {
   $("password").focus();
 }
 $("unlock").addEventListener("click", unlock);
+
+// Export and Import: the dialogs, the file and its reading are the app's (`export_settings`,
+// `open_settings`); the service replaces everything on Import.
+$("export").replaceChildren(t("settings.export"), carbonIcon("download", "icon"));
+$("import").replaceChildren(t("settings.import"), carbonIcon("upload", "icon"));
+$("export").addEventListener("click", async () => {
+  try {
+    const file = await invoke("export_settings");
+    if (file) notify("transfer-notices", "success", t("settings.exported", { file }));
+  } catch (e) {
+    notify("transfer-notices", "error", t("settings.exportFailed"), String(e));
+  }
+});
+$("import").addEventListener("click", async () => {
+  notify("transfer-notices");
+  try {
+    const opened = await invoke("open_settings");
+    if (!opened) return;
+    const { lists, schedules, blocks, unlocked } = opened.contents;
+    const body = [
+      t("settings.importBody", {
+        lists: t("settings.importLists", { n: lists }),
+        schedules: t("settings.importSchedules", { n: schedules }),
+        blocks: t("settings.importBlocks", { n: blocks }),
+      }),
+    ];
+    if (unlocked.length) body.push(t("settings.importUnlocked", { n: unlocked.length, names: unlocked.map(quoted).join(t("common.separator")) }));
+    const sure = await ask({ heading: t("settings.importHeading"), body: body.join(" "), action: t("settings.importAction"), kind: "danger" });
+    if (!sure) return;
+    await invoke("import_settings", { path: opened.path });
+    notify("transfer-notices", "success", t("settings.imported"));
+    await refresh();
+  } catch (e) {
+    notify("transfer-notices", "error", t("settings.importFailed"), String(e));
+  }
+});
 $("password").addEventListener("input", () => {
   $("unlock").disabled = !$("password").value;
   notify("settings-notices");
