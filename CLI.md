@@ -21,7 +21,7 @@ A `<block>` is a block's name (any case) or its id; `bullseye-cli status` lists 
 | `bullseye-cli delete <block> [--yes]` | **Delete** (asks first, unless `--yes`) |
 | `bullseye-cli start <block> [--yes]` | **Start** (a locked block asks first, unless `--yes`) |
 | `bullseye-cli stop <block>` | **Stop** |
-| `bullseye-cli unlock [--password <pw>]` | **Unlock** in Settings |
+| `bullseye-cli unlock [--password <pw>]` | **Unlock** in Settings (also closes the app) |
 | `bullseye-cli schedule <text>` | the Times field of a weekly schedule |
 | `bullseye-cli help` | |
 | `bullseye-cli version` | |
@@ -104,18 +104,18 @@ Schedule:       Mon-Fri 08:00-17:00
 Lock:           timer, 2 hours 30 minutes 0 seconds (cannot be stopped for that long once started)
 ```
 
-With `--json`, `status` prints what the service says, for scripts: `blocks` (every definition, with `schedule` as `{"kind":"always"}` or `{"kind":"weekly","days":[…]}` and `lock` as `{"method":"none"}` or `{"method":"timer","duration":"2h 30m"}`), `running` (each running block with `remaining`, the seconds left of its lock or `null`; `schedule`; `enforcing`, whether it blocks anything right now; and `schedule_change`, the seconds until its schedule turns it on or off) and `clock_synced`. `show --json` prints `{"block": …, "running": … or null}`. A weekly schedule's `days` are Monday first, each a list of `[start, end)` spans in minutes since midnight.
+With `--json`, `status` prints what the service says, for scripts: `blocks` (every definition, with `schedule` as `{"kind":"always"}` or `{"kind":"weekly","days":[…]}` and `lock` as `{"method":"none"}` or `{"method":"timer","duration":"2h 30m"}`), `running` (each running block with `remaining`, the seconds left of its lock or `null`; `schedule`; `enforcing`, whether it blocks anything right now; `schedule_change`, the seconds until its schedule turns it on or off; and both times in words as `remaining_words` and `schedule_change_words`) and `clock_synced`. `show --json` prints `{"block": …, "running": … or null}`. A weekly schedule's `days` are Monday first, each a list of `[start, end)` spans in minutes since midnight.
 
 ### `unlock`
 
-Ends every running block, locked or not, with the unlock password; the definitions stay. Wrong guesses are slowed down after three, as in the window. Without `--password` it asks for the password without showing it, or reads it from standard input when that is not a terminal:
+Ends every running block, locked or not, with the unlock password, and closes the tray app, exactly as the window's Unlock does: the definitions stay, the service stays installed and starts the app again at your next sign-in. Wrong guesses are slowed down after three, as in the window. Without `--password` it asks for the password without showing it, or reads it from standard input when that is not a terminal:
 
 ```powershell
 bullseye-cli unlock
 "my password" | bullseye-cli unlock
 ```
 
-Unlike the window's Unlock, this does not close the tray app: it stays, with nothing to enforce. (A password given with `--password` ends up in your shell history.)
+(A password given with `--password` ends up in your shell history.) The app is closed by the service: after an unlock it answers the app's next request for what to enforce, within a second, with "quit" (`proto::Response::Quit`), for 10 seconds or until a block is started again.
 
 ### `schedule`
 
@@ -149,6 +149,7 @@ A running block reads its schedule in the time zone Windows had when the block s
 
 ## For developers
 
+- The CLI shares everything with the window but its presentation: it sends the same `proto::Request`s through the same `client::Remote` (`Remote::for_cli`), so the service decides and checks everything for both, and texts such as schedules and durations come from the same Rust functions (`schedule.rs`, `duration.rs`).
 - The CLI is `src-tauri/src/cli.rs`, a console exe (`src-tauri/src/bin/bullseye-cli.rs`) on the same library as the app (`src-tauri/src/lib.rs`). Tauri's installer bundles every binary of the package, so it ships next to `bullseye.exe`.
 - **Keep it level with the window.** Every command the window can invoke (the `generate_handler!` list in `lib.rs`) must be in `cli::GUI_COMMANDS` with the CLI commands that do the same; `cargo test` fails otherwise, and also when such a command is missing from the help text or from this file. Enforcer names come from `state::Enforcers` itself, so a new enforcer needs no CLI change. A new list, schedule kind or lock method needs an option in `cli::parse_changes`, the help and this file.
 - `npm run dev` keeps the service inside the app, where the CLI cannot reach it; use an installed service (in a VM) to try the CLI.

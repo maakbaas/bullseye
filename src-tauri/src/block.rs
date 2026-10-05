@@ -189,6 +189,12 @@ pub struct Running {
     /// Seconds until its schedule turns it on or off, if it has one that ever does.
     #[serde(default)]
     pub schedule_change: Option<u64>,
+    /// The two times above in words (`duration::words`), so the window and the CLI show them the
+    /// same way without a formatter of their own.
+    #[serde(default)]
+    pub remaining_words: Option<String>,
+    #[serde(default)]
+    pub schedule_change_words: Option<String>,
 }
 
 fn yes() -> bool {
@@ -364,6 +370,8 @@ impl Blocklist {
                 schedule: b.schedule.clone(),
                 enforcing: b.in_schedule(now),
                 schedule_change: b.schedule_change(now),
+                remaining_words: remaining(b, now).map(duration::words),
+                schedule_change_words: b.schedule_change(now).map(duration::words),
             })
             .collect();
         Status { running, clock_synced: self.clock.synced() }
@@ -726,6 +734,9 @@ mod tests {
         assert!(list.runs("a") && list.stop("a").is_err());
         let a = running(&list, "a");
         assert!(!a.enforcing);
+        // In words too, for the window and the CLI.
+        assert!(a.remaining_words.as_deref().is_some_and(|words| words.starts_with("1 hour ")), "{:?}", a.remaining_words);
+        assert!(a.schedule_change_words.as_deref().is_some_and(|words| words.starts_with("14 hours") || words.starts_with("15 hours")));
         // Rounded up, and the start took a moment of the clock: a little over the hour.
         assert!(a.remaining.is_some_and(|left| (3590..=3610).contains(&left)));
         // Active again on Tuesday at 08:00.

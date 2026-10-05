@@ -9,24 +9,22 @@
 //! lock method needs an option in `parse_changes`, a line in `HELP` and in `CLI.md`.
 
 use std::io::{BufRead, IsTerminal, Write};
-use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value};
 
 use crate::block::Running;
-use crate::client;
+use crate::client::Remote;
 use crate::definitions::{Definition, Schedule};
 use crate::duration;
 use crate::lock::Lock;
-use crate::proto::{Overview, Request, Response};
-use crate::registration;
+use crate::proto::{Overview, Request};
 use crate::schedule::Week;
 use crate::state::Enforcers;
 
 /// Each command the window's page can invoke, and the CLI commands that do the same. Empty: it is
 /// about the window itself.
-pub const GUI_COMMANDS: [(&str, &[&str]); 9] = [
+pub const GUI_COMMANDS: [(&str, &[&str]); 10] = [
     ("block_status", &["status", "show"]),
     ("save_block", &["new", "edit"]),
     ("delete_block", &["delete"]),
@@ -35,6 +33,8 @@ pub const GUI_COMMANDS: [(&str, &[&str]); 9] = [
     ("force_exit", &["unlock"]),
     ("parse_schedule", &["schedule"]),
     ("describe_schedule", &["schedule"]),
+    // A lock's length in words: what `show` says of a timer lock.
+    ("describe_duration", &["show"]),
     ("window_ready", &[]),
 ];
 
@@ -65,8 +65,9 @@ Commands:
   delete <block> [--yes]   Delete a block that is not running. Asks first, unless --yes.
   start <block> [--yes]    Start a block. A locked one asks first, unless --yes.
   stop <block>             Stop a running block that is not locked.
-  unlock [--password <pw>] End every running block with the unlock password. Asks for it when
-                           not given (or reads standard input when that is not a terminal).
+  unlock [--password <pw>] End every running block with the unlock password, and close the app,
+                           as the window's Unlock does. Asks for the password when not given (or
+                           reads standard input when that is not a terminal).
   schedule <text>          Check a weekly schedule and show it per day, as --schedule takes it.
   help                     Show this.
   version                  Show the version.
@@ -362,7 +363,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             };
             changes.apply(&mut block);
             let (id, name) = (block.id.clone(), block.name.clone());
-            done(ask(&Request::Save { block })?)?;
+            send(Request::Save { block })?;
             println!("Made \"{name}\" (id {id}). Start it with: bullseye-cli start \"{name}\"");
         }
         Command::Edit { block, changes } => {
@@ -370,7 +371,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             let mut block = find(&overview, &block)?.clone();
             changes.apply(&mut block);
             let name = block.name.clone();
-            done(ask(&Request::Save { block })?)?;
+            send(Request::Save { block })?;
             println!("Saved \"{name}\".");
         }
         Command::Delete { block, yes } => {
@@ -379,7 +380,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             if !confirm(&format!("Delete \"{}\"? This cannot be undone.", block.name), yes)? {
                 return Err(failed("Not deleted."));
             }
-            done(ask(&Request::Delete { id: block.id.clone() })?)?;
+            send(Request::Delete { id: block.id.clone() })?;
             println!("Deleted \"{}\".", block.name);
         }
         Command::Start { block, yes } => {
@@ -396,7 +397,7 @@ fn execute(command: Command) -> Result<(), Failure> {
                     return Err(failed("Not started."));
                 }
             }
-            done(ask(&Request::Start { id: block.id.clone() })?)?;
+            send(Request::Start { id: block.id.clone() })?;
             println!("Started \"{}\".", block.name);
         }
         Command::Stop { block } => {
@@ -409,7 +410,7 @@ fn execute(command: Command) -> Result<(), Failure> {
                     None => return Err(failed(format!("No block called \"{block}\""))),
                 },
             };
-            done(ask(&Request::Stop { id })?)?;
+            send(Request::Stop { id })?;
             println!("Stopped \"{name}\".");
         }
         Command::Unlock { password } => {
@@ -417,18 +418,26 @@ fn execute(command: Command) -> Result<(), Failure> {
                 Some(password) => password,
                 None => read_password().map_err(Failure::Failed)?,
             };
-            done(ask(&Request::Unlock { password })?)?;
-            println!("Unlocked: every block has ended.");
+            send(Request::Unlock { password })?;
+            // The service tells the app to quit at its next policy request, within a second.
+            println!("Unlocked: every block has ended, and Bullseye closes. It starts again at your next sign-in.");
         }
     }
     Ok(())
 }
 
+/// The service, as the window reaches it: the same `Remote`, so the same requests and answers.
+fn remote() -> Remote {
+    Remote::for_cli()
+}
+
 fn overview() -> Result<Overview, Failure> {
-    match ask(&Request::Status)? {
-        Response::Status(overview) => Ok(overview),
-        other => Err(unexpected(other)),
-    }
+    remote().status().map_err(failed)
+}
+
+/// One command, as the window sends it (`Remote::command`).
+fn send(request: Request) -> Result<(), Failure> {
+    remote().command(request).map_err(failed)
 }
 
 /// A block by its id, or else by its name, ignoring case.
@@ -452,38 +461,6 @@ fn find<'a>(overview: &'a Overview, wanted: &str) -> Result<&'a Definition, Fail
 fn new_id() -> String {
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
     format!("cli-{nanos:x}-{:x}", std::process::id())
-}
-
-fn done(response: Response) -> Result<(), Failure> {
-    match response {
-        Response::Done => Ok(()),
-        Response::Failed(why) | Response::Refused(why) => Err(failed(why)),
-        other => Err(unexpected(other)),
-    }
-}
-
-fn unexpected(response: Response) -> Failure {
-    failed(format!("Unexpected answer from the service: {response:?}"))
-}
-
-/// One request to the service. If it is installed but not running, it is started first, as the
-/// app would (interactive users may start it, nothing more).
-fn ask(request: &Request) -> Result<Response, Failure> {
-    let first = match client::call(request) {
-        Ok(response) => return Ok(response),
-        Err(e) => e,
-    };
-    if let Ok(true) = registration::start_registered() {
-        for _ in 0..40 {
-            thread::sleep(Duration::from_millis(250));
-            if let Ok(response) = client::call(request) {
-                return Ok(response);
-            }
-        }
-    }
-    Err(failed(format!(
-        "Cannot reach the Bullseye service: {first}\nIs Bullseye installed? (A development build, `npm run dev`, keeps the service inside the app, where the CLI cannot reach it.)"
-    )))
 }
 
 /// Asks a yes/no question in the terminal; `yes` (from `--yes`) answers it beforehand. Without a
@@ -538,14 +515,14 @@ fn read_password() -> Result<String, String> {
 fn state(running: Option<&Running>) -> String {
     let Some(running) = running else { return "Not running".into() };
     let mut parts = vec!["Running".to_string()];
-    parts.push(match (running.enforcing, running.schedule_change) {
+    parts.push(match (running.enforcing, &running.schedule_change_words) {
         (true, None) => "blocking now".into(),
-        (true, Some(change)) => format!("blocking now, inactive in {}", duration::words(change)),
-        (false, Some(change)) => format!("inactive by its schedule, active in {}", duration::words(change)),
+        (true, Some(change)) => format!("blocking now, inactive in {change}"),
+        (false, Some(change)) => format!("inactive by its schedule, active in {change}"),
         (false, None) => "inactive by its schedule".into(),
     });
-    parts.push(match running.remaining {
-        Some(left) => format!("locked, {} left", duration::words(left)),
+    parts.push(match &running.remaining_words {
+        Some(left) => format!("locked, {left} left"),
         None => "not locked".into(),
     });
     parts.join(" · ")
@@ -793,6 +770,8 @@ mod tests {
             schedule: Week::parse("mon-fri 8-17").unwrap(),
             enforcing: false,
             schedule_change: Some(3600),
+            remaining_words: Some(duration::words(2 * 3600 + 61)),
+            schedule_change_words: Some(duration::words(3600)),
         };
         let overview = Overview { blocks: vec![defined("a1", "Work"), defined("b2", "Evenings")], running: vec![running.clone()], clock_synced: false };
         let text = describe_overview(&overview);

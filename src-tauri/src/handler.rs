@@ -29,11 +29,19 @@ pub struct Context {
     lockout: Mutex<Lockout>,
     /// Which process is the app (`watchdog.rs`).
     slot: Arc<AppSlot>,
+    /// Until when the app is told to quit when it asks for its policy: set by the unlock password,
+    /// so the app quits however the blocks were unlocked (the window or the CLI). Only for a short
+    /// while, so an app started later (at the next logon) is not sent away, and cleared when a block
+    /// starts.
+    quit_app_until: Mutex<Option<Instant>>,
 }
+
+/// How long after an unlock the app is told to quit; it asks every second.
+const QUIT_WINDOW: Duration = Duration::from_secs(10);
 
 impl Context {
     pub fn new(blocklist: Blocklist, definitions: Definitions, slot: Arc<AppSlot>) -> Context {
-        Context { blocklist, definitions, lockout: Mutex::default(), slot }
+        Context { blocklist, definitions, lockout: Mutex::default(), slot, quit_app_until: Mutex::default() }
     }
 }
 
@@ -68,6 +76,9 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
             // This request comes from the thread that closes tabs: hearing it is how the service
             // knows that is going on. It counts only from the process taken in as the app.
             context.slot.heard(caller);
+            if context.quit_app_until.locked().is_some_and(|until| Instant::now() < until) {
+                return (Response::Quit, None);
+            }
             let policies = blocklist
                 .active()
                 .map(|active| active.blocks)
@@ -86,7 +97,14 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
         // the block; refusing it keeps what the UI shows and what runs the same.
         Request::Save { block } => (done(unless_running(blocklist, &block.id).and_then(|()| context.definitions.save(block))), None),
         Request::Delete { id } => (done(unless_running(blocklist, &id).and_then(|()| context.definitions.delete(&id))), None),
-        Request::Start { id } => (done(start(context, &id)), None),
+        Request::Start { id } => {
+            let started = start(context, &id);
+            // A block wants the app: it is not to be sent away by an unlock just before.
+            if started.is_ok() {
+                *context.quit_app_until.locked() = None;
+            }
+            (done(started), None)
+        }
         Request::Stop { id } => (done(blocklist.stop(&id)), None),
         Request::Unlock { password } => (done(unlock(context, &password)), None),
         // Refused during a timed block, judged by internet time, like the block itself.
@@ -146,6 +164,7 @@ fn unlock(context: &Context, password: &str) -> Result<(), String> {
     }
     *lockout = Lockout::default();
     context.blocklist.reset();
+    *context.quit_app_until.locked() = Some(Instant::now() + QUIT_WINDOW);
     Ok(())
 }
 
@@ -392,5 +411,23 @@ mod tests {
         // A weekly schedule with no time in it is never active: not even saved.
         let never = Definition { schedule: Schedule::Weekly(Week::default()), ..definition("n", &["a.com"]) };
         assert!(matches!(handle(&context, 0, Request::Save { block: never }).0, Response::Failed(why) if why.contains("never be active")));
+    }
+
+    #[test]
+    fn after_an_unlock_the_app_is_told_to_quit_until_a_block_starts() {
+        let context = context("quit");
+        assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
+        assert!(matches!(handle(&context, 0, Request::Policy).0, Response::Policy(_)));
+        // Unlocked from anywhere (the CLI, say): the app's next policy request is answered with Quit.
+        assert_eq!(handle(&context, 0, Request::Unlock { password: "test1234".into() }).0, Response::Done);
+        assert_eq!(handle(&context, 0, Request::Policy).0, Response::Quit);
+        assert_eq!(handle(&context, 0, Request::Policy).0, Response::Quit, "until it has quit");
+        // A block started again wants the app, so it is not sent away.
+        assert_eq!(handle(&context, 0, Request::Start { id: "a".into() }).0, Response::Done);
+        assert!(matches!(handle(&context, 0, Request::Policy).0, Response::Policy(p) if p.len() == 1));
+        // And only for a short while: an app started at the next logon gets its policy.
+        assert_eq!(handle(&context, 0, Request::Unlock { password: "test1234".into() }).0, Response::Done);
+        *context.quit_app_until.locked() = Some(Instant::now());
+        assert_eq!(handle(&context, 0, Request::Policy).0, Response::Policy(Vec::new()));
     }
 }

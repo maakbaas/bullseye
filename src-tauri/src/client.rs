@@ -10,7 +10,7 @@
 //! builds do not contain that.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::block::{Active, Enforced};
@@ -42,6 +42,13 @@ pub struct Remote {
     last_start: Arc<Mutex<Option<Instant>>>,
     /// Set in development: the service's logic, in this process.
     local: Option<Local>,
+    /// What quits the app when the service says so (`Response::Quit`); set once the app is up.
+    on_quit: Arc<OnceLock<Box<dyn Fn() + Send + Sync>>>,
+    /// Whether that has been done, so it is done once.
+    quitting: Arc<AtomicBool>,
+    /// For the CLI: a request that finds the service registered but not running starts it and
+    /// waits for it, rather than failing (the app tries again a second later anyway).
+    patient: bool,
 }
 
 /// The least time between two attempts to start the service.
@@ -57,10 +64,35 @@ impl Remote {
         Remote::default()
     }
 
+    /// The CLI's: the same requests and answers as the app's, but it waits for a service it had to
+    /// start.
+    pub fn for_cli() -> Remote {
+        Remote { patient: true, ..Remote::default() }
+    }
+
     /// A remote that is its own service: for `npm run dev`, and for tests.
     #[cfg(any(debug_assertions, test))]
     pub fn local(handler: Local) -> Remote {
         Remote { local: Some(handler), ..Remote::default() }
+    }
+
+    /// How to quit the app when the service says so: the same exit as the window's Unlock.
+    pub fn when_told_to_quit(&self, quit: impl Fn() + Send + Sync + 'static) {
+        let _ = self.on_quit.set(Box::new(quit));
+    }
+
+    /// The blocks were ended with the unlock password, from the CLI say: quit, as after the
+    /// window's Unlock. Before the app is up there is nothing to close but the process.
+    fn quit(&self) {
+        *self.cache.locked() = None;
+        if self.quitting.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        note("app", "stopped by the unlock password");
+        match self.on_quit.get() {
+            Some(quit) => quit(),
+            None => std::process::exit(0),
+        }
     }
 
     /// Whether this is its own service, so there is nobody to register with or to start.
@@ -70,10 +102,26 @@ impl Remote {
 
     /// One request, to the service over the pipe or to the local one.
     fn send(&self, request: Request) -> Result<Response, String> {
-        match &self.local {
-            Some(local) => Ok(local(request)),
+        let first = match &self.local {
+            Some(local) => return Ok(local(request)),
             None => call(&request),
+        };
+        match first {
+            Err(e) if self.patient => self.after_starting_the_service(&request).ok_or(e),
+            answer => answer,
         }
+    }
+
+    /// The answer to `request` once the service, registered but not running, has been started;
+    /// `None` if it was running already (so something else is wrong) or did not come up.
+    fn after_starting_the_service(&self, request: &Request) -> Option<Response> {
+        if !matches!(registration::start_registered(), Ok(true)) {
+            return None;
+        }
+        (0..40).find_map(|_| {
+            std::thread::sleep(Duration::from_millis(250));
+            call(request).ok()
+        })
     }
 
     /// A command that answers yes or no.
@@ -100,6 +148,7 @@ impl Remote {
                 self.failing.store(false, Ordering::Relaxed);
                 self.apply(policy);
             }
+            Ok(Response::Quit) => self.quit(),
             Ok(other) => self.fail(&format!("unexpected answer: {other:?}")),
             Err(e) => {
                 self.fail(&e);

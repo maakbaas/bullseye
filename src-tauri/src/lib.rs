@@ -32,7 +32,7 @@ use proto::{Overview, Request, Response};
 use schedule::Week;
 use tauri::{
     tray::{MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, RunEvent, State, WindowEvent,
+    AppHandle, Manager, RunEvent, State, WindowEvent,
 };
 
 // The page's commands. **Each one has a CLI command that does the same** (`cli::GUI_COMMANDS`, which a
@@ -79,6 +79,16 @@ fn parse_schedule(text: String) -> Result<Option<Week>, String> {
 #[tauri::command]
 fn describe_schedule(week: Week) -> Result<String, String> {
     week.normalized().map(|week| week.describe())
+}
+
+/// A typed duration (`2h 30m`) in words, for a timer lock's summary and its confirmation. Needs no
+/// service: it only reads the text.
+#[tauri::command]
+fn describe_duration(text: String) -> Result<String, String> {
+    match duration::parse(&text)? {
+        Some(length) => Ok(duration::words(length.as_secs())),
+        None => Err("No duration given".into()),
+    }
 }
 
 /// Ends every block for good, if the unlock password is right, and quits the app. The service
@@ -147,6 +157,7 @@ pub fn run() {
             force_exit,
             parse_schedule,
             describe_schedule,
+            describe_duration,
             ui::window_ready
         ])
         // The window's X hides it (it is destroyed after a while, `ui.rs`); only the unlock password quits.
@@ -166,6 +177,10 @@ pub fn run() {
                 })
                 .build(app)?;
             ui::spawn_reaper(app.handle().clone());
+            // The blocks can also be unlocked from the CLI; the service then tells the app to quit,
+            // and it does as after the window's Unlock.
+            let handle = app.handle().clone();
+            app.state::<Remote>().when_told_to_quit(move || handle.exit(0));
             #[cfg(debug_assertions)]
             ui::debug_aids(app.handle());
 

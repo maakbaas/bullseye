@@ -84,7 +84,8 @@
       .choice-fields:empty { display: none; }
       /* The weekly schedule: a column per day and a row per half hour, labelled every two hours.
          Carbon has no calendar grid, so this is layout in Carbon's tokens (see `weekEditor`). */
-      .week { display: grid; grid-template-columns: var(--cds-spacing-10) repeat(7, minmax(0, 1fr)); grid-auto-rows: var(--cds-spacing-03); max-inline-size: 40rem; touch-action: none; user-select: none; }
+      /* As wide as the fields above it, whatever the window's width: the days share the room. */
+      .week { display: grid; grid-template-columns: var(--cds-spacing-09) repeat(7, minmax(0, 1fr)); grid-auto-rows: var(--cds-spacing-03); inline-size: 100%; touch-action: none; user-select: none; }
       .week .day { align-self: center; text-align: center; color: var(--cds-text-secondary); }
       .week .hour { color: var(--cds-text-secondary); }
       .week .cell { background: var(--cds-layer-01); border-inline-start: 1px solid var(--cds-border-subtle-01); cursor: pointer; }
@@ -303,8 +304,9 @@
               helper: "How long a started block cannot be stopped, changed or deleted: 30s, 10m, 2h, 1d, or together, e.g. 2h 30m. It ends by itself then.",
             },
           ],
-          describe: (l) => `Locked for ${durationWords(l.duration) || l.duration} once started`,
-          locks: (l) => durationWords(l.duration) || l.duration || null,
+          describe: (l) => `Locked for ${durationText(l.duration)} once started`,
+          // The length as typed; the confirmation asks the backend for it in words.
+          locks: (l) => l.duration || null,
         },
       };
 
@@ -343,53 +345,23 @@
         return node;
       }
 
-      // Seconds in words, to the three largest units that matter: the same rules as `duration::words`.
-      function formatDuration(seconds) {
-        const d = Math.floor(seconds / 86400);
-        const h = Math.floor((seconds % 86400) / 3600);
-        const m = Math.floor((seconds % 3600) / 60);
-        const s = seconds % 60;
-        const parts = d
-          ? [[d, "day"], [h, "hour"], [m, "minute"]]
-          : h ? [[h, "hour"], [m, "minute"], [s, "second"]] : m ? [[m, "minute"], [s, "second"]] : [[s, "second"]];
-        return parts.map(([n, unit]) => `${n} ${unit}${n === 1 ? "" : "s"}`).join(" ");
-      }
-
-      // A typed duration (`2h 30m`, `90m`, `1 day`) in seconds, or null if it is not one. The same
-      // rules as `duration::parse`, which is what counts; this is only for showing it in words.
-      function durationSeconds(text) {
-        const units = { s: 1, sec: 1, secs: 1, second: 1, seconds: 1, m: 60, min: 60, mins: 60, minute: 60, minutes: 60, h: 3600, hr: 3600, hrs: 3600, hour: 3600, hours: 3600, d: 86400, day: 86400, days: 86400 };
-        const rest = String(text || "").trim().toLowerCase();
-        if (!rest) return null;
-        let total = 0;
-        let matched = "";
-        for (const part of rest.matchAll(/(\d+)\s*([a-z]+)[\s,]*/g)) {
-          if (!(part[2] in units)) return null;
-          total += Number(part[1]) * units[part[2]];
-          matched += part[0];
-        }
-        return matched === rest && total > 0 ? total : null;
-      }
-
-      function durationWords(text) {
-        const seconds = durationSeconds(text);
-        return seconds == null ? null : formatDuration(seconds);
-      }
-
-      // A weekly schedule as text (`Mon-Fri 08:00-17:00`), from the backend so it reads exactly as the
-      // CLI and the text field write it. Asked once per schedule; until the answer is in, a stand-in.
-      const weekTexts = new Map();
-      function weekText(week) {
-        const key = JSON.stringify(week.days);
-        if (!weekTexts.has(key)) {
-          weekTexts.set(key, "by a weekly schedule");
-          invoke("describe_schedule", { week: { days: week.days } })
-            .then((text) => weekTexts.set(key, text))
-            .catch((e) => weekTexts.set(key, String(e)))
+      // Text that only the backend writes, so the window says exactly what the CLI says: a weekly
+      // schedule (`Mon-Fri 08:00-17:00`) and a lock's length (`2 hours 30 minutes 0 seconds`). Asked
+      // once per value; until the answer is in, a stand-in, and the page is drawn again when it comes.
+      const texts = new Map();
+      function described(command, args, standIn) {
+        const key = command + JSON.stringify(args);
+        if (!texts.has(key)) {
+          texts.set(key, standIn);
+          invoke(command, args)
+            .then((text) => texts.set(key, text))
+            .catch(() => texts.set(key, standIn))
             .finally(render);
         }
-        return weekTexts.get(key);
+        return texts.get(key);
       }
+      const weekText = (week) => described("describe_schedule", { week: { days: week.days } }, "by a weekly schedule");
+      const durationText = (text) => described("describe_duration", { text: text || "" }, text || "");
 
       function lines(text) {
         return text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
@@ -455,9 +427,9 @@
       // The schedule of a running block, as it is now: what its tag and its last summary line say.
       function scheduleNow(running) {
         if (running.enforcing) {
-          return running.schedule_change != null ? `Active now; inactive in ${formatDuration(running.schedule_change)}` : null;
+          return running.schedule_change_words ? `Active now; inactive in ${running.schedule_change_words}` : null;
         }
-        return running.schedule_change != null ? `Inactive by its schedule; active again in ${formatDuration(running.schedule_change)}` : "Inactive by its schedule";
+        return running.schedule_change_words ? `Inactive by its schedule; active again in ${running.schedule_change_words}` : "Inactive by its schedule";
       }
 
       function makeTile(id) {
@@ -531,7 +503,7 @@
             : block;
           const summary = summaryOf(shownBlock);
           // While it runs, the lock says how long is left rather than how long it was.
-          if (timed) summary[summary.length - 1] = `Locked: ${formatDuration(running.remaining)} left`;
+          if (timed) summary[summary.length - 1] = `Locked: ${running.remaining_words} left`;
           const now = running && scheduleNow(running);
           if (now) summary.push(now);
           if (parts.summary.dataset.text !== summary.join("\n")) {
@@ -559,7 +531,9 @@
         const block = overview.blocks.find((b) => b.id === id) || running;
         // A block that cannot be stopped is only started after a second, deliberate click.
         const lock = !running && block && block.lock && LOCKS[block.lock.method];
-        const locks = lock && lock.locks(block.lock);
+        const typed = lock && lock.locks(block.lock);
+        // In words, as the backend writes them; a length it cannot read is refused on start anyway.
+        const locks = typed && (await invoke("describe_duration", { text: typed }).catch(() => typed));
         if (locks) {
           const sure = await ask({
             heading: `Start “${block.name}” for ${locks}?`,
