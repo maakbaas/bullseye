@@ -148,7 +148,7 @@ window.STRINGS = {
       field: "Password",
       helper: "Best chosen by someone else. Only a hash of it is kept.",
       // When the block already has a password lock: the old password is never shown.
-      helperSet: "A password is set and is not shown. Type a new one to replace it.",
+      helperSet: "A password is set. Type a new one to replace it.",
       repeat: "Repeat password",
       missing: "Type a password",
       differ: "The passwords differ",

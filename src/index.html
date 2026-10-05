@@ -266,6 +266,9 @@
 
       // How a started block is kept from being stopped (`lock::Lock`), by `method`. Set on the
       // block's tile, next to Start. `confirm` says what starting it asks first (null: nothing).
+      // What a password lock's fields show for a password that is set: 8 dots, masked or revealed.
+      const KEPT = "•".repeat(8);
+
       const LOCKS = {
         none: {
           label: t("locks.none.label"),
@@ -332,13 +335,33 @@
           // that has one just says so. Typed twice, as nothing ever shows it again: a typo would leave a lock only the unlock
           // password opens.
           form: (block) => {
-            // A password already set is never shown (only its hash is kept): the fields say so instead.
+            // A password already set is never known here (only its hash is kept), so the fields hold
+            // 8 dots in its place, as text of normal weight rather than a placeholder. They go as soon
+            // as either field is entered and come back if both are left empty; saved as they are, the
+            // block keeps its password.
             const set = block.lock.method === "password";
             const password = el("cds-password-input", { label: t("locks.password.field"), autocomplete: "new-password", "helper-text": t(set ? "locks.password.helperSet" : "locks.password.helper") });
             const repeat = el("cds-password-input", { label: t("locks.password.repeat"), autocomplete: "new-password" });
+            const fields = [password, repeat];
+            if (set) {
+              const stand = () => fields.forEach((field) => (field.value = KEPT));
+              stand();
+              for (const field of fields) {
+                field.dataset.kept = "1";
+                field.addEventListener("focusin", () => {
+                  if (field.value === KEPT) fields.forEach((f) => (f.value = ""));
+                });
+                field.addEventListener("focusout", () =>
+                  setTimeout(() => {
+                    if (!fields.some((f) => f.matches(":focus-within") || f.value)) stand();
+                  }, 0),
+                );
+              }
+            }
             return {
-              fields: [password, repeat],
+              fields,
               read: async () => {
+                if (set && fields.every((field) => field.value === KEPT)) return { method: "password" };
                 if (invalid(password, password.value ? null : t("locks.password.missing"))) return null;
                 if (invalid(repeat, repeat.value === password.value ? null : t("locks.password.differ"))) return null;
                 return { method: "password", password: password.value };
@@ -748,7 +771,8 @@
         reader = read;
         $("confirm").open = true;
         // A form starts in its first field; a question on Cancel.
-        if (fields.length) setTimeout(() => fields[0].focus(), 100);
+        // (Not one standing in for a kept value, which entering it would clear.)
+        if (fields.length && !fields[0].dataset.kept) setTimeout(() => fields[0].focus(), 100);
         return new Promise((resolve) => (answer = resolve));
       }
       $("confirm-fields").addEventListener("keydown", (event) => {
