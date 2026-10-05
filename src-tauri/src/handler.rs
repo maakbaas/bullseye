@@ -144,8 +144,10 @@ fn start(context: &Context, id: &str) -> Result<(), String> {
     let resolved = context.definitions.library().resolve(id)?;
     let lock = &resolved.block.lock;
     let locks = Locks {
-        timer: lock.duration()?,
+        duration: lock.duration()?,
+        until: lock.until()?,
         schedule: resolved.lock_week,
+        until_restart: *lock == Lock::UntilRestart,
         password: match lock {
             Lock::Password { .. } => Some(lock.password_hash().ok_or("Set a password for the password lock")?.to_string()),
             _ => None,
@@ -229,7 +231,7 @@ mod tests {
     }
 
     fn timed(id: &str, filters: &[&str], duration: &str) -> One {
-        definition(id, filters).lock(Lock::Timer { duration: duration.into() })
+        definition(id, filters).lock(Lock::Duration { duration: duration.into() })
     }
 
     /// Saves the list, the schedule and the block; the first answer that is not Done, or Done.
@@ -455,6 +457,25 @@ mod tests {
         // While it runs, its lock schedule cannot be changed or deleted.
         assert!(failed(handle(&context, 0, Request::SaveSchedule { schedule: weekly("daily", "weekends") }).0));
         assert!(failed(handle(&context, 0, Request::DeleteSchedule { id: "daily".into() }).0));
+    }
+
+    #[test]
+    fn until_a_time_and_until_a_restart_are_locks_too() {
+        let context = context("until");
+        // A time that is not one is refused when saved; one that has passed when started.
+        assert!(failed(save(&context, definition("a", &["a.com"]).lock(Lock::Until { until: "tomorrow".into() }))));
+        let Response::Failed(why) = run(&context, definition("a", &["a.com"]).lock(Lock::Until { until: "2001-01-01 00:00".into() })) else { panic!("started") };
+        assert!(why.contains("has passed"), "{why}");
+        // A time ahead locks like a duration.
+        assert_eq!(run(&context, definition("a", &["a.com"]).lock(Lock::Until { until: "2999-01-01 00:00".into() })), Response::Done);
+        assert!(overview(&context).running[0].remaining.is_some());
+        assert!(failed(handle(&context, 0, Request::Stop { id: "a".into(), password: None }).0));
+        // Until Windows restarts: locked, no stop, no uninstall.
+        assert_eq!(run(&context, definition("b", &["b.com"]).lock(Lock::UntilRestart)), Response::Done);
+        let b = overview(&context).running.into_iter().find(|r| r.id == "b").unwrap();
+        assert!(b.until_restart && b.locked && b.remaining.is_none());
+        assert!(failed(handle(&context, 0, Request::Stop { id: "b".into(), password: None }).0));
+        assert!(matches!(handle(&context, 0, Request::PrepareUninstall).0, Response::Refused(_)));
     }
 
     #[test]

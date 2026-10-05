@@ -186,7 +186,7 @@ impl Library {
         if let Some(schedule) = &block.schedule {
             self.schedule(schedule).ok_or_else(|| format!("No schedule with id {schedule}"))?;
         }
-        block.lock.duration()?;
+        block.lock.check()?;
         if let Some(schedule) = block.lock.schedule() {
             self.schedule(schedule).ok_or_else(|| format!("No schedule with id {schedule} for the lock"))?;
         }
@@ -377,7 +377,7 @@ pub mod tests {
         definitions.save_schedule(weekly("work", "mon-fri 8-17")).unwrap();
         let mut work = block("w", &["social", "games"]);
         work.schedule = Some("work".into());
-        work.lock = Lock::Timer { duration: "1h".into() };
+        work.lock = Lock::Duration { duration: "1h".into() };
         definitions.save_block(work.clone()).unwrap();
         // Saving one with the same id replaces it, in its place.
         definitions.save_list(block_list("social", &["reddit.com"])).unwrap();
@@ -410,8 +410,8 @@ pub mod tests {
         let bad_blocks = [
             block("b", &["nope"]),
             Definition { schedule: Some("nope".into()), ..block("b", &["l"]) },
-            Definition { lock: Lock::Timer { duration: "soon".into() }, ..block("b", &["l"]) },
-            Definition { lock: Lock::Timer { duration: "".into() }, ..block("b", &["l"]) },
+            Definition { lock: Lock::Duration { duration: "soon".into() }, ..block("b", &["l"]) },
+            Definition { lock: Lock::Duration { duration: "".into() }, ..block("b", &["l"]) },
             Definition { lock: Lock::Scheduled { schedule: "nope".into() }, ..block("b", &["l"]) },
         ];
         for b in bad_blocks {

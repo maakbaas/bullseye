@@ -18,11 +18,13 @@ As in the window, which has a page for each:
 - **Schedules**: when, as a weekly schedule. A block without one is always active.
 - **Blocks**: what you start. One or more block lists, a schedule (or always) and a lock:
   - `none`: not locked; it can be stopped at any time.
-  - `timer`: locked for a while. It cannot be stopped, changed or deleted, and it ends by itself when the time is up.
+  - `duration`: locked for a while. It cannot be stopped, changed or deleted, and it ends by itself when the time is up.
+  - `until`: the same, until a date and time (local time, read when the block starts).
+  - `until restart`: locked until Windows restarts, and it ends then. A shut down with Fast Startup on is not a restart.
   - `schedule`: locked while a schedule of its choosing is active. Outside those times it can be stopped; otherwise it runs until stopped. With the block's own schedule, it is locked exactly while the block is active.
   - `password`: locked with a password, for someone else to set. It runs until stopped with that password (or the unlock password). Only a salted hash of it is kept, and it is never shown again.
 
-Outside its schedule a running block keeps running, but enforces nothing. For example, with a schedule of `daily 08:00-17:00`, a block started at 16:00 with a 2-hour timer blocks until 17:00; from then on everything is accessible again, and at 18:00 the timer ends the block. With a lock schedule of `daily 08:00-17:00` instead (say the same schedule), it blocks every day from 8 to 5 and cannot be stopped then, until you stop it some evening.
+Outside its schedule a running block keeps running, but enforces nothing. For example, with a schedule of `daily 08:00-17:00`, a block started at 16:00 with a 2-hour duration lock blocks until 17:00; from then on everything is accessible again, and at 18:00 the lock ends the block. With a lock schedule of `daily 08:00-17:00` instead (say the same schedule), it blocks every day from 8 to 5 and cannot be stopped then, until you stop it some evening.
 
 A running block keeps what it was started with: while it runs, it cannot be changed or deleted, and neither can the block lists and the schedules it uses (for when it is active and for its lock). A block list or schedule that any block uses cannot be deleted either; the message says which blocks.
 
@@ -58,7 +60,9 @@ Exit codes: `0` done, `1` failed, refused or cancelled (the reason is printed), 
 |---|---|---|
 | `--list <list>` | A block list it enforces (repeatable). | none (it cannot start without one) |
 | `--schedule <schedule>` | When it is active: a schedule, or `always`. | `always` |
-| `--lock-timer <duration>` | Lock: timer, for this long once started. | |
+| `--lock-duration <duration>` | Lock: for this long once started. | |
+| `--lock-until <date time>` | Lock: until then, e.g. `"2026-10-06 18:00"` (local time). A time that has passed when the block starts is refused. | |
+| `--lock-until-restart` | Lock: until Windows restarts. | |
 | `--lock-schedule <schedule>` | Lock: while this schedule is active. | |
 | `--lock-password <pw>` | Lock: with this password. Only a hash of it is kept. | |
 | `--no-lock` | Not locked. | yes |
@@ -92,7 +96,9 @@ bullseye-cli schedule new "Work hours" "Mon-Fri 08:00-17:00"
 bullseye-cli new "Work" --list "Social media" --list Games --schedule "Work hours" --lock-schedule "Work hours"
 bullseye-cli new "Evening" --list Games
 bullseye-cli start Work --yes
-bullseye-cli start Evening --lock-timer 2h
+bullseye-cli start Evening --lock-duration 2h
+bullseye-cli start Evening --lock-until "2026-10-06 18:00"
+bullseye-cli start Evening --lock-until-restart
 
 # Later: Saturdays too (once Work is stopped, outside work hours).
 bullseye-cli stop Work
@@ -113,7 +119,7 @@ Schedules:
   Work hours  Mon-Fri 08:00-17:00
 ```
 
-`show <block>`, `list show <list>` and `schedule show <schedule>` give everything about one. With `--json`, `status` prints what the service says, for scripts: `lists`, `schedules` and `blocks` (as defined; a schedule's `days` are Monday first, each a list of `[start, end)` spans in minutes since midnight; a block's `schedule` is a schedule's id or `null` for always, and its `lock` is `{"method":"none"}`, `{"method":"timer","duration":"2h 30m"}`, `{"method":"scheduled","schedule":"<id>"}` or `{"method":"password"}`; a password is never shown), `running` (each running block with its `lists` as started; `remaining`, the seconds left of a timer, and `remaining_words`; `lock_schedule`, the week of a scheduled lock, and `lock_change` / `lock_change_words`, the time until it locks or frees the block; `password`, whether it is locked with one; `locked`, whether it cannot be stopped right now; `schedule`; `enforcing`, whether it blocks anything right now; `schedule_change`, the seconds until its schedule turns it on or off, and `schedule_change_words`) and `clock_synced`.
+`show <block>`, `list show <list>` and `schedule show <schedule>` give everything about one. With `--json`, `status` prints what the service says, for scripts: `lists`, `schedules` and `blocks` (as defined; a schedule's `days` are Monday first, each a list of `[start, end)` spans in minutes since midnight; a block's `schedule` is a schedule's id or `null` for always, and its `lock` is `{"method":"none"}`, `{"method":"duration","duration":"2h 30m"}`, `{"method":"until","until":"2026-10-06 18:00"}`, `{"method":"until_restart"}`, `{"method":"scheduled","schedule":"<id>"}` or `{"method":"password"}`; a password is never shown), `running` (each running block with its `lists` as started; `remaining`, the seconds left of a duration or until lock, and `remaining_words`; `until_restart`; `lock_schedule`, the week of a scheduled lock, and `lock_change` / `lock_change_words`, the time until it locks or frees the block; `password`, whether it is locked with one; `locked`, whether it cannot be stopped right now; `schedule`; `enforcing`, whether it blocks anything right now; `schedule_change`, the seconds until its schedule turns it on or off, and `schedule_change_words`) and `clock_synced`.
 
 ### `stop`, `delete`, `list delete`, `schedule delete`
 

@@ -282,7 +282,7 @@ mod tests {
         assert!(remote.active().is_none());
 
         remote.command(Request::SaveList { list: block_list("a", &["a.com"]) }).unwrap();
-        let block = Definition { lock: Lock::Timer { duration: "1h".into() }, ..block("a", &["a"]) };
+        let block = Definition { lock: Lock::Duration { duration: "1h".into() }, ..block("a", &["a"]) };
         remote.command(Request::SaveBlock { block }).unwrap();
         remote.command(Request::Start { id: "a".into() }).unwrap();
         assert!(remote.active().unwrap().blocks_page("https://a.com/x", false));

@@ -3,9 +3,11 @@
 //! (`cli.rs`, `CLI.md`).
 
 mod block;
+mod boot;
 pub mod cli;
 mod client;
 mod clock;
+mod datetime;
 mod definitions;
 mod duration;
 mod filters;
@@ -105,7 +107,7 @@ fn describe_schedule(week: Week) -> Result<String, String> {
     week.normalized().map(|week| week.describe())
 }
 
-/// A typed duration (`2h 30m`) in words, for a timer lock's summary and its confirmation. Needs no
+/// A typed duration (`2h 30m`) in words, for a duration lock's summary and its confirmation. Needs no
 /// service: it only reads the text.
 #[tauri::command]
 fn describe_duration(text: String) -> Result<String, String> {
@@ -113,6 +115,13 @@ fn describe_duration(text: String) -> Result<String, String> {
         Some(length) => Ok(duration::words(length.as_secs())),
         None => Err("No duration given".into()),
     }
+}
+
+/// An until lock's end as typed (`2026-10-06 18:00`), written out and how long from now, for its
+/// form, its summary and its confirmation; refused when it has passed. Needs no service.
+#[tauri::command]
+fn describe_until(text: String) -> Result<localtime::Until, String> {
+    localtime::until(&text)
 }
 
 /// Ends every block for good, if the unlock password is right, and quits the app. The service
@@ -183,6 +192,7 @@ pub fn run() {
             parse_schedule,
             describe_schedule,
             describe_duration,
+            describe_until,
             ui::window_ready
         ])
         // The window's X hides it (it is destroyed after a while, `ui.rs`); only the unlock password quits.

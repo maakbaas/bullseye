@@ -24,14 +24,16 @@ pub struct Saved {
     pub name: String,
     /// Its block lists, each with its own enforcers.
     pub parts: Vec<SavedPart>,
-    /// Seconds since the Unix epoch at which a timer lock ends, and the block with it; `None`: no
-    /// timer.
+    /// Seconds since the Unix epoch at which a duration or until lock ends, and the block with it;
+    /// `None`: no such lock.
     pub until: Option<u64>,
     /// The latest time the block was known to be running at, so the clock cannot start from an
     /// earlier one while offline (`clock::at_least`).
     pub seen: Option<u64>,
     /// Locked while this schedule is active (`lock::Lock::Scheduled`).
     pub lock_schedule: Option<Week>,
+    /// Locked until Windows restarts: the start of Windows it was started in (`boot::id`).
+    pub boot: Option<String>,
     /// Locked with a password: its salted hash (`lock::Lock::Password`), never the password.
     pub password: Option<String>,
     /// When the block is active (`schedule.rs`); `None` is always.
@@ -226,7 +228,7 @@ mod tests {
 
     fn timed(until: Option<u64>) -> Saved {
         let part = SavedPart { name: "A".into(), filters: vec!["tweakers.net".to_string()], allowed: Vec::new(), programs: Vec::new(), enforcers: Enforcers::default() };
-        Saved { id: "a".into(), name: "A".into(), parts: vec![part], until, seen: None, lock_schedule: None, password: None, schedule: None, zone: "fixed:+0".into() }
+        Saved { id: "a".into(), name: "A".into(), parts: vec![part], until, seen: None, lock_schedule: None, boot: None, password: None, schedule: None, zone: "fixed:+0".into() }
     }
 
     #[test]

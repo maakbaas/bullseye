@@ -79,6 +79,7 @@ window.STRINGS = {
       always: "Always active",
       unknownLock: "Unknown lock",
       lockedPassword: "Locked with a password: stop it with its password",
+      lockedRestart: "Locked until Windows restarts",
       lockedTimer: "Locked: {left} left",
       lockedSchedule: "Locked by its lock schedule, for another {left}",
       lockedScheduleOpen: "Locked by its lock schedule",
@@ -120,8 +121,8 @@ window.STRINGS = {
       label: "No lock",
       describe: "Not locked: can be stopped at any time",
     },
-    timer: {
-      label: "Timer",
+    duration: {
+      label: "Duration",
       field: "Locked for",
       placeholder: "e.g. 2h 30m",
       helper: "Combine as you like: 30m, 2h 30m, 1d",
@@ -130,6 +131,27 @@ window.STRINGS = {
       confirmHeading: "Start {name} for {duration}?",
       confirmBody: "It cannot be stopped, changed or deleted for {duration}. Only the unlock password in Settings ends it early.",
       confirmAction: "Start for {duration}",
+    },
+    // {when}: the end written out (Tuesday 6 October 2026, 18:00); {left}: how long from now.
+    until: {
+      label: "Until",
+      date: "Date",
+      datePlaceholder: "yyyy-mm-dd",
+      dateMissing: "Choose a date",
+      time: "Time",
+      timePlaceholder: "hh:mm",
+      timeMissing: "Type a time, e.g. 18:00",
+      describe: "Locked until {when} once started",
+      confirmHeading: "Start {name} until {when}?",
+      confirmBody: "It cannot be stopped, changed or deleted until {when}, {left} from now. Only the unlock password in Settings ends it early.",
+      confirmAction: "Start locked",
+    },
+    until_restart: {
+      label: "Until restart",
+      describe: "Locked until Windows restarts once started",
+      confirmHeading: "Start {name} until Windows restarts?",
+      confirmBody: "It cannot be stopped, changed or deleted until Windows restarts, and it ends then. Shutting down with Fast Startup on is not a restart. Only the unlock password in Settings ends it early.",
+      confirmAction: "Start locked",
     },
     scheduled: {
       label: "Schedule",

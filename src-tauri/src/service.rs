@@ -237,7 +237,7 @@ mod tests {
         let Ok(Response::Status(status)) = client::call(&Request::Status) else { panic!("no status") };
         assert!(status.running.is_empty());
         assert_eq!(client::call(&Request::SaveList { list: block_list("a", &["a.com"]) }), Ok(Response::Done));
-        let block = Definition { lock: Lock::Timer { duration: "1h".into() }, ..block("a", &["a"]) };
+        let block = Definition { lock: Lock::Duration { duration: "1h".into() }, ..block("a", &["a"]) };
         assert_eq!(client::call(&Request::SaveBlock { block }), Ok(Response::Done));
         assert_eq!(client::call(&Request::Start { id: "a".into() }), Ok(Response::Done));
         let Ok(Response::Policy(policies)) = client::call(&Request::Policy) else { panic!("no policy") };

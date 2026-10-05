@@ -1,19 +1,26 @@
 //! Local time for schedules (`schedule.rs`): the weekday and time of day that a moment in internet
 //! time (`clock.rs`) is, in the block's time zone.
 //!
+//! It also goes the other way, for the "until" lock (`lock::Lock::Until`): the moment a local date
+//! and time is (`Zone::instant`).
+//!
 //! The time zone is the one Windows had when the block started, and it stays the block's until the
 //! block ends, also across a restart (`state::Saved::zone`). Standard users may change Windows'
 //! time zone, so following it would let a schedule be moved out of the way; daylight saving is
 //! still followed, as Windows' rules for that zone say.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
 use windows_sys::Win32::System::Time::{
-    EnumDynamicTimeZoneInformation, FileTimeToSystemTime, GetDynamicTimeZoneInformation, SystemTimeToTzSpecificLocalTimeEx,
-    DYNAMIC_TIME_ZONE_INFORMATION,
+    EnumDynamicTimeZoneInformation, FileTimeToSystemTime, GetDynamicTimeZoneInformation, SystemTimeToFileTime, SystemTimeToTzSpecificLocalTimeEx,
+    TzSpecificLocalTimeToSystemTimeEx, DYNAMIC_TIME_ZONE_INFORMATION,
 };
 
+use serde::Serialize;
+
+use crate::datetime::DateTime;
+use crate::duration;
 use crate::schedule::LocalTime;
 
 /// 100-nanosecond intervals between 1601 (Windows' epoch) and 1970.
@@ -107,6 +114,55 @@ impl Zone {
             }
         }
     }
+
+    /// The moment a local date and time is in this zone, or `None` if Windows cannot say (or it is
+    /// before 1970). In the hour that daylight saving time skips or repeats, Windows decides.
+    pub fn instant(&self, at: &DateTime) -> Option<SystemTime> {
+        let seconds = match &self.kind {
+            Kind::Fixed(minutes) => at.seconds_as_utc() - i64::from(*minutes) * 60,
+            Kind::Windows(info) => {
+                let local = SYSTEMTIME {
+                    wYear: u16::try_from(at.year).ok()?,
+                    wMonth: u16::from(at.month),
+                    wDay: u16::from(at.day),
+                    wHour: u16::from(at.hour),
+                    wMinute: u16::from(at.minute),
+                    ..SYSTEMTIME::default()
+                };
+                let mut utc = SYSTEMTIME::default();
+                let mut file_time = FILETIME::default();
+                // SAFETY: all pointers are to valid values of the right types.
+                let converted = unsafe {
+                    TzSpecificLocalTimeToSystemTimeEx(&**info, &local, &mut utc) != 0 && SystemTimeToFileTime(&utc, &mut file_time) != 0
+                };
+                if !converted {
+                    return None;
+                }
+                let ticks = (u64::from(file_time.dwHighDateTime) << 32) | u64::from(file_time.dwLowDateTime);
+                (ticks.checked_sub(FILETIME_UNIX_EPOCH)? / 10_000_000) as i64
+            }
+        };
+        Some(UNIX_EPOCH + Duration::from_secs(u64::try_from(seconds).ok()?))
+    }
+}
+
+/// An until lock's end (`lock::Lock::Until`) as the window and the CLI show it.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct Until {
+    /// `Tuesday 6 October 2026, 18:00`.
+    pub when: String,
+    /// How long from now, in words, by the Windows clock (the service measures on internet time).
+    pub left: String,
+}
+
+/// An until lock's end as typed (`2026-10-06 18:00`), in Windows' time zone now; refused when it is
+/// not a date and time or has passed.
+pub fn until(text: &str) -> Result<Until, String> {
+    let at = DateTime::parse(text)?;
+    let end = Zone::current().instant(&at).ok_or_else(|| format!("Cannot tell when {at} is in this time zone"))?;
+    let left = end.duration_since(SystemTime::now()).map_err(|_| format!("{at} has passed"))?;
+    // Rounded up to the minute, as the time was given in minutes.
+    Ok(Until { when: at.to_string(), left: duration::words(left.as_secs().div_ceil(60) * 60) })
 }
 
 fn key_name(info: &DYNAMIC_TIME_ZONE_INFORMATION) -> String {
@@ -118,7 +174,6 @@ fn key_name(info: &DYNAMIC_TIME_ZONE_INFORMATION) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     /// 2030-01-07 00:00:00 UTC, a Monday.
     const MONDAY: u64 = 1_893_974_400;
@@ -131,6 +186,19 @@ mod tests {
         // An hour east of UTC, it is already 01:00 on Monday; an hour west, still Sunday.
         assert_eq!(Zone::fixed(60).local(at(MONDAY)), Some(LocalTime { weekday: 0, minute: 60, second: 0 }));
         assert_eq!(Zone::fixed(-60).local(at(MONDAY)), Some(LocalTime { weekday: 6, minute: 23 * 60, second: 0 }));
+    }
+
+    #[test]
+    fn a_local_date_and_time_is_a_moment_in_its_zone() {
+        let monday = DateTime::parse("2030-01-07 00:00").unwrap();
+        let at = |seconds: u64| UNIX_EPOCH + Duration::from_secs(seconds);
+        assert_eq!(Zone::fixed(0).instant(&monday), Some(at(MONDAY)));
+        // Midnight an hour east of UTC is an hour earlier.
+        assert_eq!(Zone::fixed(60).instant(&monday), Some(at(MONDAY - 3600)));
+        // Windows' own zone, there and back.
+        let zone = Zone::current();
+        let moment = zone.instant(&monday).unwrap();
+        assert_eq!(zone.local(moment), Some(LocalTime { weekday: 0, minute: 0, second: 0 }));
     }
 
     #[test]

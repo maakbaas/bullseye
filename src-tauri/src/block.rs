@@ -1,9 +1,10 @@
 //! The running blocks: for each, its block lists (each with its own enforcers), its weekly schedule
-//! if it has one, and its lock (`lock.rs`): when a timer lock ends, and whether it is locked while
-//! its schedule has it active. Each block is started from a definition (`definitions.rs`) and runs
-//! on its own: several can run at once, and what is enforced is all of them together. A block with
-//! a timer lock cannot be stopped early and stops by itself once its time is up. Outside its
-//! schedule a block keeps running, and stays locked by a timer, but enforces nothing.
+//! if it has one, and its lock (`lock.rs`): when a duration or until lock ends, the lock schedule,
+//! the start of Windows a restart lock waits out, a password's hash. Each block is started from a
+//! definition (`definitions.rs`) and runs on its own: several can run at once, and what is enforced
+//! is all of them together. A block with a duration or until lock cannot be stopped early and stops
+//! by itself once its time is up; one locked until Windows restarts ends with the restart. Outside
+//! its schedule a block keeps running, and stays locked, but enforces nothing.
 //!
 //! The running blocks are also kept on disk (`state.rs`), so ending the app, or restarting
 //! Windows, does not end them: the next run picks them up again while their time is not up.
@@ -17,6 +18,7 @@ use std::time::{Duration, Instant, SystemTime};
 use serde::{Deserialize, Serialize};
 
 use crate::clock::{self, Clock};
+use crate::datetime::DateTime;
 use crate::duration;
 use crate::filters::FilterList;
 use crate::localtime::Zone;
@@ -40,6 +42,9 @@ pub struct Blocklist {
     /// The time zone a new block's schedule is read in; `None` is Windows' own (`localtime.rs`).
     /// Tests use a fixed one.
     zone: Option<Zone>,
+    /// This start of Windows, for locks until it restarts; `None` is Windows' own (`boot.rs`).
+    /// Tests use their own.
+    boot: Option<String>,
 }
 
 struct Inner {
@@ -148,12 +153,15 @@ impl Part {
     }
 }
 
-/// How a block is locked once started (`lock::Lock`): a timer's length, a lock schedule (locked
-/// while it is active), a password's hash (`unlock::new_hash`). None of them: not locked.
+/// How a block is locked once started (`lock::Lock`): a duration, a local date and time to end
+/// at, a lock schedule (locked while it is active), until Windows restarts, a password's hash
+/// (`unlock::new_hash`). None of them: not locked.
 #[derive(Default)]
 pub struct Locks {
-    pub timer: Option<Duration>,
+    pub duration: Option<Duration>,
+    pub until: Option<DateTime>,
     pub schedule: Option<Week>,
+    pub until_restart: bool,
     pub password: Option<String>,
 }
 
@@ -169,10 +177,14 @@ struct Block {
     name: String,
     /// One per block list, each by its own enforcers and allowed sites.
     parts: Vec<RunPart>,
-    /// When a timer lock ends, and the block with it, in internet time; `None`: no timer.
+    /// When a duration or until lock ends, and the block with it, in internet time; `None`: no
+    /// such lock.
     until: Option<SystemTime>,
     /// Locked while this schedule is active (`Lock::Scheduled`), read in `zone` like `schedule`.
     lock_schedule: Option<Week>,
+    /// Locked until Windows restarts (`Lock::UntilRestart`): the start of Windows it was started
+    /// in (`boot::id`). It ends with the restart.
+    boot: Option<String>,
     /// Locked with a password: its salted hash (`Lock::Password`).
     password: Option<String>,
     /// When the block is active; `None` is always.
@@ -215,6 +227,9 @@ impl Block {
         if let Some(left) = remaining(self, now) {
             return Some(format!("“{}” is locked for another {}", self.name, duration::words(left)));
         }
+        if self.boot.is_some() {
+            return Some(format!("“{}” is locked until Windows restarts", self.name));
+        }
         if self.schedule_locked(now) {
             let until = self.lock_change(now).map(|s| format!(", for another {}", duration::words(s))).unwrap_or_default();
             return Some(format!("“{}” is locked by its lock schedule{until}", self.name));
@@ -240,10 +255,12 @@ pub struct Running {
     pub name: String,
     /// What it blocks and how, as it was started, so the UI can show what a running block does.
     pub lists: Vec<RunningList>,
-    /// Seconds left of a timer lock; `None`: no timer.
+    /// Seconds left of a duration or until lock; `None`: no such lock.
     pub remaining: Option<u64>,
     /// Locked while this schedule is active (`Lock::Scheduled`).
     pub lock_schedule: Option<Week>,
+    /// Locked until Windows restarts, and ends then (`Lock::UntilRestart`).
+    pub until_restart: bool,
     /// Locked with a password: stopped only with it (`Lock::Password`).
     pub password: bool,
     /// Whether it cannot be stopped right now (without its password, for a password lock).
@@ -274,13 +291,13 @@ pub struct Status {
 impl Blocklist {
     /// The service's block list, over the real store in its data folder.
     pub fn new() -> Blocklist {
-        Blocklist { inner: Arc::default(), store: state::store().map(Arc::new), clock: clock::global(), zone: None }
+        Blocklist { inner: Arc::default(), store: state::store().map(Arc::new), clock: clock::global(), zone: None, boot: None }
     }
 
     /// A block list over a store of its own and a clock of its own, for other modules' tests.
     #[cfg(test)]
     pub fn with_store(store: Store) -> Blocklist {
-        Blocklist { inner: Arc::default(), store: Some(Arc::new(store)), clock: Box::leak(Box::default()), zone: Some(Zone::fixed(0)) }
+        Blocklist { inner: Arc::default(), store: Some(Arc::new(store)), clock: Box::leak(Box::default()), zone: Some(Zone::fixed(0)), boot: Some("boot".into()) }
     }
 
     /// Starts a block from the definition `id`, unless that one is running: checked here rather
@@ -293,6 +310,23 @@ impl Blocklist {
         if inner.blocks.iter().any(|b| b.id == id) {
             return Err("This block is already running".into());
         }
+        let zone = self.zone.clone().unwrap_or_else(Zone::current);
+        let now = self.clock.now();
+        let until = match (locks.duration, locks.until) {
+            (Some(length), _) => Some(now + length),
+            (None, Some(at)) => {
+                let end = zone.instant(&at).ok_or_else(|| format!("Cannot tell when {at} is in this time zone"))?;
+                if end <= now {
+                    return Err(format!("{at} has passed"));
+                }
+                Some(end)
+            }
+            (None, None) => None,
+        };
+        let boot = match locks.until_restart {
+            true => Some(self.boot().ok_or("Cannot tell when Windows restarts, so this lock cannot be used")?),
+            false => None,
+        };
         let parts = parts
             .into_iter()
             .map(|p| RunPart {
@@ -304,11 +338,12 @@ impl Blocklist {
             id: id.to_string(),
             name: name.to_string(),
             parts,
-            until: locks.timer.map(|d| self.clock.now() + d),
+            until,
             lock_schedule: locks.schedule,
+            boot,
             password: locks.password,
             schedule,
-            zone: self.zone.clone().unwrap_or_else(Zone::current),
+            zone,
         };
         // Written before the block goes live, so a block cannot be missed after a restart. A
         // block that cannot be written would not survive the service ending, so it does not start.
@@ -379,12 +414,18 @@ impl Blocklist {
             if until.is_some_and(|u| self.clock.now() >= u) {
                 continue;
             }
+            // Locked until Windows restarts, and it has: the block ended with it. If this start of
+            // Windows cannot be told, it errs on the side of blocking.
+            if saved.boot.as_ref().is_some_and(|b| self.boot().is_some_and(|now| now != *b)) {
+                continue;
+            }
             blocks.push(Block {
                 id: saved.id,
                 name: saved.name,
                 parts,
                 until,
                 lock_schedule: saved.lock_schedule,
+                boot: saved.boot,
                 password: saved.password,
                 schedule,
                 zone: Zone::named(&saved.zone),
@@ -473,6 +514,7 @@ impl Blocklist {
                     .collect(),
                 remaining: remaining(b, now),
                 lock_schedule: b.lock_schedule.clone(),
+                until_restart: b.boot.is_some(),
                 password: b.password.is_some(),
                 locked: b.locked(now).is_some(),
                 schedule: b.schedule.clone(),
@@ -495,7 +537,11 @@ impl Blocklist {
         self.save_all(&mut inner);
     }
 
-    /// Removes blocks whose timer lock is up; they end by themselves and leave nothing to resume.
+    fn boot(&self) -> Option<String> {
+        self.boot.clone().or_else(crate::boot::id)
+    }
+
+    /// Removes blocks whose duration or until lock is up; they end by themselves and leave nothing to resume.
     fn expire(&self, inner: &mut Inner) {
         let now = self.clock.now();
         let before = inner.blocks.len();
@@ -534,6 +580,7 @@ impl Blocklist {
                 until: b.until.and_then(state::to_unix),
                 seen,
                 lock_schedule: b.lock_schedule.clone(),
+                boot: b.boot.clone(),
                 password: b.password.clone(),
                 schedule: b.schedule.clone(),
                 zone: b.zone.name().to_string(),
@@ -565,7 +612,7 @@ mod tests {
         if wiped {
             let _ = std::fs::remove_dir_all(&dir);
         }
-        Blocklist { inner: Arc::default(), clock: test_clock(), zone: Some(Zone::fixed(0)), store: Some(Arc::new(Store::new(dir.join("state.json")))) }
+        Blocklist { inner: Arc::default(), clock: test_clock(), zone: Some(Zone::fixed(0)), store: Some(Arc::new(Store::new(dir.join("state.json")))), boot: Some("boot".into()) }
     }
 
     fn blocklist(name: &str) -> Blocklist {
@@ -583,7 +630,7 @@ mod tests {
     }
 
     fn start(list: &Blocklist, id: &str, lists: Lists, duration: Option<Duration>) -> Result<(), String> {
-        list.start(id, &format!("Block {id}"), vec![part(lists, Enforcers::default())], None, Locks { timer: duration, ..Locks::default() })
+        list.start(id, &format!("Block {id}"), vec![part(lists, Enforcers::default())], None, Locks { duration, ..Locks::default() })
     }
 
     /// One block list of a block.
@@ -674,7 +721,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("not-a-folder"), "").unwrap();
-        let list = Blocklist { inner: Arc::default(), clock: test_clock(), zone: Some(Zone::fixed(0)), store: Some(Arc::new(Store::new(dir.join("not-a-folder").join("state.json")))) };
+        let list = Blocklist { inner: Arc::default(), clock: test_clock(), zone: Some(Zone::fixed(0)), store: Some(Arc::new(Store::new(dir.join("not-a-folder").join("state.json")))), boot: Some("boot".into()) };
         assert!(start(&list, "a", sites(&["a.com"]), Some(Duration::from_secs(60))).is_err());
         assert!(!list.is_running());
     }
@@ -801,7 +848,7 @@ mod tests {
     fn a_resumed_block_keeps_its_enforcers() {
         let only_obsidian = Enforcers { chromium_tabs: false, chromium_split_view: false, obsidian_web_viewer: true, exe_names: false };
         let list = blocklist("enforcers");
-        list.start("a", "A", vec![part(sites(&[]), only_obsidian)], None, Locks { timer: Some(Duration::from_secs(3600)), ..Locks::default() }).unwrap();
+        list.start("a", "A", vec![part(sites(&[]), only_obsidian)], None, Locks { duration: Some(Duration::from_secs(3600)), ..Locks::default() }).unwrap();
         let resumed = reopened("enforcers");
         resumed.restore();
         assert_eq!(resumed.active().map(|active| active.blocks[0].enforcers), Some(only_obsidian));
@@ -817,7 +864,7 @@ mod tests {
         // Monday 16:00, office hours until 17:00, locked for two hours: the user's own example.
         list.clock.at_least(MONDAY + 16 * 3600);
         let office = Week::parse("mon-fri 08:00-17:00").unwrap();
-        list.start("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], office.clone(), Locks { timer: Some(Duration::from_secs(2 * 3600)), ..Locks::default() }).unwrap();
+        list.start("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], office.clone(), Locks { duration: Some(Duration::from_secs(2 * 3600)), ..Locks::default() }).unwrap();
         // An always-active block next to it, to show the other one going quiet on its own.
         start(&list, "b", sites(&["b.com"]), None).unwrap();
         assert!(list.active().unwrap().blocks_page("https://a.com/", false));
@@ -923,6 +970,39 @@ mod tests {
     }
 
     #[test]
+    fn an_until_lock_ends_at_its_local_time() {
+        let list = blocklist("until");
+        // Monday 16:00 UTC; the test zone is UTC, so 18:00 is two hours away.
+        list.clock.at_least(MONDAY + 16 * 3600);
+        let at = |text: &str| Locks { until: Some(DateTime::parse(text).unwrap()), ..Locks::default() };
+        let why = list.start("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, at("2030-01-07 12:00")).unwrap_err();
+        assert!(why.contains("has passed"), "{why}");
+        list.start("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, at("2030-01-07 18:00")).unwrap();
+        assert!(list.stop("a", false).is_err());
+        assert!(running(&list, "a").remaining.is_some_and(|left| (7190..=7200).contains(&left)));
+        list.clock.at_least(MONDAY + 18 * 3600 + 1);
+        assert!(!list.runs("a"));
+    }
+
+    #[test]
+    fn a_lock_until_restart_holds_until_windows_restarts() {
+        let list = blocklist("until-restart");
+        list.start("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, Locks { until_restart: true, ..Locks::default() }).unwrap();
+        let why = list.stop("a", false).unwrap_err();
+        assert!(why.contains("until Windows restarts"), "{why}");
+        assert!(running(&list, "a").until_restart && list.locked().is_some());
+        // The service started again without a restart of Windows: still there, still locked.
+        let resumed = reopened("until-restart");
+        resumed.restore();
+        assert!(resumed.stop("a", false).is_err());
+        // After a restart the block has ended.
+        let mut restarted = reopened("until-restart");
+        restarted.boot = Some("next boot".into());
+        restarted.restore();
+        assert!(!restarted.is_running());
+    }
+
+    #[test]
     fn a_resumed_block_keeps_its_schedule_and_time_zone() {
         let list = blocklist("schedule-resume");
         list.clock.at_least(MONDAY + 12 * 3600);
@@ -954,6 +1034,7 @@ mod tests {
             until,
             seen: None,
             lock_schedule: None,
+            boot: None,
             password: None,
             schedule: None,
             zone: "fixed:+0".into(),
@@ -996,7 +1077,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("state.json");
 
-        let list = Blocklist { inner: Arc::default(), clock: test_clock(), zone: Some(Zone::fixed(0)), store: None };
+        let list = Blocklist { inner: Arc::default(), clock: test_clock(), zone: Some(Zone::fixed(0)), store: None, boot: Some("boot".into()) };
         start(&list, "a", sites(&["a.com"]), Some(Duration::from_secs(60))).unwrap();
         assert!(list.is_running());
         list.restore();

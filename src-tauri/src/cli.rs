@@ -18,6 +18,7 @@ use crate::block::Running;
 use crate::client::Remote;
 use crate::definitions::{BlockList, Definition, Library, NamedSchedule};
 use crate::duration;
+use crate::localtime;
 use crate::lock::Lock;
 use crate::proto::{Overview, Request};
 use crate::schedule::Week;
@@ -25,7 +26,7 @@ use crate::state::Enforcers;
 
 /// Each command the window can invoke, and the CLI commands that do the same. Empty: it is about
 /// the window itself.
-pub const GUI_COMMANDS: [(&str, &[&str]); 14] = [
+pub const GUI_COMMANDS: [(&str, &[&str]); 15] = [
     ("block_status", &["status", "show", "list show", "schedule show"]),
     ("save_block", &["new", "edit"]),
     ("delete_block", &["delete"]),
@@ -38,8 +39,9 @@ pub const GUI_COMMANDS: [(&str, &[&str]); 14] = [
     ("force_exit", &["unlock"]),
     ("parse_schedule", &["schedule check"]),
     ("describe_schedule", &["schedule check"]),
-    // A lock's length in words: what `show` says of a timer lock.
+    // A lock's length or end in words: what `show` and `start` say of a duration or until lock.
     ("describe_duration", &["show"]),
+    ("describe_until", &["show", "start"]),
     ("window_ready", &[]),
 ];
 
@@ -59,8 +61,13 @@ Blocks:
   new <name> [options]     Make a block. Options:
       --list <list>            A block list it enforces (repeatable).
       --schedule <schedule>    When it is active: a schedule's name, or 'always' (the default).
-      --lock-timer <duration>  Locked for this long once started, e.g. 2h 30m: it cannot be
+      --lock-duration <duration>
+                               Locked for this long once started, e.g. 2h 30m: it cannot be
                                stopped and ends by itself.
+      --lock-until <date time> Locked until then, e.g. \"2026-10-06 18:00\" (local time): it
+                               cannot be stopped and ends by itself.
+      --lock-until-restart     Locked until Windows restarts, and ends then. A shut down with
+                               Fast Startup is not a restart.
       --lock-schedule <schedule>
                                Locked while this schedule is active: it cannot be stopped then,
                                and runs until stopped outside those times. With the block's own
@@ -254,21 +261,24 @@ fn parse(args: &[String]) -> Result<Command, String> {
     Ok(parsed)
 }
 
-/// `--lock-timer <duration>`, `--lock-schedule <schedule>`, `--lock-password <pw>` or `--no-lock`,
+/// `--lock-duration <duration>`, `--lock-until <date time>`, `--lock-until-restart`,
+/// `--lock-schedule <schedule>`, `--lock-password <pw>` or `--no-lock`,
 /// at most one. A lock schedule by name or id, looked up when the command runs (`find_lock_schedule`).
 fn parse_lock(options: &mut Options) -> Result<Option<Lock>, String> {
-    let timer = options.value("--lock-timer")?.map(|duration| Lock::Timer { duration });
+    let duration = options.value("--lock-duration")?.map(|duration| Lock::Duration { duration });
+    let until = options.value("--lock-until")?.map(|until| Lock::Until { until });
+    let restart = options.flag("--lock-until-restart").then_some(Lock::UntilRestart);
     let scheduled = options.value("--lock-schedule")?.map(|schedule| Lock::Scheduled { schedule });
     let password = options.value("--lock-password")?.map(|password| Lock::Password { password: Some(password), hash: None });
     let unlocked = options.flag("--no-lock").then_some(Lock::None);
-    let mut given: Vec<Lock> = [timer, scheduled, password, unlocked].into_iter().flatten().collect();
+    let mut given: Vec<Lock> = [duration, until, restart, scheduled, password, unlocked].into_iter().flatten().collect();
     let lock = match given.len() {
         0 => return Ok(None),
         1 => given.remove(0),
-        _ => return Err("Give one of --lock-timer, --lock-schedule, --lock-password and --no-lock".into()),
+        _ => return Err("Give one of --lock-duration, --lock-until, --lock-until-restart, --lock-schedule, --lock-password and --no-lock".into()),
     };
     // The service checks it again; this is for a clear message before anything is sent.
-    lock.duration()?;
+    lock.check()?;
     Ok(Some(lock))
 }
 
@@ -608,10 +618,16 @@ fn find_lock_schedule(overview: &Overview, lock: Lock) -> Result<Lock, Failure> 
 fn lock_warning(overview: &Overview, block: &Definition) -> Option<String> {
     match &block.lock {
         Lock::None => None,
-        Lock::Timer { .. } => {
+        Lock::Duration { .. } => {
             let words = duration::words(block.lock.duration().ok()??.as_secs());
             Some(format!("It cannot be stopped, changed or deleted for {words}."))
         }
+        Lock::Until { until } => match localtime::until(until) {
+            Ok(end) => Some(format!("It cannot be stopped, changed or deleted until {} ({} from now).", end.when, end.left)),
+            // It will not start; the service says why.
+            Err(_) => None,
+        },
+        Lock::UntilRestart => Some("It cannot be stopped, changed or deleted until Windows restarts (a shut down with Fast Startup is not a restart).".into()),
         Lock::Scheduled { schedule } => {
             let schedule = overview.schedules.iter().find(|n| &n.id == schedule)?;
             Some(format!("It cannot be stopped while its lock schedule \"{}\" is active ({}).", schedule.name, schedule.week.describe()))
@@ -717,6 +733,7 @@ fn state(running: Option<&Running>) -> String {
     });
     parts.push(match (&running.remaining_words, running.locked) {
         _ if running.password => "locked with a password".into(),
+        _ if running.until_restart => "locked until Windows restarts".into(),
         (Some(left), _) => format!("locked, {left} left"),
         (None, true) => match &running.lock_change_words {
             Some(change) => format!("locked by its lock schedule, for another {change}"),
@@ -789,10 +806,15 @@ fn describe_block(overview: &Overview, block: &Definition, running: Option<&Runn
     };
     let lock = match &block.lock {
         Lock::None => "none: can be stopped at any time".to_string(),
-        Lock::Timer { duration } => match block.lock.duration() {
-            Ok(Some(d)) => format!("timer, {} (cannot be stopped for that long once started)", duration::words(d.as_secs())),
-            _ => format!("timer, {duration}"),
+        Lock::Duration { duration } => match block.lock.duration() {
+            Ok(Some(d)) => format!("duration, {} (cannot be stopped for that long once started)", duration::words(d.as_secs())),
+            _ => format!("duration, {duration}"),
         },
+        Lock::Until { until } => match block.lock.until() {
+            Ok(Some(at)) => format!("until {at} (cannot be stopped until then once started)"),
+            _ => format!("until {until}"),
+        },
+        Lock::UntilRestart => "until restart: cannot be stopped until Windows restarts, and ends then".into(),
         Lock::Scheduled { schedule } => match overview.schedules.iter().find(|s| &s.id == schedule) {
             Some(s) => format!("scheduled: cannot be stopped while \"{}\" is active ({})", s.name, s.week.describe()),
             None => "scheduled: (schedule gone)".into(),
@@ -919,12 +941,12 @@ mod tests {
 
     #[test]
     fn a_new_block_finds_its_lists_and_schedule_by_name() {
-        let line = args(&["new", "Evening", "--list", "social", "--list", "l1", "--schedule", "WORK HOURS", "--lock-timer", "2h 30m"]);
+        let line = args(&["new", "Evening", "--list", "social", "--list", "l1", "--schedule", "WORK HOURS", "--lock-duration", "2h 30m"]);
         let Ok(Command::New { name, changes }) = parse(&line) else { panic!("not new") };
         assert_eq!(name, "Evening");
         let mut b = block("x", &[]);
         assert!(apply_block_changes(&library(), &mut b, changes).is_ok());
-        assert_eq!((b.lists, b.schedule, b.lock), (vec!["l1".to_string(), "l1".to_string()], Some("s1".to_string()), Lock::Timer { duration: "2h 30m".into() }));
+        assert_eq!((b.lists, b.schedule, b.lock), (vec!["l1".to_string(), "l1".to_string()], Some("s1".to_string()), Lock::Duration { duration: "2h 30m".into() }));
 
         // `always`, and a list that does not exist.
         let Ok(Command::Edit { changes, .. }) = parse(&args(&["edit", "Work", "--schedule", "always", "--no-lock"])) else { panic!("not edit") };
@@ -942,11 +964,18 @@ mod tests {
             Ok(Command::Start { block: "Work".into(), lock: Some(Lock::Scheduled { schedule: "Work hours".into() }), yes: true })
         );
         assert_eq!(parse(&args(&["start", "Work"])), Ok(Command::Start { block: "Work".into(), lock: None, yes: false }));
+        assert_eq!(
+            parse(&args(&["start", "Work", "--lock-until", "2026-10-06 18:00"])),
+            Ok(Command::Start { block: "Work".into(), lock: Some(Lock::Until { until: "2026-10-06 18:00".into() }), yes: false })
+        );
+        assert_eq!(parse(&args(&["start", "Work", "--lock-until-restart"])), Ok(Command::Start { block: "Work".into(), lock: Some(Lock::UntilRestart), yes: false }));
+        assert!(parse(&args(&["start", "Work", "--lock-until", "tomorrow"])).is_err());
+        assert!(parse(&args(&["start", "Work", "--lock-until-restart", "--no-lock"])).is_err());
         // What starting asks, per lock.
         let overview = library();
         let warning = lock_warning(&overview, &overview.blocks[0]).unwrap();
         assert!(warning.contains("while its lock schedule \"Work hours\" is active (Mon-Fri 08:00-17:00)"), "{warning}");
-        let timed = Definition { lock: Lock::Timer { duration: "2h5m".into() }, ..overview.blocks[0].clone() };
+        let timed = Definition { lock: Lock::Duration { duration: "2h5m".into() }, ..overview.blocks[0].clone() };
         assert!(lock_warning(&overview, &timed).unwrap().contains("2 hours 5 minutes 0 seconds"));
         assert_eq!(lock_warning(&overview, &Definition { lock: Lock::None, ..timed }), None);
     }
@@ -981,9 +1010,9 @@ mod tests {
             &["frobnicate"][..],
             &["new"],
             &["new", "--list", "a"],
-            &["new", "A", "--lock-timer", "soon"],
-            &["new", "A", "--lock-timer", ""],
-            &["new", "A", "--lock-timer", "1h", "--no-lock"],
+            &["new", "A", "--lock-duration", "soon"],
+            &["new", "A", "--lock-duration", ""],
+            &["new", "A", "--lock-duration", "1h", "--no-lock"],
             &["new", "A", "--name", "B"],
             &["new", "A", "--site", "a.com"],
             &["list"],
@@ -1051,6 +1080,7 @@ mod tests {
             lists: vec![RunningList { name: "Social".into(), filters: vec!["youtube.com".into()], allowed: vec![], programs: vec![], enforcers: Enforcers::default() }],
             remaining: None,
             lock_schedule: Week::parse("mon-fri 8-17").unwrap(),
+            until_restart: false,
             password: false,
             locked: false,
             schedule: Week::parse("mon-fri 8-17").unwrap(),
