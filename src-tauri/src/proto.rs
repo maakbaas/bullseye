@@ -10,7 +10,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::block::Running;
-use crate::definitions::{BlockList, Definition, NamedSchedule};
+use crate::definitions::{BlockList, Definition, Kind, NamedSchedule};
 use crate::state::Enforcers;
 
 /// The pipe the service listens on.
@@ -40,12 +40,16 @@ pub enum Request {
     DeleteBlock { id: String },
     /// Adds a block list, or replaces the one with its id. Refused while a running block uses it.
     SaveList { list: BlockList },
-    /// Removes a block list. Refused while any block uses it.
+    /// Removes a block list, and takes it out of the blocks that use it. Refused while a running
+    /// block uses it.
     DeleteList { id: String },
     /// Adds a schedule, or replaces the one with its id. Refused while a running block uses it.
     SaveSchedule { schedule: NamedSchedule },
-    /// Removes a schedule. Refused while any block uses it.
+    /// Removes a schedule, and takes it out of the blocks that use it. Refused while a running
+    /// block uses it.
     DeleteSchedule { id: String },
+    /// Copies a block, block list or schedule as `new_id`, named after it with a number.
+    Duplicate { kind: Kind, id: String, new_id: String },
     /// Starts the block defined as `id`, as it is defined now.
     Start { id: String },
     /// Stops the running block `id`, unless it is locked right now. `password`: the password of its

@@ -26,7 +26,7 @@ As in the window, which has a page for each:
 
 Outside its schedule a running block keeps running, but enforces nothing. For example, with a schedule of `daily 08:00-17:00`, a block started at 16:00 with a 2-hour duration lock blocks until 17:00; from then on everything is accessible again, and at 18:00 the lock ends the block. With a lock schedule of `daily 08:00-17:00` instead (say the same schedule), it blocks every day from 8 to 5 and cannot be stopped then, until you stop it some evening.
 
-A running block keeps what it was started with: while it runs, it cannot be changed or deleted, and neither can the block lists and the schedules it uses (for when it is active and for its lock). Deleting a block list or schedule that blocks use takes it out of them, as in the window: a block left without a block list is deleted too, one that loses its schedule is always active, and one that loses its lock schedule has no lock. The question before it says which. A block list or schedule that any block uses cannot be deleted either; the message says which blocks.
+A running block keeps what it was started with: while it runs, it cannot be changed or deleted, and neither can the block lists and the schedules it uses (for when it is active and for its lock). Deleting a block list or schedule that blocks use takes it out of them, as in the window: a block left without a block list is deleted too, one that loses its schedule is always active, and one that loses its lock schedule has no lock. The question before it says which.
 
 ## Commands
 
@@ -37,16 +37,19 @@ A running block keeps what it was started with: while it runs, it cannot be chan
 | `bullseye-cli new <name> [options]` | **New block**, then **Save** |
 | `bullseye-cli edit <block> [options]` | **Edit**, then **Save** |
 | `bullseye-cli delete <block> [--yes]` | **Delete** (asks first, unless `--yes`) |
+| `bullseye-cli duplicate <block>` | **Duplicate** |
 | `bullseye-cli start <block> [lock option] [--yes]` | the lock on the block's tile, then **Start** (a locked block asks first, unless `--yes`) |
 | `bullseye-cli stop <block> [--password <pw>]` | **Stop** (a block locked with a password asks for it, as the window does) |
 | `bullseye-cli list show <list> [--json]` | a block list's tile and its editor |
 | `bullseye-cli list new <name> [options]` | **New block list**, then **Save** |
 | `bullseye-cli list edit <list> [options]` | **Edit** a block list, then **Save** |
 | `bullseye-cli list delete <list> [--yes]` | **Delete** a block list |
+| `bullseye-cli list duplicate <list>` | **Duplicate** a block list |
 | `bullseye-cli schedule show <schedule>` | a schedule's tile and its editor |
 | `bullseye-cli schedule new <name> <times>` | **New schedule**, then **Save** |
 | `bullseye-cli schedule edit <schedule> [--name <name>] [--times <times>]` | **Edit** a schedule, then **Save** |
 | `bullseye-cli schedule delete <schedule> [--yes]` | **Delete** a schedule |
+| `bullseye-cli schedule duplicate <schedule>` | **Duplicate** a schedule |
 | `bullseye-cli schedule check <times>` | the schedule written out under the week grid in the schedule editor |
 | `bullseye-cli unlock [--password <pw>]` | **Unlock** in Settings |
 | `bullseye-cli help` | |
@@ -124,6 +127,10 @@ Schedules:
 ### `stop`, `delete`, `list delete`, `schedule delete`
 
 `stop <block>` stops a running block that is not locked right now; a locked one is refused, and the message says why and for how long. A block locked with a password stops with it: give it with `--password`, or the CLI asks for it without showing it. Deleting asks first (`[y/N]`), or goes ahead with `--yes`, which is also needed when there is no terminal to ask in (a script). A running block, and a block list or schedule that a running block uses, cannot be deleted; the question before deleting a block list or schedule says what it does to the blocks that use it.
+
+### `duplicate`, `list duplicate`, `schedule duplicate`
+
+Make a copy, as **Duplicate** in a tile's menu does: named after the original with the next free number (a copy of `Work` or of `Work (2)` is `Work (2)`, or `Work (3)` when that is taken), with everything the original has. A block's copy uses the same block lists and schedule and has the same lock, a password lock with the same password. The CLI can also copy a running block, or what one uses (the window hides the menu of those); the copy is not running.
 
 ### `unlock`
 

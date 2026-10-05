@@ -16,7 +16,7 @@ use serde_json::{Map, Value};
 
 use crate::block::Running;
 use crate::client::Remote;
-use crate::definitions::{BlockList, Definition, Library, NamedSchedule};
+use crate::definitions::{BlockList, Definition, Kind, Library, NamedSchedule};
 use crate::duration;
 use crate::localtime;
 use crate::lock::Lock;
@@ -26,7 +26,7 @@ use crate::state::Enforcers;
 
 /// Each command the window can invoke, and the CLI commands that do the same. Empty: it is about
 /// the window itself.
-pub const GUI_COMMANDS: [(&str, &[&str]); 15] = [
+pub const GUI_COMMANDS: [(&str, &[&str]); 16] = [
     ("block_status", &["status", "show", "list show", "schedule show"]),
     ("save_block", &["new", "edit"]),
     ("delete_block", &["delete"]),
@@ -34,6 +34,7 @@ pub const GUI_COMMANDS: [(&str, &[&str]); 15] = [
     ("delete_list", &["list delete"]),
     ("save_schedule", &["schedule new", "schedule edit"]),
     ("delete_schedule", &["schedule delete"]),
+    ("duplicate", &["duplicate", "list duplicate", "schedule duplicate"]),
     ("start_block", &["start"]),
     ("stop_block", &["stop"]),
     ("unlock_all", &["unlock"]),
@@ -79,6 +80,7 @@ Blocks:
   edit <block> [options]   Change a block that is not running: the options of new, which replace
                            what they name (--list replaces all its lists), and --name <name>.
   delete <block> [--yes]   Delete a block that is not running. Asks first, unless --yes.
+  duplicate <block>        Make a copy of a block, named after it with a number: \"Work (2)\".
   start <block> [--yes]    Start a block. The lock options of new set its lock first, as the lock
                            on its tile in the window does. A locked block asks first, unless --yes.
   stop <block> [--password <pw>]
@@ -98,7 +100,9 @@ Block lists:
   list edit <list> [options]  Change a block list that no running block uses: the options of
                               list new, which replace what they name, --name <name> and
                               --clear <sites|allowed|programs> (repeatable).
-  list delete <list> [--yes]  Delete a block list that no block uses.
+  list delete <list> [--yes]  Delete a block list that no running block uses; it is taken out of
+                              the blocks that use it (a block left without one is deleted).
+  list duplicate <list>       Make a copy of a block list, named after it with a number.
 
 Schedules:
   schedule show <schedule>          One schedule, per day, and the blocks that use it.
@@ -106,13 +110,16 @@ Schedules:
   schedule edit <schedule> [--name <name>] [--times <times>]
                                     Change a schedule that no running block uses.
   schedule delete <schedule> [--yes]
-                                    Delete a schedule that no block uses.
+                                    Delete a schedule that no running block uses; blocks it was
+                                    the schedule of are always active, and those it locked are
+                                    not locked any more.
+  schedule duplicate <schedule>     Make a copy of a schedule, named after it with a number.
   schedule check <times>            Check times and show them per day, as a schedule takes them.
 
 Other:
-  unlock [--password <pw>] End every running block with the unlock password, and close the app,
-                           as the window's Unlock does. Asks for the password when not given (or
-                           reads standard input when that is not a terminal).
+  unlock [--password <pw>] End every running block with the unlock password, as the window's
+                           Unlock does. Asks for the password when not given (or reads standard
+                           input when that is not a terminal).
   help                     Show this.
   version                  Show the version.
 
@@ -124,23 +131,77 @@ Exit codes: 0 done, 1 failed, refused or cancelled, 2 not understood.";
 enum Command {
     Help,
     Version,
-    Status { json: bool },
-    Show { block: String, json: bool },
-    New { name: String, changes: BlockChanges },
-    Edit { block: String, changes: BlockChanges },
-    Delete { block: String, yes: bool },
-    Start { block: String, lock: Option<Lock>, yes: bool },
-    Stop { block: String, password: Option<String> },
-    ListShow { list: String, json: bool },
-    ListNew { name: String, changes: ListChanges },
-    ListEdit { list: String, changes: ListChanges },
-    ListDelete { list: String, yes: bool },
-    ScheduleShow { schedule: String },
-    ScheduleNew { name: String, times: String },
-    ScheduleEdit { schedule: String, name: Option<String>, times: Option<String> },
-    ScheduleDelete { schedule: String, yes: bool },
-    ScheduleCheck { times: String },
-    Unlock { password: Option<String> },
+    Status {
+        json: bool,
+    },
+    Show {
+        block: String,
+        json: bool,
+    },
+    New {
+        name: String,
+        changes: BlockChanges,
+    },
+    Edit {
+        block: String,
+        changes: BlockChanges,
+    },
+    Delete {
+        block: String,
+        yes: bool,
+    },
+    Start {
+        block: String,
+        lock: Option<Lock>,
+        yes: bool,
+    },
+    Stop {
+        block: String,
+        password: Option<String>,
+    },
+    ListShow {
+        list: String,
+        json: bool,
+    },
+    ListNew {
+        name: String,
+        changes: ListChanges,
+    },
+    ListEdit {
+        list: String,
+        changes: ListChanges,
+    },
+    ListDelete {
+        list: String,
+        yes: bool,
+    },
+    ScheduleShow {
+        schedule: String,
+    },
+    ScheduleNew {
+        name: String,
+        times: String,
+    },
+    ScheduleEdit {
+        schedule: String,
+        name: Option<String>,
+        times: Option<String>,
+    },
+    ScheduleDelete {
+        schedule: String,
+        yes: bool,
+    },
+    ScheduleCheck {
+        times: String,
+    },
+    /// `item` of the kind, by name or id.
+    Duplicate {
+        kind: Kind,
+        item: String,
+    },
+    Unlock {
+        password: Option<String>,
+    },
 }
 
 /// What `new` and `edit` set on a block; `None` leaves it. Lists and the schedule by name or id,
@@ -218,7 +279,10 @@ fn parse(args: &[String]) -> Result<Command, String> {
     let (command, rest) = match (command.as_str(), rest.split_first()) {
         ("list" | "schedule", Some((verb, rest))) => (format!("{command} {verb}"), rest),
         ("list" | "schedule", None) => {
-            return Err(format!("`{command}` needs show, new, edit, delete{}", if command == "schedule" { " or check" } else { "" }))
+            return Err(format!(
+                "`{command}` needs show, new, edit, delete, duplicate{}",
+                if command == "schedule" { " or check" } else { "" }
+            ))
         }
         _ => (command.clone(), rest),
     };
@@ -235,6 +299,9 @@ fn parse(args: &[String]) -> Result<Command, String> {
         }
         "edit" => Command::Edit { block: named(&mut options, "block")?, changes: parse_block_changes(&mut options, true)? },
         "delete" => Command::Delete { block: named(&mut options, "block")?, yes: options.flag("--yes") },
+        "duplicate" => Command::Duplicate { kind: Kind::Block, item: named(&mut options, "block")? },
+        "list duplicate" => Command::Duplicate { kind: Kind::List, item: named(&mut options, "block list")? },
+        "schedule duplicate" => Command::Duplicate { kind: Kind::Schedule, item: named(&mut options, "schedule")? },
         "start" => Command::Start { block: named(&mut options, "block")?, lock: parse_lock(&mut options)?, yes: options.flag("--yes") },
         "stop" => Command::Stop { block: named(&mut options, "block")?, password: options.value("--password")? },
         "list show" => Command::ListShow { list: named(&mut options, "block list")?, json: options.flag("--json") },
@@ -584,6 +651,27 @@ fn execute(command: Command) -> Result<(), Failure> {
             Some(week) => print!("{}", per_day(&week)),
             None => println!("Always active: a block without a schedule"),
         },
+        Command::Duplicate { kind, item } => {
+            // The item's id and name, then the copy's name, which the service gives it.
+            let names = |overview: &Overview| -> Vec<(String, String)> {
+                match kind {
+                    Kind::Block => overview.blocks.iter().map(|b| (b.id.clone(), b.name.clone())).collect(),
+                    Kind::List => overview.lists.iter().map(|l| (l.id.clone(), l.name.clone())).collect(),
+                    Kind::Schedule => overview.schedules.iter().map(|s| (s.id.clone(), s.name.clone())).collect(),
+                }
+            };
+            let noun = match kind {
+                Kind::Block => "block",
+                Kind::List => "block list",
+                Kind::Schedule => "schedule",
+            };
+            let items = names(&overview()?);
+            let (id, name) = find(&items, &item, noun, |(id, name)| (id, name))?;
+            let new_id = new_id();
+            send(Request::Duplicate { kind, id: id.clone(), new_id: new_id.clone() })?;
+            let copy = names(&overview()?).into_iter().find(|(id, _)| *id == new_id).map(|(_, name)| name).unwrap_or_default();
+            println!("Made \"{copy}\", a copy of the {noun} \"{name}\".");
+        }
         Command::Unlock { password } => {
             let password = match password {
                 Some(password) => password,
@@ -1107,6 +1195,12 @@ mod tests {
         assert_eq!(parse(&args(&["status", "--json"])), Ok(Command::Status { json: true }));
         assert_eq!(parse(&args(&["show", "Work", "--json"])), Ok(Command::Show { block: "Work".into(), json: true }));
         assert_eq!(parse(&args(&["delete", "Work", "--yes"])), Ok(Command::Delete { block: "Work".into(), yes: true }));
+        assert_eq!(parse(&args(&["duplicate", "Work"])), Ok(Command::Duplicate { kind: Kind::Block, item: "Work".into() }));
+        assert_eq!(parse(&args(&["list", "duplicate", "Social"])), Ok(Command::Duplicate { kind: Kind::List, item: "Social".into() }));
+        assert_eq!(
+            parse(&args(&["schedule", "duplicate", "Evenings"])),
+            Ok(Command::Duplicate { kind: Kind::Schedule, item: "Evenings".into() })
+        );
         assert_eq!(parse(&args(&["stop", "Work"])), Ok(Command::Stop { block: "Work".into(), password: None }));
         assert_eq!(
             parse(&args(&["stop", "Work", "--password", "pw"])),

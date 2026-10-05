@@ -29,7 +29,7 @@ mod unlock;
 mod watchdog;
 
 use client::Remote;
-use definitions::{BlockList, Definition, Fallout, Library, NamedSchedule};
+use definitions::{BlockList, Definition, Fallout, Kind, Library, NamedSchedule};
 use proto::{Overview, Request, Response};
 use schedule::Week;
 use tauri::{
@@ -64,7 +64,7 @@ fn save_list(list: BlockList, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::SaveList { list })
 }
 
-/// Refused while any block uses it.
+/// Takes it out of the blocks that use it too; refused while a running block uses it.
 #[tauri::command]
 fn delete_list(id: String, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::DeleteList { id })
@@ -76,10 +76,16 @@ fn save_schedule(schedule: NamedSchedule, remote: State<Remote>) -> Result<(), S
     remote.command(Request::SaveSchedule { schedule })
 }
 
-/// Refused while any block uses it.
+/// Takes it out of the blocks that use it too; refused while a running block uses it.
 #[tauri::command]
 fn delete_schedule(id: String, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::DeleteSchedule { id })
+}
+
+/// A copy of a block, block list or schedule, as `new_id`, named after it with a number.
+#[tauri::command]
+fn duplicate(kind: Kind, id: String, new_id: String, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::Duplicate { kind, id, new_id })
 }
 
 /// Starts a block as it is defined. The service owns it from then on: it goes on even if this app
@@ -185,6 +191,7 @@ pub fn run() {
             delete_list,
             save_schedule,
             delete_schedule,
+            duplicate,
             start_block,
             stop_block,
             unlock_all,

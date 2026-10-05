@@ -10,8 +10,8 @@
 //! restarts, and is only a template: starting a block copies its lists and schedule into a running
 //! block (`block.rs`), which is then fixed until it ends. So that what is shown and what runs stay
 //! the same, a running block's definition, and every block list and schedule it uses, cannot be
-//! changed or deleted until it ends (`handler.rs`). A block list or schedule that any block uses
-//! cannot be deleted either.
+//! changed or deleted until it ends (`handler.rs`). Deleting a block list or schedule takes it out
+//! of the blocks that use it (`Library::fallout`).
 
 use std::fs;
 use std::path::PathBuf;
@@ -57,6 +57,15 @@ pub struct NamedSchedule {
     /// When it is active (`days`, Monday first).
     #[serde(flatten)]
     pub week: Week,
+}
+
+/// Which kind of thing: what `Definitions::duplicate` copies.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    Block,
+    List,
+    Schedule,
 }
 
 /// A block: what is started. Its lists by id, its schedule by id (`None`: always active) and its
@@ -202,6 +211,61 @@ impl Library {
     }
 }
 
+/// What every kind has: an id and a name.
+trait Named: Clone {
+    fn id(&self) -> &str;
+    fn name(&self) -> &str;
+    fn rename(&mut self, id: String, name: String);
+}
+
+macro_rules! named {
+    ($($kind:ty),*) => {$(
+        impl Named for $kind {
+            fn id(&self) -> &str {
+                &self.id
+            }
+            fn name(&self) -> &str {
+                &self.name
+            }
+            fn rename(&mut self, id: String, name: String) {
+                self.id = id;
+                self.name = name;
+            }
+        }
+    )*};
+}
+named!(BlockList, NamedSchedule, Definition);
+
+/// A copy of the item `id` as `new_id`, at the end, named after it with the next number free among
+/// its kind (`copy_name`).
+fn duplicate<T: Named>(items: &mut Vec<T>, kind: &str, id: &str, new_id: &str) -> Result<(), String> {
+    let mut copy = items.iter().find(|i| i.id() == id).ok_or_else(|| format!("No such {kind}"))?.clone();
+    if items.iter().any(|i| i.id() == new_id) {
+        return Err(format!("There already is a {kind} with id {new_id}"));
+    }
+    let name = copy_name(copy.name(), &items.iter().map(Named::name).collect::<Vec<_>>());
+    check_name(kind, new_id, &name)?;
+    copy.rename(new_id.to_string(), name);
+    put(items, copy, |_| false)
+}
+
+/// The name of a copy: `Work` and `Work (2)` both give `Work (2)`, or the next number not taken.
+fn copy_name(name: &str, taken: &[&str]) -> String {
+    let base = match name.strip_suffix(')').and_then(|rest| rest.rsplit_once(" (")) {
+        Some((base, number)) if !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) => base,
+        _ => name,
+    };
+    (2..)
+        .map(|n| {
+            let number = format!(" ({n})");
+            // Within the longest name there may be.
+            let base: String = base.chars().take(MAX_NAME - number.len()).collect();
+            format!("{}{number}", base.trim_end())
+        })
+        .find(|candidate| !taken.contains(&candidate.as_str()))
+        .expect("a free number")
+}
+
 /// Adds `item`, or replaces the one with its id, in its place.
 fn put<T>(items: &mut Vec<T>, item: T, same: impl Fn(&T) -> bool) -> Result<(), String> {
     match items.iter().position(same) {
@@ -212,7 +276,6 @@ fn put<T>(items: &mut Vec<T>, item: T, same: impl Fn(&T) -> bool) -> Result<(), 
     Ok(())
 }
 
-/// The library, and the file it is kept in.
 /// What a block keeps of the other lock methods once its lock is `lock`: what it kept before and
 /// the lock it had, the latest of each method that has settings, without `lock`'s own method.
 fn kept_locks(old: Option<&Definition>, lock: &Lock) -> Vec<Lock> {
@@ -225,6 +288,7 @@ fn kept_locks(old: Option<&Definition>, lock: &Lock) -> Vec<Lock> {
     kept
 }
 
+/// The library, and the file it is kept in.
 pub struct Definitions {
     library: Mutex<Library>,
     /// `None`: kept for this run only (no data folder, or a test).
@@ -348,6 +412,17 @@ impl Definitions {
         })
     }
 
+    /// A copy of a block, block list or schedule, as `new_id` (made by the client, as for anything
+    /// new), named after it with a number (`copy_name`). A block's copy has its lists, schedule and
+    /// lock, a password lock's hash included, and the lock settings it kept.
+    pub fn duplicate(&self, kind: Kind, id: &str, new_id: &str) -> Result<(), String> {
+        self.change(|library| match kind {
+            Kind::Block => duplicate(&mut library.blocks, "block", id, new_id),
+            Kind::List => duplicate(&mut library.lists, "block list", id, new_id),
+            Kind::Schedule => duplicate(&mut library.schedules, "schedule", id, new_id),
+        })
+    }
+
     /// Through a temporary file, like `state::Store::save`, so a crash leaves the old file or the new.
     fn write(&self, library: &Library) -> Result<(), String> {
         let Some(path) = &self.path else { return Ok(()) };
@@ -363,7 +438,6 @@ impl Definitions {
     }
 }
 
-/// A block list or schedule that blocks use cannot be deleted; the message says which blocks.
 /// What deleting a block list or schedule does to the blocks that use it, by their names: what
 /// the service does (`Definitions::delete_list`, `delete_schedule`), and what the window and the
 /// CLI say before it.
@@ -597,6 +671,48 @@ pub mod tests {
         let kept = definitions.library().block("b").unwrap().kept_locks.clone();
         assert_eq!(kept.len(), 1);
         assert!(kept[0].same_method(&Lock::Password { password: None, hash: None }) && kept[0].password_hash() == Some(hash.as_str()));
+    }
+
+    #[test]
+    fn a_copy_is_named_with_the_next_free_number() {
+        assert_eq!(copy_name("Work", &["Work"]), "Work (2)");
+        assert_eq!(copy_name("Work", &["Work", "Work (2)"]), "Work (3)");
+        assert_eq!(copy_name("Work (2)", &["Work", "Work (2)"]), "Work (3)");
+        assert_eq!(copy_name("Work (later)", &["Work (later)"]), "Work (later) (2)");
+        assert_eq!(copy_name("(2)", &["(2)"]), "(2) (2)");
+        let long = "x".repeat(MAX_NAME);
+        assert_eq!(copy_name(&long, &[&long]).chars().count(), MAX_NAME);
+    }
+
+    #[test]
+    fn everything_can_be_duplicated() {
+        let definitions = Definitions::at(Some(path("duplicate")));
+        definitions.save_list(block_list("l", &["a.com"])).unwrap();
+        definitions.save_schedule(weekly("s", "Mon 08:00-09:00")).unwrap();
+        let block = Definition {
+            schedule: Some("s".into()),
+            lock: Lock::Password { password: Some("secret".into()), hash: None },
+            ..block("b", &["l"])
+        };
+        definitions.save_block(block).unwrap();
+
+        definitions.duplicate(Kind::List, "l", "l2").unwrap();
+        definitions.duplicate(Kind::Schedule, "s", "s2").unwrap();
+        definitions.duplicate(Kind::Block, "b", "b2").unwrap();
+        definitions.duplicate(Kind::Block, "b", "b3").unwrap();
+        let library = definitions.library();
+        assert_eq!(library.list("l2").unwrap().filters, vec!["a.com"]);
+        assert_eq!(library.schedule("s2").unwrap().week, library.schedule("s").unwrap().week);
+        let (original, copy) = (library.block("b").unwrap(), library.block("b2").unwrap());
+        assert_eq!((copy.name.as_str(), library.block("b3").unwrap().name.as_str()), ("Block b (2)", "Block b (3)"));
+        // The copy uses the same block list and schedule, and has the same lock, hash included.
+        assert_eq!((&copy.lists, &copy.schedule, &copy.lock), (&original.lists, &original.schedule, &original.lock));
+        assert!(unlock::check_hash("secret", copy.lock.password_hash().unwrap()));
+
+        // Not under an id that is taken, and not of what is not there.
+        assert!(definitions.duplicate(Kind::Block, "b", "b2").is_err());
+        assert!(definitions.duplicate(Kind::List, "nope", "x").is_err());
+        assert!(definitions.duplicate(Kind::Schedule, "s", "not an id").is_err());
     }
 
     #[test]

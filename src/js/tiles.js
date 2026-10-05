@@ -1,7 +1,7 @@
 // A page of tiles, one per block, block list or schedule: kept and updated in place, so an open menu
 // survives a refresh. A block's tile also has its lock and Start / Stop. Deleting is asked here.
 
-import { $, ask, el, invalid, invoke, listName, names, notify, overview, quoted, reachable, refresh, runningOf, scheduleOf, t, usersOf, weekText } from "./core.js";
+import { $, ask, el, invalid, invoke, listName, names, newId, notify, overview, quoted, reachable, refresh, runningOf, scheduleOf, t, usersOf, weekText } from "./core.js";
 import { LOCKS } from "./locks.js";
 import { ENFORCERS, LISTS, SECTIONS } from "./forms.js";
 import { KINDS } from "./kinds.js";
@@ -71,6 +71,7 @@ function makeTile(kind, id) {
       "cds-overflow-menu-body",
       { flipped: true },
       el("cds-overflow-menu-item", { "data-action": "edit" }, t("common.edit")),
+      el("cds-overflow-menu-item", { "data-action": "duplicate" }, t("common.duplicate")),
       // A block's lock settings (a timer's length, …); the method is the tile's select.
       kind === "blocks" ? el("cds-overflow-menu-item", { "data-action": "lock" }, t("blocks.lockSettings")) : null,
       el("cds-overflow-menu-item", { "data-action": "delete", danger: true }, t("common.delete")),
@@ -92,6 +93,7 @@ function makeTile(kind, id) {
   for (const item of menu.querySelectorAll("[data-action]")) {
     item.addEventListener("click", () => {
       if (item.dataset.action === "edit") location.hash = KINDS[kind].editPath + encodeURIComponent(id);
+      if (item.dataset.action === "duplicate") duplicate(kind, id);
       if (item.dataset.action === "lock") setLock(id, tiles.get(`${kind}:${id}`).method.value);
       if (item.dataset.action === "delete") confirmDelete(kind, id);
     });
@@ -295,6 +297,22 @@ async function confirmDelete(kind, id) {
     notify(inEditor ? "editor-notices" : "list-notices", "error", t("delete.failed", { noun: kindOf.noun }), String(e));
   }
   await refresh();
+}
+
+// A copy, made and named by the service; it comes at the end of the page.
+async function duplicate(kind, id) {
+  const kindOf = KINDS[kind];
+  const original = kindOf.items().find((i) => i.id === id);
+  if (!original) return;
+  const copyId = newId();
+  try {
+    await kindOf.duplicate(id, copyId);
+    await refresh();
+    const copy = kindOf.items().find((i) => i.id === copyId);
+    notify("list-notices", "success", t("common.duplicated", { name: quoted(copy ? copy.name : ""), original: quoted(original.name) }));
+  } catch (e) {
+    notify("list-notices", "error", t("common.duplicateFailed", { name: quoted(original.name) }), String(e));
+  }
 }
 
 export { tiles, renderTiles, confirmDelete };

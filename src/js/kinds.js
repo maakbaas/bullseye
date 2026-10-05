@@ -27,6 +27,7 @@ const KINDS = {
     create: () => ({ id: newId(), name: "", lists: [], schedule: null, lock: { method: "none" } }),
     save: (block) => invoke("save_block", { block }),
     remove: (id) => invoke("delete_block", { id }),
+    duplicate: (id, copyId) => invoke("duplicate", { kind: "block", id, newId: copyId }),
     // Why it cannot be changed now, or null.
     held: (block) => (runningOf(block.id) ? t("blocks.held") : null),
     form: () => blockForm(),
@@ -45,6 +46,7 @@ const KINDS = {
     }),
     save: (list) => invoke("save_list", { list }),
     remove: (id) => invoke("delete_list", { id }),
+    duplicate: (id, copyId) => invoke("duplicate", { kind: "list", id, newId: copyId }),
     held: (list) => {
       const holders = holdersOf(list.id);
       return holders.length ? t("lists.held", { names: names(holders) }) : null;
@@ -60,6 +62,7 @@ const KINDS = {
     create: () => ({ id: newId(), name: "", days: [0, 1, 2, 3, 4, 5, 6].map(() => []) }),
     save: (schedule) => invoke("save_schedule", { schedule }),
     remove: (id) => invoke("delete_schedule", { id }),
+    duplicate: (id, copyId) => invoke("duplicate", { kind: "schedule", id, newId: copyId }),
     held: (schedule) => {
       const holders = holdersOf(schedule.id);
       return holders.length ? t("schedules.held", { names: names(holders) }) : null;

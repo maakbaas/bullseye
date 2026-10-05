@@ -87,6 +87,11 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
         Request::DeleteList { id } => (done(edit(context, &id, |d| d.delete_list(&id))), None),
         Request::SaveSchedule { schedule } => (done(edit(context, &schedule.id.clone(), |d| d.save_schedule(schedule))), None),
         Request::DeleteSchedule { id } => (done(edit(context, &id, |d| d.delete_schedule(&id))), None),
+        // A copy changes nothing that exists, so also of what a running block holds.
+        Request::Duplicate { kind, id, new_id } => {
+            let _editing = context.editing.locked();
+            (done(context.definitions.duplicate(kind, &id, &new_id)), None)
+        }
         Request::Start { id } => (done(start(context, &id)), None),
         // A password lock stops with its own password; the others take none.
         Request::Stop { id, password } => {

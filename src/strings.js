@@ -29,6 +29,10 @@ window.STRINGS = {
     save: "Save",
     delete: "Delete",
     edit: "Edit",
+    duplicate: "Duplicate",
+    // {name}: the copy's (the service names it after the original, with a number).
+    duplicated: "Made {name}, a copy of {original}",
+    duplicateFailed: "Could not duplicate {name}",
     options: "Options",
     locked: "Locked",
     name: "Name",
