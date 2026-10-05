@@ -884,8 +884,10 @@ mod tests {
         let names = enforcer_names();
         assert_eq!(names.len(), 4);
         let page = include_str!("../../src/index.html");
+        let strings = include_str!("../../src/strings.js");
         for name in names {
-            assert!(page.contains(&format!("key: \"{name}\"")), "{name} is not on the page");
+            assert!(page.contains(&format!("enforcer(\"{name}\")")), "{name} is not on the page");
+            assert!(strings.contains(&format!("{name}: {{")), "{name} has no text in strings.js");
         }
     }
 
@@ -943,7 +945,7 @@ mod tests {
         // What starting asks, per lock.
         let overview = library();
         let warning = lock_warning(&overview, &overview.blocks[0]).unwrap();
-        assert!(warning.contains("while its schedule has it active (Mon-Fri 08:00-17:00)"), "{warning}");
+        assert!(warning.contains("while its lock schedule \"Work hours\" is active (Mon-Fri 08:00-17:00)"), "{warning}");
         let timed = Definition { lock: Lock::Timer { duration: "2h5m".into() }, ..overview.blocks[0].clone() };
         assert!(lock_warning(&overview, &timed).unwrap().contains("2 hours 5 minutes 0 seconds"));
         assert_eq!(lock_warning(&overview, &Definition { lock: Lock::None, ..timed }), None);

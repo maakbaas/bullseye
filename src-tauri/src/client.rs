@@ -91,6 +91,10 @@ impl Remote {
         note("app", "stopped by the unlock password");
         match self.on_quit.get() {
             Some(quit) => quit(),
+            // In a test, ending the process would end every test with it, and with exit code 0.
+            #[cfg(test)]
+            None => panic!("told to quit without `when_told_to_quit`"),
+            #[cfg(not(test))]
             None => std::process::exit(0),
         }
     }
@@ -288,6 +292,11 @@ mod tests {
         assert!(remote.command(Request::Stop { id: "a".into(), password: None }).is_err());
         assert!(remote.command(Request::Unlock { password: "wrong".into() }).is_err());
         remote.command(Request::Unlock { password: "test1234".into() }).unwrap();
+        // The next policy request is told to quit, as the app is after an unlock.
+        let quit = Arc::new(AtomicBool::new(false));
+        let told = quit.clone();
+        remote.when_told_to_quit(move || told.store(true, Ordering::SeqCst));
         assert!(remote.active().is_none());
+        assert!(quit.load(Ordering::SeqCst));
     }
 }
