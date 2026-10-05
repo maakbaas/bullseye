@@ -53,7 +53,7 @@ window.STRINGS = {
     editTitle: "Edit block",
     emptyTitle: "No blocks yet",
     emptyText: "A block combines block lists (what to block) with a schedule (when). Make block lists first, then use New block.",
-    editorDescription: "A block enforces its block lists, when its schedule has it active. Its lock is set on its tile, next to Start.",
+    editorDescription: "A block enforces its block lists, when its schedule has it active. Its lock is set on its tile, next to Start, and changed from its menu.",
     held: "This block is running. Its settings can be changed once it ends.",
 
     // The editor.
@@ -99,7 +99,8 @@ window.STRINGS = {
     start: "Start",
     stop: "Stop",
     lockLabel: "Lock",
-    changeLock: "Change the lock",
+    // In a block's ⋮ menu: its lock's settings.
+    changeLock: "Change lock…",
     // The dialog with a lock's settings. {method}: the lock's name below (locks.*.label).
     lockHeading: "{method} lock for {name}",
     lockFailed: "Could not set the lock of {name}",
@@ -146,6 +147,8 @@ window.STRINGS = {
       label: "Password",
       field: "Password",
       helper: "Best chosen by someone else. Only a hash of it is kept.",
+      // When the block already has a password lock: the old password is never shown.
+      helperSet: "A password is set and is not shown. Type a new one to replace it.",
       repeat: "Repeat password",
       missing: "Type a password",
       differ: "The passwords differ",

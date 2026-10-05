@@ -36,7 +36,6 @@ import '@carbon/web-components/es/components/inline-loading/inline-loading.js';
 import { toSVG } from '@carbon/icon-helpers';
 import add16 from '@carbon/icons/es/add/16.js';
 import calendar20 from '@carbon/icons/es/calendar/20.js';
-import edit16 from '@carbon/icons/es/edit/16.js';
 import locked16 from '@carbon/icons/es/locked/16.js';
 import overflowMenuVertical16 from '@carbon/icons/es/overflow-menu--vertical/16.js';
 import play16 from '@carbon/icons/es/play/16.js';
@@ -49,7 +48,6 @@ import trashCan16 from '@carbon/icons/es/trash-can/16.js';
 const icons = {
   add: add16,
   calendar: calendar20,
-  edit: edit16,
   home: home20,
   'list-checked': listChecked20,
   locked: locked16,

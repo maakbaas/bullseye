@@ -68,7 +68,7 @@
       .block-tile h2 { overflow-wrap: anywhere; padding-top: var(--cds-spacing-02); }
       .block-tile .summary { display: flex; flex-direction: column; gap: var(--cds-spacing-02); color: var(--cds-text-secondary); }
       .block-tile .actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--cds-spacing-04); }
-      /* A block's lock, next to Start: the method, and a button to change its settings (in the modal). */
+      /* A block's lock, next to Start: the method; its settings are in the modal. */
       .block-tile .lock-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--cds-spacing-04); }
       .block-tile .lock-method { inline-size: 9rem; }
       .modal-fields { display: flex; flex-direction: column; gap: var(--cds-spacing-06); }
@@ -331,8 +331,10 @@
           // Sent once; the service keeps only a salted hash and never sends either back, so a block
           // that has one just says so. Typed twice, as nothing ever shows it again: a typo would leave a lock only the unlock
           // password opens.
-          form: () => {
-            const password = el("cds-password-input", { label: t("locks.password.field"), autocomplete: "new-password", "helper-text": t("locks.password.helper") });
+          form: (block) => {
+            // A password already set is never shown (only its hash is kept): the fields say so instead.
+            const set = block.lock.method === "password";
+            const password = el("cds-password-input", { label: t("locks.password.field"), autocomplete: "new-password", "helper-text": t(set ? "locks.password.helperSet" : "locks.password.helper") });
             const repeat = el("cds-password-input", { label: t("locks.password.repeat"), autocomplete: "new-password" });
             return {
               fields: [password, repeat],
@@ -549,6 +551,8 @@
             "cds-overflow-menu-body",
             { flipped: true },
             el("cds-overflow-menu-item", { "data-action": "edit" }, t("common.edit")),
+            // A block's lock settings (a timer's length, …); the method is the tile's select.
+            kind === "blocks" ? el("cds-overflow-menu-item", { "data-action": "lock" }, t("blocks.changeLock")) : null,
             el("cds-overflow-menu-item", { "data-action": "delete", danger: true }, t("common.delete")),
           ),
         );
@@ -568,10 +572,11 @@
         for (const item of menu.querySelectorAll("[data-action]")) {
           item.addEventListener("click", () => {
             if (item.dataset.action === "edit") location.hash = KINDS[kind].editPath + encodeURIComponent(id);
+            if (item.dataset.action === "lock") setLock(id, tiles.get(`${kind}:${id}`).method.value);
             if (item.dataset.action === "delete") confirmDelete(kind, id);
           });
         }
-        const parts = { tile, name, tag, summary, actions, menu, lock };
+        const parts = { tile, name, tag, summary, actions, menu, lock, lockItem: menu.querySelector('[data-action="lock"]') };
         if (kind === "blocks") addBlockControls(parts, id);
         tiles.set(`${kind}:${id}`, parts);
         return parts;
@@ -620,13 +625,11 @@
       function addBlockControls(parts, id) {
         const method = el("cds-select", { "label-text": t("blocks.lockLabel"), size: "sm", class: "lock-method" });
         for (const [key, lock] of Object.entries(LOCKS)) method.append(el("cds-select-item", { value: key, label: lock.label }, lock.label));
-        const change = el("cds-button", { kind: "ghost", size: "sm", "tooltip-text": t("blocks.changeLock"), "tooltip-position": "top" }, carbonIcon("edit", "icon"));
         const toggle = el("cds-button", { kind: "primary", size: "sm" });
-        const controls = el("div", { class: "lock-controls" }, method, change);
+        const controls = el("div", { class: "lock-controls" }, method);
         parts.actions.append(controls, toggle);
-        Object.assign(parts, { method, change, toggle, controls });
+        Object.assign(parts, { method, toggle, controls });
         method.addEventListener("cds-select-selected", () => setLock(id, method.value));
-        change.addEventListener("click", () => setLock(id, method.value));
         toggle.addEventListener("click", () => startOrStop(id));
       }
 
@@ -674,8 +677,8 @@
         // The lock is set while the block is stopped; a running block's is in its summary.
         parts.controls.hidden = !!running;
         if (block.lock && !parts.choosing && parts.method.value !== block.lock.method) parts.method.value = block.lock.method;
-        // Settings to change: all but No lock.
-        parts.change.hidden = !LOCKS[parts.method.value] || !LOCKS[parts.method.value].form;
+        // Settings to change (in the menu): all locks but No lock.
+        parts.lockItem.hidden = !LOCKS[parts.method.value] || !LOCKS[parts.method.value].form;
         // A lock schedule needs a schedule to choose.
         const scheduled = parts.method.querySelector('[value="scheduled"]');
         if (scheduled) scheduled.disabled = overview.schedules.length === 0 && parts.method.value !== "scheduled";
