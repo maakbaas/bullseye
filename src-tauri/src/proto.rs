@@ -48,14 +48,13 @@ pub enum Request {
     DeleteSchedule { id: String },
     /// Starts the block defined as `id`, as it is defined now.
     Start { id: String },
-    /// Stops the running block `id`, unless it is locked right now.
-    Stop { id: String },
+    /// Stops the running block `id`, unless it is locked right now. `password`: the password of its
+    /// password lock, which stops that one.
+    Stop { id: String, password: Option<String> },
     /// Ends every block, whatever its time.
     Unlock { password: String },
     /// From the installer: end the service and remove it. Refused while a block is locked.
     PrepareUninstall,
-    /// From the installer: let go of the exe so it can be replaced. Refused during any block.
-    PrepareUpdate,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -91,9 +90,7 @@ pub struct Overview {
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Policy {
     pub filters: Vec<String>,
-    #[serde(default)]
     pub allowed: Vec<String>,
-    #[serde(default)]
     pub programs: Vec<String>,
     pub enforcers: Enforcers,
 }
@@ -166,20 +163,6 @@ mod tests {
         let mut wire = Vec::new();
         write_message(&mut wire, &Response::Policy(Vec::new())).unwrap();
         assert_eq!(read_message::<Response>(&mut Cursor::new(wire)), Ok(Response::Policy(Vec::new())));
-    }
-
-    #[test]
-    fn what_can_be_left_out_reads_as_its_default() {
-        let body = br#"{"cmd":"save_list","args":{"list":{"id":"a","name":"A","filters":["a.com"]}}}"#;
-        let mut wire = (body.len() as u32).to_le_bytes().to_vec();
-        wire.extend_from_slice(body);
-        let Ok(Request::SaveList { list }) = read_message::<Request>(&mut Cursor::new(wire)) else { panic!("not read") };
-        assert!(list.programs.is_empty() && list.allowed.is_empty() && list.enforcers == Enforcers::default());
-        let body = br#"{"cmd":"save_block","args":{"block":{"id":"b","name":"B"}}}"#;
-        let mut wire = (body.len() as u32).to_le_bytes().to_vec();
-        wire.extend_from_slice(body);
-        let Ok(Request::SaveBlock { block }) = read_message::<Request>(&mut Cursor::new(wire)) else { panic!("not read") };
-        assert!(block.lists.is_empty() && block.schedule.is_none() && block.lock == crate::lock::Lock::None);
     }
 
     #[test]

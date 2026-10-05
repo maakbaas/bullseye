@@ -19,11 +19,12 @@ As in the window, which has a page for each:
 - **Blocks**: what you start. One or more block lists, a schedule (or always) and a lock:
   - `none`: not locked; it can be stopped at any time.
   - `timer`: locked for a while. It cannot be stopped, changed or deleted, and it ends by itself when the time is up.
-  - `while active`: locked while its schedule has it active. Outside those times it can be stopped; otherwise it runs until stopped. Needs a weekly schedule.
+  - `schedule`: locked while a schedule of its choosing is active. Outside those times it can be stopped; otherwise it runs until stopped. With the block's own schedule, it is locked exactly while the block is active.
+  - `password`: locked with a password, for someone else to set. It runs until stopped with that password (or the unlock password). Only a salted hash of it is kept, and it is never shown again.
 
-Outside its schedule a running block keeps running, but enforces nothing. For example, with a schedule of `daily 08:00-17:00`, a block started at 16:00 with a 2-hour timer blocks until 17:00; from then on everything is accessible again, and at 18:00 the timer ends the block. With "while active" instead, it blocks every day from 8 to 5 and cannot be stopped then, until you stop it some evening.
+Outside its schedule a running block keeps running, but enforces nothing. For example, with a schedule of `daily 08:00-17:00`, a block started at 16:00 with a 2-hour timer blocks until 17:00; from then on everything is accessible again, and at 18:00 the timer ends the block. With a lock schedule of `daily 08:00-17:00` instead (say the same schedule), it blocks every day from 8 to 5 and cannot be stopped then, until you stop it some evening.
 
-A running block keeps what it was started with: while it runs, it cannot be changed or deleted, and neither can the block lists and the schedule it uses. A block list or schedule that any block uses cannot be deleted either; the message says which blocks.
+A running block keeps what it was started with: while it runs, it cannot be changed or deleted, and neither can the block lists and the schedules it uses (for when it is active and for its lock). A block list or schedule that any block uses cannot be deleted either; the message says which blocks.
 
 ## Commands
 
@@ -35,7 +36,7 @@ A running block keeps what it was started with: while it runs, it cannot be chan
 | `bullseye-cli edit <block> [options]` | **Edit**, then **Save** |
 | `bullseye-cli delete <block> [--yes]` | **Delete** (asks first, unless `--yes`) |
 | `bullseye-cli start <block> [lock option] [--yes]` | the lock on the block's tile, then **Start** (a locked block asks first, unless `--yes`) |
-| `bullseye-cli stop <block>` | **Stop** |
+| `bullseye-cli stop <block> [--password <pw>]` | **Stop** (a block locked with a password asks for it, as the window does) |
 | `bullseye-cli list show <list> [--json]` | a block list's tile and its editor |
 | `bullseye-cli list new <name> [options]` | **New block list**, then **Save** |
 | `bullseye-cli list edit <list> [options]` | **Edit** a block list, then **Save** |
@@ -58,11 +59,12 @@ Exit codes: `0` done, `1` failed, refused or cancelled (the reason is printed), 
 | `--list <list>` | A block list it enforces (repeatable). | none (it cannot start without one) |
 | `--schedule <schedule>` | When it is active: a schedule, or `always`. | `always` |
 | `--lock-timer <duration>` | Lock: timer, for this long once started. | |
-| `--lock-while-active` | Lock: while its schedule has it active. | |
+| `--lock-schedule <schedule>` | Lock: while this schedule is active. | |
+| `--lock-password <pw>` | Lock: with this password. Only a hash of it is kept. | |
 | `--no-lock` | Not locked. | yes |
 | `--name <name>` | (`edit` only) A new name. | |
 
-With `edit`, an option replaces only what it names: `--list` replaces all its block lists with the ones given, and what is not named stays. `start` takes the three lock options too: they set the block's lock before it starts, as the lock on its tile in the window does.
+With `edit`, an option replaces only what it names: `--list` replaces all its block lists with the ones given, and what is not named stays. `start` takes the lock options too: they set the block's lock before it starts, as the lock on its tile in the window does.
 
 ### Block lists: `list new`, `list edit`
 
@@ -87,7 +89,7 @@ bullseye-cli list new "Games" --programs-file games.txt --enforcers exe_names
 bullseye-cli schedule new "Work hours" "Mon-Fri 08:00-17:00"
 
 # Blocks: work hours that cannot be stopped during work hours, and an evening one for 2 hours.
-bullseye-cli new "Work" --list "Social media" --list Games --schedule "Work hours" --lock-while-active
+bullseye-cli new "Work" --list "Social media" --list Games --schedule "Work hours" --lock-schedule "Work hours"
 bullseye-cli new "Evening" --list Games
 bullseye-cli start Work --yes
 bullseye-cli start Evening --lock-timer 2h
@@ -102,7 +104,7 @@ bullseye-cli schedule edit "Work hours" --times "Mon-Fri 08:00-17:00; Sat 10:00-
 ```
 > bullseye-cli status
 Blocks:
-  Work     Running · inactive by its schedule, active in 15 hours 0 minutes 0 seconds · can be stopped until it is active again
+  Work     Running · inactive by its schedule, active in 15 hours 0 minutes 0 seconds · can be stopped, locked again in 15 hours 0 minutes 0 seconds
   Evening  Running · blocking now · locked, 1 hour 2 minutes 3 seconds left
 Block lists:
   Social media  used by Work
@@ -111,15 +113,15 @@ Schedules:
   Work hours  Mon-Fri 08:00-17:00
 ```
 
-`show <block>`, `list show <list>` and `schedule show <schedule>` give everything about one. With `--json`, `status` prints what the service says, for scripts: `lists`, `schedules` and `blocks` (as defined; a schedule's `days` are Monday first, each a list of `[start, end)` spans in minutes since midnight; a block's `schedule` is a schedule's id or `null` for always, and its `lock` is `{"method":"none"}`, `{"method":"timer","duration":"2h 30m"}` or `{"method":"while_active"}`), `running` (each running block with its `lists` as started; `remaining`, the seconds left of a timer, and `remaining_words`; `while_active`; `locked`, whether it cannot be stopped right now; `schedule`; `enforcing`, whether it blocks anything right now; `schedule_change`, the seconds until its schedule turns it on or off, and `schedule_change_words`) and `clock_synced`.
+`show <block>`, `list show <list>` and `schedule show <schedule>` give everything about one. With `--json`, `status` prints what the service says, for scripts: `lists`, `schedules` and `blocks` (as defined; a schedule's `days` are Monday first, each a list of `[start, end)` spans in minutes since midnight; a block's `schedule` is a schedule's id or `null` for always, and its `lock` is `{"method":"none"}`, `{"method":"timer","duration":"2h 30m"}`, `{"method":"scheduled","schedule":"<id>"}` or `{"method":"password"}`; a password is never shown), `running` (each running block with its `lists` as started; `remaining`, the seconds left of a timer, and `remaining_words`; `lock_schedule`, the week of a scheduled lock, and `lock_change` / `lock_change_words`, the time until it locks or frees the block; `password`, whether it is locked with one; `locked`, whether it cannot be stopped right now; `schedule`; `enforcing`, whether it blocks anything right now; `schedule_change`, the seconds until its schedule turns it on or off, and `schedule_change_words`) and `clock_synced`.
 
 ### `stop`, `delete`, `list delete`, `schedule delete`
 
-`stop <block>` stops a running block that is not locked right now; a locked one is refused, and the message says why and for how long. Deleting asks first (`[y/N]`), or goes ahead with `--yes`, which is also needed when there is no terminal to ask in (a script). A running block, and a block list or schedule that a block uses, cannot be deleted.
+`stop <block>` stops a running block that is not locked right now; a locked one is refused, and the message says why and for how long. A block locked with a password stops with it: give it with `--password`, or the CLI asks for it without showing it. Deleting asks first (`[y/N]`), or goes ahead with `--yes`, which is also needed when there is no terminal to ask in (a script). A running block, and a block list or schedule that a block uses, cannot be deleted.
 
 ### `unlock`
 
-Ends every running block, locked or not, with the unlock password, and closes the tray app, exactly as the window's Unlock does: the block lists, schedules and blocks stay, and the service stays installed and starts the app again at your next sign-in. Wrong guesses are slowed down after three, as in the window. Without `--password` it asks for the password without showing it, or reads it from standard input when that is not a terminal:
+Ends every running block, locked or not, with the unlock password, and closes the tray app, exactly as the window's Unlock does: the block lists, schedules and blocks stay, and the service stays installed and starts the app again at your next sign-in. Without `--password` it asks for the password without showing it, or reads it from standard input when that is not a terminal:
 
 ```powershell
 bullseye-cli unlock
@@ -162,5 +164,5 @@ A running block reads its schedule in the time zone Windows had when the block s
 
 - The CLI shares everything with the window but its presentation: it sends the same `proto::Request`s through the same `client::Remote` (`Remote::for_cli`), so the service decides and checks everything for both, and texts such as schedules and durations come from the same Rust functions (`schedule.rs`, `duration.rs`).
 - The CLI is `src-tauri/src/cli.rs`, a console exe (`src-tauri/src/bin/bullseye-cli.rs`) on the same library as the app (`src-tauri/src/lib.rs`). Tauri's installer bundles every binary of the package, so it ships next to `bullseye.exe`.
-- **Keep it level with the window.** Every command the window can invoke (the `generate_handler!` list in `lib.rs`) must be in `cli::GUI_COMMANDS` with the CLI commands that do the same; `cargo test` fails otherwise, and also when such a command is missing from the help text or from this file. Enforcer names come from `state::Enforcers` itself, so a new enforcer needs no CLI change. A new list or lock method needs an option in `cli.rs`, the help and this file.
+- **Keep it level with the window.** Every command the window can invoke (the `generate_handler!` list in `lib.rs`) must be in `cli::GUI_COMMANDS` with the CLI commands that do the same; `cargo test` fails otherwise, and also when such a command is missing from the help text or from this file. Enforcer names come from `state::Enforcers` itself, so a new enforcer needs no CLI change. A new list or lock method needs an option in `cli.rs` (`parse_lock` for a lock), the help and this file.
 - `npm run dev` keeps the service inside the app, where the CLI cannot reach it; use an installed service (in a VM) to try the CLI.

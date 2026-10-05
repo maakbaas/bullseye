@@ -285,7 +285,7 @@ mod tests {
         assert!(remote.status().unwrap().running[0].remaining.is_some());
         // The same rules as with the real service: a timed block cannot be stopped early, the
         // password ends it.
-        assert!(remote.command(Request::Stop { id: "a".into() }).is_err());
+        assert!(remote.command(Request::Stop { id: "a".into(), password: None }).is_err());
         assert!(remote.command(Request::Unlock { password: "wrong".into() }).is_err());
         remote.command(Request::Unlock { password: "test1234".into() }).unwrap();
         assert!(remote.active().is_none());

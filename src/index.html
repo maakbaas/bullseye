@@ -66,10 +66,10 @@
       .block-tile h2 { overflow-wrap: anywhere; padding-top: var(--cds-spacing-02); }
       .block-tile .summary { display: flex; flex-direction: column; gap: var(--cds-spacing-02); color: var(--cds-text-secondary); }
       .block-tile .actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--cds-spacing-04); }
-      /* A block's lock, next to Start: the method, and how long for a timer. */
+      /* A block's lock, next to Start: the method, and a button to change its settings (in the modal). */
       .block-tile .lock-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--cds-spacing-04); }
       .block-tile .lock-method { inline-size: 9rem; }
-      .block-tile .lock-duration { inline-size: 8rem; }
+      .modal-fields { display: flex; flex-direction: column; gap: var(--cds-spacing-06); }
       @media (min-width: 42rem) { /* Carbon's md breakpoint */
         .block-tile .body { flex-direction: row; align-items: flex-end; justify-content: space-between; }
         .block-tile .actions { flex: none; }
@@ -191,7 +191,11 @@
         <cds-modal-close-button></cds-modal-close-button>
         <cds-modal-heading id="confirm-heading"></cds-modal-heading>
       </cds-modal-header>
-      <cds-modal-body><cds-modal-body-content id="confirm-body"></cds-modal-body-content></cds-modal-body>
+      <cds-modal-body>
+        <cds-modal-body-content id="confirm-body"></cds-modal-body-content>
+        <!-- A form's fields: a lock's settings, or the password that stops a block. -->
+        <div id="confirm-fields" class="modal-fields" hidden></div>
+      </cds-modal-body>
       <cds-modal-footer>
         <!-- Focus starts on Cancel, so a stray Enter or Space never confirms. -->
         <cds-modal-footer-button kind="secondary" data-modal-close data-modal-primary-focus>Cancel</cds-modal-footer-button>
@@ -261,13 +265,23 @@
       const LOCKS = {
         none: {
           label: "No lock",
-          fields: [],
           describe: () => "Not locked: can be stopped at any time",
           confirm: async () => null,
         },
         timer: {
           label: "Timer",
-          fields: [{ key: "duration", label: "Locked for", placeholder: "e.g. 2h 30m" }],
+          form: (block) => {
+            const input = el("cds-text-input", { label: "Locked for", placeholder: "e.g. 2h 30m", "helper-text": "Combine as you like: 30m, 2h 30m, 1d" });
+            input.value = (block.lock.method === "timer" && block.lock.duration) || "";
+            return {
+              fields: [input],
+              read: async () => {
+                const duration = input.value.trim();
+                const fault = await invoke("describe_duration", { text: duration }).then(() => null, (e) => String(e));
+                return invalid(input, fault) ? null : { method: "timer", duration };
+              },
+            };
+          },
           describe: (lock) => `Locked for ${durationText(lock.duration)} once started`,
           confirm: async (block) => {
             const words = await invoke("describe_duration", { text: block.lock.duration || "" }).catch(() => block.lock.duration);
@@ -278,21 +292,57 @@
             };
           },
         },
-        while_active: {
-          label: "While active",
-          fields: [],
-          // With Always it would only ever end with the password; the service refuses it too.
-          needsSchedule: true,
-          describe: () => "Locked while its schedule has it active",
+        scheduled: {
+          label: "Schedule",
+          // A schedule of its own: with the block's own schedule, it is locked exactly while active.
+          // Only with a schedule to choose (`renderBlockControls` disables it otherwise).
+          form: (block) => {
+            const select = el("cds-select", { "label-text": "Locked during", "helper-text": "It cannot be stopped while this schedule is active" });
+            select.append(...overview.schedules.map((s) => el("cds-select-item", { value: s.id, label: s.name }, s.name)));
+            // The block's own schedule first: then it is locked exactly while it is active.
+            const chosen = block.lock.method === "scheduled" ? block.lock.schedule : block.schedule;
+            select.value = overview.schedules.some((s) => s.id === chosen) ? chosen : (overview.schedules[0] || {}).id || "";
+            return { fields: [select], read: async () => (invalid(select, select.value ? null : "Choose a schedule") ? null : { method: "scheduled", schedule: select.value }) };
+          },
+          describe: (lock) => {
+            const schedule = overview.schedules.find((s) => s.id === lock.schedule);
+            return schedule ? `Locked while “${schedule.name}” is active (${weekText(schedule.days)})` : "Locked by a schedule that is gone";
+          },
           confirm: async (block) => {
-            const schedule = scheduleOf(block);
-            const when = schedule ? await invoke("describe_schedule", { week: { days: schedule.days } }).catch(() => schedule.name) : "";
+            const schedule = overview.schedules.find((s) => s.id === block.lock.schedule);
+            const name = schedule ? schedule.name : "its lock schedule";
+            const when = schedule ? await invoke("describe_schedule", { week: { days: schedule.days } }).catch(() => "") : "";
             return {
-              heading: `Start “${block.name}” locked while active?`,
-              body: `It cannot be stopped while its schedule has it active (${when}). Outside those times you can stop it. Only the unlock password in Settings ends it early.`,
+              heading: `Start “${block.name}” locked during “${name}”?`,
+              body: `It cannot be stopped while “${name}” is active${when ? ` (${when})` : ""}. Outside those times you can stop it. Only the unlock password in Settings ends it early.`,
               action: "Start locked",
             };
           },
+        },
+        password: {
+          label: "Password",
+          // Typed on the tile and sent once; the service keeps only a salted hash and never sends
+          // either back, so a block that has one just says so.
+          // Typed twice, as nothing ever shows it again: a typo would leave a lock only the unlock
+          // password opens.
+          form: () => {
+            const password = el("cds-password-input", { label: "Password", autocomplete: "new-password", "helper-text": "Best chosen by someone else. Only a hash of it is kept." });
+            const repeat = el("cds-password-input", { label: "Repeat password", autocomplete: "new-password" });
+            return {
+              fields: [password, repeat],
+              read: async () => {
+                if (invalid(password, password.value ? null : "Type a password")) return null;
+                if (invalid(repeat, repeat.value === password.value ? null : "The passwords differ")) return null;
+                return { method: "password", password: password.value };
+              },
+            };
+          },
+          describe: () => "Locked with a password once started",
+          confirm: async (block) => ({
+            heading: `Start “${block.name}” locked with a password?`,
+            body: "It can only be stopped with its password, or with the unlock password in Settings.",
+            action: "Start locked",
+          }),
         },
       };
 
@@ -364,7 +414,7 @@
       const scheduleOf = (block) => overview.schedules.find((s) => s.id === block.schedule);
       const listName = (id) => (overview.lists.find((l) => l.id === id) || { name: "(gone)" }).name;
       // The blocks that use a block list or schedule, and those of them that run (which hold it).
-      const usersOf = (id) => overview.blocks.filter((b) => b.lists.includes(id) || b.schedule === id);
+      const usersOf = (id) => overview.blocks.filter((b) => b.lists.includes(id) || b.schedule === id || (b.lock && b.lock.schedule === id));
       const holdersOf = (id) => usersOf(id).filter((b) => runningOf(b.id));
       const names = (blocks) => blocks.map((b) => `“${b.name}”`).join(", ");
 
@@ -465,8 +515,13 @@
           parts.push(lock ? lock.describe(item.lock) : "Unknown lock");
           return parts;
         }
-        if (running.remaining_words) parts.push(`Locked: ${running.remaining_words} left`);
-        else if (running.while_active) parts.push(running.locked ? "Locked while active" : "Not locked now: can be stopped until it is active again");
+        if (running.password) parts.push("Locked with a password: stop it with its password");
+        else if (running.remaining_words) parts.push(`Locked: ${running.remaining_words} left`);
+        else if (running.lock_schedule) {
+          const change = running.lock_change_words;
+          if (running.locked) parts.push(change ? `Locked by its lock schedule, for another ${change}` : "Locked by its lock schedule");
+          else parts.push(change ? `Not locked now: can be stopped; locked again in ${change}` : "Not locked now: can be stopped");
+        }
         else parts.push("Not locked: can be stopped at any time");
         if (running.enforcing && running.schedule_change_words) parts.push(`Active now; inactive in ${running.schedule_change_words}`);
         if (!running.enforcing) parts.push(running.schedule_change_words ? `Inactive by its schedule; active again in ${running.schedule_change_words}` : "Inactive by its schedule");
@@ -528,22 +583,15 @@
       function renderTiles(kind) {
         const container = $("tiles");
         const kindOf = KINDS[kind];
-        const shown = kindOf.items().map((item) => ({ item, defined: true }));
-        // A running block whose definition is gone (one from an older version, say): it shows what
-        // it runs with and can still be stopped.
-        if (kind === "blocks") {
-          for (const r of overview.running) {
-            if (!overview.blocks.some((b) => b.id === r.id)) shown.push({ item: { id: r.id, name: r.name || "Earlier block", lists: [], schedule: null, lock: { method: "none" } }, defined: false });
-          }
-        }
-        const wanted = new Set(shown.map((s) => `${kind}:${s.item.id}`));
+        const shown = kindOf.items();
+        const wanted = new Set(shown.map((item) => `${kind}:${item.id}`));
         for (const [key, parts] of tiles) {
           if (!wanted.has(key)) {
             parts.tile.remove();
             tiles.delete(key);
           }
         }
-        shown.forEach(({ item, defined }, index) => {
+        shown.forEach((item, index) => {
           const parts = tiles.get(`${kind}:${item.id}`) || makeTile(kind, item.id);
           if (container.children[index] !== parts.tile) container.insertBefore(parts.tile, container.children[index] || null);
           parts.name.textContent = item.name;
@@ -553,9 +601,9 @@
             parts.summary.replaceChildren(...summary.map((line) => el("span", {}, line)));
           }
           const held = kindOf.held(item);
-          parts.menu.hidden = !!held || !defined;
+          parts.menu.hidden = !!held;
           parts.lock.hidden = !parts.menu.hidden;
-          if (kind === "blocks") renderBlockControls(parts, item, defined);
+          if (kind === "blocks") renderBlockControls(parts, item);
           else {
             parts.tag.hidden = !held;
             parts.tag.setAttribute("type", "blue");
@@ -570,64 +618,64 @@
       function addBlockControls(parts, id) {
         const method = el("cds-select", { "label-text": "Lock", size: "sm", class: "lock-method" });
         for (const [key, lock] of Object.entries(LOCKS)) method.append(el("cds-select-item", { value: key, label: lock.label }, lock.label));
-        const duration = el("cds-text-input", { label: "Locked for", size: "sm", placeholder: "e.g. 2h 30m", class: "lock-duration" });
+        const change = el("cds-button", { kind: "ghost", size: "sm", "tooltip-text": "Change the lock", "tooltip-position": "top" }, carbonIcon("edit", "icon"));
         const toggle = el("cds-button", { kind: "primary", size: "sm" });
-        const controls = el("div", { class: "lock-controls" }, method, duration);
+        const controls = el("div", { class: "lock-controls" }, method, change);
         parts.actions.append(controls, toggle);
-        Object.assign(parts, { method, duration, toggle, controls, pending: null });
-        method.addEventListener("cds-select-selected", () => saveLockSoon(id, 0));
-        duration.addEventListener("input", () => saveLockSoon(id, 700));
+        Object.assign(parts, { method, change, toggle, controls });
+        method.addEventListener("cds-select-selected", () => setLock(id, method.value));
+        change.addEventListener("click", () => setLock(id, method.value));
         toggle.addEventListener("click", () => startOrStop(id));
       }
 
-      // The lock as the tile's controls say.
-      function lockOf(parts) {
-        const method = parts.method.value || "none";
-        const lock = { method };
-        for (const field of LOCKS[method].fields) lock[field.key] = parts.duration.value.trim();
-        return lock;
-      }
-
-      // The lock is saved with the block as soon as it is chosen (typing waits a moment).
-      function saveLockSoon(id, wait) {
+      // Sets a block's lock to `method`: what the method needs is asked for in the modal, and the
+      // lock is saved with the block once it is given. Cancel leaves the lock as it was.
+      async function setLock(id, method) {
         const parts = tiles.get(`blocks:${id}`);
-        parts.dirty = true;
-        renderBlockControls(parts, overview.blocks.find((b) => b.id === id), true);
-        clearTimeout(parts.timer);
-        parts.pending = new Promise((resolve) => {
-          parts.timer = setTimeout(async () => {
-            const block = overview.blocks.find((b) => b.id === id);
-            if (!block) return resolve(false);
-            try {
-              await invoke("save_block", { block: { ...block, lock: lockOf(parts) } });
-              notify("list-notices");
-              parts.dirty = false;
-              resolve(true);
-            } catch (e) {
-              notify("list-notices", "error", `Could not set the lock of “${block.name}”`, String(e));
-              resolve(false);
-            }
-            await refresh();
-          }, wait);
-        });
+        const block = overview.blocks.find((b) => b.id === id);
+        if (!block) return;
+        const form = LOCKS[method].form && LOCKS[method].form(block);
+        let lock = { method };
+        if (form) {
+          // Kept on the tile while the dialog is open, though the block has the old lock still.
+          parts.choosing = true;
+          lock = await ask({ heading: `${LOCKS[method].label} lock for “${block.name}”`, action: "Save", kind: "primary", fields: form.fields, read: form.read });
+        }
+        if (lock) {
+          try {
+            await invoke("save_block", { block: { ...block, lock } });
+            notify("list-notices");
+          } catch (e) {
+            notify("list-notices", "error", `Could not set the lock of “${block.name}”`, String(e));
+          }
+        }
+        // Cancelled or refused: the tile shows the lock the block has.
+        parts.choosing = false;
+        parts.method.value = block.lock.method;
+        await refresh();
       }
 
-      function renderBlockControls(parts, block, defined) {
+      // Marks a field as wrong (with why) or right again; true when wrong.
+      function invalid(field, why) {
+        field.toggleAttribute("invalid", !!why);
+        if (why) field.setAttribute("invalid-text", why);
+        return !!why;
+      }
+
+      function renderBlockControls(parts, block) {
         const running = runningOf(block.id);
         const quiet = running && running.enforcing === false;
         parts.tag.hidden = false;
         parts.tag.setAttribute("type", running ? (quiet ? "cool-gray" : running.locked ? "green" : "blue") : "gray");
         parts.tag.textContent = running ? (quiet ? "Inactive by schedule" : running.locked ? "Running · locked" : "Running") : "Not running";
         // The lock is set while the block is stopped; a running block's is in its summary.
-        parts.controls.hidden = !!running || !defined;
-        if (!parts.dirty && block.lock) {
-          if (parts.method.value !== block.lock.method) parts.method.value = block.lock.method;
-          if (document.activeElement !== parts.duration) parts.duration.value = block.lock.duration || "";
-        }
-        parts.duration.hidden = parts.method.value !== "timer";
-        // "While active" needs a weekly schedule.
-        const whileActive = parts.method.querySelector('[value="while_active"]');
-        if (whileActive) whileActive.disabled = !block.schedule;
+        parts.controls.hidden = !!running;
+        if (block.lock && !parts.choosing && parts.method.value !== block.lock.method) parts.method.value = block.lock.method;
+        // Settings to change: all but No lock.
+        parts.change.hidden = !LOCKS[parts.method.value] || !LOCKS[parts.method.value].form;
+        // A lock schedule needs a schedule to choose.
+        const scheduled = parts.method.querySelector('[value="scheduled"]');
+        if (scheduled) scheduled.disabled = overview.schedules.length === 0 && parts.method.value !== "scheduled";
         const busy = parts.toggle.dataset.busy === "1";
         const action = running ? "stop" : "start";
         if (parts.toggle.dataset.action !== action) {
@@ -635,23 +683,38 @@
           parts.toggle.setAttribute("kind", running ? "secondary" : "primary");
           parts.toggle.replaceChildren(running ? "Stop" : "Start", carbonIcon(running ? "stop" : "play", "icon"));
         }
-        parts.toggle.disabled = busy || (running && running.locked) || !reachable;
+        // A block locked with a password stops with it (asked for on Stop).
+        parts.toggle.disabled = busy || (running && running.locked && !running.password) || !reachable;
       }
 
       async function startOrStop(id) {
         const parts = tiles.get(`blocks:${id}`);
         const running = runningOf(id);
-        // A lock still being saved counts.
-        if (!running && parts.pending && !(await parts.pending)) return;
-        const block = overview.blocks.find((b) => b.id === id) || running;
+        const block = overview.blocks.find((b) => b.id === id);
         // A block that cannot be stopped is only started after a second, deliberate click.
-        const lock = !running && block && block.lock && LOCKS[block.lock.method];
+        const lock = !running && LOCKS[block.lock.method];
         const question = lock && (await lock.confirm(block));
         if (question && !(await ask({ ...question, kind: "primary" }))) return;
+        // A block locked with a password stops with it.
+        let password = null;
+        if (running && running.password) {
+          const field = el("cds-password-input", { label: "Password", autocomplete: "off" });
+          const given = await ask({
+            heading: `Stop “${block.name}”?`,
+            body: "It is locked with a password. Enter it to stop the block.",
+            action: "Stop",
+            kind: "danger",
+            fields: [field],
+            read: async () => (invalid(field, field.value ? null : "Type its password") ? null : field.value),
+          });
+          if (!given) return;
+          password = given;
+        }
         parts.toggle.dataset.busy = "1";
         parts.toggle.disabled = true;
         try {
-          await invoke(running ? "stop_block" : "start_block", { id });
+          if (running) await invoke("stop_block", { id, password });
+          else await invoke("start_block", { id });
           notify("list-notices");
         } catch (e) {
           notify("list-notices", "error", `Could not ${running ? "stop" : "start"} “${block ? block.name : "the block"}”`, String(e));
@@ -660,25 +723,41 @@
         await refresh();
       }
 
-      // The confirmation dialog: resolves true for the action, false for Cancel, the X or Escape.
+      // The one dialog: a question before anything that cannot be taken back, or a short form (a
+      // lock's settings, a password). Resolves false for Cancel, the X or Escape; otherwise true,
+      // or with `fields`, what `read` makes of them: the dialog stays open while that is null (the
+      // fields then say what is wrong).
       let answer = null;
-      function ask({ heading, body, action, kind }) {
+      let reader = null;
+      function ask({ heading, body = "", action, kind, fields = [], read = null }) {
         if (answer) answer(false);
         $("confirm-heading").textContent = heading;
         $("confirm-body").textContent = body;
+        $("confirm-body").hidden = !body;
         $("confirm-action").textContent = action;
         $("confirm-action").setAttribute("kind", kind);
+        $("confirm-fields").replaceChildren(...fields);
+        $("confirm-fields").hidden = fields.length === 0;
+        $("confirm").setAttribute("size", fields.length ? "sm" : "xs");
+        reader = read;
         $("confirm").open = true;
+        // A form starts in its first field; a question on Cancel.
+        if (fields.length) setTimeout(() => fields[0].focus(), 100);
         return new Promise((resolve) => (answer = resolve));
       }
-      function answered(yes) {
+      $("confirm-fields").addEventListener("keydown", (event) => {
+        if (event.key === "Enter") $("confirm-action").click();
+      });
+      function answered(value) {
         const resolve = answer;
         answer = null;
-        if (resolve) resolve(yes);
+        if (resolve) resolve(value);
       }
-      $("confirm-action").addEventListener("click", () => {
+      $("confirm-action").addEventListener("click", async () => {
+        const value = reader ? await reader() : true;
+        if (value === null || value === undefined) return;
         $("confirm").open = false;
-        answered(true);
+        answered(value);
       });
       $("confirm").addEventListener("cds-modal-closed", () => answered(false));
 

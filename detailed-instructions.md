@@ -4533,11 +4533,11 @@ Build with `npm run build` (installer in `src-tauri\target\release\bundle\nsis\`
 | 7 | Log off and on during the block | app returns, block continues with the remaining time |
 | 8 | Reboot during the block | block resumes after boot |
 | 9 | Boot into safe mode with networking during the block | service runs (check `sc query bullseye`) |
-| 10 | Run the installer again during the block | refused with the message from the hook; nothing replaced |
+| 10 | (Removed: there is no update path. Bullseye is only installed on a clean machine; to try a new build, uninstall first.) | |
 | 11 | Uninstall during the timed block | refused (exit code 2), message shown |
-| 12 | Wrong unlock password three times, then the right one | the right one is refused for a few seconds, then works; block ends, app quits |
+| 12 | Wrong unlock password, then the right one | the wrong one is refused with "Wrong password" at once (there is no slowdown); the right one ends every block and the app quits |
 | 13 | After unlocking: log off and on | the app returns (idle) |
-| 14 | End the block, update to a new build | installer succeeds; service runs the new exe |
+| 14 | End the block, uninstall, install a new build | installer succeeds; service runs the new exe |
 | 15 | Uninstall without a block | service, `%ProgramData%\bullseye` and the safe-mode keys are gone |
 | 16 | Open the pipe with a script and send garbage / a huge length / nothing | service keeps answering the app |
 | 17 | Kill the service with a SYSTEM shell (`psexec -s`) | Windows restarts it at once; app keeps enforcing meanwhile |
@@ -4564,10 +4564,10 @@ Build with `npm run build` (installer in `src-tauri\target\release\bundle\nsis\`
 | 38 | During test 37, change Windows' time zone (Settings > Time & language) by several hours | nothing changes: the running block keeps the time zone it started with |
 | 39 | During test 37, restart the PC | the block is back with its schedule and the same time left |
 | 40 | During test 37, open "Social" and its schedule from their pages | both editors are read-only with "“…” uses it and is running"; their tiles show a lock icon and "In use by a running block"; Delete is refused |
-| 41 | The same block with Lock: While active (its schedule marks the current hour); Start | it cannot be stopped during the marked hour ("locked while its schedule has it active"); after it, Stop works; uninstall is refused during the marked hour only |
-| 42 | Lock: While active on a block with "Always" as schedule | the option is greyed out on the tile; the CLI's `--lock-while-active` is refused with the reason |
+| 41 | The same block with Lock: Schedule, "Locked during" its own schedule (which marks the current hour); Start | it cannot be stopped during the marked hour ("locked by its lock schedule, for another …"); after it, Stop works and the tile says when it locks again; uninstall is refused during the marked hour only |
+| 42 | A block with schedule "Always" and Lock: Schedule with another schedule (current hour marked); Start | it blocks all the time but cannot be stopped during the marked hour only; that schedule's tile says it is in use, and it cannot be edited or deleted while the block runs |
 | 43 | In the schedule editor, drag from Monday 08:00 to Friday 16:30, then type `sat 10-12` in Times | the drag marks the rectangle and Times says `Mon-Fri 08:00-17:00`; the typed text replaces the week with Saturday 10:00-12:00 |
-| 44 | A `blocks.json` from before (a list of blocks with their own sites, some with `"schedule":{"kind":"duration","duration":"1h"}`) | after the update each is a block list and a block of the same name; a duration became a 1-hour timer lock; equal weekly schedules became one schedule |
+| 44 | Lock: Password on a tile; type a password and a different one under Repeat password; then the same | with different ones "The passwords differ" and Start says the lock is not saved; with the same the lock is saved and the fields empty. Start, then Stop: a modal asks for the password; a wrong one is refused, the right one stops it |
 | 45 | In a terminal: `bullseye-cli list new T --site example.com`, `bullseye-cli new T --list T`, `bullseye-cli start T --lock-timer 10m` (answer y), `bullseye-cli status`, `bullseye-cli stop T` | everything appears in the window; status shows "locked, 9 minutes … left"; stop is refused with the time left (exit code 1) |
 | 46 | `bullseye-cli unlock`, type the password | not echoed; "Unlocked: every block has ended, and Bullseye closes." (exit code 0); within about a second the tray icon is gone and `app.log` says "stopped by the unlock password"; it comes back at the next sign-in |
 | 47 | `bullseye-cli list new X --program explorer` | refused with "Would close programs Windows or this app needs" (exit code 1); `bullseye-cli new X --colour red` is exit code 2 |
@@ -4640,3 +4640,16 @@ The three layers of section 12 became three kinds of things with lists and pages
 **Migration.** `blocks.json` was a list of all-in-one blocks. It is read as such when it is not today's `Library` object (`OnDisk`, untagged) and turned into a block list and a block per old block (same id and name), one named schedule per different weekly schedule, and a timer lock for an old duration. `state.json` (running blocks) keeps reading the one-list form of older versions (`Saved::parts`).
 
 **UI.** One generic page (tiles) and one generic editor serve the three kinds, described in `KINDS`; the forms are `blockForm`, `listForm` and `scheduleForm`. The header has four icon actions; Carbon's side nav would be the next step if there are ever more pages.
+
+## 14. Lean again: no old formats, password and scheduled locks (later change)
+
+**No old formats and no updates.** Bullseye is only ever installed on a clean machine, so everything that read older files or carried a block across an update is gone: `blocks.json` is read only as today's `Library`, `state.json` only as today's `{"blocks": [...]}`, there are no serde defaults for fields older versions lacked, and `--prepare-update`, `Request::PrepareUpdate` and the installer's PREINSTALL hook are removed. Running the installer over an installed copy is not supported; uninstall first.
+
+**No slowdown on wrong passwords.** The unlock password (and a password lock's) is checked as given; the lockout after three wrong guesses is gone. A PBKDF2 check of 600 000 rounds already costs a moment per guess, and offline guessing never went through the service anyway (the hash is in the binary).
+
+**Password lock** (`Lock::Password`). Meant for someone else to set: the block runs until stopped with that password, or with the unlock password. The client sends the password once (`password`), the service turns it into a salted PBKDF2 hash at once (`unlock::new_hash`, `salt$hash` in hex, a random salt per lock) and keeps only that in `blocks.json`, and the running block keeps the hash in `state.json`. Neither the password nor the hash is ever sent back (`Library::redacted`); a password lock saved without a new password keeps its hash. It is asked for twice (Password and Repeat password), as nothing ever shows it again: a typo would leave a lock only the unlock password opens; it is saved only when both are the same. Stop on such a block opens the modal with a password field (`ask({password: true})`); the CLI's `stop` asks for it when it is not given with `--password`.
+
+**Scheduled lock** (`Lock::Scheduled { schedule }`) replaces "while active". The block cannot be stopped while a schedule of its own choosing is active, and can outside those times; otherwise it runs until stopped. With the block's own schedule it is exactly the old "locked while active"; with another one, a block can for instance block all the time but be stoppable only in the evenings. The lock's schedule is resolved when the block starts (`Resolved::lock_week`) and fixed in the running block (`lock_schedule`, read in the block's pinned time zone), and it counts as used by the block (`Library::users_of`): it cannot be deleted while a block uses it, nor changed while that block runs. The status gives `lock_change` / `lock_change_words`, the time until it locks or frees the block. In the window it is a `cds-select` of the schedules ("Locked during"), defaulting to the block's own schedule; the CLI option is `--lock-schedule <schedule>`.
+
+**Lock settings in the modal.** The tile only holds the lock's method (a `cds-select`) and an edit button, next to Start. A method with settings (a timer's length, a lock schedule, a password twice) asks for them in the one modal (`ask` with `fields` and `read`; `LOCKS[method].form`), which stays open while they are wrong and marks the field with Carbon's invalid state; Cancel keeps the lock the block had. Side by side on a tile the fields were cramped, and a lock is set rarely.
+

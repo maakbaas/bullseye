@@ -348,7 +348,7 @@ fn launch_app() -> Result<Process, String> {
     }
 }
 
-/// Ends the app, when the service goes away for an update or an uninstall. Every other process
+/// Ends the app, when the service goes away for an uninstall. Every other process
 /// of this executable that was started without arguments; the service itself and the installer's
 /// calls are left alone.
 pub fn kill_apps() {

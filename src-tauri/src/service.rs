@@ -95,14 +95,12 @@ fn run_service() -> Result<(), String> {
     report(&status, ServiceState::Running, ServiceControlAccept::SESSION_CHANGE, 0);
     note("service", "running");
 
-    let Ok(shutdown) = quit.recv() else {
+    let Ok(Shutdown) = quit.recv() else {
         report(&status, ServiceState::Stopped, ServiceControlAccept::empty(), 1);
         return Err("the pipe thread ended".into());
     };
     watchdog::kill_apps();
-    if matches!(shutdown, Shutdown::Remove) {
-        registration::remove();
-    }
+    registration::remove();
     note("service", "ending at the installer's request");
     // Exit code 0: Windows does not start a service again that ended cleanly.
     report(&status, ServiceState::Stopped, ServiceControlAccept::empty(), 0);
@@ -244,7 +242,7 @@ mod tests {
         assert_eq!(client::call(&Request::Start { id: "a".into() }), Ok(Response::Done));
         let Ok(Response::Policy(policies)) = client::call(&Request::Policy) else { panic!("no policy") };
         assert_eq!(policies[0].filters, vec!["a.com"]);
-        assert!(matches!(client::call(&Request::Stop { id: "a".into() }), Ok(Response::Failed(_))));
+        assert!(matches!(client::call(&Request::Stop { id: "a".into(), password: None }), Ok(Response::Failed(_))));
         assert!(matches!(client::call(&Request::PrepareUninstall), Ok(Response::Refused(_))));
 
         // A length far beyond the limit gets an error back, not an allocation.
@@ -268,10 +266,10 @@ mod tests {
         // What it gets is a refusal, or a closed pipe; never an answer to a request it did not make.
         assert!(matches!(proto::read_message::<Response>(&mut silent), Ok(Response::Failed(_)) | Err(_)));
 
-        // The password ends the block; then the installer may update, and the service says so.
+        // The password ends the block; then the installer may uninstall, and the service says so.
         let unlock = Request::Unlock { password: "test1234".into() };
         assert_eq!(client::call(&unlock), Ok(Response::Done));
-        assert_eq!(client::call(&Request::PrepareUpdate), Ok(Response::Done));
-        assert!(matches!(quit.recv_timeout(Duration::from_secs(5)), Ok(Shutdown::Update)));
+        assert_eq!(client::call(&Request::PrepareUninstall), Ok(Response::Done));
+        assert!(matches!(quit.recv_timeout(Duration::from_secs(5)), Ok(Shutdown)));
     }
 }

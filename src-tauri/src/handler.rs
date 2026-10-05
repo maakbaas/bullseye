@@ -6,28 +6,21 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::block::{Blocklist, Part};
+use crate::block::{Blocklist, Locks, Part};
 use crate::definitions::Definitions;
-use crate::duration;
 use crate::lock::Lock;
 use crate::proto::{Overview, Policy, Request, Response};
 use crate::sync::LockExt;
 use crate::unlock;
 use crate::watchdog::AppSlot;
 
-/// What the installer asked the service to end for.
-pub enum Shutdown {
-    /// Let go of the exe so it can be replaced; the installer starts the service again.
-    Update,
-    /// Remove the service and everything it keeps.
-    Remove,
-}
+/// The installer asked the service to end, and to remove itself and everything it keeps.
+pub struct Shutdown;
 
 /// What `handle` works with.
 pub struct Context {
     blocklist: Blocklist,
     definitions: Definitions,
-    lockout: Mutex<Lockout>,
     /// Which process is the app (`watchdog.rs`).
     slot: Arc<AppSlot>,
     /// Until when the app is told to quit when it asks for its policy: set by the unlock password,
@@ -45,15 +38,8 @@ const QUIT_WINDOW: Duration = Duration::from_secs(10);
 
 impl Context {
     pub fn new(blocklist: Blocklist, definitions: Definitions, slot: Arc<AppSlot>) -> Context {
-        Context { blocklist, definitions, lockout: Mutex::default(), slot, quit_app_until: Mutex::default(), editing: Mutex::default() }
+        Context { blocklist, definitions, slot, quit_app_until: Mutex::default(), editing: Mutex::default() }
     }
-}
-
-/// Wrong unlock passwords in a row, and until when the next guess is refused.
-#[derive(Default)]
-struct Lockout {
-    failures: u32,
-    until: Option<Instant>,
 }
 
 /// Answers one request from the process `caller`, and says whether the service should end
@@ -68,7 +54,8 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
     match request {
         Request::Status => {
             let status = blocklist.status();
-            let library = context.definitions.library();
+            // Password locks without their hashes: a client never sees them.
+            let library = context.definitions.library().redacted();
             let overview = Overview {
                 lists: library.lists,
                 schedules: library.schedules,
@@ -120,17 +107,16 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
             }
             (done(started), None)
         }
-        Request::Stop { id } => (done(blocklist.stop(&id)), None),
+        // A password lock stops with its own password; the others take none.
+        Request::Stop { id, password } => {
+            let given = password.is_some_and(|password| blocklist.password_matches(&id, &password));
+            (done(blocklist.stop(&id, given)), None)
+        }
         Request::Unlock { password } => (done(unlock(context, &password)), None),
         // Refused while a block cannot be stopped, judged by internet time, like the block itself.
         Request::PrepareUninstall => match blocklist.locked() {
             Some(why) => (Response::Refused(why), None),
-            None => (Response::Done, Some(Shutdown::Remove)),
-        },
-        // Stricter: replacing the exe is also a way to end the service, so no block at all.
-        Request::PrepareUpdate => match blocklist.is_running() {
-            true => (Response::Refused("a block is running".into()), None),
-            false => (Response::Done, Some(Shutdown::Update)),
+            None => (Response::Done, Some(Shutdown)),
         },
     }
 }
@@ -157,10 +143,14 @@ fn start(context: &Context, id: &str) -> Result<(), String> {
     let _editing = context.editing.locked();
     let resolved = context.definitions.library().resolve(id)?;
     let lock = &resolved.block.lock;
-    let locked_for = lock.duration()?;
-    if *lock == Lock::WhileActive && resolved.week.is_none() {
-        return Err("Locked while active needs a weekly schedule".into());
-    }
+    let locks = Locks {
+        timer: lock.duration()?,
+        schedule: resolved.lock_week,
+        password: match lock {
+            Lock::Password { .. } => Some(lock.password_hash().ok_or("Set a password for the password lock")?.to_string()),
+            _ => None,
+        },
+    };
     let parts = resolved
         .lists
         .iter()
@@ -171,26 +161,14 @@ fn start(context: &Context, id: &str) -> Result<(), String> {
     if !parts.iter().any(Part::can_run) {
         return Err("Nothing to block: add a site or program to its block lists, or turn on an enforcer that needs no list".into());
     }
-    context.blocklist.start(id, &resolved.block.name, parts, resolved.week, locked_for, *lock == Lock::WhileActive)
+    context.blocklist.start(id, &resolved.block.name, parts, resolved.week, locks)
 }
 
-/// Ends every block for the unlock password. After three wrong guesses in a row, guesses are
-/// refused for longer each time. The lock is held while the hash is computed, so guesses cannot
-/// be made in parallel either.
+/// Ends every block for the unlock password.
 fn unlock(context: &Context, password: &str) -> Result<(), String> {
-    let mut lockout = context.lockout.locked();
-    if let Some(left) = lockout.until.and_then(|until| until.checked_duration_since(Instant::now())) {
-        return Err(format!("Too many wrong passwords; wait {}", duration::words(left.as_secs() + 1)));
-    }
     if !unlock::check(password) {
-        lockout.failures += 1;
-        if lockout.failures >= 3 {
-            let seconds = 5u64 << (lockout.failures - 3).min(8);
-            lockout.until = Some(Instant::now() + Duration::from_secs(seconds));
-        }
         return Err("Wrong password".into());
     }
-    *lockout = Lockout::default();
     context.blocklist.reset();
     *context.quit_app_until.locked() = Some(Instant::now() + QUIT_WINDOW);
     Ok(())
@@ -336,8 +314,8 @@ mod tests {
         assert_eq!(handle(&context, 0, Request::DeleteBlock { id: "idle".into() }).0, Response::Done);
 
         // The unlocked one stops, and can then be changed; the timed one cannot stop.
-        assert_eq!(handle(&context, 0, Request::Stop { id: "evening".into() }).0, Response::Done);
-        assert!(failed(handle(&context, 0, Request::Stop { id: "work".into() }).0));
+        assert_eq!(handle(&context, 0, Request::Stop { id: "evening".into(), password: None }).0, Response::Done);
+        assert!(failed(handle(&context, 0, Request::Stop { id: "work".into(), password: None }).0));
         assert_eq!(save(&context, definition("evening", &["d.com"])), Response::Done);
         assert_eq!(policies(&context).iter().map(|p| p.filters.clone()).collect::<Vec<_>>(), vec![vec!["a.com".to_string()]]);
     }
@@ -366,7 +344,7 @@ mod tests {
         assert_eq!(handle(&context, 0, Request::SaveBlock { block: block("work", &["social", "games"]) }).0, Response::Done);
 
         // Once it ends, the list can change; deleting it is still refused while blocks use it.
-        assert_eq!(handle(&context, 0, Request::Stop { id: "evening".into() }).0, Response::Done);
+        assert_eq!(handle(&context, 0, Request::Stop { id: "evening".into(), password: None }).0, Response::Done);
         assert_eq!(handle(&context, 0, Request::SaveList { list: block_list("social", &["reddit.com"]) }).0, Response::Done);
         let Response::Failed(why) = handle(&context, 0, Request::DeleteList { id: "social".into() }).0 else { panic!("deleted") };
         assert!(why.contains("Block evening") && why.contains("Block work"), "{why}");
@@ -452,28 +430,31 @@ mod tests {
         assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
         // Not shortened through its definition, not stopped.
         assert!(failed(handle(&context, 0, Request::SaveBlock { block: timed("a", &["a.com"], "1s").block }).0));
-        assert!(failed(handle(&context, 0, Request::Stop { id: "a".into() }).0));
-        // Neither uninstalling nor updating gets through, and the service keeps running.
+        assert!(failed(handle(&context, 0, Request::Stop { id: "a".into(), password: None }).0));
+        // Uninstalling does not get through, and the service keeps running.
         let (response, shutdown) = handle(&context, 0, Request::PrepareUninstall);
-        assert!(matches!(response, Response::Refused(_)) && shutdown.is_none());
-        let (response, shutdown) = handle(&context, 0, Request::PrepareUpdate);
         assert!(matches!(response, Response::Refused(_)) && shutdown.is_none());
         // The policy is what the app enforces.
         assert_eq!(policies(&context)[0].filters, vec!["a.com"]);
     }
 
     #[test]
-    fn locked_while_active_holds_while_active_and_needs_a_schedule() {
-        let context = context("while-active");
-        // With Always it would only end with the password: refused.
-        assert!(failed(save(&context, definition("a", &["a.com"]).lock(Lock::WhileActive))));
-        // Active all week, so locked now: no stop, no uninstall.
-        assert_eq!(run(&context, definition("a", &["a.com"]).week("daily").lock(Lock::WhileActive)), Response::Done);
-        let Response::Failed(why) = handle(&context, 0, Request::Stop { id: "a".into() }).0 else { panic!("stopped") };
-        assert!(why.contains("while its schedule has it active"), "{why}");
+    fn a_lock_schedule_locks_while_it_is_active() {
+        let context = context("lock-schedule");
+        // A lock schedule that does not exist is refused.
+        assert!(failed(save(&context, definition("a", &["a.com"]).lock(Lock::Scheduled { schedule: "nope".into() }))));
+        // Its own schedule, active all week, so locked now while the block's schedule is Always:
+        // no stop, no uninstall.
+        assert_eq!(handle(&context, 0, Request::SaveSchedule { schedule: weekly("daily", "daily") }).0, Response::Done);
+        assert_eq!(run(&context, definition("a", &["a.com"]).lock(Lock::Scheduled { schedule: "daily".into() })), Response::Done);
+        let Response::Failed(why) = handle(&context, 0, Request::Stop { id: "a".into(), password: None }).0 else { panic!("stopped") };
+        assert!(why.contains("locked by its lock schedule"), "{why}");
         assert!(matches!(handle(&context, 0, Request::PrepareUninstall).0, Response::Refused(_)));
         let running = &overview(&context).running[0];
-        assert!(running.locked && running.while_active && running.remaining.is_none());
+        assert!(running.locked && running.lock_schedule.is_some() && running.schedule.is_none() && running.remaining.is_none());
+        // While it runs, its lock schedule cannot be changed or deleted.
+        assert!(failed(handle(&context, 0, Request::SaveSchedule { schedule: weekly("daily", "weekends") }).0));
+        assert!(failed(handle(&context, 0, Request::DeleteSchedule { id: "daily".into() }).0));
     }
 
     #[test]
@@ -481,35 +462,47 @@ mod tests {
         let context = context("idle");
         let (response, shutdown) = handle(&context, 0, Request::PrepareUninstall);
         assert_eq!(response, Response::Done);
-        assert!(matches!(shutdown, Some(Shutdown::Remove)));
-        let (response, shutdown) = handle(&context, 0, Request::PrepareUpdate);
-        assert_eq!(response, Response::Done);
-        assert!(matches!(shutdown, Some(Shutdown::Update)));
-        // An unlocked block does not stop an uninstall, but does stop an update.
+        assert!(shutdown.is_some());
+        // An unlocked block does not stop an uninstall either.
         assert_eq!(run(&context, definition("a", &["a.com"])), Response::Done);
-        assert!(matches!(handle(&context, 0, Request::PrepareUninstall).1, Some(Shutdown::Remove)));
-        assert!(matches!(handle(&context, 0, Request::PrepareUpdate).0, Response::Refused(_)));
+        assert!(handle(&context, 0, Request::PrepareUninstall).1.is_some());
     }
 
     #[test]
-    fn the_password_ends_every_block_and_wrong_ones_are_slowed_down() {
+    fn the_password_ends_every_block() {
         let context = context("unlock");
         assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
         assert_eq!(run(&context, timed("b", &["b.com"], "2h")), Response::Done);
-        for _ in 0..3 {
-            let wrong = Request::Unlock { password: "nope".into() };
-            assert_eq!(handle(&context, 0, wrong).0, Response::Failed("Wrong password".into()));
-        }
-        // After the third, even the right password waits.
-        let right = Request::Unlock { password: "test1234".into() };
-        assert!(matches!(handle(&context, 0, right).0, Response::Failed(why) if why.starts_with("Too many")));
+        let wrong = Request::Unlock { password: "nope".into() };
+        assert_eq!(handle(&context, 0, wrong).0, Response::Failed("Wrong password".into()));
         assert!(context.blocklist.is_running());
-        // Once the wait is over, it works, and ends them all; the definitions stay.
-        context.lockout.locked().until = None;
+        // The right one ends them all; the definitions stay.
         let right = Request::Unlock { password: "test1234".into() };
         assert_eq!(handle(&context, 0, right).0, Response::Done);
         assert!(!context.blocklist.is_running());
         assert_eq!(overview(&context).blocks.len(), 2);
+    }
+
+    #[test]
+    fn a_password_lock_is_set_hashed_and_stops_only_with_its_password() {
+        let context = context("password");
+        let one = definition("p", &["a.com"]).lock(Lock::Password { password: Some("partner".into()), hash: None });
+        assert_eq!(run(&context, one), Response::Done);
+        // What a client sees has neither the password nor its hash.
+        assert_eq!(overview(&context).blocks[0].lock, Lock::Password { password: None, hash: None });
+        assert!(overview(&context).running[0].password);
+        // Not stopped without it, nor with a wrong one; not uninstalled; then stopped with it.
+        let stop = |password: Option<&str>| Request::Stop { id: "p".into(), password: password.map(str::to_string) };
+        assert!(failed(handle(&context, 0, stop(None)).0));
+        assert!(failed(handle(&context, 0, stop(Some("wrong"))).0));
+        assert!(matches!(handle(&context, 0, Request::PrepareUninstall).0, Response::Refused(_)));
+        assert_eq!(handle(&context, 0, stop(Some("partner"))).0, Response::Done);
+        // Saved again without a new password (renamed, say), it keeps its password.
+        let mut renamed = overview(&context).blocks[0].clone();
+        renamed.name = "Renamed".into();
+        assert_eq!(handle(&context, 0, Request::SaveBlock { block: renamed }).0, Response::Done);
+        assert_eq!(handle(&context, 0, Request::Start { id: "p".into() }).0, Response::Done);
+        assert_eq!(handle(&context, 0, stop(Some("partner"))).0, Response::Done);
     }
 
     #[test]
@@ -520,7 +513,7 @@ mod tests {
         let running = &overview(&context).running[0];
         assert!(running.enforcing && running.schedule.is_some());
         assert_eq!(policies(&context).len(), 1);
-        let Response::Failed(why) = handle(&context, 0, Request::Stop { id: "w".into() }).0 else { panic!("stopped") };
+        let Response::Failed(why) = handle(&context, 0, Request::Stop { id: "w".into(), password: None }).0 else { panic!("stopped") };
         assert!(why.contains("2 hours 4 minutes") || why.contains("2 hours 5 minutes"), "{why}");
         let Response::Refused(why) = handle(&context, 0, Request::PrepareUninstall).0 else { panic!("not refused") };
         assert!(why.contains("2 hours") && why.contains("seconds"), "{why}");

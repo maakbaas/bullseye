@@ -16,85 +16,44 @@ use serde::{Deserialize, Serialize};
 use crate::schedule::Week;
 
 /// A running block as written to disk.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Saved {
-    /// Which definition it was started from (`definitions.rs`). Empty in files from before there
-    /// were several blocks.
-    #[serde(default)]
+    /// Which definition it was started from (`definitions.rs`).
     pub id: String,
-    /// The definition's name when it started, so the block can be shown if the definition is gone.
-    #[serde(default)]
+    /// The definition's name when it started.
     pub name: String,
-    /// Its block lists, each with its own enforcers. Missing in files from before blocks had several
-    /// lists; those have the one list in the fields below (`parts`).
-    #[serde(default)]
+    /// Its block lists, each with its own enforcers.
     pub parts: Vec<SavedPart>,
     /// Seconds since the Unix epoch at which a timer lock ends, and the block with it; `None`: no
     /// timer.
-    #[serde(default)]
     pub until: Option<u64>,
     /// The latest time the block was known to be running at, so the clock cannot start from an
-    /// earlier one while offline (`clock::at_least`). Missing in files from older versions.
-    #[serde(default)]
+    /// earlier one while offline (`clock::at_least`).
     pub seen: Option<u64>,
-    /// Locked while its schedule has it active (`lock::Lock::WhileActive`).
-    #[serde(default)]
-    pub while_active: bool,
-    /// When the block is active (`schedule.rs`); `None` is always. Missing in files from older
-    /// versions, whose blocks were always active.
-    #[serde(default)]
+    /// Locked while this schedule is active (`lock::Lock::Scheduled`).
+    pub lock_schedule: Option<Week>,
+    /// Locked with a password: its salted hash (`lock::Lock::Password`), never the password.
+    pub password: Option<String>,
+    /// When the block is active (`schedule.rs`); `None` is always.
     pub schedule: Option<Week>,
     /// The time zone the schedule is read in, by name (`localtime::Zone::named`), fixed when the
-    /// block started. Missing in files from older versions.
-    #[serde(default)]
-    pub zone: Option<String>,
-    /// From before blocks had several lists: the one list, as typed in the UI. Only read.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub filters: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enforcers: Option<Enforcers>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub programs: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allowed: Vec<String>,
+    /// block started.
+    pub zone: String,
 }
 
 /// One block list of a running block, as written to disk.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SavedPart {
-    #[serde(default)]
     pub name: String,
-    #[serde(default)]
     pub filters: Vec<String>,
-    #[serde(default)]
     pub allowed: Vec<String>,
-    #[serde(default)]
     pub programs: Vec<String>,
-    #[serde(default)]
     pub enforcers: Enforcers,
-}
-
-impl Saved {
-    /// Its block lists; for a block from before there were several, its one list (all enforcers
-    /// if the file is older still).
-    pub fn parts(&self) -> Vec<SavedPart> {
-        if !self.parts.is_empty() {
-            return self.parts.clone();
-        }
-        vec![SavedPart {
-            name: self.name.clone(),
-            filters: self.filters.clone(),
-            allowed: self.allowed.clone(),
-            programs: self.programs.clone(),
-            enforcers: self.enforcers.unwrap_or_default(),
-        }]
-    }
 }
 
 /// The ways a block is enforced, chosen when it starts and fixed while it runs, so turning one
 /// off is not a way around a timed block.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
-#[serde(default)]
 pub struct Enforcers {
     /// Closes a Chromium tab whose page is on the block list (`tab_closer.rs`).
     pub chromium_tabs: bool,
@@ -164,17 +123,10 @@ pub fn from_unix(seconds: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(seconds)
 }
 
-/// The file: the running blocks, or, from before there were several, one block on its own.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum OnDisk {
-    Many { blocks: Vec<Saved> },
-    One(Box<Saved>),
-}
-
-#[derive(Serialize)]
-struct ToDisk<'a> {
-    blocks: &'a [Saved],
+/// The file: the running blocks.
+#[derive(Serialize, Deserialize)]
+struct OnDisk {
+    blocks: Vec<Saved>,
 }
 
 /// One state file, so tests can work in a directory of their own.
@@ -195,22 +147,8 @@ impl Store {
 
     /// The saved blocks; none if there is no file, it is unreadable, or it is not ours.
     pub fn load(&self) -> Vec<Saved> {
-        match self.read() {
-            Some(OnDisk::Many { blocks }) => blocks,
-            Some(OnDisk::One(saved)) => vec![*saved],
-            None => Vec::new(),
-        }
-    }
-
-    fn read(&self) -> Option<OnDisk> {
-        let mut bytes = fs::read(&self.path).ok()?;
-        // Windows tools write a UTF-8 byte order mark, which serde_json rejects as part of the
-        // JSON. Skipping it means such a file still resumes rather than silently reading as no
-        // block at all.
-        if bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
-            bytes.drain(..3);
-        }
-        serde_json::from_slice(&bytes).ok()
+        let read = fs::read(&self.path).ok().and_then(|bytes| serde_json::from_slice::<OnDisk>(&bytes).ok());
+        read.map(|file| file.blocks).unwrap_or_default()
     }
 
     /// Writes the running blocks, replacing what was there; none at all removes the file. Through a
@@ -221,7 +159,7 @@ impl Store {
             self.clear();
             return Ok(());
         }
-        let json = serde_json::to_string(&ToDisk { blocks }).map_err(|e| e.to_string())?;
+        let json = serde_json::to_string(&OnDisk { blocks: blocks.to_vec() }).map_err(|e| e.to_string())?;
         let dir = self.path.parent().ok_or_else(|| format!("no folder for {}", self.path.display()))?;
         fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
         let temporary = self.path.with_extension("new");
@@ -288,7 +226,7 @@ mod tests {
 
     fn timed(until: Option<u64>) -> Saved {
         let part = SavedPart { name: "A".into(), filters: vec!["tweakers.net".to_string()], allowed: Vec::new(), programs: Vec::new(), enforcers: Enforcers::default() };
-        Saved { id: "a".into(), name: "A".into(), parts: vec![part], until, ..Saved::default() }
+        Saved { id: "a".into(), name: "A".into(), parts: vec![part], until, seen: None, lock_schedule: None, password: None, schedule: None, zone: "fixed:+0".into() }
     }
 
     #[test]
@@ -318,19 +256,6 @@ mod tests {
     }
 
     #[test]
-    fn a_byte_order_mark_does_not_hide_the_block() {
-        let store = store("bom");
-        let saved = timed(Some(now().unwrap().as_secs() + 600));
-        store.save(std::slice::from_ref(&saved)).unwrap();
-        // PowerShell's `Set-Content -Encoding utf8` and other Windows tools add one.
-        let mut with_bom = vec![0xef, 0xbb, 0xbf];
-        with_bom.extend_from_slice(serde_json::to_string(&ToDisk { blocks: std::slice::from_ref(&saved) }).unwrap().as_bytes());
-        fs::write(store.path(), with_bom).unwrap();
-        assert_eq!(store.load(), vec![saved]);
-        store.clear();
-    }
-
-    #[test]
     fn leftovers_are_cleaned_up() {
         let store = store("leftovers");
         store.save(&[timed(Some(now().unwrap().as_secs() + 600))]).unwrap();
@@ -345,19 +270,6 @@ mod tests {
         store.clear();
     }
 
-
-    #[test]
-    fn files_from_before_several_blocks_still_load() {
-        let store = store("old");
-        fs::create_dir_all(store.path().parent().unwrap()).unwrap();
-        fs::write(store.path(), r#"{"filters":["a.com"],"until":1800000000}"#).unwrap();
-        let old = Saved { filters: vec!["a.com".into()], until: Some(1_800_000_000), ..Saved::default() };
-        assert_eq!(store.load(), vec![old.clone()]);
-        // Its one list, with every enforcer, as such a file ran.
-        let parts = old.parts();
-        assert_eq!((parts.len(), parts[0].filters.clone(), parts[0].enforcers), (1, vec!["a.com".to_string()], Enforcers::default()));
-        store.clear();
-    }
 
     #[test]
     fn what_can_run_depends_on_the_enforcers_and_the_lists() {

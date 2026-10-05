@@ -182,6 +182,7 @@ dependencies = [
 name = "bullseye"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.3.4",
  "pbkdf2",
  "regex",
  "serde",

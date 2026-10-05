@@ -61,15 +61,21 @@ Blocks:
       --schedule <schedule>    When it is active: a schedule's name, or 'always' (the default).
       --lock-timer <duration>  Locked for this long once started, e.g. 2h 30m: it cannot be
                                stopped and ends by itself.
-      --lock-while-active      Locked while its schedule has it active; runs until stopped
-                               outside those times. Needs a weekly schedule.
+      --lock-schedule <schedule>
+                               Locked while this schedule is active: it cannot be stopped then,
+                               and runs until stopped outside those times. With the block's own
+                               schedule, it is locked exactly while it is active.
+      --lock-password <pw>     Locked with a password: it runs until stopped with that password
+                               (or the unlock password). Only a hash of it is kept.
       --no-lock                Not locked: it can be stopped at any time (the default).
   edit <block> [options]   Change a block that is not running: the options of new, which replace
                            what they name (--list replaces all its lists), and --name <name>.
   delete <block> [--yes]   Delete a block that is not running. Asks first, unless --yes.
   start <block> [--yes]    Start a block. The lock options of new set its lock first, as the lock
                            on its tile in the window does. A locked block asks first, unless --yes.
-  stop <block>             Stop a running block that is not locked right now.
+  stop <block> [--password <pw>]
+                           Stop a running block that is not locked right now; one locked with a
+                           password with its password (asked for when not given).
 
 Block lists:
   list show <list> [--json]   One block list, and the blocks that use it.
@@ -116,7 +122,7 @@ enum Command {
     Edit { block: String, changes: BlockChanges },
     Delete { block: String, yes: bool },
     Start { block: String, lock: Option<Lock>, yes: bool },
-    Stop { block: String },
+    Stop { block: String, password: Option<String> },
     ListShow { list: String, json: bool },
     ListNew { name: String, changes: ListChanges },
     ListEdit { list: String, changes: ListChanges },
@@ -220,7 +226,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
         "edit" => Command::Edit { block: named(&mut options, "block")?, changes: parse_block_changes(&mut options, true)? },
         "delete" => Command::Delete { block: named(&mut options, "block")?, yes: options.flag("--yes") },
         "start" => Command::Start { block: named(&mut options, "block")?, lock: parse_lock(&mut options)?, yes: options.flag("--yes") },
-        "stop" => Command::Stop { block: named(&mut options, "block")? },
+        "stop" => Command::Stop { block: named(&mut options, "block")?, password: options.value("--password")? },
         "list show" => Command::ListShow { list: named(&mut options, "block list")?, json: options.flag("--json") },
         "list new" => {
             let name = options.positional().ok_or("Give the new block list a name")?;
@@ -248,17 +254,18 @@ fn parse(args: &[String]) -> Result<Command, String> {
     Ok(parsed)
 }
 
-/// `--lock-timer <duration>`, `--lock-while-active` or `--no-lock`, at most one.
+/// `--lock-timer <duration>`, `--lock-schedule <schedule>`, `--lock-password <pw>` or `--no-lock`,
+/// at most one. A lock schedule by name or id, looked up when the command runs (`find_lock_schedule`).
 fn parse_lock(options: &mut Options) -> Result<Option<Lock>, String> {
-    let timer = options.value("--lock-timer")?;
-    let while_active = options.flag("--lock-while-active");
-    let unlocked = options.flag("--no-lock");
-    let lock = match (timer, while_active, unlocked) {
-        (None, false, false) => return Ok(None),
-        (Some(duration), false, false) => Lock::Timer { duration },
-        (None, true, false) => Lock::WhileActive,
-        (None, false, true) => Lock::None,
-        _ => return Err("Give one of --lock-timer, --lock-while-active and --no-lock".into()),
+    let timer = options.value("--lock-timer")?.map(|duration| Lock::Timer { duration });
+    let scheduled = options.value("--lock-schedule")?.map(|schedule| Lock::Scheduled { schedule });
+    let password = options.value("--lock-password")?.map(|password| Lock::Password { password: Some(password), hash: None });
+    let unlocked = options.flag("--no-lock").then_some(Lock::None);
+    let mut given: Vec<Lock> = [timer, scheduled, password, unlocked].into_iter().flatten().collect();
+    let lock = match given.len() {
+        0 => return Ok(None),
+        1 => given.remove(0),
+        _ => return Err("Give one of --lock-timer, --lock-schedule, --lock-password and --no-lock".into()),
     };
     // The service checks it again; this is for a clear message before anything is sent.
     lock.duration()?;
@@ -450,6 +457,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             let overview = overview()?;
             let mut block = find(&overview.blocks, &block, "block", |b| (&b.id, &b.name))?.clone();
             // As the lock on the block's tile: set on the block, then started with it.
+            let lock = lock.map(|lock| find_lock_schedule(&overview, lock)).transpose()?;
             if let Some(lock) = lock.filter(|lock| *lock != block.lock) {
                 block.lock = lock;
                 send(Request::SaveBlock { block: block.clone() })?;
@@ -464,18 +472,17 @@ fn execute(command: Command) -> Result<(), Failure> {
             send(Request::Start { id: block.id.clone() })?;
             println!("Started \"{}\".", block.name);
         }
-        Command::Stop { block } => {
+        Command::Stop { block, password } => {
             let overview = overview()?;
-            let (id, name) = match find(&overview.blocks, &block, "block", |b| (&b.id, &b.name)) {
-                Ok(definition) => (definition.id.clone(), definition.name.clone()),
-                // A running block whose definition is gone can still be stopped, by its id.
-                Err(_) => match overview.running.iter().find(|r| r.id == block) {
-                    Some(running) => (running.id.clone(), running.name.clone()),
-                    None => return Err(failed(format!("No block called \"{block}\""))),
-                },
+            let block = find(&overview.blocks, &block, "block", |b| (&b.id, &b.name))?;
+            // A block locked with a password stops with it: asked for when it was not given.
+            let password_locked = overview.running.iter().any(|r| r.id == block.id && r.password);
+            let password = match password {
+                None if password_locked => Some(read_password(&format!("Password of \"{}\": ", block.name)).map_err(Failure::Failed)?),
+                given => given,
             };
-            send(Request::Stop { id })?;
-            println!("Stopped \"{name}\".");
+            send(Request::Stop { id: block.id.clone(), password })?;
+            println!("Stopped \"{}\".", block.name);
         }
         Command::ListShow { list, json } => {
             let overview = overview()?;
@@ -551,7 +558,7 @@ fn execute(command: Command) -> Result<(), Failure> {
         Command::Unlock { password } => {
             let password = match password {
                 Some(password) => password,
-                None => read_password().map_err(Failure::Failed)?,
+                None => read_password("Unlock password: ").map_err(Failure::Failed)?,
             };
             send(Request::Unlock { password })?;
             // The service tells the app to quit at its next policy request, within a second.
@@ -584,9 +591,17 @@ fn apply_block_changes(overview: &Overview, block: &mut Definition, changes: Blo
         };
     }
     if let Some(lock) = changes.lock {
-        block.lock = lock;
+        block.lock = find_lock_schedule(overview, lock)?;
     }
     Ok(())
+}
+
+/// A lock with its lock schedule, given by name or id, as the schedule's id.
+fn find_lock_schedule(overview: &Overview, lock: Lock) -> Result<Lock, Failure> {
+    match lock {
+        Lock::Scheduled { schedule } => Ok(Lock::Scheduled { schedule: find(&overview.schedules, &schedule, "schedule", |s| (&s.id, &s.name))?.id.clone() }),
+        other => Ok(other),
+    }
 }
 
 /// What the start of a locked block asks about, as the window's confirmation; `None`: not locked.
@@ -597,10 +612,11 @@ fn lock_warning(overview: &Overview, block: &Definition) -> Option<String> {
             let words = duration::words(block.lock.duration().ok()??.as_secs());
             Some(format!("It cannot be stopped, changed or deleted for {words}."))
         }
-        Lock::WhileActive => {
-            let times = block.schedule.as_ref().and_then(|s| overview.schedules.iter().find(|n| &n.id == s)).map(|s| s.week.describe());
-            Some(format!("It cannot be stopped while its schedule has it active ({}).", times.unwrap_or_default()))
+        Lock::Scheduled { schedule } => {
+            let schedule = overview.schedules.iter().find(|n| &n.id == schedule)?;
+            Some(format!("It cannot be stopped while its lock schedule \"{}\" is active ({}).", schedule.name, schedule.week.describe()))
         }
+        Lock::Password { .. } => Some("It can only be stopped with its password.".into()),
     }
 }
 
@@ -657,9 +673,9 @@ fn confirm(question: &str, yes: bool) -> Result<bool, Failure> {
     Ok(matches!(answer.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
-/// The unlock password, typed without showing it; from standard input as it is when that is not a
-/// terminal (`echo pw | bullseye-cli unlock`).
-fn read_password() -> Result<String, String> {
+/// A password, typed after `prompt` without showing it; from standard input as it is when that is
+/// not a terminal (`echo pw | bullseye-cli unlock`).
+fn read_password(prompt: &str) -> Result<String, String> {
     use windows_sys::Win32::System::Console::{GetConsoleMode, GetStdHandle, SetConsoleMode, ENABLE_ECHO_INPUT, STD_INPUT_HANDLE};
 
     let terminal = std::io::stdin().is_terminal();
@@ -668,7 +684,7 @@ fn read_password() -> Result<String, String> {
     let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
     let hidden = terminal && unsafe { GetConsoleMode(handle, &mut mode) } != 0;
     if terminal {
-        eprint!("Unlock password: ");
+        eprint!("{prompt}");
     }
     if hidden {
         // SAFETY: as above; the mode is put back below.
@@ -700,9 +716,16 @@ fn state(running: Option<&Running>) -> String {
         (false, None) => "inactive by its schedule".into(),
     });
     parts.push(match (&running.remaining_words, running.locked) {
+        _ if running.password => "locked with a password".into(),
         (Some(left), _) => format!("locked, {left} left"),
-        (None, true) => "locked while active".into(),
-        (None, false) if running.while_active => "can be stopped until it is active again".into(),
+        (None, true) => match &running.lock_change_words {
+            Some(change) => format!("locked by its lock schedule, for another {change}"),
+            None => "locked by its lock schedule".into(),
+        },
+        (None, false) if running.lock_schedule.is_some() => match &running.lock_change_words {
+            Some(change) => format!("can be stopped, locked again in {change}"),
+            None => "can be stopped".into(),
+        },
         (None, false) => "not locked".into(),
     });
     parts.join(" · ")
@@ -723,13 +746,8 @@ fn users(overview: &Overview, id: &str) -> String {
 
 /// Everything, as the window's pages show it: the blocks, the block lists, the schedules.
 fn describe_overview(overview: &Overview) -> String {
-    let mut blocks: Vec<(String, String)> =
+    let blocks: Vec<(String, String)> =
         overview.blocks.iter().map(|b| (b.name.clone(), state(overview.running.iter().find(|r| r.id == b.id)))).collect();
-    // A running block whose definition is gone (from an older version) is shown too.
-    for running in overview.running.iter().filter(|r| !overview.blocks.iter().any(|b| b.id == r.id)) {
-        let name = if running.name.is_empty() { format!("Earlier block ({})", running.id) } else { running.name.clone() };
-        blocks.push((name, state(Some(running))));
-    }
     let lists: Vec<(String, String)> = overview.lists.iter().map(|l| (l.name.clone(), format!("used by {}", users(overview, &l.id)))).collect();
     let schedules: Vec<(String, String)> = overview.schedules.iter().map(|s| (s.name.clone(), s.week.describe())).collect();
     let mut text = String::new();
@@ -775,7 +793,11 @@ fn describe_block(overview: &Overview, block: &Definition, running: Option<&Runn
             Ok(Some(d)) => format!("timer, {} (cannot be stopped for that long once started)", duration::words(d.as_secs())),
             _ => format!("timer, {duration}"),
         },
-        Lock::WhileActive => "while active: cannot be stopped while its schedule has it active".into(),
+        Lock::Scheduled { schedule } => match overview.schedules.iter().find(|s| &s.id == schedule) {
+            Some(s) => format!("scheduled: cannot be stopped while \"{}\" is active ({})", s.name, s.week.describe()),
+            None => "scheduled: (schedule gone)".into(),
+        },
+        Lock::Password { .. } => "password: can only be stopped with its password".into(),
     };
     format!(
         "Name:        {}\nId:          {}\nState:       {}\nBlock lists: {}\nSchedule:    {schedule}\nLock:        {lock}\n",
@@ -831,7 +853,7 @@ mod tests {
         let mut b = block("b1", &["l1"]);
         b.name = "Work".into();
         b.schedule = Some("s1".into());
-        b.lock = Lock::WhileActive;
+        b.lock = Lock::Scheduled { schedule: "s1".into() };
         Overview { lists: vec![social], schedules: vec![work], blocks: vec![b], running: vec![], clock_synced: true }
     }
 
@@ -914,8 +936,8 @@ mod tests {
     #[test]
     fn start_can_set_the_lock_as_the_tile_does() {
         assert_eq!(
-            parse(&args(&["start", "Work", "--lock-while-active", "--yes"])),
-            Ok(Command::Start { block: "Work".into(), lock: Some(Lock::WhileActive), yes: true })
+            parse(&args(&["start", "Work", "--lock-schedule", "Work hours", "--yes"])),
+            Ok(Command::Start { block: "Work".into(), lock: Some(Lock::Scheduled { schedule: "Work hours".into() }), yes: true })
         );
         assert_eq!(parse(&args(&["start", "Work"])), Ok(Command::Start { block: "Work".into(), lock: None, yes: false }));
         // What starting asks, per lock.
@@ -988,7 +1010,13 @@ mod tests {
         assert_eq!(parse(&args(&["status", "--json"])), Ok(Command::Status { json: true }));
         assert_eq!(parse(&args(&["show", "Work", "--json"])), Ok(Command::Show { block: "Work".into(), json: true }));
         assert_eq!(parse(&args(&["delete", "Work", "--yes"])), Ok(Command::Delete { block: "Work".into(), yes: true }));
-        assert_eq!(parse(&args(&["stop", "Work"])), Ok(Command::Stop { block: "Work".into() }));
+        assert_eq!(parse(&args(&["stop", "Work"])), Ok(Command::Stop { block: "Work".into(), password: None }));
+        assert_eq!(parse(&args(&["stop", "Work", "--password", "pw"])), Ok(Command::Stop { block: "Work".into(), password: Some("pw".into()) }));
+        assert_eq!(
+            parse(&args(&["start", "Work", "--lock-password", "partner"])),
+            Ok(Command::Start { block: "Work".into(), lock: Some(Lock::Password { password: Some("partner".into()), hash: None }), yes: false })
+        );
+        assert!(parse(&args(&["start", "Work", "--lock-password", "pw", "--no-lock"])).is_err());
         assert_eq!(parse(&args(&["list", "show", "Social"])), Ok(Command::ListShow { list: "Social".into(), json: false }));
         assert_eq!(parse(&args(&["list", "delete", "Social", "--yes"])), Ok(Command::ListDelete { list: "Social".into(), yes: true }));
         assert_eq!(parse(&args(&["schedule", "show", "Work hours"])), Ok(Command::ScheduleShow { schedule: "Work hours".into() }));
@@ -1020,24 +1048,28 @@ mod tests {
             name: "Work".into(),
             lists: vec![RunningList { name: "Social".into(), filters: vec!["youtube.com".into()], allowed: vec![], programs: vec![], enforcers: Enforcers::default() }],
             remaining: None,
-            while_active: true,
+            lock_schedule: Week::parse("mon-fri 8-17").unwrap(),
+            password: false,
             locked: false,
             schedule: Week::parse("mon-fri 8-17").unwrap(),
             enforcing: false,
             schedule_change: Some(3600),
             remaining_words: None,
             schedule_change_words: Some(duration::words(3600)),
+            lock_change: Some(3600),
+            lock_change_words: Some(duration::words(3600)),
         });
         overview.clock_synced = false;
         let text = describe_overview(&overview);
-        assert!(text.contains("  Work  Running · inactive by its schedule, active in 1 hour 0 minutes 0 seconds · can be stopped until it is active again"), "{text}");
+        assert!(text.contains("  Work  Running · inactive by its schedule, active in 1 hour 0 minutes 0 seconds · can be stopped, locked again in 1 hour 0 minutes 0 seconds"), "{text}");
         assert!(text.contains("Block lists:\n  Social  used by Work"), "{text}");
         assert!(text.contains("Schedules:\n  Work hours  Mon-Fri 08:00-17:00"), "{text}");
         assert!(text.contains("Waiting for internet time"), "{text}");
 
         let block = describe_block(&overview, &overview.blocks[0], overview.running.first());
         assert!(block.contains("Block lists: Social") && block.contains("Schedule:    Work hours (Mon-Fri 08:00-17:00)"), "{block}");
-        assert!(block.contains("Lock:        while active"), "{block}");
+        assert!(block.contains("Lock:        scheduled: cannot be stopped while \"Work hours\" is active"), "{block}");
+        assert_eq!(find_lock_schedule(&overview, Lock::Scheduled { schedule: "work HOURS".into() }).ok(), Some(Lock::Scheduled { schedule: "s1".into() }));
         let list = describe_list(&overview, &overview.lists[0]);
         assert!(list.contains("Block list:     youtube.com") && list.contains("Used by:        Work"), "{list}");
     }

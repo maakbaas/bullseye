@@ -1,10 +1,10 @@
 //! Installing and uninstalling: what the Windows installer runs (`windows/hooks.nsh`), as an
-//! administrator, as `bullseye.exe --prepare-update` before replacing the app, `--install`
-//! after copying it, and `--uninstall` before removing it.
+//! administrator, as `bullseye.exe --install` after copying the app and `--uninstall` before
+//! removing it. Installing is from a clean machine only; there is no update path.
 //!
 //! The installer cannot stop the service itself (nobody but SYSTEM can), so it asks it, over the
-//! pipe. The service refuses while a block runs, so none of this is a way around a block: the way
-//! out of a timed block stays waiting for it to end or the unlock password.
+//! pipe. The service refuses while a block is locked, so this is no way around a block: the way out
+//! of a locked block stays waiting for it to end or the unlock password.
 
 use std::thread;
 use std::time::Duration;
@@ -33,24 +33,16 @@ pub fn install() -> i32 {
     }
 }
 
-/// Removes the service and everything it kept, and ends the app. Refused during a timed block.
+/// Removes the service and everything it kept, and ends the app. Refused while a block is locked.
 pub fn uninstall() -> i32 {
-    ask("uninstall", Request::PrepareUninstall)
-}
-
-/// Lets go of the exe so the installer can replace it. Refused during any block.
-pub fn prepare_update() -> i32 {
-    ask("update", Request::PrepareUpdate)
-}
-
-fn ask(what: &str, request: Request) -> i32 {
+    let (what, request) = ("uninstall", Request::PrepareUninstall);
     // Nothing to ask: never installed, or already removed.
     if !registration::exists() {
         return OK;
     }
     let mut answer = client::call(&request);
     if answer.is_err() {
-        // Not running (an update that did not finish, say). Administrators may start it.
+        // Not running. Administrators may start it.
         let _ = registration::start_registered();
         for _ in 0..10 {
             thread::sleep(Duration::from_secs(1));

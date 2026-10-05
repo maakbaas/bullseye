@@ -88,8 +88,8 @@ fn start_block(id: String, remote: State<Remote>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn stop_block(id: String, remote: State<Remote>) -> Result<(), String> {
-    remote.command(Request::Stop { id })
+fn stop_block(id: String, password: Option<String>, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::Stop { id, password })
 }
 
 /// A weekly schedule written as text (`schedule.rs`), for the schedule editor; `None` is always
@@ -149,9 +149,6 @@ pub fn run() {
     }
     if std::env::args_os().any(|arg| arg == "--uninstall") {
         std::process::exit(setup::uninstall());
-    }
-    if std::env::args_os().any(|arg| arg == "--prepare-update") {
-        std::process::exit(setup::prepare_update());
     }
 
     let remote = remote_for_this_run();
