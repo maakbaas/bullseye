@@ -440,7 +440,7 @@ fn execute(command: Command) -> Result<(), Failure> {
         }
         Command::New { name, changes } => {
             let overview = overview()?;
-            let mut block = Definition { id: new_id(), name, lists: Vec::new(), schedule: None, lock: Lock::None };
+            let mut block = Definition { id: new_id(), name, lists: Vec::new(), schedule: None, lock: Lock::None, kept_locks: Vec::new() };
             apply_block_changes(&overview, &mut block, changes)?;
             let (id, name) = (block.id.clone(), block.name.clone());
             send(Request::SaveBlock { block })?;

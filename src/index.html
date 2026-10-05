@@ -279,6 +279,11 @@
       // What a password lock's fields show for a password that is set: 8 dots, masked or revealed.
       const KEPT = "•".repeat(8);
 
+      // A lock method's settings for a block: its lock's if it has that method, else the ones the
+      // service kept from when it last had it (`kept_locks`; a password only as being set), else none.
+      const settingsOf = (block, method) =>
+        (block.lock && block.lock.method === method ? block.lock : (block.kept_locks || []).find((lock) => lock.method === method)) || {};
+
       const LOCKS = {
         none: {
           label: t("locks.none.label"),
@@ -289,7 +294,7 @@
           label: t("locks.duration.label"),
           form: (block) => {
             const input = el("cds-text-input", { label: t("locks.duration.field"), placeholder: t("locks.duration.placeholder"), "helper-text": t("locks.duration.helper") });
-            input.value = (block.lock.method === "duration" && block.lock.duration) || "";
+            input.value = settingsOf(block, "duration").duration || "";
             return {
               fields: [input],
               read: async () => {
@@ -315,7 +320,7 @@
           // Carbon's date picker and time picker side by side; the backend reads the two together
           // (`describe_until`), so a wrong or past time is said in its words.
           form: (block) => {
-            const [day, time] = ((block.lock.method === "until" && block.lock.until) || "").split(" ");
+            const [day, time] = (settingsOf(block, "until").until || "").split(" ");
             const datePicker = el("cds-date-picker", { "date-format": "Y-m-d", "min-date": localDate(new Date()) });
             const dateInput = el("cds-date-picker-input", { kind: "single", "label-text": t("locks.until.date"), placeholder: t("locks.until.datePlaceholder") });
             datePicker.append(dateInput);
@@ -366,7 +371,7 @@
             const select = el("cds-select", { "label-text": t("locks.scheduled.field"), "helper-text": t("locks.scheduled.helper") });
             select.append(...overview.schedules.map((s) => el("cds-select-item", { value: s.id, label: s.name }, s.name)));
             // The block's own schedule first: then it is locked exactly while it is active.
-            const chosen = block.lock.method === "scheduled" ? block.lock.schedule : block.schedule;
+            const chosen = settingsOf(block, "scheduled").schedule || block.schedule;
             select.value = overview.schedules.some((s) => s.id === chosen) ? chosen : (overview.schedules[0] || {}).id || "";
             return { fields: [select], read: async () => (invalid(select, select.value ? null : t("locks.scheduled.missing")) ? null : { method: "scheduled", schedule: select.value }) };
           },
@@ -397,7 +402,7 @@
             // 8 dots in its place, as text of normal weight rather than a placeholder. They go as soon
             // as either field is entered and come back if both are left empty; saved as they are, the
             // block keeps its password.
-            const set = block.lock.method === "password";
+            const set = settingsOf(block, "password").method === "password";
             const password = el("cds-password-input", { label: t("locks.password.field"), autocomplete: "new-password", "helper-text": t(set ? "locks.password.helperSet" : "locks.password.helper") });
             const repeat = el("cds-password-input", { label: t("locks.password.repeat"), autocomplete: "new-password" });
             const fields = [password, repeat];

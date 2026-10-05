@@ -4666,3 +4666,5 @@ The three layers of section 12 became three kinds of things with lists and pages
 
 **Icons on a block tile's lines**: block lists, schedule, lock (closed or open) and, while running, when its schedule turns it on or off, as 16 px Carbon icons (`summaryOf` gives `[icon, text]`).
 
+**Lock settings are kept per method.** A block remembers the last settings of each lock method it has had (`Definition::kept_locks`): choosing Duration again after No lock starts from its 5m, a lock schedule from the one chosen before, a password from the hash it had (shown as the 8 dots, and saved unchanged it is that password again). The service keeps them, not the window, so they survive the window and a client cannot put a hash in: `save_block` builds `kept_locks` from what it had and the block's previous lock, and ignores the client's. A kept lock schedule does not count as a use of that schedule (it can be deleted; the form then starts from the block's own schedule).
+

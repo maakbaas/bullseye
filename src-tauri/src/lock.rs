@@ -56,6 +56,16 @@ impl Lock {
         }
     }
 
+    /// Whether it has settings worth keeping when another method is chosen (`Definition::kept_locks`).
+    pub fn has_settings(&self) -> bool {
+        !matches!(self, Lock::None | Lock::UntilRestart)
+    }
+
+    /// Whether the two are the same method, whatever their settings.
+    pub fn same_method(&self, other: &Lock) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+
     /// The schedule of a scheduled lock, by id.
     pub fn schedule(&self) -> Option<&str> {
         match self {

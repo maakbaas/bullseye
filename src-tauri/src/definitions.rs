@@ -71,6 +71,11 @@ pub struct Definition {
     pub schedule: Option<String>,
     /// How it is kept from being stopped once started (`lock.rs`).
     pub lock: Lock,
+    /// The last settings of each other lock method it has had (a duration, an end, a lock
+    /// schedule, a password's hash), so that choosing one again starts from them. Kept by the
+    /// service (`Definitions::save_block`): what a client sends here is ignored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kept_locks: Vec<Lock>,
 }
 
 /// Everything the user has defined, each kind in the order it was made.
@@ -136,6 +141,7 @@ impl Library {
     pub fn redacted(mut self) -> Library {
         for block in &mut self.blocks {
             block.lock = block.lock.redacted();
+            block.kept_locks = block.kept_locks.iter().map(Lock::redacted).collect();
         }
         self
     }
@@ -205,6 +211,18 @@ fn put<T>(items: &mut Vec<T>, item: T, same: impl Fn(&T) -> bool) -> Result<(), 
 }
 
 /// The library, and the file it is kept in.
+/// What a block keeps of the other lock methods once its lock is `lock`: what it kept before and
+/// the lock it had, the latest of each method that has settings, without `lock`'s own method.
+fn kept_locks(old: Option<&Definition>, lock: &Lock) -> Vec<Lock> {
+    let mut kept: Vec<Lock> = old.map(|old| old.kept_locks.clone()).unwrap_or_default();
+    if let Some(previous) = old.map(|old| &old.lock).filter(|previous| previous.has_settings()) {
+        kept.retain(|k| !k.same_method(previous));
+        kept.push(previous.clone());
+    }
+    kept.retain(|k| !k.same_method(lock));
+    kept
+}
+
 pub struct Definitions {
     library: Mutex<Library>,
     /// `None`: kept for this run only (no data folder, or a test).
@@ -241,18 +259,21 @@ impl Definitions {
     pub fn save_block(&self, mut block: Definition) -> Result<(), String> {
         block.name = block.name.trim().to_string();
         self.change(|library| {
+            let old = library.block(&block.id).cloned();
             if let Lock::Password { password, hash } = &mut block.lock {
                 *hash = match password.take() {
                     Some(new) if new.is_empty() => return Err("The password of a password lock cannot be empty".into()),
                     Some(new) => Some(unlock::new_hash(&new)?),
-                    // A hash from a client is not taken: only one this service made.
-                    None => library.block(&block.id).and_then(|old| old.lock.password_hash()).map(str::to_string),
+                    // A hash from a client is not taken: only one this service made, the block's
+                    // own or the one kept from when it last had a password lock.
+                    None => old.as_ref().and_then(|old| old.lock.password_hash().or_else(|| old.kept_locks.iter().find_map(Lock::password_hash))).map(str::to_string),
                 };
                 if hash.is_none() {
                     return Err("Set a password for the password lock".into());
                 }
             }
             library.check_block(&block)?;
+            block.kept_locks = kept_locks(old.as_ref(), &block.lock);
             let id = block.id.clone();
             put(&mut library.blocks, block, |b| b.id == id)
         })
@@ -355,7 +376,7 @@ pub mod tests {
 
     /// A block of these lists, always active and not locked.
     pub fn block(id: &str, lists: &[&str]) -> Definition {
-        Definition { id: id.into(), name: format!("Block {id}"), lists: lists.iter().map(|l| l.to_string()).collect(), schedule: None, lock: Lock::None }
+        Definition { id: id.into(), name: format!("Block {id}"), lists: lists.iter().map(|l| l.to_string()).collect(), schedule: None, lock: Lock::None, kept_locks: Vec::new() }
     }
 
     pub fn weekly(id: &str, text: &str) -> NamedSchedule {
@@ -464,6 +485,32 @@ pub mod tests {
         // client is not taken.
         definitions.save_block(Definition { name: "Renamed".into(), ..with(None, Some("00$00")) }).unwrap();
         assert_eq!(definitions.library().block("b").unwrap().lock.password_hash(), Some(kept.as_str()));
+    }
+
+    #[test]
+    fn the_settings_of_other_lock_methods_are_kept() {
+        let definitions = Definitions::at(Some(path("kept")));
+        definitions.save_list(block_list("l", &["a.com"])).unwrap();
+        let with = |lock: Lock| Definition { lock, ..block("b", &["l"]) };
+        definitions.save_block(with(Lock::Duration { duration: "5m".into() })).unwrap();
+        definitions.save_block(with(Lock::Password { password: Some("secret".into()), hash: None })).unwrap();
+        definitions.save_block(with(Lock::None)).unwrap();
+        let kept = definitions.library().block("b").unwrap().kept_locks.clone();
+        assert_eq!(kept.len(), 2);
+        assert!(kept.contains(&Lock::Duration { duration: "5m".into() }));
+        // What a client sees has the duration, and that there was a password, without its hash.
+        let seen = definitions.library().redacted().block("b").unwrap().kept_locks.clone();
+        assert!(seen.contains(&Lock::Password { password: None, hash: None }));
+        // A password lock chosen again without a new password has the one it had.
+        definitions.save_block(with(Lock::Password { password: None, hash: None })).unwrap();
+        let hash = definitions.library().block("b").unwrap().lock.password_hash().unwrap().to_string();
+        assert!(unlock::check_hash("secret", &hash));
+        // The current method is not kept twice; a client's kept locks are ignored.
+        let sent = Definition { kept_locks: vec![Lock::Duration { duration: "1d".into() }], ..with(Lock::Duration { duration: "10m".into() }) };
+        definitions.save_block(sent).unwrap();
+        let kept = definitions.library().block("b").unwrap().kept_locks.clone();
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0].same_method(&Lock::Password { password: None, hash: None }) && kept[0].password_hash() == Some(hash.as_str()));
     }
 
     #[test]
