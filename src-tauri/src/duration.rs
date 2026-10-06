@@ -1,6 +1,5 @@
 //! Durations as people type and read them. Typed short (`5s`, `10m`, `3h`, `1d`, or several
-//! together: `2h 5m`, `1d12h`) or in words (`2 hours 5 minutes`); shown in words
-//! (`2 hours 5 minutes`), wherever the app or the CLI shows one.
+//! together: `2h 5m`, `1d12h`) or in words (`2 hours 5 minutes`); shown short (`countdown`), wherever the app or the CLI shows one.
 
 use std::time::Duration;
 
@@ -44,29 +43,43 @@ pub fn parse(text: &str) -> Result<Option<Duration>, String> {
     Ok(Some(Duration::from_secs(total)))
 }
 
-/// Seconds in words, to the three largest units from the first that is not zero, leaving out the
-/// ones that are: `1 day, 2 hours and 5 minutes`, `2 hours and 5 seconds`, `1 minute`, `0 seconds`.
-/// The window and the CLI show every time this way.
-pub fn words(seconds: u64) -> String {
-    let units = [(seconds / 86400, "day"), (seconds % 86400 / 3600, "hour"), (seconds % 3600 / 60, "minute"), (seconds % 60, "second")];
-    let first = units.iter().position(|&(n, _)| n > 0).unwrap_or(units.len() - 1);
-    let parts: Vec<String> = units[first..]
-        .iter()
-        .take(3)
-        .enumerate()
-        .filter(|&(i, &(n, _))| n > 0 || i == 0)
-        .map(|(_, &(n, unit))| format!("{n} {unit}{}", if n == 1 { "" } else { "s" }))
-        .collect();
-    match parts.as_slice() {
-        [] => String::new(),
-        [one] => one.clone(),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+/// Seconds left, as short as a countdown wants: never more than two units, the smaller one
+/// dropped from a day on and written as a clock below: `3 days`, `1 day and 2 hours`, `2:05 hours`,
+/// `5:03 minutes`, `42 seconds`. Seconds are hidden from an hour on (the minutes round down).
+pub fn countdown(seconds: u64) -> String {
+    let (days, hours, minutes) = (seconds / 86400, seconds % 86400 / 3600, seconds % 3600 / 60);
+    let plural = |n: u64, unit: &str| format!("{n} {unit}{}", if n == 1 { "" } else { "s" });
+    if days > 0 {
+        return if hours > 0 { format!("{} and {}", plural(days, "day"), plural(hours, "hour")) } else { plural(days, "day") };
     }
+    if hours > 0 {
+        return format!("{hours}:{minutes:02} hours");
+    }
+    if minutes > 0 {
+        return format!("{minutes}:{:02} minutes", seconds % 60);
+    }
+    plural(seconds, "second")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn countdowns_are_short() {
+        assert_eq!(countdown(0), "0 seconds");
+        assert_eq!(countdown(1), "1 second");
+        assert_eq!(countdown(59), "59 seconds");
+        assert_eq!(countdown(60), "1:00 minutes");
+        assert_eq!(countdown(303), "5:03 minutes");
+        assert_eq!(countdown(3599), "59:59 minutes");
+        assert_eq!(countdown(3600), "1:00 hours");
+        assert_eq!(countdown(2 * 3600 + 5 * 60 + 59), "2:05 hours");
+        assert_eq!(countdown(86400 - 1), "23:59 hours");
+        assert_eq!(countdown(86400), "1 day");
+        assert_eq!(countdown(86400 + 7200 + 60), "1 day and 2 hours");
+        assert_eq!(countdown(3 * 86400 + 59), "3 days");
+    }
 
     #[test]
     fn single_units() {
@@ -96,21 +109,5 @@ mod tests {
         for bad in ["5", "m", "0m", "0h 0m", "5x", "1.5h", "-1h", "h5", "2h 5", "5 parsecs", "99999999999999999999d"] {
             assert!(parse(bad).is_err(), "{bad}");
         }
-    }
-
-    #[test]
-    fn durations_in_words() {
-        assert_eq!(words(0), "0 seconds");
-        assert_eq!(words(1), "1 second");
-        assert_eq!(words(59), "59 seconds");
-        assert_eq!(words(60), "1 minute");
-        assert_eq!(words(61), "1 minute and 1 second");
-        assert_eq!(words(3600), "1 hour");
-        assert_eq!(words(2 * 3600 + 5), "2 hours and 5 seconds");
-        assert_eq!(words(2 * 3600 + 5 * 60 + 3), "2 hours, 5 minutes and 3 seconds");
-        assert_eq!(words(86400 + 7200 + 60 + 5), "1 day, 2 hours and 1 minute");
-        // Seconds are past the three largest units from a day on.
-        assert_eq!(words(86400 + 5), "1 day");
-        assert_eq!(words(3 * 86400), "3 days");
     }
 }

@@ -105,6 +105,11 @@ impl Enforcers {
         ]
     }
 
+    /// Whether `new` turns off an enforcer that is on here (for a locked block, that is a way out).
+    pub fn turned_off_by(&self, new: &Enforcers) -> bool {
+        self.all().iter().zip(new.all()).any(|(&(was, _), (now, _))| was && !now)
+    }
+
     /// Whether any enforcer that is turned on needs this kind of list.
     pub fn uses(&self, list: Uses) -> bool {
         self.all().iter().any(|&(on, needs)| on && needs == list)

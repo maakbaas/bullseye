@@ -17,7 +17,7 @@ use serde_json::{Map, Value};
 
 use crate::block::Running;
 use crate::client::Remote;
-use crate::condition::Rule;
+use crate::condition::{Mode, Rule};
 use crate::definitions::{self, BlockList, Condition, Definition, Kind, Library};
 use crate::duration;
 use crate::lists::Entries;
@@ -124,26 +124,33 @@ Block lists:
                                --programs-file, --store-apps-file and --titles-file.
       --enforcers <list>       Comma-separated, or 'all' (the default). Names:
                                {enforcers}
-  list edit <list> [options]  Change a block list that no running block uses: the options of
-                              list new, which replace what they name, --name <name> and
-                              --clear <sites|allowed|programs|store-apps|titles> (repeatable).
+  list edit <list> [options]  Change a block list: the options of list new, which replace what
+                              they name, --name <name> and --clear <sites|allowed|programs|
+                              store-apps|titles> (repeatable). While a locked block uses it,
+                              only stricter: more to block, fewer allowed, more enforcers.
   list delete <list> [--yes]  Delete a block list that no running block uses; it is taken out of
                               the blocks that use it (a block left without one is deleted).
   list duplicate <list>       Make a copy of a block list, named after it with a number.
 
 Conditions:
   condition show <condition>        One condition, and the blocks that use it.
-  condition new <name> (--times <times> | --drive <drive>)
+  condition new <name> (--times <times> | --drive <drive> | --any <condition>... | --all <condition>...)
                                     Make a condition: a weekly schedule, e.g. --times
                                     \"Mon-Fri 08:00-17:00; Sat 10-12\"; or a flash drive, by name
                                     or serial number ('drives' lists them): active while it is
-                                    not connected.
-  condition edit <condition> [--name <name>] [--times <times> | --drive <drive>]
-                                    Change a condition that no running block uses.
+                                    not connected; or a combination of two or more other
+                                    conditions (--any or --all, once for each): active when any
+                                    of them is, or when all are. Not of other combinations.
+  condition edit <condition> [--name <name>] [--times <times> | --drive <drive> | --any <condition>... | --all <condition>...]
+                                    Change a condition. While a locked block uses it, a schedule
+                                    can only get more times, a drive cannot change, and a
+                                    combination can only get more active.
   condition delete <condition> [--yes]
-                                    Delete a condition that no running block uses; blocks it was
-                                    the condition of are always active, and those it locked are
-                                    not locked any more.
+                                    Delete a condition that no running block uses, directly or
+                                    in a combination; blocks it was the condition of are always
+                                    active, and those it locked are not locked any more. It is
+                                    taken out of its combinations, and one left with a single
+                                    condition is deleted too.
   condition duplicate <condition>   Make a copy of a condition, named after it with a number.
   condition check <times>           Check times and show them per day, as a schedule takes them.
 
@@ -164,8 +171,8 @@ Other:
                            --abort stops it (back to locked).
   unlock-delay [<time>]    Show how long unlocking takes, or set it: 0 to 24 hours, e.g. 30m
                            or 2h 30m, or 0 for none. A longer delay is free; a shorter one needs
-                           unlocking to be ready.
-  help                     Show this.
+                           unlocking to be ready, or no block to be locked.
+  help                    Show this.
   version                  Show the version.
 
 Durations: 30s, 10m, 2h, 1d, or several together: 2h 30m, 1d 12h.
@@ -271,6 +278,10 @@ enum Command {
 enum RuleChoice {
     Times(String),
     Drive(String),
+    /// Conditions by name or id, of which any one is enough (`--any`).
+    Any(Vec<String>),
+    /// Conditions by name or id, all of which are needed (`--all`).
+    All(Vec<String>),
 }
 
 /// What `new` and `edit` set on a block; `None` leaves it. Lists and the condition by name or id,
@@ -392,8 +403,9 @@ fn parse(args: &[String]) -> Result<Command, String> {
         "condition show" => Command::ConditionShow { condition: named(&mut options, "condition")? },
         "condition new" => {
             let name = options.positional().ok_or("Give the new condition a name")?;
-            let rule =
-                parse_rule(&mut options)?.ok_or("Give --times \"Mon-Fri 08:00-17:00\" for a weekly schedule, or --drive <flash drive>")?;
+            let rule = parse_rule(&mut options)?.ok_or(
+                "Give --times \"Mon-Fri 08:00-17:00\" for a weekly schedule, --drive <flash drive>, or --any / --all <condition> (twice or more) to combine conditions",
+            )?;
             Command::ConditionNew { name, rule }
         }
         "condition edit" => Command::ConditionEdit {
@@ -449,13 +461,23 @@ fn parse_block_changes(options: &mut Options, editing: bool) -> Result<BlockChan
     })
 }
 
-/// `--times <times>` or `--drive <drive>` of a condition, at most one.
+/// `--times <times>`, `--drive <drive>`, `--any <condition>...` or `--all <condition>...` of a
+/// condition, at most one kind.
 fn parse_rule(options: &mut Options) -> Result<Option<RuleChoice>, String> {
-    let times = options.value("--times")?.map(RuleChoice::Times);
-    let drive = options.value("--drive")?.map(RuleChoice::Drive);
-    match (times, drive) {
-        (Some(_), Some(_)) => Err("Give --times or --drive, not both".into()),
-        (times, drive) => Ok(times.or(drive)),
+    let mut given: Vec<RuleChoice> = Vec::new();
+    given.extend(options.value("--times")?.map(RuleChoice::Times));
+    given.extend(options.value("--drive")?.map(RuleChoice::Drive));
+    let any = options.values("--any")?;
+    let all = options.values("--all")?;
+    if !any.is_empty() {
+        given.push(RuleChoice::Any(any));
+    }
+    if !all.is_empty() {
+        given.push(RuleChoice::All(all));
+    }
+    match given.len() {
+        0 | 1 => Ok(given.pop()),
+        _ => Err("Give one of --times, --drive, --any or --all".into()),
     }
 }
 
@@ -723,12 +745,12 @@ fn execute(command: Command) -> Result<(), Failure> {
             println!("{}", condition.name);
             match &condition.rule {
                 Rule::Schedule { week } => print!("{}", per_day(week)),
-                rule => println!("{}", describe_rule(rule)),
+                rule => println!("{}", describe_rule(&overview, rule)),
             }
             println!("Used by: {}", users(&overview, &condition.id));
         }
         Command::ConditionNew { name, rule } => {
-            let rule = resolve_rule(rule)?;
+            let rule = resolve_rule(&overview()?, rule)?;
             send(Request::SaveCondition { condition: Condition { id: new_id(), name: name.clone(), rule } })?;
             println!("Made the condition \"{name}\". Use it with: bullseye-cli new <block> --condition \"{name}\"");
         }
@@ -739,7 +761,7 @@ fn execute(command: Command) -> Result<(), Failure> {
                 condition.name = name;
             }
             if let Some(rule) = rule {
-                condition.rule = resolve_rule(rule)?;
+                condition.rule = resolve_rule(&overview, rule)?;
             }
             let name = condition.name.clone();
             send(Request::SaveCondition { condition })?;
@@ -862,8 +884,13 @@ fn times_of(text: &str) -> Result<Week, Failure> {
 
 /// A condition's rule from what was typed: weekly times, or a flash drive looked up among the
 /// connected ones by name or serial number.
-fn resolve_rule(choice: RuleChoice) -> Result<Rule, Failure> {
+fn resolve_rule(overview: &Overview, choice: RuleChoice) -> Result<Rule, Failure> {
     match choice {
+        RuleChoice::Any(ref given) | RuleChoice::All(ref given) if given.len() < 2 => {
+            Err(failed("A combination needs at least two conditions: give --any or --all once for each"))
+        }
+        RuleChoice::Any(given) => combination(overview, Mode::Any, &given),
+        RuleChoice::All(given) => combination(overview, Mode::All, &given),
         RuleChoice::Times(text) => Ok(Rule::Schedule { week: times_of(&text)? }),
         RuleChoice::Drive(given) => {
             let drives = crate::drives::connected().map_err(Failure::Failed)?;
@@ -879,21 +906,39 @@ fn resolve_rule(choice: RuleChoice) -> Result<Rule, Failure> {
     }
 }
 
+/// A combination of the conditions given by name or id; they must be single conditions, not
+/// combinations (the service refuses those too).
+fn combination(overview: &Overview, mode: Mode, given: &[String]) -> Result<Rule, Failure> {
+    let mut members = Vec::new();
+    for wanted in given {
+        let condition = find(&overview.conditions, wanted, "condition", |c| (&c.id, &c.name))?;
+        members.push(condition.id.clone());
+    }
+    Ok(Rule::Combined { mode, members, rules: Vec::new() })
+}
+
 /// What a block's lock says of its condition besides its name: nothing for a schedule (the times are
 /// on the Conditions page, and only there), and the drive for a flash drive, which is what makes
 /// "active" mean something.
 fn drive_detail(rule: &Rule) -> String {
     match rule {
-        Rule::Schedule { .. } => String::new(),
+        Rule::Schedule { .. } | Rule::Combined { .. } => String::new(),
         Rule::FlashDrive { drive, .. } => format!(" (the flash drive \"{drive}\" is not connected)"),
     }
 }
 
-/// A condition as words: its times, or the drive it waits for.
-fn describe_rule(rule: &Rule) -> String {
+/// A condition as words: its times, the drive it waits for, or the conditions it combines.
+fn describe_rule(overview: &Overview, rule: &Rule) -> String {
     match rule {
         Rule::Schedule { week } => week.describe(),
         Rule::FlashDrive { drive, .. } => format!("while the flash drive \"{drive}\" is not connected"),
+        Rule::Combined { mode, members, .. } => {
+            let names: Vec<String> = members
+                .iter()
+                .map(|id| overview.conditions.iter().find(|c| &c.id == id).map_or("(gone)".to_string(), |c| format!("\"{}\"", c.name)))
+                .collect();
+            format!("{} of {}", if *mode == Mode::Any { "any" } else { "all" }, names.join(", "))
+        }
     }
 }
 
@@ -936,7 +981,7 @@ fn lock_warning(overview: &Overview, block: &Definition) -> Option<String> {
     match &block.lock {
         Lock::None => None,
         Lock::Duration { .. } => {
-            let words = duration::words(block.lock.duration().ok()??.as_secs());
+            let words = duration::countdown(block.lock.duration().ok()??.as_secs());
             Some(format!("It cannot be stopped, changed or deleted for {words}."))
         }
         Lock::Until { until } => match localtime::until(until) {
@@ -1095,7 +1140,7 @@ fn users(overview: &Overview, id: &str) -> String {
 /// What deleting a block list or condition does to the blocks that use it, in sentences each with a
 /// space in front, as the window's question says it; empty when no block uses it.
 fn fallout(overview: &Overview, id: &str) -> String {
-    let library = Library { blocks: overview.blocks.clone(), ..Library::default() };
+    let library = Library { blocks: overview.blocks.clone(), conditions: overview.conditions.clone(), ..Library::default() };
     let fallout = library.fallout(id);
     let quoted = |names: &[String]| names.iter().map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ");
     let mut text = String::new();
@@ -1104,6 +1149,8 @@ fn fallout(overview: &Overview, id: &str) -> String {
         (&fallout.without_it, "keeps its other block lists"),
         (&fallout.always, "is always active from then on"),
         (&fallout.unlocked, "has no lock from then on"),
+        (&fallout.shrinks, "goes on without it"),
+        (&fallout.removed, "is deleted too, as only one condition is left in it"),
     ] {
         if !names.is_empty() {
             text.push_str(&format!(" {} {what}.", quoted(names)));
@@ -1118,7 +1165,8 @@ fn describe_overview(overview: &Overview) -> String {
         overview.blocks.iter().map(|b| (b.name.clone(), state(overview.running.iter().find(|r| r.id == b.id)))).collect();
     let lists: Vec<(String, String)> =
         overview.lists.iter().map(|l| (l.name.clone(), format!("used by {}", users(overview, &l.id)))).collect();
-    let conditions: Vec<(String, String)> = overview.conditions.iter().map(|c| (c.name.clone(), describe_rule(&c.rule))).collect();
+    let conditions: Vec<(String, String)> =
+        overview.conditions.iter().map(|c| (c.name.clone(), describe_rule(overview, &c.rule))).collect();
     let mut text = String::new();
     for (title, rows, empty) in [
         ("Blocks", blocks, "  None yet. Make one with: bullseye-cli new <name> --list <block list>\n"),
@@ -1163,7 +1211,7 @@ fn describe_block(overview: &Overview, block: &Definition, running: Option<&Runn
     let lock = match &block.lock {
         Lock::None => "none: can be stopped at any time".to_string(),
         Lock::Duration { duration } => match block.lock.duration() {
-            Ok(Some(d)) => format!("duration, {} (cannot be stopped for that long once started)", duration::words(d.as_secs())),
+            Ok(Some(d)) => format!("duration, {} (cannot be stopped for that long once started)", duration::countdown(d.as_secs())),
             _ => format!("duration, {duration}"),
         },
         Lock::Until { until } => match block.lock.until() {
@@ -1371,7 +1419,7 @@ mod tests {
         assert!(warning.contains("while its lock condition \"Work hours\" is active."), "{warning}");
         assert!(!warning.contains("08:00"), "{warning}");
         let timed = Definition { lock: Lock::Duration { duration: "2h5m".into() }, ..overview.blocks[0].clone() };
-        assert!(lock_warning(&overview, &timed).unwrap().contains("for 2 hours and 5 minutes."));
+        assert!(lock_warning(&overview, &timed).unwrap().contains("for 2:05 hours."));
         assert_eq!(lock_warning(&overview, &Definition { lock: Lock::None, ..timed }), None);
     }
 
@@ -1542,14 +1590,14 @@ mod tests {
             enforcing: false,
             condition_change: Some(3600),
             remaining_words: None,
-            condition_change_words: Some(duration::words(3600)),
+            condition_change_words: Some(duration::countdown(3600)),
             lock_change: Some(3600),
-            lock_change_words: Some(duration::words(3600)),
+            lock_change_words: Some(duration::countdown(3600)),
         });
         overview.clock_synced = false;
         let text = describe_overview(&overview);
         assert!(
-            text.contains("  Work  Running · inactive by its condition, active in 1 hour · can be stopped, locked again in 1 hour"),
+            text.contains("  Work  Running · inactive by its condition, active in 1:00 hours · can be stopped, locked again in 1:00 hours"),
             "{text}"
         );
         assert!(text.contains("Block lists:\n  Social  used by Work"), "{text}");

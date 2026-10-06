@@ -46,7 +46,7 @@ window.STRINGS = {
     and: " and ",
     serviceDown: "The Bullseye service does not answer",
     // A block list's or condition's tile while a running block uses it.
-    inUse: "In use by a running block",
+    inUse: "In use by a locked block",
     // {names}: the blocks that use it, as links.
     usedBy: "Used by {names}",
     // While a weekly schedule's description is being asked of the backend.
@@ -88,6 +88,7 @@ window.STRINGS = {
     tile: {
       noLists: "No block lists yet",
       active: "Active by its schedule",
+      activeCombined: "Active by its combined condition",
       activeNamed: "Active during {name}",
       activeDrive: "Active while {drive} is not connected",
       always: "Always active",
@@ -100,10 +101,16 @@ window.STRINGS = {
       lockedTimer: "Locked: {left} left",
       lockedSchedule: "Locked by its lock schedule, for another {left}",
       lockedScheduleOpen: "Locked by its lock schedule",
+      lockedCondition: "Locked by its lock condition, for another {left}",
+      lockedConditionOpen: "Locked by its lock condition",
+      freeCondition: "Not locked now: can be stopped; locked again in {change}",
+      freeConditionOpen: "Not locked now: can be stopped",
       freeSchedule: "Not locked now: can be stopped; locked again in {change}",
       freeScheduleOpen: "Not locked now: can be stopped",
       notLocked: "Not locked: can be stopped at any time",
       activeNow: "Active now; inactive in {change}",
+      activeNowOpen: "Active now",
+      activeNowDrive: "Active now because {drive} is not connected",
       inactiveUntil: "Inactive by its schedule; active again in {change}",
       inactive: "Inactive by its schedule",
       inactiveDrive: "Inactive because {drive} is connected",
@@ -232,9 +239,9 @@ window.STRINGS = {
     editTitle: "Edit block list",
     emptyTitle: "No block lists yet",
     emptyText: "A block list holds sites and programs to close, and the ways to close them. Use New block list to make one.",
-    editorDescription: "Kept by the Bullseye service. A running block keeps the lists it was started with.",
-    // {names}: the running blocks that use it, quoted.
-    held: "{names} uses it and is running. It can be changed once that has ended.",
+    editorDescription: "Kept by the Bullseye service. A running block uses the lists as they are, also after a change.",
+    // {names}: the locked blocks that use it, quoted.
+    limited: "{names} uses it and is locked. Until it can be stopped you can add to what is blocked, take sites out of the always allowed and turn enforcers on, but nothing else. It cannot be deleted while a block that uses it runs.",
     namePlaceholder: "e.g. Social media",
     nameMissing: "Give the block list a name",
     nothing: "Nothing to block yet",
@@ -316,18 +323,33 @@ window.STRINGS = {
   conditions: {
     title: "Conditions",
     noun: "condition",
-    description: "When a block is active: at the times of a weekly schedule, or while a flash drive is not connected. A block without one is always active. While its condition is not active a running block blocks nothing.",
+    description: "When a block is active: at the times of a weekly schedule, while a flash drive is not connected, or by a combination of such conditions. A block without one is always active. While its condition is not active a running block blocks nothing.",
     newLabel: "New condition",
     editTitle: "Edit condition",
     emptyTitle: "No conditions yet",
     emptyText: "Blocks without a condition are always active. Use New condition to make one, e.g. work hours.",
-    editorDescription: "Kept by the Bullseye service. A running block keeps the condition it was started with.",
-    held: "{names} uses it and is running. It can be changed once that has ended.",
+    editorDescription: "Kept by the Bullseye service. A running block uses the condition as it is, also after a change.",
+    // {names}: the locked blocks that use it, quoted.
+    limited: "{names} uses it and is locked. Until it can be stopped a schedule can get more times but not fewer, a flash drive cannot change, and a combination can only get more active (conditions added to an \"any\", taken out of an \"all\"); a condition in a combination that needs all of them cannot change. It cannot be deleted while a block that uses it runs.",
     namePlaceholder: "e.g. Work hours",
     nameMissing: "Give the condition a name",
     typeLabel: "Type",
     typeSchedule: "Weekly schedule",
     typeDrive: "Flash drive",
+    typeCombined: "Combination of conditions",
+    // {names}: the conditions combined, as links.
+    activeAny: "Active when any of {names} is",
+    activeAll: "Active when all of {names} are",
+    // A combination: which conditions, and whether any or all of them make it active. Never of other combinations.
+    combine: {
+      modeLabel: "Active when",
+      modeHelper: "Any: one of them is enough. All: every one of them is needed.",
+      any: "Any of them is active",
+      all: "All of them are active",
+      legend: "Conditions",
+      none: "A combination needs at least two other conditions: make them on the Conditions page first. A combination is not made of other combinations.",
+      missing: "Choose at least two conditions",
+    },
     // {times}: the schedule in words; {drive}: the drive's name, quoted.
     active: "Active {times}",
     activeDrive: "Active while {drive} is not connected",
@@ -361,12 +383,15 @@ window.STRINGS = {
     keepsOthers: "{names} keeps its other block lists.",
     becomesAlways: "{names} is always active from then on.",
     losesLock: "{names} has no lock from then on.",
+    shrinksCombination: "{names} goes on without it.",
+    removesCombination: "{names} is deleted too, as only one condition is left in it.",
     failed: "Could not delete the {noun}",
   },
 
   editor: {
     saveFailed: "Could not save the {noun}",
     lockedTitle: "Locked while running",
+    limitedTitle: "Only stricter changes while locked",
   },
 
   settings: {
@@ -389,7 +414,7 @@ window.STRINGS = {
     failed: "Not unlocked",
     unlocked: "Unlocked: every block has ended",
     delayTitle: "Unlock delay",
-    delayText: "How long unlocking takes after you ask for it, from nothing to 24 hours: enough to sleep on it, and to abort with a fresh mind. A longer delay can be set at any time; a shorter one only once unlocking is ready, or it would be a way around the wait.",
+    delayText: "How long unlocking takes after you ask for it, from nothing to 24 hours: enough to sleep on it, and to abort with a fresh mind. A longer delay can be set at any time; a shorter one only once unlocking is ready, or while no block is locked: otherwise it would be a way around the wait.",
     delayLabel: "Delay (up to 24 hours)",
     delayPlaceholder: "e.g. 2h 30m, or 0",
     setDelay: "Set delay",

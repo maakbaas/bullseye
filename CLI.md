@@ -48,8 +48,8 @@ A running block keeps what it was started with: while it runs, it cannot be chan
 | `bullseye-cli list delete <list> [--yes]` | **Delete** a block list |
 | `bullseye-cli list duplicate <list>` | **Duplicate** a block list |
 | `bullseye-cli condition show <condition>` | a condition's tile and its editor |
-| `bullseye-cli condition new <name> (--times <times> \| --drive <drive>)` | **New condition**, of the type Weekly schedule or Flash drive, then **Save** |
-| `bullseye-cli condition edit <condition> [--name <name>] [--times <times> \| --drive <drive>]` | **Edit** a condition, then **Save** |
+| `bullseye-cli condition new <name> (--times <times> \| --drive <drive> \| --any <condition>... \| --all <condition>...)` | **New condition**, of the type Weekly schedule, Flash drive or Combination of conditions, then **Save** |
+| `bullseye-cli condition edit <condition> [--name <name>] [--times <times> \| --drive <drive> \| --any <condition>... \| --all <condition>...]` | **Edit** a condition, then **Save** |
 | `bullseye-cli condition delete <condition> [--yes]` | **Delete** a condition |
 | `bullseye-cli condition duplicate <condition>` | **Duplicate** a condition |
 | `bullseye-cli condition check <times>` | the schedule written out under the week grid in the condition editor |
@@ -108,6 +108,11 @@ bullseye-cli condition new "Work hours" --times "Mon-Fri 08:00-17:00"
 bullseye-cli drives
 bullseye-cli condition new "Key" --drive "Kingston DataTraveler 3.0"
 
+# A combination of two or more conditions (not of other combinations): active when any of them
+# is (--any), or when all of them are (--all). Give the option once for each condition.
+bullseye-cli condition new "Work or weekend" --any "Work hours" --any "Weekend"
+bullseye-cli condition new "Work hours with the key out" --all "Work hours" --all "Key"
+
 # Blocks: work hours that cannot be stopped during work hours, and an evening one for 2 hours.
 bullseye-cli new "Work" --list "Social media" --list Games --condition "Work hours" --lock-condition "Work hours"
 bullseye-cli new "Evening" --list Games
@@ -139,7 +144,7 @@ Conditions:
 
 ### `stop`, `delete`, `list delete`, `condition delete`
 
-`stop <block>` stops a running block that is not locked right now; a locked one is refused, and the message says why and for how long. A block locked with a text is not stopped here: it is stopped in the window, by typing its text. A block locked with a password stops with it: give it with `--password`, or the CLI asks for it without showing it. Deleting asks first (`[y/N]`), or goes ahead with `--yes`, which is also needed when there is no terminal to ask in (a script). A running block, and a block list or condition that a running block uses, cannot be deleted; the question before deleting a block list or schedule says what it does to the blocks that use it.
+`stop <block>` stops a running block that is not locked right now; a locked one is refused, and the message says why and for how long. A block locked with a text is not stopped here: it is stopped in the window, by typing its text. A block locked with a password stops with it: give it with `--password`, or the CLI asks for it without showing it. Deleting asks first (`[y/N]`), or goes ahead with `--yes`, which is also needed when there is no terminal to ask in (a script). A running block, and a block list or condition that a running block uses, cannot be deleted; and while a locked block uses a block list or condition, `list edit` and `condition edit` only make it stricter (more sites, programs, apps or titles to block, fewer allowed sites, more enforcers; a schedule with more times, never fewer; a flash drive stays the same one); the question before deleting a block list or schedule says what it does to the blocks that use it.
 
 ### `duplicate`, `list duplicate`, `condition duplicate`
 
@@ -169,7 +174,7 @@ Ready, you can still `--abort` instead. Unlocking uses the request up: the next 
 
 ### `unlock-delay`
 
-Shows how long unlocking takes, or sets it: `0` (none, the default) to `24h`, typed like a duration (`30m`, `2h 30m`). A longer delay can be set at any time; a shorter one only once unlocking is ready, because setting it low would be a way around the wait. At most 24 hours is enough to sleep on it and to abort with a fresh mind.
+Shows how long unlocking takes, or sets it: `0` (none, the default) to `24h`, typed like a duration (`30m`, `2h 30m`). A longer delay can be set at any time; a shorter one only once unlocking is ready or while no block is locked, because setting it low would be a way around the wait. At most 24 hours is enough to sleep on it and to abort with a fresh mind.
 
 ```powershell
 bullseye-cli unlock-delay

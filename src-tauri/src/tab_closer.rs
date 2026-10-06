@@ -30,6 +30,7 @@ use crate::sync::spawn_critical;
 use crate::wake;
 use crate::watchdog::note;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+use uiautomation::core::UICondition;
 use uiautomation::patterns::{UIInvokePattern, UIValuePattern, UIWindowPattern};
 use uiautomation::types::{ControlType, Handle, TreeScope, UIProperty};
 use uiautomation::{UIAutomation, UIElement};
@@ -179,6 +180,14 @@ impl Closer {
             // Two pages at once is a split view; one is an ordinary tab.
             let split_view = pages.len() > 1;
             if let Some(page) = pages.iter().find(|p| active.blocks_page(&p.url, split_view)) {
+                // The pages were read a moment ago, and what is shown changes under us: the user
+                // switches tabs, and the browser shows a neighbour as soon as a tab closes, while
+                // its old page may still be exposed for a few milliseconds. So the page is looked
+                // at again just before, and only closed if it is still there as it was.
+                let unchanged = self.pages(&browser).is_ok_and(|now| now.iter().any(|p| p.url == page.url && p.title == page.title));
+                if !unchanged {
+                    continue;
+                }
                 match close_tab(&self.automation, &browser.window, &page.title) {
                     Ok(()) => note("app", &format!("closed {} ({})", page.url, self.woken.describe())),
                     Err(e) => eprintln!("tab_closer: failed to close {}: {e}", page.url),
@@ -529,13 +538,17 @@ fn ask_to_close(pid: u32) {
 /// (an ARIA tablist), whose close button must never be pressed.
 const TAB_CLASSES: [&str; 2] = ["Tab", "EdgeTab"];
 
-/// Whether the browser window has a tab strip: any tab, selected or not.
-fn has_tabs(a: &UIAutomation, window: &UIElement) -> uiautomation::Result<bool> {
-    let is_a_tab_class = a.create_or_condition(
+/// The condition for an element that is a tab of the tab strip (`TAB_CLASSES`).
+fn is_a_tab(a: &UIAutomation) -> uiautomation::Result<UICondition> {
+    a.create_or_condition(
         a.create_property_condition(UIProperty::ClassName, TAB_CLASSES[0].into(), None)?,
         a.create_property_condition(UIProperty::ClassName, TAB_CLASSES[1].into(), None)?,
-    )?;
-    Ok(window.find_first(TreeScope::Descendants, &is_a_tab_class).is_ok())
+    )
+}
+
+/// Whether the browser window has a tab strip: any tab, selected or not.
+fn has_tabs(a: &UIAutomation, window: &UIElement) -> uiautomation::Result<bool> {
+    Ok(window.find_first(TreeScope::Descendants, &is_a_tab(a)?).is_ok())
 }
 
 /// A page of a Firefox window: the root document of a tab, or of one half of a split view.
@@ -605,15 +618,13 @@ fn close_window(window: &UIElement) -> uiautomation::Result<()> {
 }
 
 /// Presses the Close button of the selected tab showing `title`. In split view both tabs are
-/// selected and named "<title> - Left view" / "<title> - Right view", so the title picks one;
-/// with a single selected tab (or no title) the first selected tab is closed.
+/// selected and named "<title> - Left view" / "<title> - Right view", so the title picks one.
+/// Only with no title to go by (a page read from the address bar) is the first selected tab
+/// closed; with one, a selected tab that is not named like it is not the page that was read (the
+/// browser has moved on to another tab), and closing it would take down an allowed tab.
 fn close_tab(a: &UIAutomation, window: &UIElement, title: &str) -> uiautomation::Result<()> {
-    let is_a_tab_class = a.create_or_condition(
-        a.create_property_condition(UIProperty::ClassName, TAB_CLASSES[0].into(), None)?,
-        a.create_property_condition(UIProperty::ClassName, TAB_CLASSES[1].into(), None)?,
-    )?;
     let cond = a.create_and_condition(
-        is_a_tab_class,
+        is_a_tab(a)?,
         a.create_and_condition(
             a.create_property_condition(UIProperty::ControlType, (ControlType::TabItem as i32).into(), None)?,
             a.create_property_condition(UIProperty::SelectionItemIsSelected, true.into(), None)?,
@@ -623,8 +634,8 @@ fn close_tab(a: &UIAutomation, window: &UIElement, title: &str) -> uiautomation:
     let tab = selected
         .iter()
         .find(|t| !title.is_empty() && t.get_name().is_ok_and(|n| n.starts_with(title)))
-        .or(selected.first())
-        .ok_or_else(|| uiautomation::Error::new(-1, "no selected tab"))?;
+        .or_else(|| if title.is_empty() { selected.first() } else { None })
+        .ok_or_else(|| uiautomation::Error::new(-1, "no selected tab with that title"))?;
     let button = a.create_property_condition(UIProperty::ControlType, (ControlType::Button as i32).into(), None)?;
     tab.find_first(TreeScope::Children, &button)?.get_pattern::<UIInvokePattern>()?.invoke()
 }

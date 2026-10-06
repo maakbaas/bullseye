@@ -289,14 +289,15 @@ impl Block {
         let name = &self.name;
         match &self.lock {
             RunLock::None => None,
-            RunLock::Ends { .. } => self.remaining(now).map(|left| format!("“{name}” is locked for another {}", duration::words(left))),
+            RunLock::Ends { .. } => self.remaining(now).map(|left| format!("“{name}” is locked for another {}", duration::countdown(left))),
             // Like `in_condition`, locked if it cannot be known.
-            RunLock::Condition { condition } => condition.active(&self.zone, now).then(|| match condition {
-                Rule::Schedule { .. } => {
-                    let until = self.lock_change(now).map(|s| format!(", for another {}", duration::words(s))).unwrap_or_default();
-                    format!("“{name}” is locked by its lock schedule{until}")
+            RunLock::Condition { condition } => condition.active(&self.zone, now).then(|| {
+                let until = self.lock_change(now).map(|s| format!(", for another {}", duration::countdown(s))).unwrap_or_default();
+                match condition {
+                    Rule::Schedule { .. } => format!("“{name}” is locked by its lock schedule{until}"),
+                    Rule::FlashDrive { drive, .. } => format!("“{name}” is locked until the flash drive “{drive}” is connected"),
+                    Rule::Combined { .. } => format!("“{name}” is locked by its lock condition{until}"),
                 }
-                Rule::FlashDrive { drive, .. } => format!("“{name}” is locked until the flash drive “{drive}” is connected"),
             }),
             RunLock::UntilRestart { .. } => Some(format!("“{name}” is locked until Windows restarts")),
             RunLock::Text { .. } => Some(format!("“{name}” is locked until its text is typed in")),
@@ -341,7 +342,7 @@ pub struct Running {
     pub condition_change: Option<u64>,
     /// Seconds until its lock condition locks or frees it, if it has one that ever does.
     pub lock_change: Option<u64>,
-    /// The three times above in words (`duration::words`), so the window and the CLI show them the
+    /// The three times above in words (`duration::countdown`), so the window and the CLI show them the
     /// same way without a formatter of their own.
     pub remaining_words: Option<String>,
     pub condition_change_words: Option<String>,
@@ -528,6 +529,34 @@ impl Blocklist {
         inner.blocks.iter().map(|b| b.id.clone()).collect()
     }
 
+    /// The ids of the running blocks that cannot be stopped right now (`Block::locked`): what a
+    /// block list or condition they use may only be made stricter by (`handler::edit_shared`).
+    pub fn locked_ids(&self) -> Vec<String> {
+        let mut inner = self.inner.locked();
+        self.expire(&mut inner);
+        let now = self.clock.now();
+        inner.blocks.iter().filter(|b| b.locked(now).is_some()).map(|b| b.id.clone()).collect()
+    }
+
+    /// Gives the running block `id` the block lists and conditions its definition has now, after
+    /// one of them was changed: all of them, its lock condition's rule too. Its lock, its time zone
+    /// and what else it started with stay. Whether the change may be made is the handler's to
+    /// judge (`handler::edit_shared`); nothing happens if the block does not run.
+    pub fn refresh(&self, id: &str, parts: Vec<Part>, condition: Option<Rule>, lock_rule: Option<Rule>) {
+        let mut inner = self.inner.locked();
+        self.expire(&mut inner);
+        let Some(block) = inner.blocks.iter_mut().find(|b| b.id == id) else { return };
+        block.parts = parts
+            .into_iter()
+            .map(|p| RunPart { name: p.name, enforced: Enforced { lists: Arc::new(p.lists), enforcers: p.enforcers } })
+            .collect();
+        block.condition = condition;
+        if let (RunLock::Condition { condition }, Some(rule)) = (&mut block.lock, lock_rule) {
+            *condition = rule;
+        }
+        self.save_all(&mut inner);
+    }
+
     /// Whether `password` is the password of the running block `id`'s password lock.
     /// Whether `text` is exactly the text of the running block `id`'s text lock (line breaks
     /// whichever way they were typed).
@@ -584,10 +613,10 @@ impl Blocklist {
                 condition: b.condition.clone(),
                 enforcing: b.in_condition(now),
                 condition_change: b.condition_change(now),
-                remaining_words: b.remaining(now).map(duration::words),
-                condition_change_words: b.condition_change(now).map(duration::words),
+                remaining_words: b.remaining(now).map(duration::countdown),
+                condition_change_words: b.condition_change(now).map(duration::countdown),
                 lock_change: b.lock_change(now),
-                lock_change_words: b.lock_change(now).map(duration::words),
+                lock_change_words: b.lock_change(now).map(duration::countdown),
             })
             .collect();
         Status { running, clock_synced: self.clock.synced() }
@@ -1001,8 +1030,12 @@ mod tests {
         let a = running(&list, "a");
         assert!(!a.enforcing);
         // In words too, for the window and the CLI.
-        assert!(a.remaining_words.as_deref().is_some_and(|words| words.starts_with("1 hour")), "{:?}", a.remaining_words);
-        assert!(a.condition_change_words.as_deref().is_some_and(|words| words.starts_with("14 hours") || words.starts_with("15 hours")));
+        assert!(
+            a.remaining_words.as_deref().is_some_and(|words| words.starts_with("1:00 hours") || words.starts_with("59:")),
+            "{:?}",
+            a.remaining_words
+        );
+        assert!(a.condition_change_words.as_deref().is_some_and(|words| words.starts_with("14:") || words.starts_with("15:")));
         // Rounded up, and the start took a moment of the clock: a little over the hour.
         assert!(a.remaining.is_some_and(|left| (3590..=3610).contains(&left)));
         // Active again on Tuesday at 08:00.
@@ -1026,7 +1059,7 @@ mod tests {
         let locks = || StartLock::Condition(office.clone().unwrap());
         list.start("a", "Work", vec![part(sites(&["a.com"]), Enforcers::default())], None, locks()).unwrap();
         let why = list.stop("a", false).unwrap_err();
-        assert!(why.contains("locked by its lock schedule, for another 1 hour") || why.contains("for another 59 minutes"), "{why}");
+        assert!(why.contains("locked by its lock schedule, for another 1:00 hours") || why.contains("for another 59:"), "{why}");
         let a = running(&list, "a");
         assert!(a.locked && a.lock_condition == office && a.enforcing);
         assert!(a.lock_change.is_some_and(|left| (3590..=3600).contains(&left)), "{:?}", a.lock_change);

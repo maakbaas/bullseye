@@ -169,7 +169,7 @@ impl UnlockDelay {
         self.set(seconds, now, false)
     }
 
-    /// As `set_delay`, for when nothing is running: there is nothing to unlock, and no way to ask
+    /// As `set_delay`, for when no block is locked: there is nothing to unlock, and no way to ask
     /// for unlocking either (the window has no button for it), so a shorter delay is free too.
     pub fn set_delay_idle(&self, seconds: u64, now: SystemTime) -> Result<(), String> {
         self.set(seconds, now, true)

@@ -1,7 +1,7 @@
 // The three kinds the user makes, each with a page of tiles and an editor: blocks, block lists and
 // conditions. Pages, tiles and the editor are the same code for all three, by this table.
 
-import { holdersOf, invoke, names, newId, overview, runningOf, t } from "./core.js";
+import { holdersOf, invoke, lockedUsersOf, names, newId, overview, runningOf, t } from "./core.js";
 import { ENFORCERS, LISTS, blockForm, conditionForm, listForm } from "./forms.js";
 
 // ---- The three kinds. Each has a page of tiles and an editor.
@@ -30,6 +30,9 @@ const KINDS = {
     duplicate: (id, copyId) => invoke("duplicate", { kind: "block", id, newId: copyId }),
     // Why it cannot be changed now, or null.
     held: (block) => (runningOf(block.id) ? t("blocks.held") : null),
+    limited: () => null,
+    // Whether a running block stands in the way of deleting it.
+    inUse: (block) => !!runningOf(block.id),
     form: () => blockForm(),
   },
   lists: {
@@ -47,10 +50,14 @@ const KINDS = {
     save: (list) => invoke("save_list", { list }),
     remove: (id) => invoke("delete_list", { id }),
     duplicate: (id, copyId) => invoke("duplicate", { kind: "list", id, newId: copyId }),
-    held: (list) => {
-      const holders = holdersOf(list.id);
-      return holders.length ? t("lists.held", { names: names(holders) }) : null;
+    // What a locked block uses can only get stricter (the service holds to it); what a block uses
+    // that is running but not locked can be changed, only not deleted.
+    held: () => null,
+    limited: (list) => {
+      const holders = lockedUsersOf(list.id);
+      return holders.length ? t("lists.limited", { names: names(holders) }) : null;
     },
+    inUse: (list) => holdersOf(list.id).length > 0,
     form: () => listForm(),
   },
   conditions: {
@@ -63,10 +70,12 @@ const KINDS = {
     save: (condition) => invoke("save_condition", { condition }),
     remove: (id) => invoke("delete_condition", { id }),
     duplicate: (id, copyId) => invoke("duplicate", { kind: "condition", id, newId: copyId }),
-    held: (condition) => {
-      const holders = holdersOf(condition.id);
-      return holders.length ? t("conditions.held", { names: names(holders) }) : null;
+    held: () => null,
+    limited: (condition) => {
+      const holders = lockedUsersOf(condition.id);
+      return holders.length ? t("conditions.limited", { names: names(holders) }) : null;
     },
+    inUse: (condition) => holdersOf(condition.id).length > 0,
     form: () => conditionForm(),
   },
 };

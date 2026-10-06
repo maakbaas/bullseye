@@ -11,7 +11,7 @@ import { detour } from "./detour.js";
 const ruleLine = (rule, condition) =>
   rule.type === "flash_drive"
     ? ["plug-16", t("blocks.tile.activeDrive", { drive: quoted(rule.drive) })]
-    : ["calendar-16", condition ? tn("blocks.tile.activeNamed", { name: ref(condition.name, editHref("conditions", condition.id)) }) : t("blocks.tile.active")];
+    : ["calendar-16", condition ? tn("blocks.tile.activeNamed", { name: ref(condition.name, editHref("conditions", condition.id)) }) : t(rule.type === "combined" ? "blocks.tile.activeCombined" : "blocks.tile.active")];
 
 // The blocks that use an item, as links.
 const usedBy = (users) => ({ text: tn("common.usedBy", { names: joined(users.map((b) => ref(b.name, editHref("blocks", b.id)))) }) });
@@ -30,7 +30,14 @@ function summaryOf(kind, item) {
   }
   if (kind === "conditions") {
     const users = usersOf(item.id);
-    const what = item.type === "flash_drive" ? t("conditions.activeDrive", { drive: quoted(item.drive) }) : t("conditions.active", { times: weekText(item.days) });
+    let what;
+    if (item.type === "combined") {
+      const members = item.members.map((id) => {
+        const member = overview.conditions.find((c) => c.id === id);
+        return member ? ref(member.name, editHref("conditions", id)) : t("common.gone");
+      });
+      what = { text: tn(item.mode === "any" ? "conditions.activeAny" : "conditions.activeAll", { names: joined(members) }) };
+    } else what = item.type === "flash_drive" ? t("conditions.activeDrive", { drive: quoted(item.drive) }) : t("conditions.active", { times: weekText(item.days) });
     return [what, users.length ? usedBy(users) : t("conditions.notUsed")];
   }
   // A block: what it runs with while it runs, else what it is defined as. Each line has an
@@ -52,20 +59,21 @@ function summaryOf(kind, item) {
   const change = running.lock_change_words;
   const lockIcon = running.locked ? "locked" : "unlocked";
   const lockRule = running.lock_condition;
+  // A schedule is named as one; a combination is a condition.
+  const lockWord = lockRule && lockRule.type === "combined" ? "Condition" : "Schedule";
   if (running.password) parts.push([lockIcon, t("blocks.tile.lockedPassword")]);
   else if (running.lock_text) parts.push([lockIcon, t("blocks.tile.lockedText")]);
   else if (running.until_restart) parts.push([lockIcon, t("blocks.tile.lockedRestart")]);
   else if (running.remaining_words) parts.push([lockIcon, t("blocks.tile.lockedTimer", { left: running.remaining_words })]);
   else if (lockRule && lockRule.type === "flash_drive") parts.push([lockIcon, t(running.locked ? "blocks.tile.lockedDrive" : "blocks.tile.freeDrive", { drive: quoted(lockRule.drive) })]);
-  else if (lockRule && running.locked) parts.push([lockIcon, change ? t("blocks.tile.lockedSchedule", { left: change }) : t("blocks.tile.lockedScheduleOpen")]);
-  else if (lockRule) parts.push([lockIcon, change ? t("blocks.tile.freeSchedule", { change }) : t("blocks.tile.freeScheduleOpen")]);
+  else if (lockRule && running.locked) parts.push([lockIcon, change ? t(`blocks.tile.locked${lockWord}`, { left: change }) : t(`blocks.tile.locked${lockWord}Open`)]);
+  else if (lockRule) parts.push([lockIcon, change ? t(`blocks.tile.free${lockWord}`, { change }) : t(`blocks.tile.free${lockWord}Open`)]);
   else parts.push([lockIcon, t("blocks.tile.notLocked")]);
+  // Whether it enforces right now is always said, whatever its condition.
   const next = running.condition_change_words;
-  if (running.enforcing && next) parts.push(["time", t("blocks.tile.activeNow", { change: next })]);
-  if (!running.enforcing) {
-    const waiting = running.condition.type === "flash_drive" ? t("blocks.tile.inactiveDrive", { drive: quoted(running.condition.drive) }) : t("blocks.tile.inactive");
-    parts.push(["time", next ? t("blocks.tile.inactiveUntil", { change: next }) : waiting]);
-  }
+  const drive = running.condition && running.condition.type === "flash_drive" ? quoted(running.condition.drive) : null;
+  if (running.enforcing) parts.push(["time", next ? t("blocks.tile.activeNow", { change: next }) : drive ? t("blocks.tile.activeNowDrive", { drive }) : t("blocks.tile.activeNowOpen")]);
+  else parts.push(["time", next ? t("blocks.tile.inactiveUntil", { change: next }) : drive ? t("blocks.tile.inactiveDrive", { drive }) : t("blocks.tile.inactive")]);
   return parts;
 }
 
@@ -93,7 +101,7 @@ function makeTile(kind, id) {
       el("cds-overflow-menu-item", { "data-action": "delete", danger: true }, t("common.delete")),
     ),
   );
-  // In the menu's place while it cannot be changed: a running block, or a list or condition one uses.
+  // In the menu's place while it cannot be changed: a running block.
   const lock = el("span", { class: "lock", role: "img", "aria-label": t("common.locked"), title: t("common.locked") }, carbonIcon("locked"));
   const name = el("h2", { class: "cds--type-productive-heading-03" });
   const tag = el("cds-tag", { size: "md" });
@@ -114,7 +122,7 @@ function makeTile(kind, id) {
       if (item.dataset.action === "delete") confirmDelete(kind, id);
     });
   }
-  const parts = { tile, name, tag, summary, actions, menu, lock, lockItem: menu.querySelector('[data-action="lock"]') };
+  const parts = { tile, name, tag, summary, actions, menu, lock, lockItem: menu.querySelector('[data-action="lock"]'), deleteItem: menu.querySelector('[data-action="delete"]') };
   if (kind === "blocks") addBlockControls(parts, id);
   tiles.set(`${kind}:${id}`, parts);
   return parts;
@@ -153,9 +161,12 @@ function renderTiles(kind) {
     parts.lock.hidden = !parts.menu.hidden;
     if (kind === "blocks") renderBlockControls(parts, item);
     else {
-      parts.tag.hidden = !held;
+      // Tagged while a locked block uses it (it can then only get stricter); a running block
+      // that is not locked leaves it free to change, but not to delete.
+      parts.tag.hidden = !kindOf.limited(item);
       parts.tag.setAttribute("type", "blue");
       parts.tag.textContent = t("common.inUse");
+      parts.deleteItem.disabled = kindOf.inUse(item);
     }
   });
   $("empty").hidden = shown.length > 0;
@@ -342,8 +353,8 @@ async function startOrStop(id) {
 // What deleting a block list or condition does to the blocks that use it, in sentences: the
 // service's rule (`deletion_fallout`, `Library::fallout`), worded by strings.js.
 async function fallout(id) {
-  const effects = await invoke("deletion_fallout", { blocks: overview.blocks, id });
-  const sentences = { deleted: "deletesToo", without_it: "keepsOthers", always: "becomesAlways", unlocked: "losesLock" };
+  const effects = await invoke("deletion_fallout", { blocks: overview.blocks, conditions: overview.conditions, id });
+  const sentences = { deleted: "deletesToo", without_it: "keepsOthers", always: "becomesAlways", unlocked: "losesLock", shrinks: "shrinksCombination", removed: "removesCombination" };
   return Object.entries(sentences)
     .filter(([field]) => effects[field].length)
     .map(([field, key]) => t(`delete.${key}`, { names: joined(effects[field].map(quoted)).join("") }));

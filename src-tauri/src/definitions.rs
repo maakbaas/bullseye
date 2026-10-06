@@ -9,9 +9,11 @@
 //! All of it is kept by the service (`%ProgramData%\bullseye\blocks.json`), so it survives
 //! restarts, and is only a template: starting a block copies its lists and condition into a running
 //! block (`block.rs`), which is then fixed until it ends. So that what is shown and what runs stay
-//! the same, a running block's definition, and every block list and condition it uses, cannot be
-//! changed or deleted until it ends (`handler.rs`). Deleting a block list or condition takes it out
-//! of the blocks that use it (`Library::fallout`).
+//! the same, a running block's definition cannot be changed or deleted until it ends, nor can a
+//! block list or condition it uses be deleted. A block list or condition can be changed, and the
+//! change goes to the running blocks that use it; but while one of them is locked, only to be
+//! stricter (`BlockList::tightened_by`, `Rule::tightened_by`, `handler::edit_shared`). Deleting a
+//! block list or condition takes it out of the blocks that use it (`Library::fallout`).
 
 use std::fs;
 use std::path::PathBuf;
@@ -19,7 +21,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::condition::Rule;
+use crate::condition::{Mode, Rule};
 use crate::lists::{Entries, Lists};
 use crate::lock::Lock;
 use crate::state::{self, Enforcers};
@@ -90,6 +92,18 @@ pub struct Library {
     pub blocks: Vec<Definition>,
 }
 
+/// How a block uses a condition that is not its own: through a combination.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Via {
+    /// As its condition or its lock's.
+    Directly,
+    /// In a combination of which any one is enough (`Mode::Any`): more active time in it is more
+    /// active time in the combination.
+    Any,
+    /// In a combination that needs all of them (`Mode::All`): more active time in it is not.
+    All,
+}
+
 /// A block with its parts looked up and checked: what starting it needs.
 pub struct Resolved {
     pub block: Definition,
@@ -120,6 +134,35 @@ impl BlockList {
         Lists::parse(&self.entries).map_err(|why| format!("{}: {why}", self.name))
     }
 
+    /// Whether `new` blocks everything this does and more, which is all a block list a locked block
+    /// uses may be changed by: entries may be added to what is blocked, taken out of what is
+    /// allowed, and enforcers turned on, never the other way. Lists are compared as they are read
+    /// (`Lists::entries`), so case and a missing `.exe` make no difference. The error says what is
+    /// wrong, for a person.
+    pub fn tightened_by(&self, new: &BlockList) -> Result<(), String> {
+        let (old, new_entries) = (self.lists()?.entries(), new.lists()?.entries());
+        let missing = |had: &[String], now: &[String]| had.iter().filter(|e| !now.contains(e)).cloned().collect::<Vec<_>>().join(", ");
+        for (what, had, now) in [
+            ("sites to block", &old.filters, &new_entries.filters),
+            ("programs", &old.programs, &new_entries.programs),
+            ("Store apps", &old.store_apps, &new_entries.store_apps),
+            ("window titles", &old.titles, &new_entries.titles),
+        ] {
+            let gone = missing(had, now);
+            if !gone.is_empty() {
+                return Err(format!("A locked block uses this block list, so {what} can be added but not taken out: {gone}"));
+            }
+        }
+        let added = missing(&new_entries.allowed, &old.allowed);
+        if !added.is_empty() {
+            return Err(format!("A locked block uses this block list, so always-allowed sites can be taken out but not added: {added}"));
+        }
+        if self.enforcers.turned_off_by(&new.enforcers) {
+            return Err("A locked block uses this block list, so enforcers can be turned on but not off".into());
+        }
+        Ok(())
+    }
+
     /// What can be checked without starting a block with it. Whether it has anything to do is only
     /// checked when a block starts, so a list can be saved half done.
     fn check(&self) -> Result<(), String> {
@@ -134,6 +177,10 @@ impl Condition {
     fn checked(mut self) -> Result<Condition, String> {
         check_name("condition", &self.id, &self.name)?;
         self.rule = self.rule.checked()?;
+        // A definition holds the ids of a combination's conditions, never copies of them.
+        if let Rule::Combined { rules, .. } = &mut self.rule {
+            rules.clear();
+        }
         Ok(self)
     }
 }
@@ -168,17 +215,63 @@ impl Library {
         self.blocks.iter().find(|b| b.id == id)
     }
 
-    /// The blocks that use a block list or a condition (as their condition or their lock's), by id.
-    pub fn users_of(&self, part: &str) -> Vec<&Definition> {
-        self.blocks
-            .iter()
-            .filter(|b| b.lists.iter().any(|l| l == part) || b.condition.as_deref() == Some(part) || b.lock.condition() == Some(part))
-            .collect()
+    /// The blocks that use a block list or a condition (as their condition or their lock's, or
+    /// through a combination that has it), with how, once for each way.
+    pub fn usages(&self, part: &str) -> Vec<(&Definition, Via)> {
+        let mut found = Vec::new();
+        for block in &self.blocks {
+            if block.lists.iter().any(|l| l == part) || block.condition.as_deref() == Some(part) || block.lock.condition() == Some(part) {
+                found.push((block, Via::Directly));
+            }
+            for used in [block.condition.as_deref(), block.lock.condition()].into_iter().flatten() {
+                if let Some(Rule::Combined { mode, members, .. }) = self.condition(used).map(|c| &c.rule) {
+                    if members.iter().any(|m| m == part) {
+                        found.push((block, if *mode == Mode::Any { Via::Any } else { Via::All }));
+                    }
+                }
+            }
+        }
+        found
     }
 
-    /// A condition's rule, checked.
+    /// The blocks that use a block list or a condition, once each (`usages`), by id.
+    pub fn users_of(&self, part: &str) -> Vec<&Definition> {
+        let mut users: Vec<&Definition> = Vec::new();
+        for (block, _) in self.usages(part) {
+            if !users.iter().any(|u| u.id == block.id) {
+                users.push(block);
+            }
+        }
+        users
+    }
+
+    /// A condition's rule, checked; a combination with copies of the rules of its conditions, as
+    /// a running block holds it.
     fn rule_of(&self, id: &str) -> Result<Rule, String> {
-        self.condition(id).ok_or("A condition of this block is gone")?.rule.clone().checked()
+        let rule = self.condition(id).ok_or("A condition of this block is gone")?.rule.clone().checked()?;
+        let Rule::Combined { mode, members, .. } = rule else { return Ok(rule) };
+        let rules = members
+            .iter()
+            .map(|member| match self.condition(member).map(|c| c.rule.clone().checked()) {
+                Some(Ok(Rule::Combined { .. })) => Err("A combination cannot hold another combination".to_string()),
+                Some(rule) => rule,
+                None => Err("A condition of this combination is gone".to_string()),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Rule::Combined { mode, members, rules })
+    }
+
+    /// The conditions a combination is of exist, and are not combinations, nor the combination.
+    fn check_combinations(&self) -> Result<(), String> {
+        for condition in &self.conditions {
+            for member in condition.rule.members() {
+                let found = self.condition(member).ok_or_else(|| format!("{}: no condition with id {member}", condition.name))?;
+                if found.id == condition.id || matches!(found.rule, Rule::Combined { .. }) {
+                    return Err(format!("{}: a combination holds conditions that are not combinations", condition.name));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// A block with its parts, ready to start. Refused if it has no block list, or a part is gone.
@@ -388,27 +481,37 @@ impl Definitions {
         let condition = condition.checked()?;
         self.change(|library| {
             let id = condition.id.clone();
-            put(&mut library.conditions, condition, |c| c.id == id)
+            put(&mut library.conditions, condition, |c| c.id == id)?;
+            library.check_combinations()
         })
     }
 
     pub fn delete_condition(&self, id: &str) -> Result<(), String> {
         self.change(|library| {
             library.condition(id).ok_or("No such condition")?;
-            library.conditions.retain(|c| c.id != id);
+            // It is taken out of the combinations it is in; one left with a single condition goes
+            // too (`Library::going_with`), and its blocks are treated as for any condition.
+            let going = library.going_with(id);
+            for condition in &mut library.conditions {
+                if let Rule::Combined { members, .. } = &mut condition.rule {
+                    members.retain(|m| m != id);
+                }
+            }
+            library.conditions.retain(|c| !going.contains(&c.id));
             // The blocks it was the condition of are always active; one it was the lock condition of
             // has no lock (`Library::fallout`).
+            let gone = |id: Option<&str>| id.is_some_and(|id| going.iter().any(|g| g == id));
             for block in &mut library.blocks {
-                if block.condition.as_deref() == Some(id) {
+                if gone(block.condition.as_deref()) {
                     block.condition = None;
                 }
-                if block.lock.condition() == Some(id) {
+                if gone(block.lock.condition()) {
                     block.lock = Lock::None;
                 }
             }
             // A block may have kept it as the condition of a lock it no longer has: forgotten too.
             for block in &mut library.blocks {
-                block.kept_locks.retain(|lock| lock.condition() != Some(id));
+                block.kept_locks.retain(|lock| !gone(lock.condition()));
             }
             Ok(())
         })
@@ -438,6 +541,7 @@ impl Definitions {
             list.check()?;
         }
         library.conditions = library.conditions.into_iter().map(Condition::checked).collect::<Result<_, _>>()?;
+        library.check_combinations()?;
         for block in &mut library.blocks {
             block.name = block.name.trim().to_string();
             if matches!(block.lock, Lock::Password { .. }) {
@@ -489,6 +593,11 @@ pub struct Fallout {
     pub always: Vec<String>,
     /// Blocks it was the lock condition of: no lock from then on.
     pub unlocked: Vec<String>,
+    /// Combinations it is in, which go on without it.
+    pub shrinks: Vec<String>,
+    /// Combinations it is in that are left with one condition, and so are deleted too (and the
+    /// blocks that used them are in `always` and `unlocked`).
+    pub removed: Vec<String>,
 }
 
 impl Library {
@@ -496,12 +605,36 @@ impl Library {
     /// `delete_condition`), for the question before it.
     pub fn fallout(&self, id: &str) -> Fallout {
         let names = |keep: &dyn Fn(&Definition) -> bool| self.blocks.iter().filter(|b| keep(b)).map(|b| b.name.clone()).collect();
+        let going = self.going_with(id);
+        let has = |condition: Option<&str>| condition.is_some_and(|c| going.iter().any(|g| g == c));
+        let combinations = |gone: bool| {
+            self.conditions
+                .iter()
+                .filter(|c| c.rule.members().iter().any(|m| m == id) && going.contains(&c.id) == gone)
+                .map(|c| c.name.clone())
+                .collect()
+        };
         Fallout {
             deleted: names(&|b| b.lists.iter().all(|l| l == id) && !b.lists.is_empty()),
             without_it: names(&|b| b.lists.iter().any(|l| l == id) && b.lists.iter().any(|l| l != id)),
-            always: names(&|b| b.condition.as_deref() == Some(id)),
-            unlocked: names(&|b| b.lock.condition() == Some(id)),
+            always: names(&|b| has(b.condition.as_deref())),
+            unlocked: names(&|b| has(b.lock.condition())),
+            shrinks: combinations(false),
+            removed: combinations(true),
         }
+    }
+
+    /// The conditions that go when the condition `id` is deleted: itself, and each combination
+    /// it is in that would be left with fewer than two conditions.
+    pub fn going_with(&self, id: &str) -> Vec<String> {
+        let mut going = vec![id.to_string()];
+        going.extend(
+            self.conditions
+                .iter()
+                .filter(|c| c.rule.members().iter().any(|m| m == id) && c.rule.members().len() <= 2)
+                .map(|c| c.id.clone()),
+        );
+        going
     }
 }
 
@@ -874,5 +1007,46 @@ pub mod tests {
         let json = serde_json::to_string(&weekly("s", "sat")).unwrap();
         assert!(json.starts_with(r#"{"id":"s","name":"Schedule s","type":"schedule","days":[[],[],[],[],[],[[0,1440]],[]]"#), "{json}");
         assert_eq!(serde_json::from_str::<Condition>(&json).unwrap(), weekly("s", "sat"));
+    }
+
+    #[test]
+    fn deleting_a_condition_takes_it_out_of_its_combinations_and_deletes_those_left_with_one() {
+        let definitions = Definitions::at(Some(path("combinations")));
+        let combination = |id: &str, mode: Mode, members: &[&str]| Condition {
+            id: id.into(),
+            name: format!("Combination {id}"),
+            rule: Rule::Combined { mode, members: members.iter().map(|m| m.to_string()).collect(), rules: Vec::new() },
+        };
+        for id in ["a", "b", "c"] {
+            definitions.save_condition(weekly(id, "mon")).unwrap();
+        }
+        definitions.save_condition(combination("abc", Mode::Any, &["a", "b", "c"])).unwrap();
+        definitions.save_condition(combination("ab", Mode::All, &["a", "b"])).unwrap();
+        definitions.save_list(block_list("l", &["a.com"])).unwrap();
+        definitions
+            .save_block(Definition {
+                condition: Some("ab".into()),
+                lock: Lock::Condition { condition: "abc".into() },
+                ..block("x", &["l"])
+            })
+            .unwrap();
+
+        // "c" is only in "abc", which has two left.
+        let fallout = definitions.library().fallout("c");
+        assert_eq!((fallout.shrinks, fallout.removed), (vec!["Combination abc".to_string()], Vec::<String>::new()));
+        definitions.delete_condition("c").unwrap();
+        let library = definitions.library();
+        assert_eq!(library.condition("abc").unwrap().rule.members(), ["a", "b"]);
+        assert!(library.block("x").unwrap().condition.is_some());
+
+        // "a" is in both, and each is left with one: both go, and "x" is always active and unlocked.
+        let fallout = library.fallout("a");
+        assert_eq!(fallout.removed, vec!["Combination ab".to_string(), "Combination abc".to_string()]);
+        assert_eq!((fallout.always, fallout.unlocked), (vec!["Block x".to_string()], vec!["Block x".to_string()]));
+        definitions.delete_condition("a").unwrap();
+        let library = definitions.library();
+        assert_eq!(library.conditions.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["b"]);
+        let x = library.block("x").unwrap();
+        assert!(x.condition.is_none() && x.lock == Lock::None);
     }
 }

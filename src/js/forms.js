@@ -258,6 +258,11 @@ function listForm() {
     disable(off) {
       for (const control of [name, ...Object.values(areas), ...Object.values(checks)]) control.disabled = off;
     },
+    // The example in an empty list (google.com under Always allowed) is only there for a list
+    // that can be filled in freely: elsewhere it reads as an entry.
+    examples(show) {
+      for (const [key, area] of Object.entries(areas)) if (!LISTS[key].picker) area.placeholder = show ? LISTS[key].placeholder : "";
+    },
     settle: async () => {},
     error: () => (name.value.trim() ? null : t("lists.nameMissing")),
     name,
@@ -323,45 +328,92 @@ function drivePicker() {
   };
 }
 
-// A condition: a name, its type, and what the type needs: a week to drag over (`weekEditor`) or a
-// flash drive (`drivePicker`). What is not of the chosen type is not kept.
+// A combination: the conditions it is of, ticked among the others (never a combination, nor
+// itself: no nesting), and whether any one of them or all of them make it active.
+function combinePicker() {
+  const mode = el("cds-select", { "label-text": t("conditions.combine.modeLabel"), "helper-text": t("conditions.combine.modeHelper") });
+  for (const key of ["any", "all"]) mode.append(el("cds-select-item", { value: key, label: t(`conditions.combine.${key}`) }, t(`conditions.combine.${key}`)));
+  const group = el("cds-checkbox-group", { "legend-text": t("conditions.combine.legend") });
+  const none = el("p", { class: "cds--type-body-01" }, t("conditions.combine.none"));
+  let boxes = [];
+  let off = false;
+  return {
+    nodes: [mode, group, none],
+    fill(condition) {
+      const others = overview.conditions.filter((c) => c.type !== "combined" && c.id !== condition.id);
+      const had = condition.type === "combined" ? condition.members : [];
+      boxes = others.map((c) => {
+        const box = el("cds-checkbox", { "label-text": c.name });
+        box.checked = had.includes(c.id);
+        box.disabled = off;
+        box.dataset.id = c.id;
+        return box;
+      });
+      group.replaceChildren(...boxes);
+      none.hidden = boxes.length >= 2;
+      mode.value = condition.type === "combined" ? condition.mode : "any";
+    },
+    read: () => ({ mode: mode.value, members: boxes.filter((box) => box.checked).map((box) => box.dataset.id) }),
+    error: () => (boxes.filter((box) => box.checked).length >= 2 ? null : t("conditions.combine.missing")),
+    disable(value) {
+      off = value;
+      mode.disabled = value;
+      for (const box of boxes) box.disabled = value;
+    },
+  };
+}
+
+// A condition: a name, its type, and what the type needs: a week to drag over (`weekEditor`), a
+// flash drive (`drivePicker`) or other conditions to combine (`combinePicker`). What is not of the
+// chosen type is not kept.
 function conditionForm() {
   const name = nameField(t("conditions.namePlaceholder"));
   const type = el("cds-select", { "label-text": t("conditions.typeLabel") });
   type.append(
     el("cds-select-item", { value: "schedule", label: t("conditions.typeSchedule") }, t("conditions.typeSchedule")),
     el("cds-select-item", { value: "flash_drive", label: t("conditions.typeDrive") }, t("conditions.typeDrive")),
+    el("cds-select-item", { value: "combined", label: t("conditions.typeCombined") }, t("conditions.typeCombined")),
   );
   const week = weekEditor();
   const weekPart = el("section", {}, ...week.nodes);
   const picker = drivePicker();
   const drivePart = el("section", {}, ...picker.nodes);
+  const combine = combinePicker();
+  const combinePart = el("section", {}, ...combine.nodes);
   const show = () => {
     weekPart.hidden = type.value !== "schedule";
     drivePart.hidden = type.value !== "flash_drive";
+    combinePart.hidden = type.value !== "combined";
   };
   type.addEventListener("cds-select-selected", show);
   return {
-    nodes: [el("section", {}, name, type), weekPart, drivePart],
+    nodes: [el("section", {}, name, type), weekPart, drivePart, combinePart],
     fill(condition) {
       name.value = condition.name;
       type.value = condition.type || "schedule";
       week.fill({ days: condition.days || [0, 1, 2, 3, 4, 5, 6].map(() => []) });
       picker.fill(condition);
+      combine.fill(condition);
       show();
     },
-    read: (condition) =>
-      type.value === "flash_drive"
-        ? { id: condition.id, name: name.value.trim(), type: "flash_drive", ...picker.read() }
-        : { id: condition.id, name: name.value.trim(), type: "schedule", days: week.read().days },
+    read: (condition) => {
+      const base = { id: condition.id, name: name.value.trim() };
+      if (type.value === "flash_drive") return { ...base, type: "flash_drive", ...picker.read() };
+      if (type.value === "combined") return { ...base, type: "combined", ...combine.read() };
+      return { ...base, type: "schedule", days: week.read().days };
+    },
     disable(off) {
       name.disabled = off;
       type.disabled = off;
       week.disable(off);
       picker.disable(off);
+      combine.disable(off);
     },
     settle: () => week.settle(),
-    error: () => (!name.value.trim() ? t("conditions.nameMissing") : type.value === "flash_drive" ? picker.error() : week.error()),
+    error: () => {
+      if (!name.value.trim()) return t("conditions.nameMissing");
+      return { flash_drive: picker, combined: combine }[type.value]?.error() ?? week.error();
+    },
     name,
   };
 }

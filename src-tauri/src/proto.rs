@@ -39,12 +39,14 @@ pub enum Request {
     SaveBlock { block: Definition },
     /// Removes a block. Refused while it runs.
     DeleteBlock { id: String },
-    /// Adds a block list, or replaces the one with its id. Refused while a running block uses it.
+    /// Adds a block list, or replaces the one with its id. While a locked block uses it, only to be
+    /// stricter (`BlockList::tightened_by`).
     SaveList { list: BlockList },
     /// Removes a block list, and takes it out of the blocks that use it. Refused while a running
     /// block uses it.
     DeleteList { id: String },
-    /// Adds a condition, or replaces the one with its id. Refused while a running block uses it.
+    /// Adds a condition, or replaces the one with its id. While a locked block uses it, only to be
+    /// stricter (`Rule::tightened_by`).
     SaveCondition { condition: Condition },
     /// Removes a condition, and takes it out of the blocks that use it. Refused while a running
     /// block uses it.
@@ -72,7 +74,7 @@ pub enum Request {
     /// Stops the countdown, or ends the readiness: back to locked.
     AbortUnlock,
     /// Sets how long unlocking takes, as typed (`2h 30m`, `0`; at most 24 hours). A longer delay is
-    /// free; a shorter one needs unlocking to be ready.
+    /// free; a shorter one needs unlocking to be ready, or no block to be locked.
     SetUnlockDelay { delay: String },
     /// From the installer: end the service and remove it. Refused while a block is locked.
     PrepareUninstall,

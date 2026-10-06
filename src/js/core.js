@@ -129,8 +129,13 @@ const runningOf = (id) => overview.running.find((r) => r.id === id);
 const conditionOf = (block) => overview.conditions.find((c) => c.id === block.condition);
 const listName = (id) => (overview.lists.find((l) => l.id === id) || { name: t("common.gone") }).name;
 // The blocks that use a block list or condition, and those of them that run (which hold it).
-const usersOf = (id) => overview.blocks.filter((b) => b.lists.includes(id) || b.condition === id || (b.lock && b.lock.condition === id));
+// (A condition is also used by the blocks that use a combination of it.)
+const conditionsOf = (b) => [b.condition, b.lock && b.lock.condition].filter(Boolean);
+const membersOf = (conditionId) => (overview.conditions.find((c) => c.id === conditionId) || {}).members || [];
+const usersOf = (id) => overview.blocks.filter((b) => b.lists.includes(id) || conditionsOf(b).some((c) => c === id || membersOf(c).includes(id)));
 const holdersOf = (id) => usersOf(id).filter((b) => runningOf(b.id));
+// Those of them that cannot be stopped now: what they use can only get stricter.
+const lockedUsersOf = (id) => usersOf(id).filter((b) => runningOf(b.id) && runningOf(b.id).locked);
 
 // Marks a field as wrong (with why) or right again; true when wrong.
 function invalid(field, why) {
@@ -178,4 +183,4 @@ $("confirm-action").addEventListener("click", async () => {
 });
 $("confirm").addEventListener("cds-modal-closed", () => answered(false));
 
-export { invoke, $, t, tn, ref, joined, nodesOf, editHref, quoted, names, applyStrings, el, described, weekText, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, listName, usersOf, holdersOf, invalid, ask };
+export { invoke, $, t, tn, ref, joined, nodesOf, editHref, quoted, names, applyStrings, el, described, weekText, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, listName, usersOf, holdersOf, lockedUsersOf, invalid, ask };

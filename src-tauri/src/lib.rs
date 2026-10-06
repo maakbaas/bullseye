@@ -65,7 +65,7 @@ fn delete_block(id: String, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::DeleteBlock { id })
 }
 
-/// Adds a block list, or changes the one with its id; refused while a running block uses it.
+/// Adds a block list, or changes the one with its id; while a locked block uses it, only to be stricter.
 #[tauri::command]
 fn save_list(list: BlockList, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::SaveList { list })
@@ -77,7 +77,7 @@ fn delete_list(id: String, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::DeleteList { id })
 }
 
-/// Adds a condition, or changes the one with its id; refused while a running block uses it.
+/// Adds a condition, or changes the one with its id; while a locked block uses it, only to be stricter.
 #[tauri::command]
 fn save_condition(condition: Condition, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::SaveCondition { condition })
@@ -118,7 +118,7 @@ fn describe_schedule(week: Week) -> Result<String, String> {
 #[tauri::command]
 fn describe_duration(text: String) -> Result<String, String> {
     match duration::parse(&text)? {
-        Some(length) => Ok(duration::words(length.as_secs())),
+        Some(length) => Ok(duration::countdown(length.as_secs())),
         None => Err("No duration given".into()),
     }
 }
@@ -144,11 +144,11 @@ async fn connected_drives() -> Result<Vec<drives::Drive>, String> {
     tauri::async_runtime::spawn_blocking(drives::connected).await.map_err(|e| e.to_string())?
 }
 
-/// What deleting the block list or condition `id` does to `blocks` (the window's copy of them),
+/// What deleting the block list or condition `id` does to `blocks` and `conditions` (the window's copy of them),
 /// for the question before it: the service's own rule, so what is asked is what happens.
 #[tauri::command]
-fn deletion_fallout(blocks: Vec<Definition>, id: String) -> Fallout {
-    Library { blocks, ..Library::default() }.fallout(&id)
+fn deletion_fallout(blocks: Vec<Definition>, conditions: Vec<Condition>, id: String) -> Fallout {
+    Library { blocks, conditions, ..Library::default() }.fallout(&id)
 }
 
 /// What the Save and Open dialogs of Export and Import show.

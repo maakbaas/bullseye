@@ -69,16 +69,22 @@ function openEditor(kind, id, { via = null, draft = null } = {}) {
 // What runs keeps what it started with, so what it uses is read-only until it ends.
 function renderEditorLock() {
   if ($("view-editor").hidden || !editing) return;
-  const held = !editing.isNew && KINDS[editing.kind].held(editing.item);
+  const kind = KINDS[editing.kind];
+  const held = !editing.isNew && kind.held(editing.item);
+  // Locked: what is used may only get stricter, which is for the service to judge.
+  const limited = !held && !editing.isNew && kind.limited(editing.item);
   forms[editing.kind].disable(!!held);
+  // No example entries where entries are fixed or limited, or they read as entries.
+  if (forms[editing.kind].examples) forms[editing.kind].examples(!held && !limited);
   $("save").disabled = !!held;
-  $("delete").disabled = !!held;
+  $("delete").disabled = !!held || (!editing.isNew && kind.inUse(editing.item));
   const box = $("editor-notices");
   const shown = box.dataset.lock === "1";
-  if (held && !shown) {
-    notify("editor-notices", "info", t("editor.lockedTitle"), held, { closable: false });
+  const note = held || limited;
+  if (note && !shown) {
+    notify("editor-notices", "info", t(held ? "editor.lockedTitle" : "editor.limitedTitle"), note, { closable: false });
     box.dataset.lock = "1";
-  } else if (!held && shown) {
+  } else if (!note && shown) {
     notify("editor-notices");
     box.dataset.lock = "";
   }
