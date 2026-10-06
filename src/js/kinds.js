@@ -1,7 +1,7 @@
 // The three kinds the user makes, each with a page of tiles and an editor: blocks, block lists and
 // conditions. Pages, tiles and the editor are the same code for all three, by this table.
 
-import { holdersOf, invoke, lockedUsersOf, names, newId, overview, runningOf, t } from "./core.js";
+import { invoke, lockedUsersOf, names, newId, overview, runningOf, t } from "./core.js";
 import { ENFORCERS, LISTS, blockForm, conditionForm, listForm } from "./forms.js";
 
 // ---- The three kinds. Each has a page of tiles and an editor.
@@ -29,10 +29,12 @@ const KINDS = {
     remove: (id) => invoke("delete_block", { id }),
     duplicate: (id, copyId) => invoke("duplicate", { kind: "block", id, newId: copyId }),
     // Why it cannot be changed now, or null.
-    held: (block) => (runningOf(block.id) ? t("blocks.held") : null),
+    // A running block can be changed, its lock aside, unless it is locked; it cannot be deleted.
+    held: (block) => (runningOf(block.id) && runningOf(block.id).locked ? t("blocks.held") : null),
     limited: () => null,
-    // Whether a running block stands in the way of deleting it.
-    inUse: (block) => !!runningOf(block.id),
+    // Whether something locked stands in the way of deleting it (a running block that is not locked
+    // ends with it).
+    inUse: (block) => !!(runningOf(block.id) && runningOf(block.id).locked),
     form: () => blockForm(),
   },
   lists: {
@@ -51,13 +53,13 @@ const KINDS = {
     remove: (id) => invoke("delete_list", { id }),
     duplicate: (id, copyId) => invoke("duplicate", { kind: "list", id, newId: copyId }),
     // What a locked block uses can only get stricter (the service holds to it); what a block uses
-    // that is running but not locked can be changed, only not deleted.
+    // that is running but not locked can be changed or deleted, and follows.
     held: () => null,
     limited: (list) => {
       const holders = lockedUsersOf(list.id);
       return holders.length ? t("lists.limited", { names: names(holders) }) : null;
     },
-    inUse: (list) => holdersOf(list.id).length > 0,
+    inUse: (list) => lockedUsersOf(list.id).length > 0,
     form: () => listForm(),
   },
   conditions: {
@@ -75,7 +77,7 @@ const KINDS = {
       const holders = lockedUsersOf(condition.id);
       return holders.length ? t("conditions.limited", { names: names(holders) }) : null;
     },
-    inUse: (condition) => holdersOf(condition.id).length > 0,
+    inUse: (condition) => lockedUsersOf(condition.id).length > 0,
     form: () => conditionForm(),
   },
 };

@@ -62,7 +62,7 @@ window.STRINGS = {
     emptyTitle: "No blocks yet",
     emptyText: "A block combines block lists (what to block) with a condition (when). Make block lists first, then use New block.",
     editorDescription: "A block enforces its block lists, when its condition has it active. Its lock is set on its tile, next to Start, and changed from its menu.",
-    held: "This block is running. Its settings can be changed once it ends.",
+    held: "This block is locked. Its settings can be changed once it can be stopped.",
 
     // The editor.
     namePlaceholder: "e.g. Work hours",
@@ -241,7 +241,7 @@ window.STRINGS = {
     emptyText: "A block list holds sites and programs to close, and the ways to close them. Use New block list to make one.",
     editorDescription: "Kept by the Bullseye service. A running block uses the lists as they are, also after a change.",
     // {names}: the locked blocks that use it, quoted.
-    limited: "{names} uses it and is locked. Until it can be stopped you can add to what is blocked, take sites out of the always allowed and turn enforcers on, but nothing else. It cannot be deleted while a block that uses it runs.",
+    limited: "{names} uses it and is locked. Until it can be stopped you can add to what is blocked, take sites out of the always allowed and turn enforcers on, but nothing else. It cannot be deleted either.",
     namePlaceholder: "e.g. Social media",
     nameMissing: "Give the block list a name",
     nothing: "Nothing to block yet",
@@ -330,7 +330,7 @@ window.STRINGS = {
     emptyText: "Blocks without a condition are always active. Use New condition to make one, e.g. work hours.",
     editorDescription: "Kept by the Bullseye service. A running block uses the condition as it is, also after a change.",
     // {names}: the locked blocks that use it, quoted.
-    limited: "{names} uses it and is locked. Until it can be stopped a schedule can get more times but not fewer, a flash drive cannot change, and a combination can only get more active (conditions added to an \"any\", taken out of an \"all\"); a condition in a combination that needs all of them cannot change. It cannot be deleted while a block that uses it runs.",
+    limited: "{names} uses it and is locked. Until it can be stopped a schedule can get more times but not fewer, a flash drive cannot change, and a combination can only get more active (conditions added to an \"any\", taken out of an \"all\"); a condition in a combination that needs all of them cannot change. It cannot be deleted either.",
     namePlaceholder: "e.g. Work hours",
     nameMissing: "Give the condition a name",
     typeLabel: "Type",
@@ -385,12 +385,13 @@ window.STRINGS = {
     losesLock: "{names} has no lock from then on.",
     shrinksCombination: "{names} goes on without it.",
     removesCombination: "{names} is deleted too, as only one condition is left in it.",
+    stopsIt: "It is running, and is stopped too.",
     failed: "Could not delete the {noun}",
   },
 
   editor: {
     saveFailed: "Could not save the {noun}",
-    lockedTitle: "Locked while running",
+    lockedTitle: "Locked",
     limitedTitle: "Only stricter changes while locked",
   },
 
@@ -440,6 +441,8 @@ window.STRINGS = {
       one: "{names} had a password lock, which is not in the file: it comes without a lock.",
       other: "{names} had a password lock, which is not in the file: they come without a lock.",
     },
+    // Said too when a block runs without being locked: it ends.
+    importStops: "Running blocks that are not locked are stopped.",
     importAction: "Import",
     imported: "Imported: everything is as in the file",
     importFailed: "Not imported",

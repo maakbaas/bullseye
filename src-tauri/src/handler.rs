@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::block::{Blocklist, Part, StartLock};
-use crate::definitions::{BlockList, Condition, Definitions, Library, Via};
+use crate::definitions::{BlockList, Condition, Definition, Definitions, Library, Via};
 use crate::duration;
 use crate::lock::Lock;
 use crate::proto::{Overview, Policy, Request, Response, UnlockStatus};
@@ -84,15 +84,16 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
                 .collect();
             (Response::Policy(policies), None)
         }
-        // A running block is a copy of its definition and its parts, so a running block itself cannot
-        // be changed or deleted. What it uses can be, unless it is locked, and then only to be
-        // stricter (`edit_shared`).
-        Request::SaveBlock { block } => (done(edit(context, &block.id.clone(), |d| d.save_block(block))), None),
-        Request::DeleteBlock { id } => (done(edit(context, &id, |d| d.delete_block(&id))), None),
+        // A running block is a copy of its definition and its parts, and one rule decides what may
+        // be done to it and to what it uses: while a locked block is involved, a change may only make
+        // it stricter and nothing may be deleted (`edit_block`, `edit_shared`, `delete_block`,
+        // `delete_shared`); otherwise the change is made and the running blocks follow.
+        Request::SaveBlock { block } => (done(edit_block(context, block)), None),
+        Request::DeleteBlock { id } => (done(delete_block(context, &id)), None),
         Request::SaveList { list } => (done(edit_shared(context, Proposed::List(list))), None),
-        Request::DeleteList { id } => (done(edit(context, &id, |d| d.delete_list(&id))), None),
+        Request::DeleteList { id } => (done(delete_shared(context, &id, |d| d.delete_list(&id))), None),
         Request::SaveCondition { condition } => (done(edit_shared(context, Proposed::Condition(condition))), None),
-        Request::DeleteCondition { id } => (done(edit(context, &id, |d| d.delete_condition(&id))), None),
+        Request::DeleteCondition { id } => (done(delete_shared(context, &id, |d| d.delete_condition(&id))), None),
         // A copy changes nothing that exists, so also of what a running block holds.
         Request::Duplicate { kind, id, new_id } => {
             let _editing = context.editing.locked();
@@ -119,30 +120,88 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
     }
 }
 
-/// Everything replaced (Import): it would replace what a running block holds, so only while none
-/// runs.
+/// Everything replaced (Import): not while a block is locked, as that would be a way out of it.
+/// Blocks that run without being locked end with it, as what they were is gone.
 fn import(context: &Context, library: Library) -> Result<(), String> {
     let _editing = context.editing.locked();
-    if !context.blocklist.running_ids().is_empty() {
-        return Err("Stop every running block first: importing replaces what they use".into());
+    if let Some(why) = context.blocklist.locked() {
+        return Err(format!("{why}; importing replaces everything, so it waits until no block is locked"));
     }
-    context.definitions.replace(library)
+    context.definitions.replace(library)?;
+    for id in context.blocklist.running_ids() {
+        // One that has become locked since stays as it is: it is a copy, and cannot be stopped.
+        let _ = context.blocklist.stop(&id, false);
+    }
+    Ok(())
 }
 
-/// A change to the definitions, unless it touches a running block: the block `id` itself, or
-/// deleting a block list or condition that a running block uses.
-fn edit(context: &Context, id: &str, change: impl FnOnce(&Definitions) -> Result<(), String>) -> Result<(), String> {
+/// Deleting a block that runs: it ends with it, unless it is locked (it could not be stopped).
+fn delete_block(context: &Context, id: &str) -> Result<(), String> {
+    let _editing = context.editing.locked();
+    if context.blocklist.running_ids().iter().any(|r| r == id) {
+        if context.blocklist.locked_ids().iter().any(|r| r == id) {
+            return Err("A locked block cannot be deleted until it can be stopped".into());
+        }
+        context.blocklist.stop(id, false)?;
+    }
+    context.definitions.delete_block(id)
+}
+
+/// Deleting a block list or condition. Unless a locked block uses it (it would loosen that block)
+/// it goes, and the running blocks that used it follow what is left: a block that is left without
+/// a block list is deleted by it and so ends, one that lost its condition is always active, and
+/// one that lost its lock condition has no lock now (`Blocklist::refresh`).
+fn delete_shared(context: &Context, id: &str, delete: impl FnOnce(&Definitions) -> Result<(), String>) -> Result<(), String> {
     let _editing = context.editing.locked();
     let running = context.blocklist.running_ids();
     let library = context.definitions.library();
-    if running.iter().any(|r| r == id) {
-        return Err("A running block cannot be changed or deleted until it ends".into());
+    let users: Vec<String> = library.users_of(id).into_iter().filter(|b| running.contains(&b.id)).map(|b| b.id.clone()).collect();
+    let locked = context.blocklist.locked_ids();
+    if let Some(block) = library.users_of(id).into_iter().find(|b| users.contains(&b.id) && locked.contains(&b.id)) {
+        return Err(format!("“{}” is locked and uses this; it can be deleted once that can be stopped", block.name));
     }
-    let users: Vec<&str> = library.users_of(id).into_iter().filter(|b| running.contains(&b.id)).map(|b| b.name.as_str()).collect();
-    if !users.is_empty() {
-        return Err(format!("{} uses this and is running; it can be deleted once that has ended", users.join(", ")));
+    delete(&context.definitions)?;
+    let library = context.definitions.library();
+    for user in users {
+        if library.block(&user).is_none() || refresh_running(context, std::slice::from_ref(&user)).is_err() {
+            let _ = context.blocklist.stop(&user, false);
+        }
     }
-    change(&context.definitions)
+    Ok(())
+}
+
+/// Saving a block. One that runs can be changed (its name, block lists and condition) unless it is
+/// locked right now, and the running block follows; its lock stays as it is, as a lock cannot be
+/// added to or changed on a block that already runs, only chosen for the next start.
+fn edit_block(context: &Context, block: Definition) -> Result<(), String> {
+    let _editing = context.editing.locked();
+    if !context.blocklist.running_ids().contains(&block.id) {
+        return context.definitions.save_block(block);
+    }
+    if context.blocklist.locked_ids().contains(&block.id) {
+        return Err("A locked block cannot be changed until it can be stopped".into());
+    }
+    let old = context.definitions.library().block(&block.id).ok_or("No such block")?.clone();
+    if block.lock != old.lock {
+        return Err("The lock of a running block cannot be changed: stop it first, or change the lock for its next start".into());
+    }
+    if block.lists.is_empty() {
+        return Err("A running block needs at least one block list".into());
+    }
+    let id = block.id.clone();
+    context.definitions.save_block(block)?;
+    refresh_running(context, &[id])
+}
+
+/// Gives the running blocks `ids` what their definitions are now (`Blocklist::refresh`).
+fn refresh_running(context: &Context, ids: &[String]) -> Result<(), String> {
+    let library = context.definitions.library();
+    for id in ids {
+        let resolved = library.resolve(id)?;
+        let parts = parts_of(&resolved.lists)?;
+        context.blocklist.refresh(id, &resolved.block.name, parts, resolved.condition, resolved.lock_condition);
+    }
+    Ok(())
 }
 
 /// A block list or condition as it is to be saved.
@@ -198,13 +257,7 @@ fn edit_shared(context: &Context, proposed: Proposed) -> Result<(), String> {
         Proposed::Condition(condition) => context.definitions.save_condition(condition)?,
     }
     // What the blocks that run use is what is defined now.
-    let library = context.definitions.library();
-    for user in users {
-        let resolved = library.resolve(&user)?;
-        let parts = parts_of(&resolved.lists)?;
-        context.blocklist.refresh(&user, parts, resolved.condition, resolved.lock_condition);
-    }
-    Ok(())
+    refresh_running(context, &users)
 }
 
 /// What a running block enforces of its block lists: each with its own lists and enforcers.
@@ -433,7 +486,7 @@ mod tests {
 
         // A running block cannot be changed, deleted or started again; an idle one can.
         assert!(failed(handle(&context, 0, Request::SaveBlock { block: block("work", &["idle"]) }).0));
-        assert!(failed(handle(&context, 0, Request::DeleteBlock { id: "evening".into() }).0));
+        assert!(failed(handle(&context, 0, Request::DeleteBlock { id: "work".into() }).0));
         assert!(failed(handle(&context, 0, Request::Start { id: "work".into() }).0));
         assert_eq!(handle(&context, 0, Request::DeleteBlock { id: "idle".into() }).0, Response::Done);
 
@@ -459,23 +512,21 @@ mod tests {
         assert_eq!(policies(&context).len(), 2);
 
         // It is not locked, so what it uses can be changed, in either direction, and the running
-        // block gets the change. Deleting what a running block uses has to wait.
+        // block gets the change.
         assert_eq!(handle(&context, 0, Request::SaveList { list: block_list("social", &["reddit.com"]) }).0, Response::Done);
         let filters: Vec<_> = policies(&context).iter().flat_map(|p| p.entries.filters.clone()).collect();
         assert_eq!(filters, vec!["reddit.com".to_string()]);
         assert_eq!(handle(&context, 0, Request::SaveCondition { condition: weekly("games-schedule", "weekends") }).0, Response::Done);
         assert!(overview(&context).running[0].condition.as_ref().is_some_and(|rule| rule.week().unwrap().days[0].is_empty()));
-        assert!(failed(handle(&context, 0, Request::DeleteList { id: "games".into() }).0));
-        assert!(failed(handle(&context, 0, Request::DeleteCondition { id: "games-schedule".into() }).0));
-        // A block that is not running and uses the list can still be changed, as long as the list is not.
-        assert_eq!(handle(&context, 0, Request::SaveBlock { block: block("work", &["social", "games"]) }).0, Response::Done);
-
-        // Once it ends, the list can change, and be deleted: the blocks keep their other list.
-        assert_eq!(handle(&context, 0, Request::Stop { id: "evening".into(), password: None, text: None }).0, Response::Done);
-        assert_eq!(handle(&context, 0, Request::SaveList { list: block_list("social", &["reddit.com"]) }).0, Response::Done);
+        // So can deleting it: the running block keeps what is left, and is always active once its
+        // condition is gone.
+        assert_eq!(handle(&context, 0, Request::DeleteCondition { id: "games-schedule".into() }).0, Response::Done);
+        assert!(overview(&context).running[0].condition.is_none());
+        assert_eq!(handle(&context, 0, Request::DeleteList { id: "games".into() }).0, Response::Done);
+        assert_eq!(overview(&context).running[0].lists.len(), 1);
+        // Deleting the last block list of a running block deletes the block, which ends it.
         assert_eq!(handle(&context, 0, Request::DeleteList { id: "social".into() }).0, Response::Done);
-        let blocks = overview(&context).blocks;
-        assert!(blocks.iter().all(|b| b.lists == vec!["games".to_string()]), "{blocks:?}");
+        assert!(overview(&context).running.is_empty() && overview(&context).blocks.is_empty());
     }
 
     #[test]
@@ -557,6 +608,82 @@ mod tests {
         let running = overview(&context).running;
         let either = running.iter().find(|r| r.id == "w").unwrap();
         assert!(matches!(&either.condition, Some(Rule::Combined { rules, .. }) if rules.len() == 3));
+    }
+
+    #[test]
+    fn a_running_block_that_is_not_locked_can_be_changed_but_not_given_a_lock() {
+        let context = context("edit-running");
+        assert_eq!(run(&context, definition("a", &["a.com"])), Response::Done);
+        assert_eq!(handle(&context, 0, Request::SaveList { list: block_list("b", &["b.com"]) }).0, Response::Done);
+        // Its name and block lists can change, and the running block follows.
+        let mut changed = block("a", &["b"]);
+        changed.name = "Renamed".into();
+        assert_eq!(handle(&context, 0, Request::SaveBlock { block: changed }).0, Response::Done);
+        let running = &overview(&context).running[0];
+        assert_eq!(running.name, "Renamed");
+        assert_eq!(running.lists[0].entries.filters, vec!["b.com".to_string()]);
+        // A lock is not added to a block that runs, and it cannot be left with nothing to block.
+        let mut locked = block("a", &["b"]);
+        locked.lock = Lock::Duration { duration: "1h".into() };
+        assert!(failed(handle(&context, 0, Request::SaveBlock { block: locked }).0));
+        assert!(failed(handle(&context, 0, Request::SaveBlock { block: block("a", &[]) }).0));
+        // Deleting it ends it.
+        assert_eq!(handle(&context, 0, Request::DeleteBlock { id: "a".into() }).0, Response::Done);
+        assert!(overview(&context).running.is_empty() && overview(&context).blocks.is_empty());
+    }
+
+    /// A schedule that is not on right now by the clock the block list goes by (UTC): one span of ten
+    /// minutes today, well away from now; `later` puts it somewhere else, equally away from now.
+    fn quiet_now(context: &Context, id: &str, later: bool) -> Condition {
+        use crate::condition::Rule;
+        use crate::localtime::Zone;
+        use crate::schedule::{Span, Week};
+        let now = Zone::fixed(0).local(context.blocklist.now()).unwrap();
+        let start = (if now.minute < 700 { 800 } else { 100 }) + (if later { 200 } else { 0 });
+        let mut week = Week::default();
+        week.days[now.weekday] = vec![Span(start, start + 10)];
+        Condition { id: id.into(), name: format!("Quiet {id}"), rule: Rule::Schedule { week } }
+    }
+
+    /// A block locked by the condition `gate`, which is not on now: it runs, and is free.
+    fn run_free(context: &Context) {
+        assert_eq!(handle(context, 0, Request::SaveList { list: block_list("social", &["youtube.com"]) }).0, Response::Done);
+        assert_eq!(handle(context, 0, Request::SaveCondition { condition: quiet_now(context, "gate", false) }).0, Response::Done);
+        let mut work = block("w", &["social"]);
+        work.lock = Lock::Condition { condition: "gate".into() };
+        assert_eq!(handle(context, 0, Request::SaveBlock { block: work }).0, Response::Done);
+        assert_eq!(handle(context, 0, Request::Start { id: "w".into() }).0, Response::Done);
+        assert!(!overview(context).running[0].locked);
+    }
+
+    #[test]
+    fn a_lock_condition_that_is_off_can_be_changed_and_one_that_locks_can_only_get_stricter() {
+        let context = context("free-lock");
+        run_free(&context);
+        // Off, so the block could be stopped now: the condition may change in any direction.
+        assert_eq!(handle(&context, 0, Request::SaveCondition { condition: quiet_now(&context, "gate", true) }).0, Response::Done);
+        assert!(!overview(&context).running[0].locked);
+        // Switched on, it locks the block at once, and from then on can only get more times.
+        assert_eq!(handle(&context, 0, Request::SaveCondition { condition: weekly("gate", "daily") }).0, Response::Done);
+        assert!(overview(&context).running[0].locked);
+        assert!(failed(handle(&context, 0, Request::SaveCondition { condition: quiet_now(&context, "gate", false) }).0));
+        // And nothing locked is deleted, nor ended by an import.
+        assert!(failed(handle(&context, 0, Request::DeleteCondition { id: "gate".into() }).0));
+        assert!(failed(handle(&context, 0, Request::DeleteBlock { id: "w".into() }).0));
+        assert!(failed(handle(&context, 0, Request::DeleteList { id: "social".into() }).0));
+        let library = overview(&context).library();
+        assert!(failed(handle(&context, 0, Request::Import { library }).0));
+        assert_eq!(overview(&context).running.len(), 1);
+    }
+
+    #[test]
+    fn deleting_the_lock_condition_of_a_block_that_is_free_leaves_it_with_no_lock() {
+        let context = context("free-lock-deleted");
+        run_free(&context);
+        assert_eq!(handle(&context, 0, Request::DeleteCondition { id: "gate".into() }).0, Response::Done);
+        let running = &overview(&context).running[0];
+        assert!(!running.locked && running.lock_condition.is_none());
+        assert_eq!(overview(&context).blocks[0].lock, Lock::None);
     }
 
     #[test]
@@ -964,9 +1091,9 @@ mod tests {
     }
 
     #[test]
-    fn importing_waits_until_no_block_runs_and_copies_need_not() {
+    fn importing_waits_until_no_block_is_locked_and_ends_the_others() {
         let context = context("import");
-        assert_eq!(run(&context, definition("a", &["a.com"])), Response::Done);
+        assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
         let library = overview(&context).library();
         assert!(failed(handle(&context, 0, Request::Import { library: library.clone() }).0));
         // A copy of the running block, or of its list, is not running.
@@ -976,8 +1103,12 @@ mod tests {
         assert_eq!(handle(&context, 0, Request::Duplicate { kind: Kind::List, id: list, new_id: "l2".into() }).0, Response::Done);
         assert_eq!(overview(&context).running.len(), 1);
 
-        assert_eq!(handle(&context, 0, Request::Stop { id: "a".into(), password: None, text: None }).0, Response::Done);
+        // A block that runs without a lock does not stand in the way, and ends with the import.
+        let context = self::context("import-unlocked");
+        assert_eq!(run(&context, definition("a", &["a.com"])), Response::Done);
+        let library = overview(&context).library();
         assert_eq!(handle(&context, 0, Request::Import { library }).0, Response::Done);
+        assert!(overview(&context).running.is_empty());
         assert_eq!(overview(&context).blocks.len(), 1);
     }
 }

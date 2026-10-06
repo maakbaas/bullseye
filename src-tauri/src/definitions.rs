@@ -886,7 +886,7 @@ pub mod tests {
 
     #[test]
     fn the_settings_of_other_lock_methods_are_kept() {
-        let definitions = Definitions::at(Some(path("kept")));
+        let definitions = Definitions::at(Some(path("kept-lock-settings")));
         definitions.save_list(block_list("l", &["a.com"])).unwrap();
         let with = |lock: Lock| Definition { lock, ..block("b", &["l"]) };
         definitions.save_block(with(Lock::Duration { duration: "5m".into() })).unwrap();

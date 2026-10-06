@@ -159,8 +159,9 @@ Moving to another computer:
                            Export in Settings does. Password locks are in it without their
                            password.
   import <file> [--yes]    Replace every block list, condition and block with those in a settings
-                           file, as Import in Settings does; not while a block runs. A block with
-                           a password lock comes without a lock. Asks first, unless --yes.
+                           file, as Import in Settings does; not while a block is locked, and
+                           blocks that run unlocked end with it. A block with a password lock
+                           comes without a lock. Asks first, unless --yes.
 
 Other:
   drives [--json]          The flash drives connected, by name and serial number, for

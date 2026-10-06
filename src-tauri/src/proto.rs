@@ -54,7 +54,7 @@ pub enum Request {
     /// Copies a block, block list or condition as `new_id`, named after it with a number.
     Duplicate { kind: Kind, id: String, new_id: String },
     /// Replaces every block list, condition and block with these, from a settings file (Import).
-    /// Refused while a block runs.
+    /// Refused while a block is locked; blocks that run unlocked end with it.
     Import { library: Library },
     /// Starts the block defined as `id`, as it is defined now.
     Start { id: String },

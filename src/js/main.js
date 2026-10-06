@@ -134,6 +134,7 @@ $("import").addEventListener("click", async () => {
         blocks: t("settings.importBlocks", { n: blocks }),
       }),
     ];
+    if (overview.running.length) body.push(t("settings.importStops"));
     if (unlocked.length) body.push(t("settings.importUnlocked", { n: unlocked.length, names: joined(unlocked.map(quoted)).join("") }));
     const sure = await ask({ heading: t("settings.importHeading"), body: body.join(" "), action: t("settings.importAction"), kind: "danger" });
     if (!sure) return;

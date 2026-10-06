@@ -538,21 +538,25 @@ impl Blocklist {
         inner.blocks.iter().filter(|b| b.locked(now).is_some()).map(|b| b.id.clone()).collect()
     }
 
-    /// Gives the running block `id` the block lists and conditions its definition has now, after
-    /// one of them was changed: all of them, its lock condition's rule too. Its lock, its time zone
-    /// and what else it started with stay. Whether the change may be made is the handler's to
-    /// judge (`handler::edit_shared`); nothing happens if the block does not run.
-    pub fn refresh(&self, id: &str, parts: Vec<Part>, condition: Option<Rule>, lock_rule: Option<Rule>) {
+    /// Gives the running block `id` its name, block lists and conditions as its definition has them
+    /// now, after it or one of them was changed: all of them, its lock condition's rule too. Its
+    /// lock (but for a condition lock, which follows its condition), its time zone and what else it started with stay. Whether the change may be made is
+    /// the handler's to judge (`handler::edit_shared`, `edit_block`); nothing happens if the block
+    /// does not run.
+    pub fn refresh(&self, id: &str, name: &str, parts: Vec<Part>, condition: Option<Rule>, lock_rule: Option<Rule>) {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
         let Some(block) = inner.blocks.iter_mut().find(|b| b.id == id) else { return };
+        block.name = name.to_string();
         block.parts = parts
             .into_iter()
             .map(|p| RunPart { name: p.name, enforced: Enforced { lists: Arc::new(p.lists), enforcers: p.enforcers } })
             .collect();
         block.condition = condition;
-        if let (RunLock::Condition { condition }, Some(rule)) = (&mut block.lock, lock_rule) {
-            *condition = rule;
+        // A condition lock follows its condition: its rule, or no lock once the condition is deleted
+        // (it was free, or the change would not have been made).
+        if matches!(block.lock, RunLock::Condition { .. }) {
+            block.lock = lock_rule.map_or(RunLock::None, |condition| RunLock::Condition { condition });
         }
         self.save_all(&mut inner);
     }

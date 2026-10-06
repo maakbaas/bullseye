@@ -183,7 +183,7 @@ struct Opened {
 }
 
 /// Import: replaces every block list, condition and block with those in the settings file at
-/// `path`. Refused while a block runs.
+/// `path`. Refused while a block is locked; blocks that run unlocked end with it.
 #[tauri::command]
 fn import_settings(path: String, remote: State<Remote>) -> Result<(), String> {
     let library = definitions::read_settings(std::path::Path::new(&path))?;

@@ -101,7 +101,7 @@ function makeTile(kind, id) {
       el("cds-overflow-menu-item", { "data-action": "delete", danger: true }, t("common.delete")),
     ),
   );
-  // In the menu's place while it cannot be changed: a running block.
+  // In the menu's place while it cannot be changed: a block that is locked.
   const lock = el("span", { class: "lock", role: "img", "aria-label": t("common.locked"), title: t("common.locked") }, carbonIcon("locked"));
   const name = el("h2", { class: "cds--type-productive-heading-03" });
   const tag = el("cds-tag", { size: "md" });
@@ -166,8 +166,8 @@ function renderTiles(kind) {
       parts.tag.hidden = !kindOf.limited(item);
       parts.tag.setAttribute("type", "blue");
       parts.tag.textContent = t("common.inUse");
-      parts.deleteItem.disabled = kindOf.inUse(item);
     }
+    parts.deleteItem.disabled = kindOf.inUse(item);
   });
   $("empty").hidden = shown.length > 0;
 }
@@ -273,7 +273,7 @@ function renderBlockControls(parts, block) {
   parts.controls.hidden = !!running;
   if (block.lock && !parts.choosing && parts.method.value !== block.lock.method) parts.method.value = block.lock.method;
   // Settings to change (in the menu): all locks but No lock.
-  parts.lockItem.hidden = !LOCKS[parts.method.value] || !LOCKS[parts.method.value].form;
+  parts.lockItem.hidden = !!running || !LOCKS[parts.method.value] || !LOCKS[parts.method.value].form;
   const busy = parts.toggle.dataset.busy === "1";
   const action = running ? "stop" : "start";
   if (parts.toggle.dataset.action !== action) {
@@ -366,7 +366,10 @@ async function confirmDelete(kind, id) {
   if (!item) return;
   const sure = await ask({
     heading: t("delete.heading", { name: quoted(item.name), noun: kindOf.noun }),
-    body: [t("delete.body", { name: quoted(item.name), noun: kindOf.noun }), ...(kind === "blocks" ? [] : await fallout(id))].join(" "),
+    body: [
+      t("delete.body", { name: quoted(item.name), noun: kindOf.noun }),
+      ...(kind === "blocks" ? (runningOf(id) ? [t("delete.stopsIt")] : []) : await fallout(id)),
+    ].join(" "),
     action: t("common.delete"),
     kind: "danger",
   });
