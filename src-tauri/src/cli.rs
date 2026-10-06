@@ -1096,27 +1096,27 @@ fn state(running: Option<&Running>) -> String {
     let Some(running) = running else { return "Not running".into() };
     let mut parts = vec!["Running".to_string()];
     parts.push(match (running.enforcing, &running.condition_change_words) {
-        (true, None) => "blocking now".into(),
-        (true, Some(change)) => format!("blocking now, inactive in {change}"),
-        (false, Some(change)) => format!("inactive by its condition, active in {change}"),
-        (false, None) => "inactive by its condition".into(),
+        (true, None) => "active".into(),
+        (true, Some(change)) => format!("active for the next {change}"),
+        (false, Some(change)) => format!("inactive for the next {change}"),
+        (false, None) => "inactive".into(),
     });
     parts.push(match (&running.remaining_words, running.locked) {
         _ if running.password => "locked with a password".into(),
-        _ if running.lock_text.is_some() => "locked until its text is typed in".into(),
+        _ if running.lock_text.is_some() => "locked until its text is typed".into(),
         _ if running.until_restart => "locked until Windows restarts".into(),
-        (Some(left), _) => format!("locked, {left} left"),
+        (Some(left), _) => format!("locked for the next {left}"),
         (None, true) => match (&running.lock_condition, &running.lock_change_words) {
-            (Some(Rule::FlashDrive { drive, .. }), _) => format!("locked, the flash drive \"{drive}\" is not connected"),
-            (_, Some(change)) => format!("locked by its lock condition, for another {change}"),
-            (_, None) => "locked by its lock condition".into(),
+            (Some(Rule::FlashDrive { drive, .. }), _) => format!("locked until the flash drive \"{drive}\" is connected"),
+            (_, Some(change)) => format!("locked for the next {change}"),
+            (_, None) => "locked".into(),
         },
         (None, false) if running.lock_condition.is_some() => match (&running.lock_condition, &running.lock_change_words) {
-            (Some(Rule::FlashDrive { drive, .. }), _) => format!("can be stopped while the flash drive \"{drive}\" is connected"),
-            (_, Some(change)) => format!("can be stopped, locked again in {change}"),
-            (_, None) => "can be stopped".into(),
+            (Some(Rule::FlashDrive { drive, .. }), _) => format!("unlocked while the flash drive \"{drive}\" is connected"),
+            (_, Some(change)) => format!("unlocked for the next {change}"),
+            (_, None) => "unlocked".into(),
         },
-        (None, false) => "not locked".into(),
+        (None, false) => "no active lock".into(),
     });
     parts.join(" · ")
 }
@@ -1420,7 +1420,7 @@ mod tests {
         assert!(warning.contains("while its lock condition \"Work hours\" is active."), "{warning}");
         assert!(!warning.contains("08:00"), "{warning}");
         let timed = Definition { lock: Lock::Duration { duration: "2h5m".into() }, ..overview.blocks[0].clone() };
-        assert!(lock_warning(&overview, &timed).unwrap().contains("for 2:05 hours."));
+        assert!(lock_warning(&overview, &timed).unwrap().contains("for 2 hours and 5 minutes."));
         assert_eq!(lock_warning(&overview, &Definition { lock: Lock::None, ..timed }), None);
     }
 
@@ -1597,10 +1597,7 @@ mod tests {
         });
         overview.clock_synced = false;
         let text = describe_overview(&overview);
-        assert!(
-            text.contains("  Work  Running · inactive by its condition, active in 1:00 hours · can be stopped, locked again in 1:00 hours"),
-            "{text}"
-        );
+        assert!(text.contains("  Work  Running · inactive for the next 1 hour · unlocked for the next 1 hour"), "{text}");
         assert!(text.contains("Block lists:\n  Social  used by Work"), "{text}");
         assert!(text.contains("Conditions:\n  Work hours  Mon-Fri 08:00-17:00"), "{text}");
         assert!(text.contains("Waiting for internet time"), "{text}");

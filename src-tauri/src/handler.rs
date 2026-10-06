@@ -1028,10 +1028,10 @@ mod tests {
         assert_eq!((status.delay, status.delay_words.as_str(), status.remaining), (0, "0 seconds", Some(0)));
         assert_eq!(handle(&context, 0, Request::SetUnlockDelay { delay: "1h 30m".into() }).0, Response::Done);
         let status = overview(&context).unlock;
-        assert_eq!((status.delay, status.delay_words.as_str(), status.remaining), (5400, "1:30 hours", None));
+        assert_eq!((status.delay, status.delay_words.as_str(), status.remaining), (5400, "1 hour and 30 minutes", None));
         assert_eq!(handle(&context, 0, Request::AskForUnlock).0, Response::Done);
         let status = overview(&context).unlock;
-        assert_eq!((status.remaining, status.remaining_words.as_deref()), (Some(5400), Some("1:30 hours")));
+        assert_eq!((status.remaining, status.remaining_words.as_deref()), (Some(5400), Some("1 hour and 30 minutes")));
     }
 
     #[test]
@@ -1067,9 +1067,9 @@ mod tests {
         let Response::Failed(why) = handle(&context, 0, Request::Stop { id: "w".into(), password: None, text: None }).0 else {
             panic!("stopped")
         };
-        assert!(why.contains("2:05 hours") || why.contains("2:04 hours"), "{why}");
+        assert!(why.contains("2 hours and 5 minutes") || why.contains("2 hours and 4 minutes"), "{why}");
         let Response::Refused(why) = handle(&context, 0, Request::PrepareUninstall).0 else { panic!("not refused") };
-        assert!(why.contains("2:0"), "{why}");
+        assert!(why.contains("2 hours"), "{why}");
         // A weekly schedule with no time in it is never active: not even saved.
         let never = Condition {
             id: "n".into(),

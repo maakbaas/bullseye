@@ -289,10 +289,12 @@ impl Block {
         let name = &self.name;
         match &self.lock {
             RunLock::None => None,
-            RunLock::Ends { .. } => self.remaining(now).map(|left| format!("“{name}” is locked for another {}", duration::countdown(left))),
+            RunLock::Ends { .. } => {
+                self.remaining(now).map(|left| format!("“{name}” is locked for the next {}", duration::countdown(left)))
+            }
             // Like `in_condition`, locked if it cannot be known.
             RunLock::Condition { condition } => condition.active(&self.zone, now).then(|| {
-                let until = self.lock_change(now).map(|s| format!(", for another {}", duration::countdown(s))).unwrap_or_default();
+                let until = self.lock_change(now).map(|s| format!(" for the next {}", duration::countdown(s))).unwrap_or_default();
                 match condition {
                     Rule::Schedule { .. } => format!("“{name}” is locked by its lock schedule{until}"),
                     Rule::FlashDrive { drive, .. } => format!("“{name}” is locked until the flash drive “{drive}” is connected"),
@@ -1035,11 +1037,11 @@ mod tests {
         assert!(!a.enforcing);
         // In words too, for the window and the CLI.
         assert!(
-            a.remaining_words.as_deref().is_some_and(|words| words.starts_with("1:00 hours") || words.starts_with("59:")),
+            a.remaining_words.as_deref().is_some_and(|words| words.starts_with("1 hour") || words.starts_with("59 minutes")),
             "{:?}",
             a.remaining_words
         );
-        assert!(a.condition_change_words.as_deref().is_some_and(|words| words.starts_with("14:") || words.starts_with("15:")));
+        assert!(a.condition_change_words.as_deref().is_some_and(|words| words.starts_with("14 hours") || words.starts_with("15 hours")));
         // Rounded up, and the start took a moment of the clock: a little over the hour.
         assert!(a.remaining.is_some_and(|left| (3590..=3610).contains(&left)));
         // Active again on Tuesday at 08:00.
@@ -1063,7 +1065,7 @@ mod tests {
         let locks = || StartLock::Condition(office.clone().unwrap());
         list.start("a", "Work", vec![part(sites(&["a.com"]), Enforcers::default())], None, locks()).unwrap();
         let why = list.stop("a", false).unwrap_err();
-        assert!(why.contains("locked by its lock schedule, for another 1:00 hours") || why.contains("for another 59:"), "{why}");
+        assert!(why.contains("locked by its lock schedule for the next 1 hour") || why.contains("for the next 59 minutes"), "{why}");
         let a = running(&list, "a");
         assert!(a.locked && a.lock_condition == office && a.enforcing);
         assert!(a.lock_change.is_some_and(|left| (3590..=3600).contains(&left)), "{:?}", a.lock_change);

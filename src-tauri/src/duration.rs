@@ -1,5 +1,5 @@
 //! Durations as people type and read them. Typed short (`5s`, `10m`, `3h`, `1d`, or several
-//! together: `2h 5m`, `1d12h`) or in words (`2 hours 5 minutes`); shown short (`countdown`), wherever the app or the CLI shows one.
+//! together: `2h 5m`, `1d12h`) or in words (`2 hours 5 minutes`); shown by `countdown`, wherever the app or the CLI shows one.
 
 use std::time::Duration;
 
@@ -43,22 +43,18 @@ pub fn parse(text: &str) -> Result<Option<Duration>, String> {
     Ok(Some(Duration::from_secs(total)))
 }
 
-/// Seconds left, as short as a countdown wants: never more than two units, the smaller one
-/// dropped from a day on and written as a clock below: `3 days`, `1 day and 2 hours`, `2:05 hours`,
-/// `5:03 minutes`, `42 seconds`. Seconds are hidden from an hour on (the minutes round down).
+/// Seconds left, as short as a countdown wants: the largest unit that is not zero and the one
+/// below it if that is not zero either, so never more than two units and no seconds from an hour
+/// on: `3 days`, `1 day and 2 hours`, `2 hours and 5 minutes`, `5 minutes and 3 seconds`,
+/// `42 seconds`. Every time the window and the CLI show is written by this.
 pub fn countdown(seconds: u64) -> String {
-    let (days, hours, minutes) = (seconds / 86400, seconds % 86400 / 3600, seconds % 3600 / 60);
-    let plural = |n: u64, unit: &str| format!("{n} {unit}{}", if n == 1 { "" } else { "s" });
-    if days > 0 {
-        return if hours > 0 { format!("{} and {}", plural(days, "day"), plural(hours, "hour")) } else { plural(days, "day") };
+    let units = [(seconds / 86400, "day"), (seconds % 86400 / 3600, "hour"), (seconds % 3600 / 60, "minute"), (seconds % 60, "second")];
+    let plural = |(n, unit): (u64, &str)| format!("{n} {unit}{}", if n == 1 { "" } else { "s" });
+    let first = units.iter().position(|&(n, _)| n > 0).unwrap_or(units.len() - 1);
+    match units.get(first + 1) {
+        Some(&next) if next.0 > 0 => format!("{} and {}", plural(units[first]), plural(next)),
+        _ => plural(units[first]),
     }
-    if hours > 0 {
-        return format!("{hours}:{minutes:02} hours");
-    }
-    if minutes > 0 {
-        return format!("{minutes}:{:02} minutes", seconds % 60);
-    }
-    plural(seconds, "second")
 }
 
 #[cfg(test)]
@@ -70,15 +66,18 @@ mod tests {
         assert_eq!(countdown(0), "0 seconds");
         assert_eq!(countdown(1), "1 second");
         assert_eq!(countdown(59), "59 seconds");
-        assert_eq!(countdown(60), "1:00 minutes");
-        assert_eq!(countdown(303), "5:03 minutes");
-        assert_eq!(countdown(3599), "59:59 minutes");
-        assert_eq!(countdown(3600), "1:00 hours");
-        assert_eq!(countdown(2 * 3600 + 5 * 60 + 59), "2:05 hours");
-        assert_eq!(countdown(86400 - 1), "23:59 hours");
+        assert_eq!(countdown(60), "1 minute");
+        assert_eq!(countdown(303), "5 minutes and 3 seconds");
+        assert_eq!(countdown(3599), "59 minutes and 59 seconds");
+        assert_eq!(countdown(3600), "1 hour");
+        assert_eq!(countdown(3601), "1 hour");
+        assert_eq!(countdown(2 * 3600 + 5 * 60 + 59), "2 hours and 5 minutes");
+        assert_eq!(countdown(13 * 3600 + 7 * 60 + 30), "13 hours and 7 minutes");
+        assert_eq!(countdown(86400 - 1), "23 hours and 59 minutes");
         assert_eq!(countdown(86400), "1 day");
         assert_eq!(countdown(86400 + 7200 + 60), "1 day and 2 hours");
         assert_eq!(countdown(3 * 86400 + 59), "3 days");
+        assert_eq!(countdown(3 * 86400 + 600), "3 days");
     }
 
     #[test]

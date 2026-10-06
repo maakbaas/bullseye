@@ -59,21 +59,19 @@ function summaryOf(kind, item) {
   const change = running.lock_change_words;
   const lockIcon = running.locked ? "locked" : "unlocked";
   const lockRule = running.lock_condition;
-  // A schedule is named as one; a combination is a condition.
-  const lockWord = lockRule && lockRule.type === "combined" ? "Condition" : "Schedule";
   if (running.password) parts.push([lockIcon, t("blocks.tile.lockedPassword")]);
   else if (running.lock_text) parts.push([lockIcon, t("blocks.tile.lockedText")]);
   else if (running.until_restart) parts.push([lockIcon, t("blocks.tile.lockedRestart")]);
-  else if (running.remaining_words) parts.push([lockIcon, t("blocks.tile.lockedTimer", { left: running.remaining_words })]);
+  else if (running.remaining_words) parts.push([lockIcon, t("blocks.tile.lockedFor", { left: running.remaining_words })]);
   else if (lockRule && lockRule.type === "flash_drive") parts.push([lockIcon, t(running.locked ? "blocks.tile.lockedDrive" : "blocks.tile.freeDrive", { drive: quoted(lockRule.drive) })]);
-  else if (lockRule && running.locked) parts.push([lockIcon, change ? t(`blocks.tile.locked${lockWord}`, { left: change }) : t(`blocks.tile.locked${lockWord}Open`)]);
-  else if (lockRule) parts.push([lockIcon, change ? t(`blocks.tile.free${lockWord}`, { change }) : t(`blocks.tile.free${lockWord}Open`)]);
+  else if (lockRule && running.locked) parts.push([lockIcon, change ? t("blocks.tile.lockedFor", { left: change }) : t("blocks.tile.locked")]);
+  else if (lockRule) parts.push([lockIcon, change ? t("blocks.tile.unlockedFor", { change }) : t("blocks.tile.unlocked")]);
   else parts.push([lockIcon, t("blocks.tile.notLocked")]);
   // Whether it enforces right now is always said, whatever its condition.
   const next = running.condition_change_words;
   const drive = running.condition && running.condition.type === "flash_drive" ? quoted(running.condition.drive) : null;
-  if (running.enforcing) parts.push(["time", next ? t("blocks.tile.activeNow", { change: next }) : drive ? t("blocks.tile.activeNowDrive", { drive }) : t("blocks.tile.activeNowOpen")]);
-  else parts.push(["time", next ? t("blocks.tile.inactiveUntil", { change: next }) : drive ? t("blocks.tile.inactiveDrive", { drive }) : t("blocks.tile.inactive")]);
+  if (running.enforcing) parts.push(["time", next ? t("blocks.tile.onFor", { change: next }) : t("blocks.tile.on")]);
+  else parts.push(["time", next ? t("blocks.tile.offFor", { change: next }) : drive ? t("blocks.tile.offDrive", { drive }) : t("blocks.tile.off")]);
   return parts;
 }
 

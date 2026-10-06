@@ -48,7 +48,7 @@ A running block keeps what it was started with: while it runs, it cannot be chan
 | `bullseye-cli list delete <list> [--yes]` | **Delete** a block list |
 | `bullseye-cli list duplicate <list>` | **Duplicate** a block list |
 | `bullseye-cli condition show <condition>` | a condition's tile and its editor |
-| `bullseye-cli condition new <name> (--times <times> \| --drive <drive> \| --any <condition>... \| --all <condition>...)` | **New condition**, of the type Weekly schedule, Flash drive or Combination of conditions, then **Save** |
+| `bullseye-cli condition new <name> (--times <times> \| --drive <drive> \| --any <condition>... \| --all <condition>...)` | **New condition**, of the type Weekly schedule, Flash drive or Combination, then **Save** |
 | `bullseye-cli condition edit <condition> [--name <name>] [--times <times> \| --drive <drive> \| --any <condition>... \| --all <condition>...]` | **Edit** a condition, then **Save** |
 | `bullseye-cli condition delete <condition> [--yes]` | **Delete** a condition |
 | `bullseye-cli condition duplicate <condition>` | **Duplicate** a condition |
@@ -131,8 +131,8 @@ bullseye-cli condition edit "Work hours" --times "Mon-Fri 08:00-17:00; Sat 10:00
 ```
 > bullseye-cli status
 Blocks:
-  Work     Running · inactive by its condition, active in 15 hours · can be stopped, locked again in 15 hours
-  Evening  Running · blocking now · locked, 1 hour 2 minutes 3 seconds left
+  Work     Running · inactive for the next 15 hours · unlocked for the next 15 hours
+  Evening  Running · active · locked for the next 1 hour and 2 minutes
 Block lists:
   Social media  used by Work
   Games         used by Work, Evening
