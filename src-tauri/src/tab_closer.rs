@@ -46,6 +46,11 @@ const RECHECK: Duration = Duration::from_secs(10);
 /// The wait after a pass that wants to look again soon: a window not yet known to be an app window,
 /// or a page read from the address bar that must be seen twice before it is closed.
 const QUICK: Duration = Duration::from_millis(150);
+/// After something was closed the passes keep coming at `QUICK` for this long: the browser shows the
+/// next tab at once, but exposes its page a moment later and raises no event for it (and Firefox
+/// raises none for tabs in the background at all), so a flood of blocked tabs would otherwise go one
+/// per `INTERVAL`.
+const BURST: Duration = Duration::from_secs(3);
 /// How long two reads of an address-bar page must be apart to count as two.
 const SETTLE: Duration = Duration::from_millis(80);
 /// A window with no tab strip is an app window only when that has been so for this long, on two
@@ -101,7 +106,8 @@ pub fn spawn(remote: Remote) {
             // Until the next second, or sooner when something worth a look happened (`wake.rs`);
             // a burst of those is one pass, after a short pause.
             thread::sleep(MIN_GAP.saturating_sub(start.elapsed()));
-            let wait = if closer.quick { QUICK } else { INTERVAL };
+            let bursting = closer.burst_until.is_some_and(|until| Instant::now() < until);
+            let wait = if closer.quick || bursting { QUICK } else { INTERVAL };
             closer.woken = wake::wait(wait.saturating_sub(start.elapsed()));
         }
     });
@@ -127,6 +133,8 @@ struct Closer {
     pending: HashMap<isize, Pending>,
     /// Whether the pass just made wants another soon (`QUICK`).
     quick: bool,
+    /// Until when passes follow each other at `QUICK`, after a close (`BURST`).
+    burst_until: Option<Instant>,
     /// When each slow step was last written to the log (`Closer::slow`).
     slow_logged: HashMap<&'static str, Instant>,
 }
@@ -237,6 +245,7 @@ impl Closer {
             doubts: HashMap::new(),
             pending: HashMap::new(),
             quick: false,
+            burst_until: None,
             slow_logged: HashMap::new(),
         }
     }
@@ -288,7 +297,10 @@ impl Closer {
                 Layout::App => {
                     if let Some(page) = app_page {
                         match close_window(&browser.window) {
-                            Ok(()) => note("app", &format!("closed the app window of {} ({})", page.url, self.woken.describe())),
+                            Ok(()) => {
+                                note("app", &format!("closed the app window of {} ({})", page.url, self.woken.describe()));
+                                self.closed_one();
+                            }
                             Err(e) => eprintln!("tab_closer: failed to close the app window of {}: {e}", page.url),
                         }
                     }
@@ -305,6 +317,11 @@ impl Closer {
         self.pending.retain(|handle, _| seen.contains(handle));
         self.windows.retain(|handle, _| seen.contains(handle));
         Ok(())
+    }
+
+    /// Something was just closed: look again soon, and keep doing so for a while (`BURST`).
+    fn closed_one(&mut self) {
+        self.burst_until = Some(Instant::now() + BURST);
     }
 
     /// Forgets what is cached of a window, so it is looked at again from the start.
@@ -402,7 +419,10 @@ impl Closer {
         self.slow("closing a tab", started);
         self.pending.remove(&handle);
         match closed {
-            Ok(()) => note("app", &format!("closed {} ({})", page.url, self.woken.describe())),
+            Ok(()) => {
+                note("app", &format!("closed {} ({})", page.url, self.woken.describe()));
+                self.closed_one();
+            }
             Err(e) => {
                 eprintln!("tab_closer: failed to close {}: {e}", page.url);
                 // The cached strip may have gone stale: look for it again.
@@ -417,7 +437,10 @@ impl Closer {
     fn tick_firefox(&mut self, handle: isize, active: &Active) {
         let Some(window) = self.firefox(handle) else { return };
         match self.close_blocked_firefox_tab(&window, active) {
-            Ok(Some(url)) => note("app", &format!("closed {url} in Firefox ({})", self.woken.describe())),
+            Ok(Some(url)) => {
+                note("app", &format!("closed {url} in Firefox ({})", self.woken.describe()));
+                self.closed_one();
+            }
             Ok(None) => {}
             Err(e) => {
                 // Cached elements went stale, or the tab would not close; look again next tick.
