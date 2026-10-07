@@ -5,13 +5,14 @@ import { durationText, el, invalid, invoke, localDate, overview, quoted, editHre
 
 // A condition lock in words, the condition's name (`name`, a link to it) worded as its own line on a
 // tile does. Not running (`state` null): "Locks while …". Running: the state it is in now, with when it
-// changes if that is known, and a flash drive says it as the key: "Locked until … is plugged in".
+// changes if that is known: "Locked during …" / "Unlocked outside …" for a schedule, "Locked since … is unplugged" for a drive.
 function conditionLockText(wording, name, state) {
   const kind = { drive: "Drive", true: "Combined", during: "" }[wording];
   if (!state) return tn(`locks.condition.describe${kind}`, { name });
   const { locked, change } = state;
   if (wording === "drive") return tn(`locks.condition.${locked ? "lockedDrive" : "unlockedDrive"}`, { name });
-  return tn(`locks.condition.${locked ? "locked" : "unlocked"}By${change ? "For" : ""}`, { name, change });
+  if (wording === "true") return tn(`locks.condition.${locked ? "lockedTrue" : "unlockedFalse"}`, { name });
+  return tn(`locks.condition.${locked ? "lockedDuring" : "unlockedOutside"}${change ? "For" : ""}`, { name, change });
 }
 
 // How a started block is kept from being stopped (`lock::Lock`), by `method`. Set on the

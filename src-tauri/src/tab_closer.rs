@@ -43,6 +43,17 @@ const INTERVAL: Duration = Duration::from_secs(1);
 /// The least time between two passes, when events ask for one sooner.
 const MIN_GAP: Duration = Duration::from_millis(100);
 const RECHECK: Duration = Duration::from_secs(10);
+/// The wait after a pass that wants to look again soon: a window not yet known to be an app window,
+/// or a page read from the address bar that must be seen twice before it is closed.
+const QUICK: Duration = Duration::from_millis(150);
+/// How long two reads of an address-bar page must be apart to count as two.
+const SETTLE: Duration = Duration::from_millis(80);
+/// A window with no tab strip is an app window only when that has been so for this long, on two
+/// passes at least (`judge`).
+const APP_AFTER: Duration = Duration::from_secs(1);
+/// A step that takes longer than this is written to `app.log` (at most once in `SLOW_EVERY`).
+const SLOW: Duration = Duration::from_millis(50);
+const SLOW_EVERY: Duration = Duration::from_secs(10);
 
 /// How long a program is given to close when asked to, before it is ended.
 const KILL_AFTER: Duration = Duration::from_secs(3);
@@ -60,6 +71,7 @@ pub fn spawn(remote: Remote) {
         let mut closer = Closer::new(automation);
         loop {
             let start = Instant::now();
+            closer.quick = false;
             if let Some(active) = remote.active() {
                 // With no entries there is nothing for these to match, so skip the UI Automation work.
                 if active.watches_sites() {
@@ -89,7 +101,8 @@ pub fn spawn(remote: Remote) {
             // Until the next second, or sooner when something worth a look happened (`wake.rs`);
             // a burst of those is one pass, after a short pause.
             thread::sleep(MIN_GAP.saturating_sub(start.elapsed()));
-            closer.woken = wake::wait(INTERVAL.saturating_sub(start.elapsed()));
+            let wait = if closer.quick { QUICK } else { INTERVAL };
+            closer.woken = wake::wait(wait.saturating_sub(start.elapsed()));
         }
     });
 }
@@ -106,6 +119,79 @@ struct Closer {
     titles_asked: HashMap<isize, Instant>,
     /// What started this pass, for the log (`wake::Woken`).
     woken: wake::Woken,
+    /// How each Chromium window is laid out, found once (`Closer::layout`): never searched for again.
+    layouts: HashMap<isize, Layout>,
+    /// Windows that showed no tab strip so far, and for how long (`judge`).
+    doubts: HashMap<isize, Doubt>,
+    /// A blocked page read from a window's address bar, waiting to be seen again before it is closed.
+    pending: HashMap<isize, Pending>,
+    /// Whether the pass just made wants another soon (`QUICK`).
+    quick: bool,
+    /// When each slow step was last written to the log (`Closer::slow`).
+    slow_logged: HashMap<&'static str, Instant>,
+}
+
+/// How a Chromium window is laid out. A window never changes from one to the other, so it is
+/// worked out once and kept.
+#[derive(Clone)]
+enum Layout {
+    /// Has a tab strip (the element that holds the tabs): tabs are closed one at a time.
+    Tabs(UIElement),
+    /// Has none (`chrome --app=<url>`, a popup): its page goes with the whole window.
+    App,
+}
+
+/// What a look for tabs in a window found.
+enum Seen {
+    Tabs,
+    NoTabs,
+    /// Windows could not be asked (busy, a timeout): says nothing.
+    Unknown,
+}
+
+/// A window that showed no tabs, how many passes in a row and since when.
+#[derive(Clone, Copy)]
+struct Doubt {
+    passes: u8,
+    since: Instant,
+}
+
+enum Verdict {
+    Tabs,
+    App,
+    /// Not known yet: what to remember of the doubt.
+    Unsure(Option<Doubt>),
+}
+
+/// Whether a window is an app window, from what was seen of it. A failure to look is no evidence
+/// (it used to count as "no tabs" and closed whole windows), and no tabs counts only when it has
+/// been so on two passes at least and for `APP_AFTER`, as a window being built shows none for a moment.
+fn judge(doubt: Option<Doubt>, seen: Seen, now: Instant) -> Verdict {
+    match seen {
+        Seen::Tabs => Verdict::Tabs,
+        Seen::Unknown => Verdict::Unsure(doubt),
+        Seen::NoTabs => {
+            let doubt = doubt.map_or(Doubt { passes: 1, since: now }, |d| Doubt { passes: d.passes.saturating_add(1), since: d.since });
+            if doubt.passes >= 2 && now.duration_since(doubt.since) >= APP_AFTER {
+                Verdict::App
+            } else {
+                Verdict::Unsure(Some(doubt))
+            }
+        }
+    }
+}
+
+/// A page read from the address bar alone (no title to check it by), with the tab that was
+/// selected when it was read.
+struct Pending {
+    url: String,
+    tab: Vec<i32>,
+    since: Instant,
+}
+
+/// Whether what is seen now is what was seen before, long enough ago to count as a second look.
+fn agrees(pending: Option<&Pending>, url: &str, tab: &[i32], now: Instant) -> bool {
+    pending.is_some_and(|p| p.url == url && p.tab == tab && now.duration_since(p.since) >= SETTLE)
 }
 
 /// Which family a browser window is of, by its window class.
@@ -147,6 +233,20 @@ impl Closer {
             asked: HashMap::new(),
             titles_asked: HashMap::new(),
             woken: wake::Woken::Second,
+            layouts: HashMap::new(),
+            doubts: HashMap::new(),
+            pending: HashMap::new(),
+            quick: false,
+            slow_logged: HashMap::new(),
+        }
+    }
+
+    /// Writes a step that took long to `app.log`, now and then, so slowness can be seen.
+    fn slow(&mut self, what: &'static str, since: Instant) {
+        let took = since.elapsed();
+        if took > SLOW && self.slow_logged.get(what).is_none_or(|last| last.elapsed() >= SLOW_EVERY) {
+            self.slow_logged.insert(what, Instant::now());
+            note("app", &format!("slow: {what} took {} ms", took.as_millis()));
         }
     }
 
@@ -162,40 +262,153 @@ impl Closer {
                 continue;
             }
             let Some(browser) = self.browser(handle) else { continue };
-            let Ok(pages) = self.pages(&browser) else {
+            let started = Instant::now();
+            let pages = self.pages(&browser);
+            self.slow("reading the pages of a window", started);
+            let Ok(pages) = pages else {
                 // Cached elements went stale; look them up again next tick.
-                self.windows.remove(&handle);
+                self.forget(handle);
                 continue;
             };
-            // An app window has no tabs to close: the page goes with its window.
-            if self.is_app_window(&browser, &pages) {
-                if let Some(page) = pages.iter().find(|p| active.blocks_app_window(&p.url)) {
-                    match close_window(&browser.window) {
-                        Ok(()) => note("app", &format!("closed the app window of {} ({})", page.url, self.woken.describe())),
-                        Err(e) => eprintln!("tab_closer: failed to close the app window of {}: {e}", page.url),
-                    }
-                }
+            // Two pages at once is a split view; one is an ordinary tab. An app window's page goes
+            // with its window; a normal window's blocked page is a tab to close.
+            let split_view = pages.len() > 1;
+            let app_page = pages.iter().find(|p| active.blocks_app_window(&p.url));
+            let tab_page = pages.iter().find(|p| active.blocks_page(&p.url, split_view));
+            if app_page.is_none() && tab_page.is_none() {
+                self.pending.remove(&handle);
                 continue;
             }
-            // Two pages at once is a split view; one is an ordinary tab.
-            let split_view = pages.len() > 1;
-            if let Some(page) = pages.iter().find(|p| active.blocks_page(&p.url, split_view)) {
-                // The pages were read a moment ago, and what is shown changes under us: the user
-                // switches tabs, and the browser shows a neighbour as soon as a tab closes, while
-                // its old page may still be exposed for a few milliseconds. So the page is looked
-                // at again just before, and only closed if it is still there as it was.
-                let unchanged = self.pages(&browser).is_ok_and(|now| now.iter().any(|p| p.url == page.url && p.title == page.title));
-                if !unchanged {
-                    continue;
+            // Only now is it worth knowing what the window is.
+            let Some(layout) = self.layout(handle, &browser.window) else {
+                self.quick = true;
+                continue;
+            };
+            match layout {
+                Layout::App => {
+                    if let Some(page) = app_page {
+                        match close_window(&browser.window) {
+                            Ok(()) => note("app", &format!("closed the app window of {} ({})", page.url, self.woken.describe())),
+                            Err(e) => eprintln!("tab_closer: failed to close the app window of {}: {e}", page.url),
+                        }
+                    }
                 }
-                match close_tab(&self.automation, &browser.window, &page.title) {
-                    Ok(()) => note("app", &format!("closed {} ({})", page.url, self.woken.describe())),
-                    Err(e) => eprintln!("tab_closer: failed to close {}: {e}", page.url),
+                Layout::Tabs(strip) => {
+                    if let Some(page) = tab_page {
+                        self.close_blocked_tab(handle, &browser, &strip, page);
+                    }
                 }
             }
         }
+        self.layouts.retain(|handle, _| seen.contains(handle));
+        self.doubts.retain(|handle, _| seen.contains(handle));
+        self.pending.retain(|handle, _| seen.contains(handle));
         self.windows.retain(|handle, _| seen.contains(handle));
         Ok(())
+    }
+
+    /// Forgets what is cached of a window, so it is looked at again from the start.
+    fn forget(&mut self, handle: isize) {
+        self.windows.remove(&handle);
+        self.layouts.remove(&handle);
+        self.doubts.remove(&handle);
+        self.pending.remove(&handle);
+    }
+
+    /// What kind of window this is, found once and kept: with a tab strip, or an app window. None
+    /// while that is not known yet (see `judge`); then the pass is repeated soon.
+    fn layout(&mut self, handle: isize, window: &UIElement) -> Option<Layout> {
+        if let Some(layout) = self.layouts.get(&handle) {
+            return Some(layout.clone());
+        }
+        let started = Instant::now();
+        let (seen, strip) = self.probe(window);
+        self.slow("looking for the tab strip of a window", started);
+        let layout = match judge(self.doubts.get(&handle).copied(), seen, Instant::now()) {
+            Verdict::Tabs => strip.map(Layout::Tabs),
+            Verdict::App => Some(Layout::App),
+            Verdict::Unsure(doubt) => {
+                match doubt {
+                    Some(doubt) => self.doubts.insert(handle, doubt),
+                    None => self.doubts.remove(&handle),
+                };
+                None
+            }
+        };
+        if let Some(layout) = &layout {
+            self.doubts.remove(&handle);
+            self.layouts.insert(handle, layout.clone());
+        }
+        layout
+    }
+
+    /// Looks for the tabs of a window, once: all of them are listed, so that "none" really is none,
+    /// and the parent of the first is the tab strip. The only search of a whole window.
+    fn probe(&self, window: &UIElement) -> (Seen, Option<UIElement>) {
+        let Ok(tab) = is_a_tab(&self.automation) else { return (Seen::Unknown, None) };
+        match window.find_all(TreeScope::Descendants, &tab) {
+            Err(_) => (Seen::Unknown, None),
+            Ok(tabs) => match tabs.first() {
+                None => (Seen::NoTabs, None),
+                Some(first) => match self.automation.get_control_view_walker().and_then(|walker| walker.get_parent(first)) {
+                    Ok(strip) => (Seen::Tabs, Some(strip)),
+                    Err(_) => (Seen::Unknown, None),
+                },
+            },
+        }
+    }
+
+    /// Closes the tab of a blocked page, only if it is still that page, and only that tab.
+    fn close_blocked_tab(&mut self, handle: isize, browser: &Browser, strip: &UIElement, page: &Page) {
+        // A page read from the address bar has no title to check the tab by. So the tab that is
+        // selected is noted with it, and the page must be seen again, in that tab, a moment later
+        // (the address bar can lag behind a switch of tabs): then that tab, by its own id, is closed.
+        let expected = if page.title.is_empty() {
+            let started = Instant::now();
+            let tabs = selected_tabs(&self.automation, strip, &browser.window);
+            self.slow("looking for the selected tab", started);
+            let id = match tabs.as_deref() {
+                Ok([only]) => only.get_runtime_id().ok(),
+                Ok(_) => None,
+                Err(_) => {
+                    self.forget(handle);
+                    return;
+                }
+            };
+            let Some(id) = id else {
+                self.pending.remove(&handle);
+                return;
+            };
+            if !agrees(self.pending.get(&handle), &page.url, &id, Instant::now()) {
+                self.pending.insert(handle, Pending { url: page.url.clone(), tab: id, since: Instant::now() });
+                self.quick = true;
+                return;
+            }
+            Some(id)
+        } else {
+            None
+        };
+        // The pages were read a moment ago, and what is shown changes under us: the user switches
+        // tabs, and the browser shows a neighbour as soon as a tab closes, while its old page may
+        // still be exposed for a few milliseconds. So the page is looked at again just before, and
+        // only closed if it is still there as it was.
+        let unchanged = self.pages(browser).is_ok_and(|now| now.iter().any(|p| p.url == page.url && p.title == page.title));
+        if !unchanged {
+            self.pending.remove(&handle);
+            return;
+        }
+        let started = Instant::now();
+        let closed = close_tab(&self.automation, strip, &browser.window, &page.title, expected.as_deref());
+        self.slow("closing a tab", started);
+        self.pending.remove(&handle);
+        match closed {
+            Ok(()) => note("app", &format!("closed {} ({})", page.url, self.woken.describe())),
+            Err(e) => {
+                eprintln!("tab_closer: failed to close {}: {e}", page.url);
+                // The cached strip may have gone stale: look for it again.
+                self.layouts.remove(&handle);
+            }
+        }
     }
 
     /// Closes the Firefox tabs whose page is blocked. Unlike Chromium, Firefox exposes the page of
@@ -220,18 +433,25 @@ impl Closer {
         let is_document = a.create_property_condition(UIProperty::ControlType, (ControlType::Document as i32).into(), None)?;
         // Each document in order, with whether it is in a split view and where (pages inside a page
         // have titles no tab has).
-        let mut documents = Vec::new();
+        let mut read = Vec::new();
         for doc in window.find_all(TreeScope::Descendants, &is_document)? {
-            documents.push(FirefoxPage {
-                url: doc.get_pattern::<UIValuePattern>().and_then(|v| v.get_value()).unwrap_or_default(),
-                title: doc.get_name().unwrap_or_default(),
-                split: in_split_view(&walker, &doc),
-                left: doc.get_bounding_rectangle().map(|r| r.get_left()).unwrap_or_default(),
-            });
+            let url = doc.get_pattern::<UIValuePattern>().and_then(|v| v.get_value()).unwrap_or_default();
+            read.push((doc.get_name().unwrap_or_default(), url, doc));
         }
-        if !documents.iter().any(|d| active.blocks_firefox_page(&d.url, d.split)) {
+        // Where a page is on screen and whether it is in a split view costs a few calls each, so
+        // only when some page is blocked, split or not.
+        if !read.iter().any(|(_, url, _)| active.blocks_firefox_page(url, false) || active.blocks_firefox_page(url, true)) {
             return Ok(None);
         }
+        let documents: Vec<FirefoxPage> = read
+            .into_iter()
+            .map(|(title, url, doc)| FirefoxPage {
+                url,
+                title,
+                split: in_split_view(&walker, &doc),
+                left: doc.get_bounding_rectangle().map(|r| r.get_left()).unwrap_or_default(),
+            })
+            .collect();
         let is_tab = a.create_property_condition(UIProperty::ControlType, (ControlType::TabItem as i32).into(), None)?;
         let tabs = window.find_all(TreeScope::Descendants, &is_tab)?;
         let names: Vec<String> = tabs.iter().map(|t| t.get_name().unwrap_or_default()).collect();
@@ -412,13 +632,6 @@ impl Closer {
         Some(browser)
     }
 
-    /// Whether the window is an app window (`--app=<url>`, or a popup): it has no tab strip. It
-    /// must also show a page, so a normal window whose tabs are not exposed yet is not taken for
-    /// one: the whole window is closed.
-    fn is_app_window(&self, browser: &Browser, pages: &[Page]) -> bool {
-        !pages.is_empty() && has_tabs(&self.automation, &browser.window).is_ok_and(|tabs| !tabs)
-    }
-
     /// URLs of the pages visible in the window. Each page's root document carries its URL, which
     /// also covers the second page in split view. Falls back to the address bar (active page only)
     /// when the documents are not exposed, skipping it while the user types in it.
@@ -546,11 +759,6 @@ fn is_a_tab(a: &UIAutomation) -> uiautomation::Result<UICondition> {
     )
 }
 
-/// Whether the browser window has a tab strip: any tab, selected or not.
-fn has_tabs(a: &UIAutomation, window: &UIElement) -> uiautomation::Result<bool> {
-    Ok(window.find_first(TreeScope::Descendants, &is_a_tab(a)?).is_ok())
-}
-
 /// A page of a Firefox window: the root document of a tab, or of one half of a split view.
 struct FirefoxPage {
     url: String,
@@ -617,12 +825,9 @@ fn close_window(window: &UIElement) -> uiautomation::Result<()> {
     window.get_pattern::<UIWindowPattern>()?.close()
 }
 
-/// Presses the Close button of the selected tab showing `title`. In split view both tabs are
-/// selected and named "<title> - Left view" / "<title> - Right view", so the title picks one.
-/// Only with no title to go by (a page read from the address bar) is the first selected tab
-/// closed; with one, a selected tab that is not named like it is not the page that was read (the
-/// browser has moved on to another tab), and closing it would take down an allowed tab.
-fn close_tab(a: &UIAutomation, window: &UIElement, title: &str) -> uiautomation::Result<()> {
+/// The selected tabs of a window: in its tab strip, which is small, or if there are none there
+/// (tabs outside the strip, a layout not seen before) in the whole window.
+fn selected_tabs(a: &UIAutomation, strip: &UIElement, window: &UIElement) -> uiautomation::Result<Vec<UIElement>> {
     let cond = a.create_and_condition(
         is_a_tab(a)?,
         a.create_and_condition(
@@ -630,12 +835,27 @@ fn close_tab(a: &UIAutomation, window: &UIElement, title: &str) -> uiautomation:
             a.create_property_condition(UIProperty::SelectionItemIsSelected, true.into(), None)?,
         )?,
     )?;
-    let selected = window.find_all(TreeScope::Descendants, &cond)?;
-    let tab = selected
-        .iter()
-        .find(|t| !title.is_empty() && t.get_name().is_ok_and(|n| n.starts_with(title)))
-        .or_else(|| if title.is_empty() { selected.first() } else { None })
-        .ok_or_else(|| uiautomation::Error::new(-1, "no selected tab with that title"))?;
+    let in_strip = strip.find_all(TreeScope::Descendants, &cond)?;
+    if in_strip.is_empty() {
+        window.find_all(TreeScope::Descendants, &cond)
+    } else {
+        Ok(in_strip)
+    }
+}
+
+/// Presses the Close button of a selected tab. With its id (`expected`, the tab that was selected
+/// when a page was read from the address bar) it is that tab or none. Otherwise it is the one
+/// showing `title`: in split view both tabs are selected and named "<title> - Left view" and
+/// "<title> - Right view", so the title picks one, and a selected tab that is not named like it is
+/// not the page that was read (the browser has moved on to another tab), and closing it would take down an
+/// allowed tab.
+fn close_tab(a: &UIAutomation, strip: &UIElement, window: &UIElement, title: &str, expected: Option<&[i32]>) -> uiautomation::Result<()> {
+    let selected = selected_tabs(a, strip, window)?;
+    let tab = match expected {
+        Some(id) => selected.iter().find(|t| t.get_runtime_id().is_ok_and(|now| now == id)),
+        None => selected.iter().find(|t| !title.is_empty() && t.get_name().is_ok_and(|n| n.starts_with(title))),
+    }
+    .ok_or_else(|| uiautomation::Error::new(-1, "no selected tab with that title"))?;
     let button = a.create_property_condition(UIProperty::ControlType, (ControlType::Button as i32).into(), None)?;
     tab.find_first(TreeScope::Children, &button)?.get_pattern::<UIInvokePattern>()?.invoke()
 }
@@ -712,6 +932,40 @@ mod tests {
         let _ = other.wait();
     }
 
+    #[test]
+    fn a_window_is_an_app_window_only_after_no_tabs_were_seen_for_a_while() {
+        let start = Instant::now();
+        let later = |ms: u64| start + Duration::from_millis(ms);
+        // Tabs seen: a normal window, whatever was doubted before.
+        assert!(matches!(judge(None, Seen::Tabs, start), Verdict::Tabs));
+        // Not being able to look says nothing, and keeps what was doubted.
+        let doubt = Doubt { passes: 1, since: start };
+        assert!(matches!(judge(None, Seen::Unknown, start), Verdict::Unsure(None)));
+        assert!(matches!(judge(Some(doubt), Seen::Unknown, later(5000)), Verdict::Unsure(Some(d)) if d.passes == 1));
+        // No tabs once, or twice within the first second: still not known.
+        assert!(matches!(judge(None, Seen::NoTabs, start), Verdict::Unsure(Some(d)) if d.passes == 1));
+        assert!(matches!(judge(Some(doubt), Seen::NoTabs, later(200)), Verdict::Unsure(Some(d)) if d.passes == 2));
+        // Twice, and for the whole of `APP_AFTER`: an app window.
+        assert!(matches!(judge(Some(doubt), Seen::NoTabs, later(1000)), Verdict::App));
+        // A first sighting is never enough, however late.
+        assert!(matches!(judge(None, Seen::NoTabs, later(60_000)), Verdict::Unsure(Some(_))));
+    }
+
+    #[test]
+    fn a_page_from_the_address_bar_is_closed_only_when_seen_again_in_the_same_tab() {
+        let start = Instant::now();
+        let pending = Pending { url: "https://blocked.example/".into(), tab: vec![42, 7], since: start };
+        let after = |ms: u64| start + Duration::from_millis(ms);
+        let (url, tab) = ("https://blocked.example/", [42, 7]);
+        assert!(agrees(Some(&pending), url, &tab, after(100)));
+        // Nothing seen before, or too soon to be a second look.
+        assert!(!agrees(None, url, &tab, after(100)));
+        assert!(!agrees(Some(&pending), url, &tab, after(10)));
+        // Another page, or the selection moved to another tab: not the same.
+        assert!(!agrees(Some(&pending), "https://other.example/", &tab, after(100)));
+        assert!(!agrees(Some(&pending), url, &[42, 8], after(100)));
+    }
+
     /// A manual check against a real browser: have a Chromium browser window open on
     /// `https://example.com` (`msedge --new-window https://example.com`), then
     /// `cargo test -- --ignored a_real_browser_tab_is_closed --nocapture`. The tab must be closed by the
@@ -758,7 +1012,7 @@ mod tests {
             let Some(browser) = closer.browser(handle) else { continue };
             let pages = closer.pages(&browser).unwrap();
             let urls: Vec<_> = pages.iter().map(|p| p.url.as_str()).collect();
-            let app = closer.is_app_window(&browser, &pages);
+            let app = !pages.is_empty() && matches!(closer.probe(&browser.window).0, Seen::NoTabs);
             println!("{} window showing {urls:?}", if app { "app" } else { "browser" });
             if app {
                 apps += 1

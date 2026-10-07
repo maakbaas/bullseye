@@ -93,7 +93,7 @@ pub fn parse_delay(text: &str) -> Result<u64, String> {
     let seconds = if ["", "0", "0s", "none", "off"].contains(&text.as_str()) {
         0
     } else {
-        duration::parse(&text)?.map_or(0, |delay| delay.as_secs())
+        duration::parse_allowing_zero(&text)?.map_or(0, |delay| delay.as_secs())
     };
     if seconds > MAX_DELAY {
         return Err("Unlocking can take at most 24 hours".into());
@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn a_delay_is_typed_like_a_duration() {
-        for none in ["", " ", "0", "0s", " None ", "OFF"] {
+        for none in ["", " ", "0", "0s", "0m", "0h", "0d", "0h 0m", "0 minutes", " None ", "OFF"] {
             assert_eq!(parse_delay(none), Ok(0), "{none:?}");
         }
         assert_eq!(parse_delay("30s"), Ok(30));

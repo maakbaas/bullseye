@@ -102,12 +102,17 @@ window.STRINGS = {
       lockedRestart: "Locked until Windows restarts",
       lockedFor: "Locked for the next {left}",
       notLocked: "No active lock",
-      // A running block's condition line, by whether it enforces now ({change}: when that changes, if known).
-      activeBy: "Active by {name}",
-      activeByFor: "Active by {name} for the next {change}",
-      inactiveBy: "Inactive by {name}",
-      inactiveByFor: "Inactive by {name} for the next {change}",
-      inactiveDriveNamed: "Inactive while {name} is plugged in",
+      // A running block's condition line: its state now and why ({change}: when that changes, if known).
+      // A schedule is "during" / "outside", a drive or a combination with one is "since …" (it is plugged
+      // in or out by hand, so it has no time).
+      activeDuring: "Active during {name}",
+      activeDuringFor: "Active during {name} for the next {change}",
+      inactiveOutside: "Inactive outside {name}",
+      inactiveOutsideFor: "Inactive outside {name} for the next {change}",
+      activeSinceDrive: "Active since {name} is unplugged",
+      inactiveSinceDrive: "Inactive since {name} is plugged in",
+      activeSinceTrue: "Active since {name} is true",
+      inactiveSinceFalse: "Inactive since {name} is false",
       conditionGone: "a condition",
     },
     // The tag on a block's tile.
@@ -194,12 +199,14 @@ window.STRINGS = {
       describeDrive: "Locks while {name} is unplugged",
       describeCombined: "Locks while {name} is true",
       // Running, by its state now ({change}: when it changes, when that is known). A flash drive is the key.
-      lockedBy: "Locked by {name}",
-      lockedByFor: "Locked by {name} for the next {change}",
-      unlockedBy: "Unlocked by {name}",
-      unlockedByFor: "Unlocked by {name} for the next {change}",
-      lockedDrive: "Locked until {name} is plugged in",
-      unlockedDrive: "Unlocked while {name} is plugged in",
+      lockedDuring: "Locked during {name}",
+      lockedDuringFor: "Locked during {name} for the next {change}",
+      unlockedOutside: "Unlocked outside {name}",
+      unlockedOutsideFor: "Unlocked outside {name} for the next {change}",
+      lockedDrive: "Locked since {name} is unplugged",
+      unlockedDrive: "Unlocked since {name} is plugged in",
+      lockedTrue: "Locked since {name} is true",
+      unlockedFalse: "Unlocked since {name} is false",
       // The condition has been deleted from a running block.
       goneName: "a condition",
       describeGone: "Condition deleted",

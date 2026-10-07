@@ -24,8 +24,9 @@ const ruleLine = (rule, condition) => {
 };
 
 // A running block's condition line: the rule as `ruleLine` words it, and whether it enforces now, as a
-// lock's line says its state: "Active by <name> for the next 3 hours" (the time when the condition has
-// a next change), a drive "Active while <name> is unplugged" / "Inactive while <name> is plugged in".
+// lock's line says its state: "Active during <name> for the next 3 hours" / "Inactive outside <name> …"
+// (the time when the condition has a next change), a drive "Active since <name> is unplugged" /
+// "Inactive since <name> is plugged in", a combination with a drive "… since <name> is true / false".
 // The tag says the same in a word, so there is no line of its own for it.
 const runningRuleLine = (running, rule, condition) => {
   const on = running.enforcing;
@@ -35,8 +36,10 @@ const runningRuleLine = (running, rule, condition) => {
     : rule.type === "flash_drive"
       ? quoted(rule.drive)
       : t("blocks.tile.conditionGone");
-  if (rule.type === "flash_drive") return ["rule-16", tn(`blocks.tile.${on ? "activeDriveNamed" : "inactiveDriveNamed"}`, { name })];
-  return ["rule-16", tn(`blocks.tile.${on ? "active" : "inactive"}By${change ? "For" : ""}`, { name, change })];
+  const wording = wordingOf(rule);
+  if (wording === "drive") return ["rule-16", tn(`blocks.tile.${on ? "activeSinceDrive" : "inactiveSinceDrive"}`, { name })];
+  if (wording === "true") return ["rule-16", tn(`blocks.tile.${on ? "activeSinceTrue" : "inactiveSinceFalse"}`, { name })];
+  return ["rule-16", tn(`blocks.tile.${on ? "activeDuring" : "inactiveOutside"}${change ? "For" : ""}`, { name, change })];
 };
 
 // The blocks that use an item, as links.

@@ -8,11 +8,28 @@ use std::time::Duration;
 /// `m`/`min`/`minute(s)`, `h`/`hr`/`hour(s)` and `d`/`day(s)`, any case. An empty text means no
 /// duration.
 pub fn parse(text: &str) -> Result<Option<Duration>, String> {
+    match read(text)? {
+        Some(Duration::ZERO) => Err(invalid_duration(text.trim().to_lowercase().as_str())),
+        other => Ok(other),
+    }
+}
+
+/// As `parse`, but a zero in any unit (`0s`, `0m`, `0h 0m`) is a duration too: for a setting where
+/// none is a value (the unlock delay).
+pub fn parse_allowing_zero(text: &str) -> Result<Option<Duration>, String> {
+    read(text)
+}
+
+fn invalid_duration(text: &str) -> String {
+    format!("Invalid duration \"{text}\"; use e.g. 10m (10 minutes), 2h 30m (2 hours 30 minutes) or 1d (1 day)")
+}
+
+fn read(text: &str) -> Result<Option<Duration>, String> {
     let text = text.trim().to_lowercase();
     if text.is_empty() {
         return Ok(None);
     }
-    let invalid = || format!("Invalid duration \"{text}\"; use e.g. 10m (10 minutes), 2h 30m (2 hours 30 minutes) or 1d (1 day)");
+    let invalid = || invalid_duration(&text);
     let mut total: u64 = 0;
     let mut rest = text.as_str();
     loop {
@@ -37,9 +54,6 @@ pub fn parse(text: &str) -> Result<Option<Duration>, String> {
         rest = &rest[letters..];
         total = number.checked_mul(seconds).and_then(|part| total.checked_add(part)).ok_or_else(invalid)?;
     }
-    if total == 0 {
-        return Err(invalid());
-    }
     Ok(Some(Duration::from_secs(total)))
 }
 
@@ -60,6 +74,16 @@ pub fn countdown(seconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_zero_is_a_duration_only_where_none_is_a_value() {
+        for zero in ["0s", "0m", "0h 0m", "0 minutes"] {
+            assert!(parse(zero).is_err(), "{zero:?}");
+            assert_eq!(parse_allowing_zero(zero), Ok(Some(Duration::ZERO)), "{zero:?}");
+        }
+        assert_eq!(parse_allowing_zero("1m"), Ok(Some(Duration::from_secs(60))));
+        assert_eq!(parse_allowing_zero(" "), Ok(None));
+    }
 
     #[test]
     fn countdowns_are_short() {
