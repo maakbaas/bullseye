@@ -1,20 +1,46 @@
 // A page of tiles, one per block, block list or condition: kept and updated in place, so an open menu
 // survives a refresh. A block's tile also has its lock and Start / Stop. Deleting is asked here.
 
-import { $, ask, el, invalid, invoke, joined, listName, newId, editHref, nodesOf, notify, overview, quoted, reachable, ref, refresh, runningOf, conditionOf, t, tn, usersOf, weekText } from "./core.js";
-import { LOCKS } from "./locks.js";
+import { $, ask, el, invalid, invoke, joined, listName, newId, editHref, nodesOf, notify, overview, quoted, reachable, ref, refresh, runningOf, conditionOf, t, tn, usersOf, weekText, wordingOf } from "./core.js";
+import { LOCKS, conditionLockText } from "./locks.js";
 import { ENFORCERS, LISTS, SECTIONS } from "./forms.js";
 import { KINDS } from "./kinds.js";
 import { detour } from "./detour.js";
 
 // A condition's line on a block's tile, with its name when the block's definition still has it.
-const ruleLine = (rule, condition) =>
-  rule.type === "flash_drive"
-    ? ["plug-16", t("blocks.tile.activeDrive", { drive: quoted(rule.drive) })]
-    : ["calendar-16", condition ? tn("blocks.tile.activeNamed", { name: ref(condition.name, editHref("conditions", condition.id)) }) : t(rule.type === "combined" ? "blocks.tile.activeCombined" : "blocks.tile.active")];
+// "Active during <name>", for a drive "Active while <name> is unplugged", for a combination with a
+// drive in it "Active while <name> is true" (`wordingOf`, as a lock's line is worded), the name a
+// link to its condition; without it (a running block keeps its rule) the drive's own name or a plain
+// word for the kind.
+const ruleLine = (rule, condition) => {
+  const icon = "rule-16"; // the Conditions tab's, whatever the kind
+  const wording = wordingOf(rule);
+  if (condition) {
+    const name = ref(condition.name, editHref("conditions", condition.id));
+    return [icon, tn(`blocks.tile.${{ drive: "activeDriveNamed", true: "activeCombinedNamed", during: "activeNamed" }[wording]}`, { name })];
+  }
+  if (rule.type === "flash_drive") return [icon, t("blocks.tile.activeDrive", { drive: quoted(rule.drive) })];
+  return [icon, t(rule.type === "combined" ? "blocks.tile.activeCombined" : "blocks.tile.active")];
+};
+
+// A running block's condition line: the rule as `ruleLine` words it, and whether it enforces now, as a
+// lock's line says its state: "Active by <name> for the next 3 hours" (the time when the condition has
+// a next change), a drive "Active while <name> is unplugged" / "Inactive while <name> is plugged in".
+// The tag says the same in a word, so there is no line of its own for it.
+const runningRuleLine = (running, rule, condition) => {
+  const on = running.enforcing;
+  const change = running.condition_change_words;
+  const name = condition
+    ? ref(condition.name, editHref("conditions", condition.id))
+    : rule.type === "flash_drive"
+      ? quoted(rule.drive)
+      : t("blocks.tile.conditionGone");
+  if (rule.type === "flash_drive") return ["rule-16", tn(`blocks.tile.${on ? "activeDriveNamed" : "inactiveDriveNamed"}`, { name })];
+  return ["rule-16", tn(`blocks.tile.${on ? "active" : "inactive"}By${change ? "For" : ""}`, { name, change })];
+};
 
 // The blocks that use an item, as links.
-const usedBy = (users) => ({ text: tn("common.usedBy", { names: joined(users.map((b) => ref(b.name, editHref("blocks", b.id)))) }) });
+const usedBy = (users) => ({ text: tn("common.usedBy", { n: users.length, names: joined(users.map((b) => ref(b.name, editHref("blocks", b.id)))) }) });
 
 // What a tile says, per kind: lines of text.
 function summaryOf(kind, item) {
@@ -49,29 +75,30 @@ function summaryOf(kind, item) {
   const parts = [["list-checked-16", lists.length ? joined(lists) : t("blocks.tile.noLists")]];
   const condition = conditionOf(item);
   const rule = running ? running.condition : condition;
-  if (!rule) parts.push(["calendar-16", t("blocks.tile.always")]);
-  else parts.push(ruleLine(rule, condition));
+  if (!rule) parts.push(["rule-16", t("blocks.tile.always")]);
+  else parts.push(running ? runningRuleLine(running, rule, condition) : ruleLine(rule, condition));
   if (!running) {
     const lock = LOCKS[item.lock && item.lock.method];
     parts.push([item.lock && item.lock.method !== "none" ? "locked" : "unlocked", lock ? lock.describe(item.lock) : t("blocks.tile.unknownLock")]);
     return parts;
   }
   const change = running.lock_change_words;
-  const lockIcon = running.locked ? "locked" : "unlocked";
   const lockRule = running.lock_condition;
-  if (running.password) parts.push([lockIcon, t("blocks.tile.lockedPassword")]);
-  else if (running.lock_text) parts.push([lockIcon, t("blocks.tile.lockedText")]);
-  else if (running.until_restart) parts.push([lockIcon, t("blocks.tile.lockedRestart")]);
-  else if (running.remaining_words) parts.push([lockIcon, t("blocks.tile.lockedFor", { left: running.remaining_words })]);
-  else if (lockRule && lockRule.type === "flash_drive") parts.push([lockIcon, t(running.locked ? "blocks.tile.lockedDrive" : "blocks.tile.freeDrive", { drive: quoted(lockRule.drive) })]);
-  else if (lockRule && running.locked) parts.push([lockIcon, change ? t("blocks.tile.lockedFor", { left: change }) : t("blocks.tile.locked")]);
-  else if (lockRule) parts.push([lockIcon, change ? t("blocks.tile.unlockedFor", { change }) : t("blocks.tile.unlocked")]);
-  else parts.push([lockIcon, t("blocks.tile.notLocked")]);
-  // Whether it enforces right now is always said, whatever its condition.
-  const next = running.condition_change_words;
-  const drive = running.condition && running.condition.type === "flash_drive" ? quoted(running.condition.drive) : null;
-  if (running.enforcing) parts.push(["time", next ? t("blocks.tile.onFor", { change: next }) : t("blocks.tile.on")]);
-  else parts.push(["time", next ? t("blocks.tile.offFor", { change: next }) : drive ? t("blocks.tile.offDrive", { drive }) : t("blocks.tile.off")]);
+  if (running.password) parts.push(["locked", t("blocks.tile.lockedPassword")]);
+  else if (running.lock_text) parts.push(["locked", t("blocks.tile.lockedText")]);
+  else if (running.until_restart) parts.push(["locked", t("blocks.tile.lockedRestart")]);
+  else if (running.remaining_words) parts.push(["locked", t("blocks.tile.lockedFor", { left: running.remaining_words })]);
+  else if (lockRule) {
+    // A condition lock is one line: what it is, as the condition's own line is worded, and the state
+    // it is in now (the icon, and its words), with when that changes if it is known.
+    const lockCondition = overview.conditions.find((c) => c.id === (item.lock && item.lock.condition));
+    const name = lockCondition
+      ? ref(lockCondition.name, editHref("conditions", lockCondition.id))
+      : lockRule.type === "flash_drive"
+        ? quoted(lockRule.drive)
+        : t("locks.condition.goneName");
+    parts.push([running.locked ? "locked" : "unlocked", conditionLockText(wordingOf(lockRule), name, { locked: running.locked, change })]);
+  } else parts.push(["unlocked", t("blocks.tile.notLocked")]);
   return parts;
 }
 
@@ -101,14 +128,19 @@ function makeTile(kind, id) {
   );
   // In the menu's place while it cannot be changed: a block that is locked.
   const lock = el("span", { class: "lock", role: "img", "aria-label": t("common.locked"), title: t("common.locked") }, carbonIcon("locked"));
-  const name = el("h2", { class: "cds--type-productive-heading-03" });
+  // The title is a link to the editor, as the names inside the tiles' lines are.
+  // An edit icon after it shows on hover and focus (`app.css`).
+  const name = el("span");
+  const editIcon = carbonIcon("edit", "icon");
+  editIcon.classList.add("title-edit");
+  const title = el("h2", { class: "cds--type-productive-heading-03" }, el("cds-link", { href: editHref(kind, id) }, name, editIcon));
   const tag = el("cds-tag", { size: "md" });
   const summary = el("div", { class: "summary cds--type-body-compact-01" });
   const actions = el("div", { class: "actions" });
   const tile = el(
     "cds-tile",
     { class: "block-tile cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16" },
-    el("div", { class: "top" }, el("div", {}, name), menu, lock),
+    el("div", { class: "top" }, el("div", {}, title), menu, lock),
     el("div", { class: "body" }, el("div", { class: "info" }, tag, summary), actions),
   );
   // On the items themselves: Carbon moves the open menu out of the tile.
@@ -379,6 +411,7 @@ async function confirmDelete(kind, id) {
     if (inEditor) location.hash = kindOf.path;
   } catch (e) {
     notify(inEditor ? "editor-notices" : "list-notices", "error", t("delete.failed", { noun: kindOf.noun }), String(e));
+    if (inEditor) $("editor-notices").dataset.lock = "error";
   }
   await refresh();
 }

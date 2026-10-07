@@ -94,11 +94,21 @@ function lines(text) {
 const newId = () => (crypto.randomUUID ? crypto.randomUUID() : `i${Date.now()}${Math.random().toString(36).slice(2)}`);
 
 // One message per place; a new one replaces the old.
-function notify(slot, kind, title, subtitle = "", { closable = true } = {}) {
+// An error scrolls into view, also when it is the same as the last (the user tried again), except
+// where `scroll` is false (the service-down notice, redrawn every second).
+function notify(slot, kind, title, subtitle = "", { closable = true, scroll = true } = {}) {
   const box = $(slot);
   box.replaceChildren();
   if (!title) return;
-  box.append(el("cds-inline-notification", { kind, title, subtitle, "low-contrast": true, "hide-close-button": !closable }));
+  const note = el("cds-inline-notification", { kind, title, subtitle, "low-contrast": true, "hide-close-button": !closable });
+  box.append(note);
+  // An error must not appear out of sight (a tile far down a long page, a form scrolled past its top).
+  // Only once the notification has drawn: before that the box is empty and has no height to scroll to.
+  if (kind === "error" && scroll) {
+    const show = () => requestAnimationFrame(() => note.isConnected && note.scrollIntoView({ block: "center", behavior: "smooth" }));
+    if (note.updateComplete) note.updateComplete.then(show);
+    else show();
+  }
 }
 
 // ---- The service's view of things, asked every second while the window is shown.
@@ -120,7 +130,7 @@ async function refresh() {
   } catch (e) {
     // The service did not answer: say so, and leave the rest as it was.
     reachable = false;
-    notify("list-notices", "error", t("common.serviceDown"), String(e));
+    notify("list-notices", "error", t("common.serviceDown"), String(e), { scroll: false });
   }
   redraw();
 }
@@ -133,6 +143,12 @@ const listName = (id) => (overview.lists.find((l) => l.id === id) || { name: t("
 const conditionsOf = (b) => [b.condition, b.lock && b.lock.condition].filter(Boolean);
 const membersOf = (conditionId) => (overview.conditions.find((c) => c.id === conditionId) || {}).members || [];
 const usersOf = (id) => overview.blocks.filter((b) => b.lists.includes(id) || conditionsOf(b).some((c) => c === id || membersOf(c).includes(id)));
+// How a condition is worded wherever one is named (a block's condition line, a lock's line): "drive"
+// for a flash drive ("… is unplugged"), "true" for a combination with a drive anywhere in it, and
+// "during" for the rest, schedules alone or combined. Works on a definition (its members are ids) and
+// on the copy a running block holds (its `rules`).
+const driveIn = (c) => c.type === "flash_drive" || (c.rules || []).some(driveIn) || (c.members || []).some((id) => driveIn(overview.conditions.find((m) => m.id === id) || {}));
+const wordingOf = (c) => (c.type === "flash_drive" ? "drive" : driveIn(c) ? "true" : "during");
 const holdersOf = (id) => usersOf(id).filter((b) => runningOf(b.id));
 // Those of them that cannot be stopped now: what they use can only get stricter.
 const lockedUsersOf = (id) => usersOf(id).filter((b) => runningOf(b.id) && runningOf(b.id).locked);
@@ -183,4 +199,4 @@ $("confirm-action").addEventListener("click", async () => {
 });
 $("confirm").addEventListener("cds-modal-closed", () => answered(false));
 
-export { invoke, $, t, tn, ref, joined, nodesOf, editHref, quoted, names, applyStrings, el, described, weekText, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, listName, usersOf, holdersOf, lockedUsersOf, invalid, ask };
+export { invoke, $, t, tn, ref, joined, nodesOf, editHref, quoted, names, applyStrings, el, described, weekText, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, listName, usersOf, wordingOf, holdersOf, lockedUsersOf, invalid, ask };

@@ -44,6 +44,7 @@ function renderSettings() {
   // Counting down: nothing to press but Abort.
   $("unlock").disabled = requested && !ready;
   $("abort-unlock").hidden = free || !requested;
+  $("set-delay").replaceChildren(t(free ? "settings.setDelay" : "settings.changeDelay"));
 }
 
 // A delay in seconds as it is typed (`1d`, `2h 30m`), to start the field from: the words the

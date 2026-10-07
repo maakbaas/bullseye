@@ -412,7 +412,9 @@ function conditionForm() {
     settle: () => week.settle(),
     error: () => {
       if (!name.value.trim()) return t("conditions.nameMissing");
-      return { flash_drive: picker, combined: combine }[type.value]?.error() ?? week.error();
+      // A valid one answers null, which must not fall through to another type's check.
+      const part = { flash_drive: picker, combined: combine, schedule: week }[type.value] ?? week;
+      return part.error();
     },
     name,
   };

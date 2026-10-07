@@ -1,7 +1,18 @@
 // The lock methods (`lock::Lock`), by `method`: their form in the dialog, the tile's line for a
 // block that is not running, and what starting a block with one asks first.
 
-import { durationText, el, invalid, invoke, localDate, overview, quoted, editHref, ref, t, tn, untilText } from "./core.js";
+import { durationText, el, invalid, invoke, localDate, overview, quoted, editHref, ref, t, tn, untilText, wordingOf } from "./core.js";
+
+// A condition lock in words, the condition's name (`name`, a link to it) worded as its own line on a
+// tile does. Not running (`state` null): "Locks while …". Running: the state it is in now, with when it
+// changes if that is known, and a flash drive says it as the key: "Locked until … is plugged in".
+function conditionLockText(wording, name, state) {
+  const kind = { drive: "Drive", true: "Combined", during: "" }[wording];
+  if (!state) return tn(`locks.condition.describe${kind}`, { name });
+  const { locked, change } = state;
+  if (wording === "drive") return tn(`locks.condition.${locked ? "lockedDrive" : "unlockedDrive"}`, { name });
+  return tn(`locks.condition.${locked ? "locked" : "unlocked"}By${change ? "For" : ""}`, { name, change });
+}
 
 // How a started block is kept from being stopped (`lock::Lock`), by `method`. Set on the
 // block's tile, next to Start. `confirm` says what starting it asks first (null: nothing).
@@ -109,8 +120,7 @@ const LOCKS = {
     describe: (lock) => {
       const condition = overview.conditions.find((c) => c.id === lock.condition);
       if (!condition) return t("locks.condition.describeGone");
-      if (condition.type === "flash_drive") return t("locks.condition.describeDrive", { drive: quoted(condition.drive) });
-      return tn("locks.condition.describe", { condition: ref(condition.name, editHref("conditions", condition.id)) });
+      return conditionLockText(wordingOf(condition), ref(condition.name, editHref("conditions", condition.id)));
     },
     confirm: async (block) => {
       // Without its condition the service refuses the start, and says why.
@@ -189,4 +199,4 @@ const LOCKS = {
   },
 };
 
-export { KEPT, settingsOf, LOCKS };
+export { KEPT, settingsOf, LOCKS, conditionLockText };

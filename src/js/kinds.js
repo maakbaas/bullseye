@@ -72,7 +72,12 @@ const KINDS = {
     save: (condition) => invoke("save_condition", { condition }),
     remove: (id) => invoke("delete_condition", { id }),
     duplicate: (id, copyId) => invoke("duplicate", { kind: "condition", id, newId: copyId }),
-    held: () => null,
+    // A flash drive can only stay the same drive, so while a locked block uses it there is nothing to change.
+    held: (condition) => {
+      if (condition.type !== "flash_drive") return null;
+      const holders = lockedUsersOf(condition.id);
+      return holders.length ? t("conditions.held", { names: names(holders) }) : null;
+    },
     limited: (condition) => {
       const holders = lockedUsersOf(condition.id);
       return holders.length ? t("conditions.limited", { names: names(holders) }) : null;

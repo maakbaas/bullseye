@@ -49,8 +49,8 @@ window.STRINGS = {
     serviceDown: "Bullseye service not responding",
     // A block list's or condition's tile while a locked block uses it.
     inUse: "Used by a locked block",
-    // {names}: the blocks that use it, as links.
-    usedBy: "Used by {names}",
+    // {names}: the blocks that use it, as links; {n} how many.
+    usedBy: { one: "Used by block {names}", other: "Used by blocks {names}" },
     // While a weekly schedule's description is being asked of the backend.
     weeklyStandIn: "a weekly schedule",
   },
@@ -93,24 +93,22 @@ window.STRINGS = {
       activeCombined: "Active by combination",
       activeNamed: "Active during {name}",
       activeDrive: "Active while {drive} is unplugged",
+      activeDriveNamed: "Active while {name} is unplugged",
+      activeCombinedNamed: "Active while {name} is true",
       always: "Always active",
       unknownLock: "Unknown lock",
       lockedPassword: "Locked with a password",
       lockedText: "Locked until its text is typed",
       lockedRestart: "Locked until Windows restarts",
-      lockedDrive: "Locked until {drive} is plugged in",
-      freeDrive: "Unlocked while {drive} is plugged in",
       lockedFor: "Locked for the next {left}",
-      locked: "Locked",
-      unlockedFor: "Unlocked for the next {change}",
-      unlocked: "Unlocked",
       notLocked: "No active lock",
-      // Whether it enforces now.
-      on: "Active",
-      onFor: "Active for the next {change}",
-      off: "Inactive",
-      offFor: "Inactive for the next {change}",
-      offDrive: "Inactive while {drive} is plugged in",
+      // A running block's condition line, by whether it enforces now ({change}: when that changes, if known).
+      activeBy: "Active by {name}",
+      activeByFor: "Active by {name} for the next {change}",
+      inactiveBy: "Inactive by {name}",
+      inactiveByFor: "Inactive by {name} for the next {change}",
+      inactiveDriveNamed: "Inactive while {name} is plugged in",
+      conditionGone: "a condition",
     },
     // The tag on a block's tile.
     state: {
@@ -190,10 +188,20 @@ window.STRINGS = {
       noneHeading: "No conditions yet",
       noneBody: "A condition lock needs a condition. Make one now and use it for this lock?",
       noneAction: "New condition",
-      // {condition}: its name, quoted.
-      describe: "Locks while {condition} is active",
-      // {drive}: a flash drive's name, quoted: said without the condition's name, which is long enough.
-      describeDrive: "Locks while {drive} is unplugged",
+      // {name}: the condition, a link. Worded like the condition's line on a tile ("Active during …"),
+      // "Locks" for a block that is not running and "Locked" for one that is, locking now or not.
+      describe: "Locks during {name}",
+      describeDrive: "Locks while {name} is unplugged",
+      describeCombined: "Locks while {name} is true",
+      // Running, by its state now ({change}: when it changes, when that is known). A flash drive is the key.
+      lockedBy: "Locked by {name}",
+      lockedByFor: "Locked by {name} for the next {change}",
+      unlockedBy: "Unlocked by {name}",
+      unlockedByFor: "Unlocked by {name} for the next {change}",
+      lockedDrive: "Locked until {name} is plugged in",
+      unlockedDrive: "Unlocked while {name} is plugged in",
+      // The condition has been deleted from a running block.
+      goneName: "a condition",
       describeGone: "Condition deleted",
       confirmHeading: "Start {name} locked during {condition}?",
       // {detail}: nothing for a schedule, the drive for a flash drive.
@@ -327,6 +335,7 @@ window.STRINGS = {
     emptyText: "Blocks without a condition are always active. Add one such as work hours",
     editorDescription: "Running blocks follow changes made here",
     // {names}: the locked blocks that use it, quoted.
+    held: "{names} uses it and is locked. A drive cannot change. It cannot be deleted",
     limited: "{names} uses it and is locked. A schedule can only gain times, a drive cannot change and a combination can only get more active. It cannot be deleted",
     namePlaceholder: "e.g. Work hours",
     nameMissing: "Name the condition",
@@ -416,6 +425,7 @@ window.STRINGS = {
     delayLabel: "Delay (up to 24 hours)",
     delayPlaceholder: "e.g. 2h 30m or 0",
     setDelay: "Set delay",
+    changeDelay: "Change delay",
     // {delay}: the new delay in words.
     delaySet: "Unlocking now takes {delay}",
     delayFree: "Unlocking is free",

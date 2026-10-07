@@ -113,7 +113,12 @@ impl Rule {
             Rule::FlashDrive { .. } => None,
             // When the combination itself turns on or off, which is not every time one of its
             // conditions does: look at each change of any of them in turn, a day-count at most.
+            // With a drive in it there is no time: it is plugged in or out by hand, so a time
+            // worked out from the schedules alone would be a guess that the drive can undo.
             Rule::Combined { rules, .. } => {
+                if rules.iter().any(|rule| matches!(rule, Rule::FlashDrive { .. })) {
+                    return None;
+                }
                 let now_active = self.active(zone, now);
                 let mut offset = 0u64;
                 for _ in 0..64 {
@@ -272,6 +277,12 @@ mod tests {
             &[Rule::FlashDrive { serial: "x".into(), drive: String::new() }, Rule::FlashDrive { serial: "y".into(), drive: String::new() }],
         );
         assert_eq!(drives.next_change(&zone, at(0.0)), None);
+        // A drive with a schedule: the schedule's times say nothing while the drive can change it.
+        for mode in [Mode::Any, Mode::All] {
+            let mixed = combined(mode, &["a", "b"], &[day("thu 8-10"), Rule::FlashDrive { serial: "x".into(), drive: String::new() }]);
+            assert_eq!(mixed.next_change(&zone, at(0.0)), None);
+            assert_eq!(mixed.next_change(&zone, at(8.5)), None);
+        }
     }
 
     #[test]

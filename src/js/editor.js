@@ -81,6 +81,8 @@ function renderEditorLock() {
   const box = $("editor-notices");
   const shown = box.dataset.lock === "1";
   const note = held || limited;
+  // An error stays until the next save or leaving; the lock note must not replace it.
+  if (box.dataset.lock === "error") return;
   if (note && !shown) {
     notify("editor-notices", "info", t(held ? "editor.lockedTitle" : "editor.limitedTitle"), note, { closable: false });
     box.dataset.lock = "1";
@@ -98,7 +100,7 @@ $("save").addEventListener("click", async () => {
   const problem = form.error();
   if (problem) {
     notify("editor-notices", "error", t("editor.saveFailed", { noun: KINDS[kind].noun }), problem);
-    $("editor-notices").dataset.lock = "";
+    $("editor-notices").dataset.lock = "error";
     return;
   }
   $("save").disabled = true;
@@ -114,7 +116,7 @@ $("save").addEventListener("click", async () => {
     } else location.hash = KINDS[kind].path;
   } catch (e) {
     notify("editor-notices", "error", t("editor.saveFailed", { noun: KINDS[kind].noun }), String(e));
-    $("editor-notices").dataset.lock = "";
+    $("editor-notices").dataset.lock = "error";
   }
   $("save").disabled = false;
   await refresh();
