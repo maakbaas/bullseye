@@ -231,11 +231,12 @@ $("import").addEventListener("click", async () => {
   try {
     const opened = await invoke("open_settings");
     if (!opened) return;
-    const { lists, conditions, blocks, unlocked } = opened.contents;
+    const { lists, conditions, allowances, blocks, unlocked } = opened.contents;
     const body = [
       t("settings.importBody", {
         lists: t("settings.importLists", { n: lists }),
         conditions: t("settings.importConditions", { n: conditions }),
+        allowances: t("settings.importAllowances", { n: allowances }),
         blocks: t("settings.importBlocks", { n: blocks }),
       }),
     ];
@@ -251,7 +252,7 @@ $("import").addEventListener("click", async () => {
   }
 });
 // ---- Pages, by the address after #: #/ (blocks), #/new, #/edit/<id>, the same under
-// #/lists and #/conditions, and #/settings.
+// #/lists, #/conditions and #/allowances, and #/settings.
 
 // The tab of the page shown; an editor is its kind's.
 function markPage(page) {
@@ -278,9 +279,9 @@ function route() {
   let view = "list";
   let kind = "blocks";
   let edit = null;
-  // A block list or condition made on a detour (`detour`): from the block editor, or for a
+  // A block list, condition or allowance made on a detour (`detour`): from the block editor, or for a
   // lock. Without its detour (the page was reloaded), back to where it came from.
-  const nested = hash.match(/^#\/((?:new|edit\/[^/]+|lock\/[^/]+))\/(lists|conditions)\/(?:new|edit\/([^/]+))$/);
+  const nested = hash.match(/^#\/((?:new|edit\/[^/]+|lock\/[^/]+))\/(lists|conditions|allowances)\/(?:new|edit\/([^/]+))$/);
   if (nested) {
     const back = nested[1].startsWith("lock/") ? KINDS.blocks.path : `#/${nested[1]}`;
     if (!detour.current || detour.current.back !== back) {
@@ -298,7 +299,7 @@ function route() {
   // Back from a detour: the block as it was being edited, with what was made on it.
   const resumed = detour.current && detour.current.back === hash ? detour.current.draft : null;
   detour.current = null;
-  const match = hash.match(/^#\/(?:(lists|conditions)(?:\/|$))?(new|edit\/(.+))?$/);
+  const match = hash.match(/^#\/(?:(lists|conditions|allowances)(?:\/|$))?(new|edit\/(.+))?$/);
   if (hash === "#/settings") view = "settings";
   else if (match) {
     kind = match[1] || "blocks";
@@ -337,7 +338,7 @@ function route() {
 }
 window.addEventListener("hashchange", route);
 $("new-item").addEventListener("click", () => (location.hash = KINDS[page].newPath));
-const PAGES = { blocks: "#/", lists: "#/lists", conditions: "#/conditions", settings: "#/settings" };
+const PAGES = { blocks: "#/", lists: "#/lists", conditions: "#/conditions", allowances: "#/allowances", settings: "#/settings" };
 // Below Carbon's md breakpoint (672 px) the tabs are icons only, each with its label as tooltip.
 const narrow = matchMedia("(max-width: 41.99rem)");
 const tabs = document.querySelectorAll("#pages cds-tab");

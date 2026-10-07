@@ -5,12 +5,14 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::allowance::Allowance;
 use crate::block::{Blocklist, Part, StartLock};
 use crate::definitions::{BlockList, Condition, Definition, Definitions, Library, Via};
 use crate::duration;
+use crate::lists::Entries;
 use crate::localtime::Zone;
 use crate::lock::Lock;
-use crate::proto::{Overview, Policy, Request, Response, UnlockStatus};
+use crate::proto::{FreeEntries, Overview, Policy, Request, Response, UnlockStatus};
 use crate::sync::LockExt;
 use crate::unlock::{self, UnlockDelay};
 use crate::watchdog::AppSlot;
@@ -60,6 +62,7 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
             let overview = Overview {
                 lists: library.lists,
                 conditions: library.conditions,
+                allowances: library.allowances,
                 blocks: library.blocks,
                 running: status.running,
                 unlock: unlock_status(context),
@@ -81,9 +84,31 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
                 .map(|active| active.blocks)
                 .unwrap_or_default()
                 .into_iter()
-                .map(|block| Policy { entries: block.lists.entries(), enforcers: block.enforcers })
+                .map(|block| Policy {
+                    entries: block.lists.entries(),
+                    enforcers: block.enforcers,
+                    // What an allowance lets through: the always-allowed sites are the policy's own.
+                    free: block
+                        .free
+                        .iter()
+                        .map(|free| FreeEntries {
+                            block: free.block.clone(),
+                            key: free.key.clone(),
+                            entries: Entries { allowed: Vec::new(), ..free.lists.entries() },
+                        })
+                        .collect(),
+                })
                 .collect();
+            // What the app reports from here counts from now.
+            blocklist.polled();
             (Response::Policy(policies), None)
+        }
+        // What the app saw in use of what an allowance lets through. Anyone may say so, but it only ever
+        // counts against a block, never for it; a key the block does not count is ignored.
+        Request::Report { used } => {
+            let used: Vec<(String, String)> = used.into_iter().take(1000).map(|used| (used.block, used.key)).collect();
+            blocklist.charge(&used);
+            (Response::Done, None)
         }
         // A running block is a copy of its definition and its parts, and one rule decides what may
         // be done to it and to what it uses: while a locked block is involved, a change may only make
@@ -95,6 +120,8 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
         Request::DeleteList { id } => (done(delete_shared(context, &id, |d| d.delete_list(&id))), None),
         Request::SaveCondition { condition } => (done(edit_shared(context, Proposed::Condition(condition))), None),
         Request::DeleteCondition { id } => (done(delete_shared(context, &id, |d| d.delete_condition(&id))), None),
+        Request::SaveAllowance { allowance } => (done(edit_shared(context, Proposed::Allowance(allowance))), None),
+        Request::DeleteAllowance { id } => (done(delete_shared(context, &id, |d| d.delete_allowance(&id))), None),
         // A copy changes nothing that exists, so also of what a running block holds.
         Request::Duplicate { kind, id, new_id } => {
             let _editing = context.editing.locked();
@@ -190,7 +217,7 @@ fn edit_block(context: &Context, block: Definition) -> Result<(), String> {
         // (A password lock comes back from the service without its hash, so two of them are the same.)
         let same_lock =
             block.lock == old.lock || (matches!(block.lock, Lock::Password { .. }) && matches!(old.lock, Lock::Password { .. }));
-        if block.lists != old.lists || block.condition != old.condition || !same_lock {
+        if block.lists != old.lists || block.condition != old.condition || block.allowance != old.allowance || !same_lock {
             return Err("A locked block cannot be changed until it can be stopped, except for its name".into());
         }
         let id = block.id.clone();
@@ -214,15 +241,16 @@ fn refresh_running(context: &Context, ids: &[String]) -> Result<(), String> {
     for id in ids {
         let resolved = library.resolve(id)?;
         let parts = parts_of(&resolved.lists)?;
-        context.blocklist.refresh(id, &resolved.block.name, parts, resolved.condition, resolved.lock_condition);
+        context.blocklist.refresh(id, &resolved.block.name, parts, resolved.condition, resolved.lock_condition, resolved.allowance);
     }
     Ok(())
 }
 
-/// A block list or condition as it is to be saved.
+/// A block list, condition or allowance as it is to be saved.
 enum Proposed {
     List(BlockList),
     Condition(Condition),
+    Allowance(Allowance),
 }
 
 /// Saving a block list or condition. While running blocks use it, what runs is kept the same as
@@ -236,6 +264,7 @@ fn edit_shared(context: &Context, proposed: Proposed) -> Result<(), String> {
     let id = match &proposed {
         Proposed::List(new) => new.id.clone(),
         Proposed::Condition(new) => new.id.clone(),
+        Proposed::Allowance(new) => new.id.clone(),
     };
     let running = context.blocklist.running_ids();
     let users: Vec<String> = library.users_of(&id).into_iter().filter(|b| running.contains(&b.id)).map(|b| b.id.clone()).collect();
@@ -265,11 +294,17 @@ fn edit_shared(context: &Context, proposed: Proposed) -> Result<(), String> {
                     }
                 }
             }
+            Proposed::Allowance(new) => {
+                if let Some(old) = library.allowance(&new.id) {
+                    old.terms.tightened_by(&new.terms)?;
+                }
+            }
         }
     }
     match proposed {
         Proposed::List(list) => context.definitions.save_list(list)?,
         Proposed::Condition(condition) => context.definitions.save_condition(condition)?,
+        Proposed::Allowance(allowance) => context.definitions.save_allowance(allowance)?,
     }
     // What the blocks that run use is what is defined now.
     refresh_running(context, &users)
@@ -302,7 +337,7 @@ fn start(context: &Context, id: &str) -> Result<(), String> {
     if !parts.iter().any(Part::can_run) {
         return Err("Nothing to block: add a site or program to its block lists, or turn on an enforcer that needs no list".into());
     }
-    context.blocklist.start(id, &resolved.block.name, parts, resolved.condition, lock)
+    context.blocklist.start_with(id, &resolved.block.name, parts, resolved.condition, resolved.allowance, lock)
 }
 
 /// Where unlocking stands now.
@@ -601,6 +636,49 @@ mod tests {
         // Deleting the last block list of a running block deletes the block, which ends it.
         assert_eq!(handle(&context, 0, Request::DeleteList { id: "social".into() }).0, Response::Done);
         assert!(overview(&context).running.is_empty() && overview(&context).blocks.is_empty());
+    }
+
+    #[test]
+    fn an_allowance_is_shared_like_a_condition() {
+        use crate::allowance::{Reset, Scope, Terms};
+        let context = context("allowance");
+        let allowance = |allowed: &str| Allowance {
+            id: "social".into(),
+            name: "Social".into(),
+            terms: Terms::Budget { allowed: allowed.into(), scope: Scope::Total, reset: Reset::Day },
+        };
+        // Not saved, or not an allowance that can be read: refused, and a block cannot have one that is not there.
+        assert!(failed(handle(&context, 0, Request::SaveAllowance { allowance: allowance("soon") }).0));
+        let mut one = definition("w", &["a.com"]).lock(Lock::Duration { duration: "1h".into() });
+        one.block.allowance = Some("social".into());
+        assert!(failed(save(&context, one.clone())));
+        assert_eq!(handle(&context, 0, Request::SaveAllowance { allowance: allowance("30m") }).0, Response::Done);
+        assert_eq!(run(&context, one), Response::Done);
+
+        // With time left the site is not enforced but watched, and the status says so.
+        let policy = &policies(&context)[0];
+        assert!(policy.entries.filters.is_empty());
+        assert_eq!(policy.free.len(), 1);
+        assert_eq!(policy.free[0].entries.filters, vec!["a.com"]);
+        assert!(overview(&context).running[0].allowance.is_some());
+
+        // The block is locked: its allowance can only get stricter, and cannot go.
+        assert!(failed(handle(&context, 0, Request::SaveAllowance { allowance: allowance("1h") }).0));
+        assert_eq!(handle(&context, 0, Request::SaveAllowance { allowance: allowance("10m") }).0, Response::Done);
+        assert!(failed(handle(&context, 0, Request::DeleteAllowance { id: "social".into() }).0));
+        let mut without = block("w", &["w"]);
+        without.lock = Lock::Duration { duration: "1h".into() };
+        assert!(failed(handle(&context, 0, Request::SaveBlock { block: without }).0));
+
+        // An unlocked block follows what is done to it: no allowance once it is deleted.
+        let mut open = definition("o", &["b.com"]);
+        open.block.allowance = Some("social".into());
+        assert_eq!(handle(&context, 0, Request::Unlock).0, Response::Done);
+        assert_eq!(run(&context, open), Response::Done);
+        assert!(overview(&context).running[0].allowance.is_some());
+        assert_eq!(handle(&context, 0, Request::DeleteAllowance { id: "social".into() }).0, Response::Done);
+        assert!(overview(&context).running[0].allowance.is_none());
+        assert!(overview(&context).blocks.iter().all(|b| b.allowance.is_none()));
     }
 
     #[test]

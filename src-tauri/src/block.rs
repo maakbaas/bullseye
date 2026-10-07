@@ -12,11 +12,13 @@
 //! Time is internet time (`clock.rs`), not the Windows clock, so setting that clock forward
 //! does not end a timed block early.
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
+use crate::allowance::{self, Run, Scope, Terms, TOTAL};
 use crate::clock::{self, Clock};
 use crate::condition::Rule;
 use crate::datetime::DateTime;
@@ -29,6 +31,10 @@ use crate::unlock;
 
 /// How often running timed blocks write down the time they have reached (`Saved::seen`).
 const CHECKPOINT: Duration = Duration::from_secs(60);
+
+/// The longest time that one report of use is counted for, whatever the time since the last look:
+/// the app asks every second, so more means it was not asking.
+const MAX_GAP: Duration = Duration::from_secs(5);
 
 /// Shared between the request handling and the ticker thread.
 #[derive(Clone)]
@@ -50,12 +56,26 @@ struct Inner {
     blocks: Vec<Block>,
     /// When the blocks were last written to disk.
     saved_at: Instant,
+    /// When the app last asked what to enforce: the time since is what a report of use counts for.
+    polled: Instant,
 }
 
 impl Default for Inner {
     fn default() -> Inner {
-        Inner { blocks: Vec::new(), saved_at: Instant::now() }
+        Inner { blocks: Vec::new(), saved_at: Instant::now(), polled: Instant::now() }
     }
+}
+
+/// Something an allowance lets through for now, which the app is to watch rather than close: when
+/// it is in use, that is counted against `key` of the block (`allowance.rs`). Its lists include
+/// the always-allowed sites of its block list, which are not in use as they are not blocked.
+#[derive(Clone)]
+pub struct Free {
+    /// The running block, by its definition's id.
+    pub block: String,
+    /// What it is counted against: `allowance::TOTAL` or an item's key (`allowance::item_keys`).
+    pub key: String,
+    pub lists: Arc<Lists>,
 }
 
 /// What one running block enforces.
@@ -63,9 +83,15 @@ impl Default for Inner {
 pub struct Enforced {
     pub lists: Arc<Lists>,
     pub enforcers: Enforcers,
+    /// What its allowance lets through now, to be watched (usually nothing).
+    pub free: Vec<Free>,
 }
 
 impl Enforced {
+    pub fn new(lists: Arc<Lists>, enforcers: Enforcers) -> Enforced {
+        Enforced { lists, enforcers, free: Vec::new() }
+    }
+
     /// Whether a page is to be closed: on the block list, and not on the list of allowed sites.
     /// Allowed wins, whatever the block list says, so `*` on the block list with `google.com`
     /// allowed blocks every site but that one. Each block's allowed sites are exceptions to its
@@ -75,72 +101,134 @@ impl Enforced {
     }
 }
 
+/// What the app has seen in use that an allowance counts (`Free`), as (block, key), until it is
+/// reported to the service (`client::Remote::active`). Shared by every copy of the same `Active`.
+#[derive(Clone, Default)]
+pub struct Usage(Arc<Mutex<BTreeSet<(String, String)>>>);
+
+impl Usage {
+    fn note(&self, block: &str, key: &str) {
+        self.0.locked().insert((block.to_string(), key.to_string()));
+    }
+
+    /// What was seen since the last time, which is then forgotten.
+    pub fn take(&self) -> Vec<(String, String)> {
+        std::mem::take(&mut *self.0.locked()).into_iter().collect()
+    }
+
+    /// Takes back what could not be reported.
+    pub fn put_back(&self, used: Vec<(String, String)>) {
+        self.0.locked().extend(used);
+    }
+}
+
 /// What is to be enforced right now: every running block's part, each with its own enforcers.
 #[derive(Clone)]
 pub struct Active {
     pub blocks: Vec<Enforced>,
+    /// What an allowance's items were seen in use (written by the `blocks_*` questions below).
+    pub used: Usage,
 }
 
 impl Active {
+    /// What the closing asks of every page, program and window: whether any block closes it
+    /// (`closes`, among those that are `on`: have the enforcer for it). If none does, what an
+    /// allowance lets through and that matches (`in_use`) is noted as in use, to be counted.
+    fn judge(&self, on: impl Fn(&Enforced) -> bool, closes: impl Fn(&Enforced) -> bool, in_use: impl Fn(&Lists) -> bool) -> bool {
+        if self.blocks.iter().any(|b| on(b) && closes(b)) {
+            return true;
+        }
+        for block in self.blocks.iter().filter(|b| on(b)) {
+            for free in block.free.iter().filter(|f| in_use(&f.lists)) {
+                self.used.note(&free.block, &free.key);
+            }
+        }
+        false
+    }
+
+    /// Whether a page is on a block list and not allowed (`Enforced::blocks_site`), for the free items.
+    fn site_in_use(lists: &Lists, url: &str) -> bool {
+        lists.sites.is_blocked(url) && !lists.allowed.is_blocked(url)
+    }
+
     /// Whether a page shown in a browser is to be closed by any block that closes such pages:
     /// `split_view` for a window showing two pages, otherwise an ordinary tab.
     pub fn blocks_page(&self, url: &str, split_view: bool) -> bool {
-        self.blocks.iter().any(|b| {
-            let enforced = if split_view { b.enforcers.chromium_split_view } else { b.enforcers.chromium_tabs };
-            enforced && b.blocks_site(url)
-        })
+        self.judge(
+            |b| if split_view { b.enforcers.chromium_split_view } else { b.enforcers.chromium_tabs },
+            |b| b.blocks_site(url),
+            |lists| Active::site_in_use(lists, url),
+        )
     }
 
     /// Whether a page shown in an app window (a Chromium window with no tabs) is to be closed, with
     /// the window, by any block that closes those.
     pub fn blocks_app_window(&self, url: &str) -> bool {
-        self.blocks.iter().any(|b| b.enforcers.chromium_app_windows && b.blocks_site(url))
+        self.judge(|b| b.enforcers.chromium_app_windows, |b| b.blocks_site(url), |lists| Active::site_in_use(lists, url))
     }
 
     /// Whether a page open in a Firefox tab is to be closed, by any block that closes those:
     /// `split_view` for a page in either half of a split view, otherwise an ordinary tab.
     pub fn blocks_firefox_page(&self, url: &str, split_view: bool) -> bool {
-        self.blocks.iter().any(|b| {
-            let enforced = if split_view { b.enforcers.firefox_split_view } else { b.enforcers.firefox_tabs };
-            enforced && b.blocks_site(url)
-        })
+        self.judge(
+            |b| if split_view { b.enforcers.firefox_split_view } else { b.enforcers.firefox_tabs },
+            |b| b.blocks_site(url),
+            |lists| Active::site_in_use(lists, url),
+        )
     }
 
-    /// Whether any block has sites to look for, so the browsers are worth looking at.
+    /// Whether any block has sites to look for, so the browsers are worth looking at: to close, or
+    /// to see in use for an allowance.
     pub fn watches_sites(&self) -> bool {
-        self.blocks.iter().any(|b| b.enforcers.uses(Uses::Sites) && !b.lists.sites.is_empty())
+        self.blocks
+            .iter()
+            .any(|b| b.enforcers.uses(Uses::Sites) && (!b.lists.sites.is_empty() || b.free.iter().any(|f| !f.lists.sites.is_empty())))
     }
 
-    /// Whether any block closes programs and has some to close.
+    /// Whether any block closes programs and has some to close (or to see in use).
     pub fn closes_programs(&self) -> bool {
-        self.blocks.iter().any(|b| b.enforcers.uses(Uses::Programs) && !b.lists.programs.is_empty())
+        self.blocks.iter().any(|b| {
+            b.enforcers.uses(Uses::Programs) && (!b.lists.programs.is_empty() || b.free.iter().any(|f| !f.lists.programs.is_empty()))
+        })
     }
 
     /// Whether a program (by file name) is closed by any block that closes programs.
     pub fn blocks_program(&self, file_name: &str) -> bool {
-        self.blocks.iter().any(|b| b.enforcers.uses(Uses::Programs) && b.lists.programs.is_blocked(file_name))
+        self.judge(
+            |b| b.enforcers.uses(Uses::Programs),
+            |b| b.lists.programs.is_blocked(file_name),
+            |lists| lists.programs.is_blocked(file_name),
+        )
     }
 
-    /// Whether any block closes Store apps and has some to close.
+    /// Whether any block closes Store apps and has some to close (or to see in use).
     pub fn closes_store_apps(&self) -> bool {
-        self.blocks.iter().any(|b| b.enforcers.uses(Uses::StoreApps) && !b.lists.store_apps.is_empty())
+        self.blocks.iter().any(|b| {
+            b.enforcers.uses(Uses::StoreApps) && (!b.lists.store_apps.is_empty() || b.free.iter().any(|f| !f.lists.store_apps.is_empty()))
+        })
     }
 
     /// Whether a Store app (by package family name) is closed by any block that closes them. Never
     /// one that is part of Windows (`store_apps::is_protected`), whatever the lists say.
     pub fn blocks_store_app(&self, family: &str) -> bool {
         !crate::store_apps::is_protected(family)
-            && self.blocks.iter().any(|b| b.enforcers.uses(Uses::StoreApps) && b.lists.store_apps.is_match(family))
+            && self.judge(
+                |b| b.enforcers.uses(Uses::StoreApps),
+                |b| b.lists.store_apps.is_match(family),
+                |lists| lists.store_apps.is_match(family),
+            )
     }
 
-    /// Whether any block closes windows by their title and has some titles.
+    /// Whether any block closes windows by their title and has some titles (or to see in use).
     pub fn closes_titles(&self) -> bool {
-        self.blocks.iter().any(|b| b.enforcers.uses(Uses::Titles) && !b.lists.titles.is_empty())
+        self.blocks.iter().any(|b| {
+            b.enforcers.uses(Uses::Titles) && (!b.lists.titles.is_empty() || b.free.iter().any(|f| !f.lists.titles.is_empty()))
+        })
     }
 
     /// Whether a window with this title is closed by any block that closes windows by title.
     pub fn blocks_title(&self, title: &str) -> bool {
-        self.blocks.iter().any(|b| b.enforcers.uses(Uses::Titles) && b.lists.titles.is_match(title))
+        self.judge(|b| b.enforcers.uses(Uses::Titles), |b| b.lists.titles.is_match(title), |lists| lists.titles.is_match(title))
     }
 
     /// Whether any block closes Obsidian when it shows web pages.
@@ -219,10 +307,65 @@ pub enum RunLock {
     },
 }
 
+/// What the lists of an entry are called in an item's key and as a field of `Entries`
+/// (`allowance::item_keys`).
+const ITEMS: [(&str, &str); 4] = [("site", "filters"), ("program", "programs"), ("app", "store_apps"), ("title", "titles")];
+
 /// A part of a running block: its block list's name and what it enforces.
 struct RunPart {
     name: String,
     enforced: Enforced,
+    /// Each entry of its lists on its own, with the always-allowed sites, by its key: what a budget
+    /// for each item watches.
+    items: Vec<(String, Arc<Lists>)>,
+    /// Only its always-allowed sites: what is left to enforce when everything of it is let through.
+    exceptions: Arc<Lists>,
+    /// Its lists without the items that are let through, for the ones that were (`remainder`).
+    remaining: Option<(Vec<String>, Arc<Lists>)>,
+}
+
+impl RunPart {
+    fn new(name: String, lists: Lists, enforcers: Enforcers) -> RunPart {
+        let entries = lists.entries();
+        let mut source = entries.clone();
+        let mut items = Vec::new();
+        for (prefix, field) in ITEMS {
+            for entry in source.field(field).cloned().unwrap_or_default() {
+                let mut one = Entries { allowed: entries.allowed.clone(), ..Entries::default() };
+                if let Some(list) = one.field(field) {
+                    list.push(entry.clone());
+                }
+                if let Ok(parsed) = Lists::parse(&one) {
+                    items.push((format!("{prefix}:{entry}"), Arc::new(parsed)));
+                }
+            }
+        }
+        let only_allowed = Entries { allowed: entries.allowed, ..Entries::default() };
+        let exceptions = Arc::new(Lists::parse(&only_allowed).unwrap_or_default());
+        RunPart { name, enforced: Enforced::new(Arc::new(lists), enforcers), items, exceptions, remaining: None }
+    }
+
+    /// Its lists without the items `free`, as long as it is the same ones (parsed once). If they cannot
+    /// be read, all of them: the block errs on the side of blocking.
+    fn remainder(&mut self, free: &[String]) -> Arc<Lists> {
+        if free.is_empty() {
+            return self.enforced.lists.clone();
+        }
+        if let Some((keys, lists)) = &self.remaining {
+            if keys == free {
+                return lists.clone();
+            }
+        }
+        let mut entries = self.enforced.lists.entries();
+        for (prefix, field) in ITEMS {
+            if let Some(list) = entries.field(field) {
+                list.retain(|entry| !free.contains(&format!("{prefix}:{entry}")));
+            }
+        }
+        let lists = Lists::parse(&entries).map(Arc::new).unwrap_or_else(|_| self.enforced.lists.clone());
+        self.remaining = Some((free.to_vec(), lists.clone()));
+        lists
+    }
 }
 
 struct Block {
@@ -237,9 +380,64 @@ struct Block {
     /// The time zone a schedule is read in: Windows' when the block started, kept until it ends,
     /// so changing the time zone does not move the schedule.
     zone: Zone,
+    /// What lets it go quiet for a while, and what of that is used (`allowance.rs`).
+    allowance: Option<Run>,
 }
 
 impl Block {
+    /// Gives an allowance what is due with the time: a budget's reset.
+    fn advance(&mut self, now: SystemTime) {
+        let active = self.in_condition(now);
+        if let Some(run) = &mut self.allowance {
+            run.advance(&self.zone, now, active);
+        }
+    }
+
+    /// Whether it has something to keep on disk besides its lock: a budget that is being used up.
+    fn keeps_count(&self) -> bool {
+        self.allowance.as_ref().is_some_and(|run| run.scope().is_some())
+    }
+
+    /// What of it the app is to enforce at `now`, by its allowance: all of it with none; nothing while a
+    /// cycle allows everything; with a budget, what has time left is not enforced but watched
+    /// (`Free`), so its use can be counted. Obsidian's enforcer has no list to watch, so it stays.
+    fn enforced(&mut self, now: SystemTime) -> Vec<Enforced> {
+        let Block { id, zone, allowance, parts, .. } = self;
+        let Some(run) = allowance.as_ref() else { return parts.iter().map(|p| p.enforced.clone()).collect() };
+        match run.scope() {
+            None if run.everything_allowed(zone, now) => Vec::new(),
+            None => parts.iter().map(|p| p.enforced.clone()).collect(),
+            Some(Scope::Total) if !run.is_free(TOTAL) => parts.iter().map(|p| p.enforced.clone()).collect(),
+            Some(Scope::Total) => parts
+                .iter()
+                .map(|p| Enforced {
+                    lists: p.exceptions.clone(),
+                    enforcers: p.enforced.enforcers,
+                    free: vec![Free { block: id.clone(), key: TOTAL.to_string(), lists: p.enforced.lists.clone() }],
+                })
+                .collect(),
+            Some(Scope::Each) => parts
+                .iter_mut()
+                .map(|p| {
+                    let free: Vec<String> = p.items.iter().filter(|(key, _)| run.is_free(key)).map(|(key, _)| key.clone()).collect();
+                    let lists = p.remainder(&free);
+                    let watched =
+                        p.items.iter().filter(|(key, _)| free.contains(key)).map(|(key, lists)| Free { block: id.clone(), key: key.clone(), lists: lists.clone() });
+                    Enforced { lists, enforcers: p.enforced.enforcers, free: watched.collect() }
+                })
+                .collect(),
+        }
+    }
+
+    /// Whether `key` is something this block's allowance counts: the block as a whole, or one of its items.
+    fn counts(&self, key: &str) -> bool {
+        match self.allowance.as_ref().and_then(Run::scope) {
+            Some(Scope::Total) => key == TOTAL,
+            Some(Scope::Each) => self.parts.iter().any(|p| p.items.iter().any(|(item, _)| item == key)),
+            None => false,
+        }
+    }
+
     /// Whether its condition has the block active at `now`. If it cannot be known (the local time,
     /// the connected drives), it is: a block errs on the side of blocking.
     fn in_condition(&self, now: SystemTime) -> bool {
@@ -387,6 +585,8 @@ pub struct Running {
     pub remaining_words: Option<String>,
     pub condition_change_words: Option<String>,
     pub lock_change_words: Option<String>,
+    /// What its allowance is doing, if it has one.
+    pub allowance: Option<allowance::Status>,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -420,6 +620,19 @@ impl Blocklist {
     /// `condition` says when it is active (`None`: always), `lock` how it is locked (`lock.rs`).
     /// Other blocks are not affected.
     pub fn start(&self, id: &str, name: &str, parts: Vec<Part>, condition: Option<Rule>, lock: StartLock) -> Result<(), String> {
+        self.start_with(id, name, parts, condition, None, lock)
+    }
+
+    /// As `start`, with an allowance (`allowance.rs`): `None` is none.
+    pub fn start_with(
+        &self,
+        id: &str,
+        name: &str,
+        parts: Vec<Part>,
+        condition: Option<Rule>,
+        allowance: Option<Terms>,
+        lock: StartLock,
+    ) -> Result<(), String> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
         if inner.blocks.iter().any(|b| b.id == id) {
@@ -446,11 +659,9 @@ impl Blocklist {
             StartLock::Text(text) => RunLock::Text { text },
             StartLock::Password(hash) => RunLock::Password { hash },
         };
-        let parts = parts
-            .into_iter()
-            .map(|p| RunPart { name: p.name, enforced: Enforced { lists: Arc::new(p.lists), enforcers: p.enforcers } })
-            .collect();
-        let new = Block { id: id.to_string(), name: name.to_string(), parts, lock, condition, zone };
+        let parts = parts.into_iter().map(|p| RunPart::new(p.name, p.lists, p.enforcers)).collect();
+        let allowance = allowance.map(|terms| Run::new(terms, now));
+        let new = Block { id: id.to_string(), name: name.to_string(), parts, lock, condition, zone, allowance };
         // Written before the block goes live, so a block cannot be missed after a restart. A
         // block that cannot be written would not survive the service ending, so it does not start.
         let mut all: Vec<&Block> = inner.blocks.iter().collect();
@@ -534,13 +745,8 @@ impl Blocklist {
         }
         for saved in saved {
             // A block list we cannot read is dropped rather than resumed as something unknown.
-            let parts: Result<Vec<RunPart>, String> = saved
-                .parts
-                .into_iter()
-                .map(|p| {
-                    Ok(RunPart { name: p.name, enforced: Enforced { lists: Arc::new(Lists::parse(&p.entries)?), enforcers: p.enforcers } })
-                })
-                .collect();
+            let parts: Result<Vec<RunPart>, String> =
+                saved.parts.into_iter().map(|p| Ok(RunPart::new(p.name, Lists::parse(&p.entries)?, p.enforcers))).collect();
             let condition = saved.condition.clone().map(Rule::checked).transpose();
             let (Ok(parts), Ok(condition)) = (parts, condition) else {
                 eprintln!("block: dropping an unreadable saved block");
@@ -556,7 +762,15 @@ impl Blocklist {
             if ended {
                 continue;
             }
-            blocks.push(Block { id: saved.id, name: saved.name, parts, lock: saved.lock, condition, zone: Zone::named(&saved.zone) });
+            blocks.push(Block {
+                id: saved.id,
+                name: saved.name,
+                parts,
+                lock: saved.lock,
+                condition,
+                zone: Zone::named(&saved.zone),
+                allowance: saved.allowance,
+            });
         }
         let mut inner = self.inner.locked();
         inner.blocks = blocks;
@@ -569,14 +783,47 @@ impl Blocklist {
     pub fn active(&self) -> Option<Active> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
-        // Keeps the time on disk moving, for a restart while offline (`Saved::seen`).
-        if inner.blocks.iter().any(|b| b.ends().is_some()) && inner.saved_at.elapsed() >= CHECKPOINT {
+        // Keeps the time on disk moving, for a restart while offline (`Saved::seen`), and what a
+        // budget has used.
+        if inner.blocks.iter().any(|b| b.ends().is_some() || b.keeps_count()) && inner.saved_at.elapsed() >= CHECKPOINT {
             self.save_all(&mut inner);
         }
         let now = self.clock.now();
-        let blocks: Vec<Enforced> =
-            inner.blocks.iter().filter(|b| b.in_condition(now)).flat_map(|b| b.parts.iter().map(|p| p.enforced.clone())).collect();
-        (!blocks.is_empty()).then_some(Active { blocks })
+        for block in inner.blocks.iter_mut() {
+            block.advance(now);
+        }
+        let blocks: Vec<Enforced> = inner.blocks.iter_mut().filter(|b| b.in_condition(now)).flat_map(|b| b.enforced(now)).collect();
+        (!blocks.is_empty()).then_some(Active { blocks, used: Usage::default() })
+    }
+
+    /// The app has been told what to enforce: what use it reports from now on counts from here
+    /// (`charge`). Only its own question does this, not the service looking for itself.
+    pub fn polled(&self) {
+        self.inner.locked().polled = Instant::now();
+    }
+
+    /// Counts what the app has seen in use (block id and key, `Free`) against the allowances of the
+    /// blocks, for the time since the app last asked what to enforce (`MAX_GAP` at most). Only what
+    /// a block's allowance counts and its condition has active now; anything else is ignored.
+    pub fn charge(&self, used: &[(String, String)]) {
+        let mut inner = self.inner.locked();
+        self.expire(&mut inner);
+        let millis = u64::try_from(inner.polled.elapsed().min(MAX_GAP).as_millis()).unwrap_or(0);
+        let now = self.clock.now();
+        for block in inner.blocks.iter_mut() {
+            block.advance(now);
+            let active = block.in_condition(now);
+            let keys: Vec<&String> = used.iter().filter(|(id, key)| *id == block.id && block.counts(key)).map(|(_, key)| key).collect();
+            if !active || keys.is_empty() {
+                continue;
+            }
+            let keys: Vec<String> = keys.into_iter().cloned().collect();
+            if let Some(run) = &mut block.allowance {
+                for key in keys {
+                    run.charge(&key, millis);
+                }
+            }
+        }
     }
 
     /// The time the service goes by (internet time, `clock.rs`).
@@ -613,16 +860,29 @@ impl Blocklist {
     /// lock (but for a condition lock, which follows its condition), its time zone and what else it started with stay. Whether the change may be made is
     /// the handler's to judge (`handler::edit_shared`, `edit_block`); nothing happens if the block
     /// does not run.
-    pub fn refresh(&self, id: &str, name: &str, parts: Vec<Part>, condition: Option<Rule>, lock_rule: Option<Rule>) {
+    pub fn refresh(
+        &self,
+        id: &str,
+        name: &str,
+        parts: Vec<Part>,
+        condition: Option<Rule>,
+        lock_rule: Option<Rule>,
+        allowance: Option<Terms>,
+    ) {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
+        let now = self.clock.now();
         let Some(block) = inner.blocks.iter_mut().find(|b| b.id == id) else { return };
         block.name = name.to_string();
-        block.parts = parts
-            .into_iter()
-            .map(|p| RunPart { name: p.name, enforced: Enforced { lists: Arc::new(p.lists), enforcers: p.enforcers } })
-            .collect();
+        block.parts = parts.into_iter().map(|p| RunPart::new(p.name, p.lists, p.enforcers)).collect();
         block.condition = condition;
+        // What is used of an allowance stays when it is changed; with another one added or taken
+        // away it starts or ends.
+        block.allowance = match (allowance, block.allowance.take()) {
+            (Some(terms), Some(run)) => Some(run.retermed(terms)),
+            (Some(terms), None) => Some(Run::new(terms, now)),
+            (None, _) => None,
+        };
         // A condition lock follows its condition: its rule, or no lock once the condition is deleted
         // (it was free, or the change would not have been made).
         if matches!(block.lock, RunLock::Condition { .. }) {
@@ -667,6 +927,9 @@ impl Blocklist {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
         let now = self.clock.now();
+        for block in inner.blocks.iter_mut() {
+            block.advance(now);
+        }
         let running = inner
             .blocks
             .iter()
@@ -695,6 +958,7 @@ impl Blocklist {
                 condition_change_words: b.condition_change(now).map(duration::countdown),
                 lock_change: b.lock_change(now),
                 lock_change_words: b.lock_change(now).map(duration::countdown),
+                allowance: b.allowance.as_ref().map(|run| run.status(&b.zone, now)),
             })
             .collect();
         Status { running, clock_synced: self.clock.synced() }
@@ -750,6 +1014,7 @@ impl Blocklist {
                 lock: b.lock.clone(),
                 condition: b.condition.clone(),
                 zone: b.zone.name().to_string(),
+                allowance: b.allowance.clone(),
             })
             .collect();
         store.save(&saved)
@@ -1348,6 +1613,7 @@ mod tests {
             lock,
             condition: None,
             zone: "fixed:+0".into(),
+            allowance: None,
         };
         store
             .save(&[
@@ -1384,6 +1650,90 @@ mod tests {
         start(&list, "b", sites(&["b.com"]), None).unwrap();
         list.reset();
         assert!(!list.is_running() && store.load().is_empty());
+    }
+
+    fn budget(allowed: &str, scope: Scope) -> Terms {
+        Terms::Budget { allowed: allowed.into(), scope, reset: allowance::Reset::Never }
+    }
+
+    #[test]
+    fn a_budget_for_the_block_lets_it_through_until_it_is_used_up() {
+        let list = blocklist("budget-total");
+        list.start_with(
+            "a",
+            "A",
+            vec![part(sites(&["a.com"]), Enforcers::default())],
+            None,
+            Some(budget("1s", Scope::Total)),
+            StartLock::None,
+        )
+        .unwrap();
+        // With time left the site is let through and its use is noted, to be counted.
+        let active = list.active().unwrap();
+        assert!(!active.blocks_page("https://a.com/x", false));
+        assert_eq!(active.used.take(), vec![("a".to_string(), TOTAL.to_string())]);
+        assert!(running(&list, "a").allowance.is_some_and(|status| status.open && status.left.is_some_and(|left| left > 0)));
+        // What is reported counts from the last time the app asked; ignored: another block, another key.
+        list.polled();
+        std::thread::sleep(Duration::from_millis(1100));
+        list.charge(&[("other".to_string(), TOTAL.to_string()), ("a".to_string(), "site:a.com".to_string())]);
+        assert!(!list.active().unwrap().blocks_page("https://a.com/x", false));
+        list.charge(&[("a".to_string(), TOTAL.to_string())]);
+        // Used up: closed again.
+        let active = list.active().unwrap();
+        assert!(active.blocks_page("https://a.com/x", false));
+        assert!(running(&list, "a").allowance.is_some_and(|status| !status.open && status.left == Some(0)));
+    }
+
+    #[test]
+    fn a_budget_for_each_item_counts_each_on_its_own() {
+        let list = blocklist("budget-each");
+        list.start_with(
+            "a",
+            "A",
+            vec![part(sites(&["a.com", "b.com"]), Enforcers::default())],
+            None,
+            Some(budget("1s", Scope::Each)),
+            StartLock::None,
+        )
+        .unwrap();
+        let active = list.active().unwrap();
+        assert!(!active.blocks_page("https://a.com/", false) && !active.blocks_page("https://b.com/", false));
+        assert_eq!(active.used.take().len(), 2);
+        list.polled();
+        std::thread::sleep(Duration::from_millis(1100));
+        list.charge(&[("a".to_string(), "site:a.com".to_string())]);
+        let active = list.active().unwrap();
+        assert!(active.blocks_page("https://a.com/", false), "a.com is used up");
+        assert!(!active.blocks_page("https://b.com/", false), "b.com has all its time");
+        assert_eq!(active.used.take(), vec![("a".to_string(), "site:b.com".to_string())]);
+        let items = running(&list, "a").allowance.unwrap().items;
+        assert_eq!(items.iter().map(|i| (i.item.as_str(), i.left)).collect::<Vec<_>>(), vec![("a.com", 0)]);
+    }
+
+    #[test]
+    fn a_cycle_that_is_blocking_enforces_and_what_is_used_survives_a_restart() {
+        let list = blocklist("cycle");
+        let cycle = Terms::Pomodoro { blocked: "1h".into(), allowed: "10m".into(), anchor: allowance::Anchor::Start };
+        list.start_with("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, Some(cycle), StartLock::None).unwrap();
+        assert!(list.active().unwrap().blocks_page("https://a.com/", false), "blocked first");
+        assert!(running(&list, "a").allowance.is_some_and(|status| !status.open && status.change.is_some()));
+
+        let list = blocklist("budget-kept");
+        let each = budget("1m", Scope::Total);
+        list.start_with("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, Some(each), StartLock::None).unwrap();
+        list.polled();
+        std::thread::sleep(Duration::from_millis(1100));
+        list.charge(&[("a".to_string(), TOTAL.to_string())]);
+        // Written to disk with the next save, then read back as a second run finds it.
+        list.refresh("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, None, Some(budget("1m", Scope::Total)));
+        let resumed = reopened("budget-kept");
+        resumed.restore();
+        let left = running(&resumed, "a").allowance.unwrap().left.unwrap();
+        assert!(left < 60, "what was used is kept: {left}");
+        // Taking the allowance away ends it.
+        resumed.refresh("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, None, None);
+        assert!(running(&resumed, "a").allowance.is_none());
     }
 
     #[test]

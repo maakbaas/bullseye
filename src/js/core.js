@@ -18,7 +18,8 @@ function t(path, values = {}) {
 // A name inside a sentence, and several of them.
 const quoted = (name) => t("common.quoted", { name });
 // Where an item is edited (the same pages as `KINDS[kind].editPath`).
-const editHref = (kind, id) => `${{ blocks: "#/edit/", lists: "#/lists/edit/", conditions: "#/conditions/edit/" }[kind]}${encodeURIComponent(id)}`;
+const editHref = (kind, id) =>
+  `${{ blocks: "#/edit/", lists: "#/lists/edit/", conditions: "#/conditions/edit/", allowances: "#/allowances/edit/" }[kind]}${encodeURIComponent(id)}`;
 const names = (blocks) => joined(blocks.map((b) => quoted(b.name))).join("");
 
 // A text with items in it, as parts: strings and `{ link, href }` (an item by its name, to its
@@ -77,6 +78,9 @@ function described(command, args, standIn) {
   return texts.get(key);
 }
 const weekText = (days) => described("describe_schedule", { week: { days } }, t("common.weeklyStandIn"));
+// An allowance's terms (its fields but id and name) in words, as the CLI says them.
+const termsOf = ({ id, name, ...terms }) => terms;
+const allowanceText = (allowance) => described("describe_allowance", { terms: termsOf(allowance) }, "");
 const durationText = (text) => described("describe_duration", { text: text || "" }, text || "");
 // An until lock's end written out (`Tuesday 6 October 2026, 18:00`); as typed until then, or
 // once it has passed.
@@ -119,7 +123,7 @@ function whenRefreshed(draw) {
   redraw = draw;
 }
 
-let overview = { lists: [], conditions: [], blocks: [], running: [], unlock: { delay: 0, delay_words: "", remaining: 0, remaining_words: "" }, clock_synced: true };
+let overview = { lists: [], conditions: [], allowances: [], blocks: [], running: [], unlock: { delay: 0, delay_words: "", remaining: 0, remaining_words: "" }, clock_synced: true };
 let reachable = true;
 
 async function refresh() {
@@ -137,12 +141,13 @@ async function refresh() {
 
 const runningOf = (id) => overview.running.find((r) => r.id === id);
 const conditionOf = (block) => overview.conditions.find((c) => c.id === block.condition);
+const allowanceOf = (block) => overview.allowances.find((a) => a.id === block.allowance);
 const listName = (id) => (overview.lists.find((l) => l.id === id) || { name: t("common.gone") }).name;
 // The blocks that use a block list or condition, and those of them that run (which hold it).
 // (A condition is also used by the blocks that use a combination of it.)
 const conditionsOf = (b) => [b.condition, b.lock && b.lock.condition].filter(Boolean);
 const membersOf = (conditionId) => (overview.conditions.find((c) => c.id === conditionId) || {}).members || [];
-const usersOf = (id) => overview.blocks.filter((b) => b.lists.includes(id) || conditionsOf(b).some((c) => c === id || membersOf(c).includes(id)));
+const usersOf = (id) => overview.blocks.filter((b) => b.lists.includes(id) || b.allowance === id || conditionsOf(b).some((c) => c === id || membersOf(c).includes(id)));
 // How a condition is worded wherever one is named (a block's condition line, a lock's line): "drive"
 // for a flash drive ("… is unplugged"), "true" for a combination with a drive anywhere in it, and
 // "during" for the rest, schedules alone or combined. Works on a definition (its members are ids) and
@@ -199,4 +204,4 @@ $("confirm-action").addEventListener("click", async () => {
 });
 $("confirm").addEventListener("cds-modal-closed", () => answered(false));
 
-export { invoke, $, t, tn, ref, joined, nodesOf, editHref, quoted, names, applyStrings, el, described, weekText, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, listName, usersOf, wordingOf, holdersOf, lockedUsersOf, invalid, ask };
+export { invoke, $, t, tn, ref, joined, nodesOf, editHref, quoted, names, applyStrings, el, described, weekText, allowanceText, termsOf, allowanceOf, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, listName, usersOf, wordingOf, holdersOf, lockedUsersOf, invalid, ask };

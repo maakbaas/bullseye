@@ -897,14 +897,15 @@ mod tests {
     /// One block with these sites and programs, and every enforcer on.
     fn active(sites: &[&str], programs: &[&str]) -> Active {
         Active {
-            blocks: vec![Enforced {
-                lists: Arc::new(Lists {
+            blocks: vec![Enforced::new(
+                Arc::new(Lists {
                     sites: FilterList::parse(sites).unwrap(),
                     programs: ProgramList::parse(programs).unwrap(),
                     ..Lists::default()
                 }),
-                enforcers: Enforcers::default(),
-            }],
+                Enforcers::default(),
+            )],
+            used: Default::default(),
         }
     }
 

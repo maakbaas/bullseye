@@ -1,7 +1,7 @@
-// A page of tiles, one per block, block list or condition: kept and updated in place, so an open menu
+// A page of tiles, one per block, block list, condition or allowance: kept and updated in place, so an open menu
 // survives a refresh. A block's tile also has its lock and Start / Stop. Deleting is asked here.
 
-import { $, ask, el, invalid, invoke, joined, listName, newId, editHref, nodesOf, notify, overview, quoted, reachable, ref, refresh, runningOf, conditionOf, t, tn, usersOf, weekText, wordingOf } from "./core.js";
+import { $, allowanceOf, allowanceText, ask, el, invalid, invoke, joined, listName, newId, editHref, nodesOf, notify, overview, quoted, reachable, ref, refresh, runningOf, conditionOf, t, tn, usersOf, weekText, wordingOf } from "./core.js";
 import { LOCKS, conditionLockText } from "./locks.js";
 import { ENFORCERS, LISTS, SECTIONS } from "./forms.js";
 import { KINDS } from "./kinds.js";
@@ -42,6 +42,30 @@ const runningRuleLine = (running, rule, condition) => {
   return ["rule-16", tn(`blocks.tile.${on ? "activeDuring" : "inactiveOutside"}${change ? "For" : ""}`, { name, change })];
 };
 
+// A block's allowance line, with its name when the block's definition still has it. Not running: the
+// terms in words. Running: where it stands now, from the backend's words (`Running::allowance`): a cycle
+// is allowed or blocked for the next so long, a budget has so much left (and when it is given back),
+// a budget for each item says what the items that have been used have left.
+const allowanceLine = (running, allowance) => {
+  const icon = "timer-16";
+  const name = allowance ? ref(allowance.name, editHref("allowances", allowance.id)) : t("blocks.tile.allowanceGone");
+  const state = running && running.allowance;
+  if (!state) return allowance ? [icon, tn("blocks.tile.allowance", { name, words: allowanceText(allowance) })] : null;
+  const words = allowanceText({ ...state.terms });
+  if (state.terms.type === "pomodoro") {
+    const key = state.open ? "Open" : "Blocked";
+    return [icon, state.change_words ? tn(`blocks.tile.allowance${key}For`, { name, change: state.change_words }) : tn(`blocks.tile.allowance${key}`, { name })];
+  }
+  if (state.left !== null) {
+    const used = state.left === 0;
+    const key = `${used ? "allowanceUsedUp" : "allowanceLeft"}${state.reset_words ? "Reset" : ""}`;
+    return [icon, tn(`blocks.tile.${key}`, { name, left: state.left_words, reset: state.reset_words })];
+  }
+  const items = state.items.map((item) => (item.left === 0 ? t("blocks.tile.allowanceItemUsedUp", { item: item.item }) : t("blocks.tile.allowanceItem", { item: item.item, left: item.left_words })));
+  if (!items.length) return [icon, tn("blocks.tile.allowance", { name, words })];
+  return [icon, tn("blocks.tile.allowanceItems", { name, words, items: items.join(t("common.separator")) })];
+};
+
 // The blocks that use an item, as links.
 const usedBy = (users) => ({ text: tn("common.usedBy", { n: users.length, names: joined(users.map((b) => ref(b.name, editHref("blocks", b.id)))) }) });
 
@@ -69,6 +93,10 @@ function summaryOf(kind, item) {
     } else what = item.type === "flash_drive" ? t("conditions.activeDrive", { drive: quoted(item.drive) }) : t("conditions.active", { times: weekText(item.days) });
     return [what, users.length ? usedBy(users) : t("conditions.notUsed")];
   }
+  if (kind === "allowances") {
+    const users = usersOf(item.id);
+    return [allowanceText(item) || t("allowances.describing"), users.length ? usedBy(users) : t("allowances.notUsed")];
+  }
   // A block: what it runs with while it runs, else what it is defined as. Each line has an
   // icon in front: its block lists, its condition, its lock (open when it does not lock), and
   // for a running block when its condition turns it on or off.
@@ -80,6 +108,9 @@ function summaryOf(kind, item) {
   const rule = running ? running.condition : condition;
   if (!rule) parts.push(["rule-16", t("blocks.tile.always")]);
   else parts.push(running ? runningRuleLine(running, rule, condition) : ruleLine(rule, condition));
+  const allowance = allowanceLine(running, allowanceOf(item));
+  // A running block keeps the allowance it was started with, which a definition without one has lost.
+  if (allowance && (running ? running.allowance : item.allowance)) parts.push(allowance);
   if (!running) {
     const lock = LOCKS[item.lock && item.lock.method];
     parts.push([item.lock && item.lock.method !== "none" ? "locked" : "unlocked", lock ? lock.describe(item.lock) : t("blocks.tile.unknownLock")]);
@@ -402,11 +433,11 @@ async function startOrStop(id) {
   await refresh();
 }
 
-// What deleting a block list or condition does to the blocks that use it, in sentences: the
+// What deleting a block list, condition or allowance does to the blocks that use it, in sentences: the
 // service's rule (`deletion_fallout`, `Library::fallout`), worded by strings.js.
 async function fallout(id) {
   const effects = await invoke("deletion_fallout", { blocks: overview.blocks, conditions: overview.conditions, id });
-  const sentences = { deleted: "deletesToo", without_it: "keepsOthers", always: "becomesAlways", unlocked: "losesLock", shrinks: "shrinksCombination", removed: "removesCombination" };
+  const sentences = { deleted: "deletesToo", without_it: "keepsOthers", always: "becomesAlways", unlocked: "losesLock", shrinks: "shrinksCombination", removed: "removesCombination", no_allowance: "losesAllowance" };
   return Object.entries(sentences)
     .filter(([field]) => effects[field].length)
     .map(([field, key]) => t(`delete.${key}`, { names: joined(effects[field].map(quoted)).join("") }));
