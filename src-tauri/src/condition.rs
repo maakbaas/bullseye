@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::drives;
 use crate::localtime::Zone;
 use crate::schedule::Week;
+use crate::webhook::{self, Hook};
 
 /// How a combined condition puts its conditions together.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
@@ -43,6 +44,8 @@ pub enum Rule {
     /// Active while the flash drive with this serial number is not connected. `drive` is what
     /// Windows calls it, for words.
     FlashDrive { serial: String, drive: String },
+    /// Active or not by what a web address answers, asked every so often (`webhook.rs`).
+    Webhook(Hook),
     /// Two or more of the other conditions, put together by `mode`; never one of its own kind, so
     /// no nesting. As defined it holds their ids (`members`); a running block holds copies of what
     /// they were when it started (`rules`, in the order of `members`, which a definition has empty:
@@ -83,6 +86,10 @@ impl Rule {
                 }
                 Ok(Rule::Combined { mode, members, rules })
             }
+            Rule::Webhook(hook) => {
+                hook.check()?;
+                Ok(Rule::Webhook(Hook { url: hook.url.trim().to_string(), ..hook }))
+            }
             other => Ok(other),
         }
     }
@@ -94,6 +101,8 @@ impl Rule {
         match self {
             Rule::Schedule { week } => zone.local(now).is_none_or(|local| week.is_on(local)),
             Rule::FlashDrive { serial, .. } => !drives::is_present(serial),
+            // What the poller last found out, or the fallback (`webhook::answer`).
+            Rule::Webhook(hook) => webhook::answer(hook),
             // Unresolved (no rules): not known, so active.
             Rule::Combined { mode, rules, .. } => {
                 rules.is_empty()
@@ -110,13 +119,13 @@ impl Rule {
     pub fn next_change(&self, zone: &Zone, now: SystemTime) -> Option<u64> {
         match self {
             Rule::Schedule { week } => week.next_change(zone.local(now)?),
-            Rule::FlashDrive { .. } => None,
+            Rule::FlashDrive { .. } | Rule::Webhook(_) => None,
             // When the combination itself turns on or off, which is not every time one of its
             // conditions does: look at each change of any of them in turn, a day-count at most.
             // With a drive in it there is no time: it is plugged in or out by hand, so a time
             // worked out from the schedules alone would be a guess that the drive can undo.
             Rule::Combined { rules, .. } => {
-                if rules.iter().any(|rule| matches!(rule, Rule::FlashDrive { .. })) {
+                if rules.iter().any(|rule| matches!(rule, Rule::FlashDrive { .. } | Rule::Webhook(_))) {
                     return None;
                 }
                 let now_active = self.active(zone, now);
@@ -177,6 +186,9 @@ impl Rule {
                     Err("A locked block uses this combination, so it can only get more active: conditions added to an \"any\", taken out of an \"all\", or an \"all\" made an \"any\"".into())
                 }
             }
+            // What a web address will answer cannot be compared: only the same one is allowed.
+            (Rule::Webhook(old), Rule::Webhook(new)) if *old == new => Ok(()),
+            (Rule::Webhook(_), _) => Err("A locked block uses this webhook condition, so it cannot change".into()),
             _ => Err("A locked block uses this condition, so its type and its drive cannot change".into()),
         }
     }
@@ -186,7 +198,7 @@ impl Rule {
     pub fn week(&self) -> Option<&Week> {
         match self {
             Rule::Schedule { week } => Some(week),
-            Rule::FlashDrive { .. } | Rule::Combined { .. } => None,
+            Rule::FlashDrive { .. } | Rule::Webhook(_) | Rule::Combined { .. } => None,
         }
     }
 }

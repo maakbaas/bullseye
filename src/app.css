@@ -17,8 +17,7 @@ body:not(.ready) { visibility: hidden; }
 .pinned { position: sticky; inset-block-start: 0; z-index: 100; background: var(--cds-layer-01); padding-block-start: var(--cds-spacing-07); }
 .tabbar { margin-block-start: var(--cds-spacing-06); border-block: 1px solid var(--cds-border-subtle); }
 .pinned .cds--css-grid, main { max-inline-size: 66rem; margin-inline: auto; }
-main { padding-block: var(--cds-spacing-06) var(--cds-spacing-09); }
-@media (max-height: 40rem) { .heading .tagline { display: none; } } /* little room: the title alone */
+main { padding-block: var(--cds-spacing-06); }
 /* An icon before a tab's label, as Carbon's tabs with icons. */
 #pages cds-tab svg { flex: none; fill: currentColor; margin-inline-end: var(--cds-spacing-03); vertical-align: text-bottom; }
 /* Below Carbon's md breakpoint the tabs are Carbon's icon-only tabs (`icon-only`, set by main.js),
@@ -39,7 +38,7 @@ main { padding-block: var(--cds-spacing-06) var(--cds-spacing-09); }
 .trail { display: block; margin-bottom: var(--cds-spacing-03); }
 .notices:empty { display: none; }
 .notices { margin-bottom: var(--cds-spacing-05); }
-.notices cds-inline-notification { max-width: none; }
+.notices cds-inline-notification, .webhook-result cds-inline-notification { max-width: none; }
 
 /* The blocks, as tiles in the Carbon grid. */
 /* The tiles are columns of the page's grid itself (this wrapper only keeps them together), so

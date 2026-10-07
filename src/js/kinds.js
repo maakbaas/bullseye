@@ -83,7 +83,7 @@ const KINDS = {
     duplicate: (id, copyId) => invoke("duplicate", { kind: "condition", id, newId: copyId }),
     // A flash drive can only stay the same drive, so while a locked block uses it there is nothing to change.
     held: (condition) => {
-      if (condition.type !== "flash_drive") return null;
+      if (condition.type !== "flash_drive" && condition.type !== "webhook") return null;
       const holders = lockedUsersOf(condition.id);
       return holders.length ? t("conditions.held", { names: names(holders) }) : null;
     },

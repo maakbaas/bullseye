@@ -49,10 +49,11 @@ A running block keeps what it was started with: while it runs, it cannot be chan
 | `bullseye-cli list delete <list> [--yes]` | **Delete** a block list |
 | `bullseye-cli list duplicate <list>` | **Duplicate** a block list |
 | `bullseye-cli condition show <condition>` | a condition's tile and its editor |
-| `bullseye-cli condition new <name> (--times <times> \| --drive <drive> \| --any <condition>... \| --all <condition>...)` | **New condition**, of the type Weekly schedule, Flash drive or Combination, then **Save** |
-| `bullseye-cli condition edit <condition> [--name <name>] [--times <times> \| --drive <drive> \| --any <condition>... \| --all <condition>...]` | **Edit** a condition, then **Save** |
+| `bullseye-cli condition new <name> (--times <times> \| --drive <drive> \| --webhook <url> [webhook options] \| --any <condition>... \| --all <condition>...)` | **New condition**, of the type Weekly schedule, Flash drive or Combination, then **Save** |
+| `bullseye-cli condition edit <condition> [--name <name>] [--times <times> \| --drive <drive> \| --webhook <url> [webhook options] \| --any <condition>... \| --all <condition>...]` | **Edit** a condition, then **Save** |
 | `bullseye-cli condition delete <condition> [--yes]` | **Delete** a condition |
 | `bullseye-cli condition duplicate <condition>` | **Duplicate** a condition |
+| `bullseye-cli condition test <condition>` | **Test** in a webhook condition's editor: asks it once and shows the status, the start of the body and what the matchers make of it |
 | `bullseye-cli condition check <times>` | the schedule written out under the week grid in the condition editor |
 | `bullseye-cli export <file>` | **Export** in Settings |
 | `bullseye-cli import <file> [--yes]` | **Import** in Settings |
@@ -113,6 +114,9 @@ bullseye-cli condition new "Key" --drive "Kingston DataTraveler 3.0"
 
 # A combination of two or more conditions (not of other combinations): active when any of them
 # is (--any), or when all of them are (--all). Give the option once for each condition.
+bullseye-cli condition new "Room" --webhook "https://example.com/state?room=1" --true-body on --false-body off --every 5m
+bullseye-cli condition new "Door" --webhook https://example.com/door --method post --true-status 200 --false-status 423 --fallback inactive
+bullseye-cli condition test "Room"
 bullseye-cli condition new "Work or weekend" --any "Work hours" --any "Weekend"
 bullseye-cli condition new "Work hours with the key out" --all "Work hours" --all "Key"
 
@@ -195,6 +199,10 @@ bullseye-cli unlock-way --password secret
 bullseye-cli unlock-way --condition "Work hours"
 bullseye-cli unlock-way --none
 ```
+
+### Webhook conditions
+
+`--webhook <url>` makes a condition that asks one web address (it can hold GET parameters; no tokens or headers) every `--every <time>` (at least `1m`, default `5m`) with `--method get` or `post` (default get), and is active or not by the answer. The **true** matcher is `--true-status <code>` and/or `--true-body <text>` (both given: both must match; a body must equal the text, white space around it aside), the **false** matcher `--false-status` and/or `--false-body`. If the true matcher matches the condition is active; if not, and the false one matches, it is not active; if neither does, or no answer came, or the last one is older than three times the interval, `--fallback active|inactive` says (default active). Both matchers are needed. Requests time out after 10 seconds, redirects are followed and certificates are checked. A locked block that uses a webhook condition cannot have it changed. `condition test` asks it once, as the editor's **Test** button does.
 
 ### `condition check`
 

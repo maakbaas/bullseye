@@ -33,6 +33,7 @@ mod ui;
 mod unlock;
 mod wake;
 mod watchdog;
+mod webhook;
 
 use client::Remote;
 use definitions::{BlockList, Condition, Contents, Definition, Fallout, Kind, Library};
@@ -118,6 +119,13 @@ fn request_stop(id: String, remote: State<Remote>) -> Result<(), String> {
 #[tauri::command]
 fn abort_stop(id: String, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::AbortStop { id })
+}
+
+/// Asks a webhook condition once, as the editor Test button does: what the web address answered and what
+/// the matchers make of it. The request is made off the main thread.
+#[tauri::command]
+async fn test_webhook(hook: webhook::Hook) -> Result<webhook::Probe, String> {
+    tauri::async_runtime::spawn_blocking(move || webhook::probe(&hook)).await.map_err(|e| e.to_string())?
 }
 
 /// A weekly schedule as text, after checking it, for the condition editor and the block's summary.
@@ -310,6 +318,7 @@ pub fn run() {
             request_unlock,
             abort_unlock,
             set_unlock_delay,
+            test_webhook,
             describe_schedule,
             describe_duration,
             describe_until,

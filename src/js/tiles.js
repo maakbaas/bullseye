@@ -20,7 +20,7 @@ const ruleLine = (rule, condition) => {
     return [icon, tn(`blocks.tile.${{ drive: "activeDriveNamed", true: "activeCombinedNamed", during: "activeNamed" }[wording]}`, { name })];
   }
   if (rule.type === "flash_drive") return [icon, t("blocks.tile.activeDrive", { drive: quoted(rule.drive) })];
-  return [icon, t(rule.type === "combined" ? "blocks.tile.activeCombined" : "blocks.tile.active")];
+  return [icon, t(rule.type === "combined" ? "blocks.tile.activeCombined" : rule.type === "webhook" ? "blocks.tile.activeWebhook" : "blocks.tile.active")];
 };
 
 // A running block's condition line: the rule as `ruleLine` words it, and whether it enforces now, as a
@@ -66,7 +66,8 @@ function summaryOf(kind, item) {
         return member ? ref(member.name, editHref("conditions", id)) : t("common.gone");
       });
       what = { text: tn(item.mode === "any" ? "conditions.activeAny" : "conditions.activeAll", { names: joined(members) }) };
-    } else what = item.type === "flash_drive" ? t("conditions.activeDrive", { drive: quoted(item.drive) }) : t("conditions.active", { times: weekText(item.days) });
+    } else if (item.type === "webhook") what = t("conditions.activeWebhook", { url: item.url });
+    else what = item.type === "flash_drive" ? t("conditions.activeDrive", { drive: quoted(item.drive) }) : t("conditions.active", { times: weekText(item.days) });
     return [what, users.length ? usedBy(users) : t("conditions.notUsed")];
   }
   // A block: what it runs with while it runs, else what it is defined as. Each line has an

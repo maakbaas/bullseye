@@ -34,7 +34,8 @@ use uiautomation::core::UICondition;
 use uiautomation::patterns::{UIInvokePattern, UIValuePattern, UIWindowPattern};
 use uiautomation::types::{ControlType, Handle, TreeScope, UIProperty};
 use uiautomation::{UIAutomation, UIElement};
-use windows_sys::Win32::Foundation::{HWND, LPARAM};
+use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM};
+use windows_sys::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, PostMessageW, WM_CLOSE,
 };
@@ -137,6 +138,9 @@ struct Closer {
     burst_until: Option<Instant>,
     /// When each slow step was last written to the log (`Closer::slow`).
     slow_logged: HashMap<&'static str, Instant>,
+    /// A blocked page of a window and when it was first seen there, so a close can say how long it took
+    /// from seeing it (`close_blocked_tab`).
+    first_seen: HashMap<isize, (String, Instant)>,
 }
 
 /// How a Chromium window is laid out. A window never changes from one to the other, so it is
@@ -147,6 +151,9 @@ enum Layout {
     Tabs(UIElement),
     /// Has none (`chrome --app=<url>`, a popup): its page goes with the whole window.
     App,
+    /// Has none, and belongs to a program that is no browser (`BROWSERS`): an app built on Chromium
+    /// that has an address bar of its own (Spotify's desktop app), which is left alone.
+    NotABrowser,
 }
 
 /// What a look for tabs in a window found.
@@ -195,6 +202,61 @@ struct Pending {
     url: String,
     tab: Vec<i32>,
     since: Instant,
+}
+
+/// The programs whose windows without tabs are app windows (`chrome --app=<url>`, installed web apps,
+/// popups). Lower case file names. A Chromium window of any other program with no tab strip is some
+/// app's own (Spotify, Electron and CEF apps with an address bar), and is never closed as a page.
+const BROWSERS: [&str; 12] = [
+    "chrome.exe",
+    "msedge.exe",
+    "brave.exe",
+    "vivaldi.exe",
+    "opera.exe",
+    "chromium.exe",
+    "browser.exe",
+    "whale.exe",
+    "thorium.exe",
+    "iron.exe",
+    "arc.exe",
+    "comet.exe",
+];
+
+/// Whether the window belongs to a browser (`BROWSERS`), by the file name of its program. If that cannot be
+/// told the window is left alone: closing an app's window by mistake costs more than missing an app window.
+fn is_browser(handle: isize) -> bool {
+    let mut pid = 0u32;
+    // SAFETY: a window handle Windows handed over a moment ago; a stale one only gives no process.
+    unsafe { GetWindowThreadProcessId(handle as HWND, &mut pid) };
+    if pid == 0 {
+        return false;
+    }
+    // SAFETY: the process handle is closed below, and the buffer is as long as its length says.
+    let name = unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return false;
+        }
+        let mut buffer = [0u16; 520];
+        let mut length = buffer.len() as u32;
+        let ok = QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length);
+        CloseHandle(process);
+        if ok == 0 {
+            return false;
+        }
+        String::from_utf16_lossy(&buffer[..length as usize])
+    };
+    let file = name.rsplit(['\\', '/']).next().unwrap_or_default().to_lowercase();
+    BROWSERS.contains(&file.as_str())
+}
+
+/// The site of an address, as the address bar and a page's own address both give it: no scheme, no `www.`,
+/// no path, lower case, so the two can be compared.
+fn host_of(url: &str) -> String {
+    let url = url.trim().to_lowercase();
+    let rest = url.split_once("://").map_or(url.as_str(), |(_, rest)| rest);
+    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    host.strip_prefix("www.").unwrap_or(host).to_string()
 }
 
 /// Whether what is seen now is what was seen before, long enough ago to count as a second look.
@@ -247,6 +309,7 @@ impl Closer {
             quick: false,
             burst_until: None,
             slow_logged: HashMap::new(),
+            first_seen: HashMap::new(),
         }
     }
 
@@ -282,8 +345,27 @@ impl Closer {
             // Two pages at once is a split view; one is an ordinary tab. An app window's page goes
             // with its window; a normal window's blocked page is a tab to close.
             let split_view = pages.len() > 1;
+            // The address bar is a quicker witness than a heavy page: the browser shows where a tab is
+            // going before the page's accessibility tree is built (which takes long on a big page, and
+            // is why such a page closed late). It counts only when it names another site than the page
+            // that is exposed (an exposed page of the same site is trusted: the bar may show less of it),
+            // and then goes the same way as a page read from the bar alone: seen twice, in the same
+            // selected tab (`close_blocked_tab`).
+            let bar = match pages.as_slice() {
+                [one] if !one.title.is_empty() => self.address_bar_page(&browser).ok().flatten().filter(|bar| host_of(&bar.url) != host_of(&one.url)),
+                _ => None,
+            };
             let app_page = pages.iter().find(|p| active.blocks_app_window(&p.url));
-            let tab_page = pages.iter().find(|p| active.blocks_page(&p.url, split_view));
+            let tab_page = pages.iter().find(|p| active.blocks_page(&p.url, split_view)).or(bar.as_ref().filter(|p| active.blocks_page(&p.url, false)));
+            match tab_page {
+                Some(page) if self.first_seen.get(&handle).is_none_or(|(url, _)| *url != page.url) => {
+                    self.first_seen.insert(handle, (page.url.clone(), Instant::now()));
+                }
+                Some(_) => {}
+                None => {
+                    self.first_seen.remove(&handle);
+                }
+            }
             if app_page.is_none() && tab_page.is_none() {
                 self.pending.remove(&handle);
                 continue;
@@ -305,6 +387,7 @@ impl Closer {
                         }
                     }
                 }
+                Layout::NotABrowser => {}
                 Layout::Tabs(strip) => {
                     if let Some(page) = tab_page {
                         self.close_blocked_tab(handle, &browser, &strip, page);
@@ -315,6 +398,7 @@ impl Closer {
         self.layouts.retain(|handle, _| seen.contains(handle));
         self.doubts.retain(|handle, _| seen.contains(handle));
         self.pending.retain(|handle, _| seen.contains(handle));
+        self.first_seen.retain(|handle, _| seen.contains(handle));
         self.windows.retain(|handle, _| seen.contains(handle));
         Ok(())
     }
@@ -330,6 +414,7 @@ impl Closer {
         self.layouts.remove(&handle);
         self.doubts.remove(&handle);
         self.pending.remove(&handle);
+        self.first_seen.remove(&handle);
     }
 
     /// What kind of window this is, found once and kept: with a tab strip, or an app window. None
@@ -343,7 +428,10 @@ impl Closer {
         self.slow("looking for the tab strip of a window", started);
         let layout = match judge(self.doubts.get(&handle).copied(), seen, Instant::now()) {
             Verdict::Tabs => strip.map(Layout::Tabs),
-            Verdict::App => Some(Layout::App),
+            // Only a browser's own windows are app windows. Tabs are proof enough of a browser, but a
+            // window with none is also what an app made of Chromium looks like (Spotify's has an address
+            // bar too), so the program decides.
+            Verdict::App => Some(if is_browser(handle) { Layout::App } else { Layout::NotABrowser }),
             Verdict::Unsure(doubt) => {
                 match doubt {
                     Some(doubt) => self.doubts.insert(handle, doubt),
@@ -409,7 +497,9 @@ impl Closer {
         // tabs, and the browser shows a neighbour as soon as a tab closes, while its old page may
         // still be exposed for a few milliseconds. So the page is looked at again just before, and
         // only closed if it is still there as it was.
-        let unchanged = self.pages(browser).is_ok_and(|now| now.iter().any(|p| p.url == page.url && p.title == page.title));
+        // (A page that came from the address bar is looked at again there.)
+        let unchanged = self.pages(browser).is_ok_and(|now| now.iter().any(|p| p.url == page.url && p.title == page.title))
+            || (page.title.is_empty() && self.address_bar_page(browser).ok().flatten().is_some_and(|bar| bar.url == page.url));
         if !unchanged {
             self.pending.remove(&handle);
             return;
@@ -420,7 +510,10 @@ impl Closer {
         self.pending.remove(&handle);
         match closed {
             Ok(()) => {
-                note("app", &format!("closed {} ({})", page.url, self.woken.describe()));
+                // How long it took from first seeing the page here, to see where the time goes.
+                let seen = self.first_seen.remove(&handle).map_or(String::new(), |(_, at)| format!(", {} ms after it was first seen", at.elapsed().as_millis()));
+                let how = if page.title.is_empty() { "from the address bar" } else { "from the page" };
+                note("app", &format!("closed {} ({}, {how}{seen})", page.url, self.woken.describe()));
                 self.closed_one();
             }
             Err(e) => {
@@ -671,11 +764,19 @@ impl Closer {
                 }
             }
         }
-        if pages.is_empty() && !browser.omnibox.has_keyboard_focus()? {
-            let url = browser.omnibox.get_pattern::<UIValuePattern>()?.get_value()?;
-            pages.push(Page { url, title: String::new() });
+        if pages.is_empty() {
+            pages.extend(self.address_bar_page(browser)?);
         }
         Ok(pages)
+    }
+
+    /// The page the address bar shows, unless the user is typing in it. It has no title to check a tab by.
+    fn address_bar_page(&self, browser: &Browser) -> uiautomation::Result<Option<Page>> {
+        if browser.omnibox.has_keyboard_focus()? {
+            return Ok(None);
+        }
+        let url = browser.omnibox.get_pattern::<UIValuePattern>()?.get_value()?;
+        Ok(Some(Page { url, title: String::new() }))
     }
 }
 

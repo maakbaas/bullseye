@@ -59,6 +59,8 @@ windows-sys = { version = "0.61", features = [
 ] }
 # the service hears programs start (src/wake.rs), to close blocked ones without waiting for the next pass
 wmi = { version = "0.18", default-features = false }
+# the requests of webhook conditions (src/webhook.rs): blocking, TLS with certificate checks
+ureq = "2"
 
 [profile.dev]
 incremental = false       # don't accumulate a multi-GB incremental cache

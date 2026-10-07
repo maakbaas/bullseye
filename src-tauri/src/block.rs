@@ -323,6 +323,7 @@ impl Block {
                 match condition {
                     Rule::Schedule { .. } => format!("“{name}” is locked by its lock schedule{until}"),
                     Rule::FlashDrive { drive, .. } => format!("“{name}” is locked until the flash drive “{drive}” is connected"),
+                    Rule::Webhook(_) => format!("“{name}” is locked by its webhook condition"),
                     Rule::Combined { .. } => format!("“{name}” is locked by its lock condition{until}"),
                 }
             }),

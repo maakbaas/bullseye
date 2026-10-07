@@ -344,6 +344,134 @@ function drivePicker() {
   };
 }
 
+// One of a webhook's two matchers: what the answer must be, by a dropdown (HTTP code only, body only or
+// both) and the fields it needs.
+function matcherFields() {
+  const mode = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.webhook.matchOn") });
+  for (const key of ["status", "body", "both"]) mode.append(el("cds-dropdown-item", { value: key }, t(`conditions.webhook.on.${key}`)));
+  const status = el("cds-text-input", { label: t("conditions.webhook.status"), placeholder: "200", "max-count": "3" });
+  const body = el("cds-text-input", { label: t("conditions.webhook.body"), placeholder: t("conditions.webhook.bodyPlaceholder"), "helper-text": t("conditions.webhook.bodyHelper") });
+  const show = () => {
+    status.hidden = mode.value === "body";
+    body.hidden = mode.value === "status";
+  };
+  mode.addEventListener("cds-dropdown-selected", show);
+  return {
+    nodes: [mode, status, body],
+    fill(matcher) {
+      mode.value = (matcher && matcher.on) || "status";
+      status.value = matcher && matcher.status != null ? String(matcher.status) : "";
+      body.value = (matcher && matcher.body) || "";
+      show();
+    },
+    read: () => ({
+      on: mode.value,
+      status: mode.value !== "body" && status.value.trim() ? Number(status.value.trim()) : null,
+      body: mode.value !== "status" ? body.value : null,
+    }),
+    error() {
+      invalid(status, null);
+      invalid(body, null);
+      if (mode.value !== "body" && !/^[1-5]\d\d$/.test(status.value.trim())) {
+        invalid(status, t("conditions.webhook.statusWrong"));
+        return t("conditions.webhook.statusWrong");
+      }
+      if (mode.value !== "status" && !body.value.trim()) {
+        invalid(body, t("conditions.webhook.bodyMissing"));
+        return t("conditions.webhook.bodyMissing");
+      }
+      return null;
+    },
+    disable(off) {
+      for (const control of [mode, status, body]) control.disabled = off;
+    },
+  };
+}
+
+// A webhook: one web address asked every so often (`webhook.rs`), GET or POST, and what its answer means: the
+// true matcher first, then the false one, else the fallback. A Test button asks it once (`test_webhook`).
+function webhookPicker() {
+  const url = el("cds-text-input", { label: t("conditions.webhook.url"), placeholder: "https://example.com/state?room=1", "helper-text": t("conditions.webhook.urlHelper") });
+  const method = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.webhook.method") });
+  for (const key of ["get", "post"]) method.append(el("cds-dropdown-item", { value: key }, key.toUpperCase()));
+  const every = el("cds-text-input", { label: t("conditions.webhook.every"), placeholder: "5", "helper-text": t("conditions.webhook.everyHelper") });
+  const fallback = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.webhook.fallback"), "helper-text": t("conditions.webhook.fallbackHelper") });
+  for (const key of ["active", "inactive"]) fallback.append(el("cds-dropdown-item", { value: key }, t(`conditions.webhook.fallback_${key}`)));
+  const whenTrue = matcherFields();
+  const whenFalse = matcherFields();
+  // What a test found, as a Carbon notification: how the condition comes out, and what was answered.
+  const result = el("div", { class: "webhook-result" });
+  const show = (kind, title, subtitle = "") => result.replaceChildren(el("cds-inline-notification", { kind, title, subtitle, "low-contrast": true, "hide-close-button": true }));
+  // Headings as in a block's editor: what is asked, when it is active, when not, and otherwise.
+  const part = (title, text, ...content) =>
+    el("section", {}, el("h2", { class: "cds--type-productive-heading-03" }, title), el("p", { class: "cds--type-body-01" }, text), ...content);
+  const test = el("cds-button", { kind: "tertiary", size: "md" }, t("conditions.webhook.test"), carbonIcon("play", "icon"));
+  const read = () => ({
+    url: url.value.trim(),
+    method: method.value || "get",
+    interval: Math.round(Number(every.value.trim()) * 60),
+    fallback: fallback.value !== "inactive",
+    when_true: whenTrue.read(),
+    when_false: whenFalse.read(),
+  });
+  const error = () => {
+    invalid(url, null);
+    invalid(every, null);
+    if (!/^https?:\/\/\S{3,}$/.test(url.value.trim())) {
+      invalid(url, t("conditions.webhook.urlWrong"));
+      return t("conditions.webhook.urlWrong");
+    }
+    const minutes = Number(every.value.trim());
+    if (!Number.isFinite(minutes) || minutes < 1) {
+      invalid(every, t("conditions.webhook.everyWrong"));
+      return t("conditions.webhook.everyWrong");
+    }
+    return whenTrue.error() || whenFalse.error();
+  };
+  test.addEventListener("click", async () => {
+    const wrong = error();
+    if (wrong) return show("error", t("conditions.webhook.testNot"), wrong);
+    test.disabled = true;
+    show("info", t("conditions.webhook.testing"));
+    try {
+      const found = await invoke("test_webhook", { hook: read() });
+      const answer = t("conditions.webhook.answer", { status: found.status, body: found.body });
+      // Green: active. Yellow: not active. Red: neither matched, so the fallback decides.
+      if (found.outcome === "neither") show("error", t(found.active ? "conditions.webhook.fellActive" : "conditions.webhook.fellInactive"), answer);
+      else show(found.active ? "success" : "warning", t(found.active ? "conditions.webhook.isActive" : "conditions.webhook.isInactive"), answer);
+    } catch (e) {
+      show("error", t("conditions.webhook.testFailed"), String(e));
+    }
+    test.disabled = false;
+  });
+  return {
+    nodes: [
+      part(t("conditions.webhook.requestTitle"), t("conditions.webhook.requestText"), url, method, every),
+      part(t("conditions.webhook.activeTitle"), t("conditions.webhook.activeText"), ...whenTrue.nodes),
+      part(t("conditions.webhook.inactiveTitle"), t("conditions.webhook.inactiveText"), ...whenFalse.nodes),
+      part(t("conditions.webhook.otherwiseTitle"), t("conditions.webhook.otherwiseText"), fallback),
+      part(t("conditions.webhook.testTitle"), t("conditions.webhook.testText"), el("div", { class: "inline-action" }, test), result),
+    ],
+    fill(condition) {
+      const hook = condition.type === "webhook" ? condition : {};
+      url.value = hook.url || "";
+      method.value = hook.method || "get";
+      every.value = hook.interval ? String(Math.round(hook.interval / 60)) : "5";
+      fallback.value = hook.fallback === false ? "inactive" : "active";
+      whenTrue.fill(hook.when_true);
+      whenFalse.fill(hook.when_false);
+      result.replaceChildren();
+    },
+    read,
+    error,
+    disable(off) {
+      for (const control of [url, method, every, fallback, test]) control.disabled = off;
+      whenTrue.disable(off);
+      whenFalse.disable(off);
+    },
+  };
+}
+
 // A combination: the conditions it is of, ticked among the others (never a combination, nor
 // itself: no nesting), and whether any one of them or all of them make it active.
 function combinePicker() {
@@ -380,7 +508,7 @@ function combinePicker() {
 }
 
 // A condition: a name, its type, and what the type needs: a week to drag over (`weekEditor`), a
-// flash drive (`drivePicker`) or other conditions to combine (`combinePicker`). What is not of the
+// flash drive (`drivePicker`), a webhook (`webhookPicker`) or other conditions to combine (`combinePicker`). What is not of the
 // chosen type is not kept.
 function conditionForm() {
   const name = nameField(t("conditions.namePlaceholder"));
@@ -388,8 +516,12 @@ function conditionForm() {
   type.append(
     el("cds-dropdown-item", { value: "schedule" }, t("conditions.typeSchedule")),
     el("cds-dropdown-item", { value: "flash_drive" }, t("conditions.typeDrive")),
+    el("cds-dropdown-item", { value: "webhook" }, t("conditions.typeWebhook")),
     el("cds-dropdown-item", { value: "combined" }, t("conditions.typeCombined")),
   );
+  const hook = webhookPicker();
+  // Its own sections, with their headings, so a div here (a section in a section would be drawn as a divided one).
+  const hookPart = el("div", { class: "form" }, ...hook.nodes);
   const week = weekEditor();
   const weekPart = el("section", {}, ...week.nodes);
   const picker = drivePicker();
@@ -399,22 +531,25 @@ function conditionForm() {
   const show = () => {
     weekPart.hidden = type.value !== "schedule";
     drivePart.hidden = type.value !== "flash_drive";
+    hookPart.hidden = type.value !== "webhook";
     combinePart.hidden = type.value !== "combined";
   };
   type.addEventListener("cds-dropdown-selected", show);
   return {
-    nodes: [nameSection(name, type), weekPart, drivePart, combinePart],
+    nodes: [nameSection(name, type), weekPart, drivePart, hookPart, combinePart],
     fill(condition, isNew = false) {
       name.value = condition.name;
       type.value = condition.type || "schedule";
       week.fill({ days: condition.days || [0, 1, 2, 3, 4, 5, 6].map(() => []) });
       picker.fill(condition);
+      hook.fill(condition);
       combine.fill(condition);
       show();
     },
     read: (condition) => {
       const base = { id: condition.id, name: name.value.trim() };
       if (type.value === "flash_drive") return { ...base, type: "flash_drive", ...picker.read() };
+      if (type.value === "webhook") return { ...base, type: "webhook", ...hook.read() };
       if (type.value === "combined") return { ...base, type: "combined", ...combine.read() };
       return { ...base, type: "schedule", days: week.read().days };
     },
@@ -422,13 +557,14 @@ function conditionForm() {
       type.disabled = off;
       week.disable(off);
       picker.disable(off);
+      hook.disable(off);
       combine.disable(off);
     },
     settle: () => week.settle(),
     error: () => {
       if (!name.value.trim()) return t("conditions.nameMissing");
       // A valid one answers null, which must not fall through to another type's check.
-      const part = { flash_drive: picker, combined: combine, schedule: week }[type.value] ?? week;
+      const part = { flash_drive: picker, webhook: hook, combined: combine, schedule: week }[type.value] ?? week;
       return part.error();
     },
     name,

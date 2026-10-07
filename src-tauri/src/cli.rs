@@ -26,10 +26,11 @@ use crate::lock::Lock;
 use crate::proto::{Overview, Request, UnlockStatus};
 use crate::schedule::Week;
 use crate::state::Enforcers;
+use crate::webhook::{self, Hook, Match, Matcher, Method};
 
 /// Each command the window can invoke, and the CLI commands that do the same. Empty: it is about
 /// the window itself.
-pub const GUI_COMMANDS: [(&str, &[&str]); 28] = [
+pub const GUI_COMMANDS: [(&str, &[&str]); 29] = [
     ("block_status", &["status", "show", "list show", "condition show"]),
     ("save_block", &["new", "edit"]),
     ("delete_block", &["delete"]),
@@ -53,6 +54,8 @@ pub const GUI_COMMANDS: [(&str, &[&str]); 28] = [
     ("abort_unlock", &["unlock"]),
     ("set_unlock_delay", &["unlock-delay"]),
     ("describe_schedule", &["condition check"]),
+    // A webhook condition asked once, as the editor Test button does.
+    ("test_webhook", &["condition test"]),
     // A lock's length or end in words: what `show` and `start` say of a duration or until lock.
     ("describe_duration", &["show"]),
     ("describe_until", &["show", "start"]),
@@ -144,14 +147,22 @@ Block lists:
 
 Conditions:
   condition show <condition>        One condition, and the blocks that use it.
-  condition new <name> (--times <times> | --drive <drive> | --any <condition>... | --all <condition>...)
+  condition new <name> (--times <times> | --drive <drive> | --webhook <url> [webhook options] | --any <condition>... | --all <condition>...)
                                     Make a condition: a weekly schedule, e.g. --times
                                     \"Mon-Fri 08:00-17:00; Sat 10-12\"; or a flash drive, by name
                                     or serial number ('drives' lists them): active while it is
                                     not connected; or a combination of two or more other
                                     conditions (--any or --all, once for each): active when any
-                                    of them is, or when all are. Not of other combinations.
-  condition edit <condition> [--name <name>] [--times <times> | --drive <drive> | --any <condition>... | --all <condition>...]
+                                    of them is, or when all are. Not of other combinations. A
+                                    webhook asks one web address (it can hold GET parameters) every
+                                    --every <time> (at least 1m, default 5m), with --method get|post
+                                    (default get). It is active when the answer matches the true
+                                    matcher --true-status <code> and/or --true-body <text>; if not,
+                                    not active when it matches the false matcher --false-status
+                                    and/or --false-body (a body must equal the text); if neither
+                                    does, or no answer comes, --fallback active|inactive (default
+                                    active) says. Both matchers are needed.
+  condition edit <condition> [--name <name>] [--times <times> | --drive <drive> | --webhook <url> [webhook options] | --any <condition>... | --all <condition>...]
                                     Change a condition. While a locked block uses it, a schedule
                                     can only get more times, a drive cannot change, and a
                                     combination can only get more active.
@@ -162,6 +173,8 @@ Conditions:
                                     taken out of its combinations, and one left with a single
                                     condition is deleted too.
   condition duplicate <condition>   Make a copy of a condition, named after it with a number.
+  condition test <condition>        Ask a webhook condition once: the status, the start of the
+                                    body, and what the matchers make of it.
   condition check <times>           Check times and show them per day, as a schedule takes them.
 
 Moving to another computer:
@@ -272,6 +285,9 @@ enum Command {
     ConditionCheck {
         times: String,
     },
+    ConditionTest {
+        condition: String,
+    },
     Export {
         file: String,
     },
@@ -307,6 +323,8 @@ enum RuleChoice {
     Any(Vec<String>),
     /// Conditions by name or id, all of which are needed (`--all`).
     All(Vec<String>),
+    /// A web address that is asked (`--webhook`, with its options).
+    Webhook(Hook),
 }
 
 /// What `new` and `edit` set on a block; `None` leaves it. Lists and the condition by name or id,
@@ -441,6 +459,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
             rule: parse_rule(&mut options)?,
         },
         "condition delete" => Command::ConditionDelete { condition: named(&mut options, "condition")?, yes: options.flag("--yes") },
+        "condition test" => Command::ConditionTest { condition: named(&mut options, "condition")? },
         "condition check" => {
             Command::ConditionCheck { times: options.positional().ok_or("Give the times to check, e.g. \"Mon-Fri 08:00-17:00\"")? }
         }
@@ -517,6 +536,7 @@ fn parse_rule(options: &mut Options) -> Result<Option<RuleChoice>, String> {
     let mut given: Vec<RuleChoice> = Vec::new();
     given.extend(options.value("--times")?.map(RuleChoice::Times));
     given.extend(options.value("--drive")?.map(RuleChoice::Drive));
+    given.extend(parse_webhook(options)?.map(RuleChoice::Webhook));
     let any = options.values("--any")?;
     let all = options.values("--all")?;
     if !any.is_empty() {
@@ -527,8 +547,46 @@ fn parse_rule(options: &mut Options) -> Result<Option<RuleChoice>, String> {
     }
     match given.len() {
         0 | 1 => Ok(given.pop()),
-        _ => Err("Give one of --times, --drive, --any or --all".into()),
+        _ => Err("Give one of --times, --drive, --webhook, --any or --all".into()),
     }
+}
+
+/// `--webhook <url>` with `--method get|post`, `--every <time>` (at least 1m, default 5m), `--fallback
+/// active|inactive` (default active), and what each answer means: `--true-status` / `--true-body` and
+/// `--false-status` / `--false-body`, each matcher by what is given of it (status, body or both).
+fn parse_webhook(options: &mut Options) -> Result<Option<Hook>, String> {
+    let Some(url) = options.value("--webhook")? else { return Ok(None) };
+    let method = match options.value("--method")?.map(|m| m.to_lowercase()).as_deref() {
+        None | Some("get") => Method::Get,
+        Some("post") => Method::Post,
+        Some(other) => return Err(format!("--method is get or post, not \"{other}\"")),
+    };
+    let interval = match options.value("--every")? {
+        Some(text) => duration::parse(&text)?.ok_or("Give the time between requests, e.g. 5m")?.as_secs(),
+        None => 300,
+    };
+    let fallback = match options.value("--fallback")?.map(|f| f.to_lowercase()).as_deref() {
+        None | Some("active") => true,
+        Some("inactive") => false,
+        Some(other) => return Err(format!("--fallback is active or inactive, not \"{other}\"")),
+    };
+    let mut matcher = |what: &str| -> Result<Matcher, String> {
+        let status = options.value(&format!("--{what}-status"))?;
+        let body = options.value(&format!("--{what}-body"))?;
+        let status = status.map(|s| s.trim().parse::<u16>().map_err(|_| format!("--{what}-status is a number, e.g. 200"))).transpose()?;
+        let on = match (status.is_some(), body.is_some()) {
+            (true, true) => Match::Both,
+            (true, false) => Match::Status,
+            (false, true) => Match::Body,
+            (false, false) => return Err(format!("Give --{what}-status and/or --{what}-body: what an answer must be for the condition to be {what}")),
+        };
+        Ok(Matcher { on, status, body })
+    };
+    let when_true = matcher("true")?;
+    let when_false = matcher("false")?;
+    let hook = Hook { url, method, interval, fallback, when_true, when_false };
+    hook.check()?;
+    Ok(Some(hook))
 }
 
 /// The options of `list new` and `list edit`. Only `list edit` takes `--name` and `--clear`.
@@ -816,6 +874,12 @@ fn execute(command: Command) -> Result<(), Failure> {
             send(Request::DeleteList { id: list.id.clone() })?;
             println!("Deleted the block list \"{}\".", list.name);
         }
+        Command::ConditionTest { condition } => {
+            let overview = overview()?;
+            let condition = find(&overview.conditions, &condition, "condition", |c| (&c.id, &c.name))?;
+            let Rule::Webhook(hook) = &condition.rule else { return Err(failed(format!("\"{}\" is not a webhook condition", condition.name))) };
+            println!("{}", webhook::test(hook).map_err(failed)?);
+        }
         Command::ConditionShow { condition } => {
             let overview = overview()?;
             let condition = find(&overview.conditions, &condition, "condition", |c| (&c.id, &c.name))?;
@@ -1003,6 +1067,7 @@ fn resolve_rule(overview: &Overview, choice: RuleChoice) -> Result<Rule, Failure
         RuleChoice::Any(given) => combination(overview, Mode::Any, &given),
         RuleChoice::All(given) => combination(overview, Mode::All, &given),
         RuleChoice::Times(text) => Ok(Rule::Schedule { week: times_of(&text)? }),
+        RuleChoice::Webhook(hook) => Ok(Rule::Webhook(hook)),
         RuleChoice::Drive(given) => {
             let drives = crate::drives::connected().map_err(Failure::Failed)?;
             let wanted = given.trim().to_lowercase();
@@ -1033,9 +1098,28 @@ fn combination(overview: &Overview, mode: Mode, given: &[String]) -> Result<Rule
 /// "active" mean something.
 fn drive_detail(rule: &Rule) -> String {
     match rule {
-        Rule::Schedule { .. } | Rule::Combined { .. } => String::new(),
+        Rule::Schedule { .. } | Rule::Combined { .. } | Rule::Webhook(_) => String::new(),
         Rule::FlashDrive { drive, .. } => format!(" (the flash drive \"{drive}\" is not connected)"),
     }
+}
+
+/// A webhook condition as words.
+fn describe_webhook(hook: &Hook) -> String {
+    let matcher = |m: &Matcher| match (m.on, m.status, &m.body) {
+        (Match::Status, Some(status), _) => format!("HTTP {status}"),
+        (Match::Body, _, Some(body)) => format!("body \"{body}\""),
+        (_, Some(status), Some(body)) => format!("HTTP {status} and body \"{body}\""),
+        _ => "(not set)".into(),
+    };
+    format!(
+        "{} {} every {}: active on {}, not active on {}, otherwise {}",
+        if hook.method == Method::Post { "POST" } else { "GET" },
+        hook.url,
+        duration::countdown(hook.interval),
+        matcher(&hook.when_true),
+        matcher(&hook.when_false),
+        if hook.fallback { "active" } else { "not active" }
+    )
 }
 
 /// A condition as words: its times, the drive it waits for, or the conditions it combines.
@@ -1043,6 +1127,7 @@ fn describe_rule(overview: &Overview, rule: &Rule) -> String {
     match rule {
         Rule::Schedule { week } => week.describe(),
         Rule::FlashDrive { drive, .. } => format!("while the flash drive \"{drive}\" is not connected"),
+        Rule::Webhook(hook) => describe_webhook(hook),
         Rule::Combined { mode, members, .. } => {
             let names: Vec<String> = members
                 .iter()
