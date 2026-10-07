@@ -13,6 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::allowance::Run;
 use crate::block::RunLock;
 use crate::condition::Rule;
 use crate::lists::Entries;
@@ -36,6 +37,9 @@ pub struct Saved {
     /// The time zone a schedule is read in, by name (`localtime::Zone::named`), fixed when the
     /// block started.
     pub zone: String,
+    /// Its allowance and what is used of it (`allowance.rs`); `None`: it has none.
+    #[serde(default)]
+    pub allowance: Option<Run>,
 }
 
 /// One block list of a running block, as written to disk.
@@ -263,7 +267,16 @@ mod tests {
             entries: Entries { filters: vec!["tweakers.net".to_string()], ..Entries::default() },
             enforcers: Enforcers::default(),
         };
-        Saved { id: "a".into(), name: "A".into(), parts: vec![part], seen: None, lock, condition: None, zone: "fixed:+0".into() }
+        Saved {
+            id: "a".into(),
+            name: "A".into(),
+            parts: vec![part],
+            seen: None,
+            lock,
+            condition: None,
+            zone: "fixed:+0".into(),
+            allowance: None,
+        }
     }
 
     #[test]

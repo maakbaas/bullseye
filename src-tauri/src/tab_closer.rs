@@ -352,11 +352,16 @@ impl Closer {
             // and then goes the same way as a page read from the bar alone: seen twice, in the same
             // selected tab (`close_blocked_tab`).
             let bar = match pages.as_slice() {
-                [one] if !one.title.is_empty() => self.address_bar_page(&browser).ok().flatten().filter(|bar| host_of(&bar.url) != host_of(&one.url)),
+                [one] if !one.title.is_empty() => {
+                    self.address_bar_page(&browser).ok().flatten().filter(|bar| host_of(&bar.url) != host_of(&one.url))
+                }
                 _ => None,
             };
             let app_page = pages.iter().find(|p| active.blocks_app_window(&p.url));
-            let tab_page = pages.iter().find(|p| active.blocks_page(&p.url, split_view)).or(bar.as_ref().filter(|p| active.blocks_page(&p.url, false)));
+            let tab_page = pages
+                .iter()
+                .find(|p| active.blocks_page(&p.url, split_view))
+                .or(bar.as_ref().filter(|p| active.blocks_page(&p.url, false)));
             match tab_page {
                 Some(page) if self.first_seen.get(&handle).is_none_or(|(url, _)| *url != page.url) => {
                     self.first_seen.insert(handle, (page.url.clone(), Instant::now()));
@@ -511,7 +516,10 @@ impl Closer {
         match closed {
             Ok(()) => {
                 // How long it took from first seeing the page here, to see where the time goes.
-                let seen = self.first_seen.remove(&handle).map_or(String::new(), |(_, at)| format!(", {} ms after it was first seen", at.elapsed().as_millis()));
+                let seen = self
+                    .first_seen
+                    .remove(&handle)
+                    .map_or(String::new(), |(_, at)| format!(", {} ms after it was first seen", at.elapsed().as_millis()));
                 let how = if page.title.is_empty() { "from the address bar" } else { "from the page" };
                 note("app", &format!("closed {} ({}, {how}{seen})", page.url, self.woken.describe()));
                 self.closed_one();
@@ -998,14 +1006,15 @@ mod tests {
     /// One block with these sites and programs, and every enforcer on.
     fn active(sites: &[&str], programs: &[&str]) -> Active {
         Active {
-            blocks: vec![Enforced {
-                lists: Arc::new(Lists {
+            blocks: vec![Enforced::new(
+                Arc::new(Lists {
                     sites: FilterList::parse(sites).unwrap(),
                     programs: ProgramList::parse(programs).unwrap(),
                     ..Lists::default()
                 }),
-                enforcers: Enforcers::default(),
-            }],
+                Enforcers::default(),
+            )],
+            used: Default::default(),
         }
     }
 

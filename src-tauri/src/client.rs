@@ -13,10 +13,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::block::{Active, Enforced};
+use crate::block::{Active, Enforced, Free, Usage};
 use crate::lists::Lists;
 use crate::pipe;
-use crate::proto::{self, Overview, Policy, Request, Response};
+use crate::proto::{self, Overview, Policy, Request, Response, Used};
 use crate::registration;
 use crate::sync::LockExt;
 use crate::watchdog::note;
@@ -44,6 +44,9 @@ pub struct Remote {
     /// For the CLI: a request that finds the service registered but not running starts it and
     /// waits for it, rather than failing (the app tries again a second later anyway).
     patient: bool,
+    /// What the closing has seen in use of what an allowance lets through, until it is reported
+    /// along with the next question for the policy.
+    usage: Usage,
 }
 
 /// The least time between two attempts to start the service.
@@ -128,6 +131,15 @@ impl Remote {
 
     /// What to enforce right now, if anything.
     pub fn active(&self) -> Option<Active> {
+        // What was seen in use since the last time goes first, so the service counts it before it
+        // says what is to be enforced now.
+        let used = self.usage.take();
+        if !used.is_empty() {
+            let report = used.iter().map(|(block, key)| Used { block: block.clone(), key: key.clone() }).collect();
+            if self.send(Request::Report { used: report }).is_err() {
+                self.usage.put_back(used);
+            }
+        }
         match self.send(Request::Policy) {
             Ok(Response::Policy(policy)) => {
                 self.failing.store(false, Ordering::Relaxed);
@@ -172,13 +184,15 @@ impl Remote {
         let mut cache = self.cache.locked();
         if policies.is_empty() {
             *cache = None;
+            // Nothing runs, so nothing is counted.
+            self.usage.take();
             return;
         }
         if cache.as_ref().is_some_and(|c| c.policies == policies) {
             return;
         }
         match policies.iter().map(parse).collect::<Option<Vec<Enforced>>>() {
-            Some(blocks) => *cache = Some(Cached { policies, active: Active { blocks } }),
+            Some(blocks) => *cache = Some(Cached { policies, active: Active { blocks, used: self.usage.clone() } }),
             // Cannot happen with a service of this version; keep what is being enforced.
             None => note("app", "the service sent a block list that cannot be read"),
         }
@@ -186,7 +200,16 @@ impl Remote {
 }
 
 fn parse(policy: &Policy) -> Option<Enforced> {
-    Some(Enforced { lists: Arc::new(Lists::parse(&policy.entries).ok()?), enforcers: policy.enforcers })
+    // What an allowance lets through is matched with the block list's always-allowed sites as exceptions.
+    let free = policy
+        .free
+        .iter()
+        .map(|free| {
+            let entries = crate::lists::Entries { allowed: policy.entries.allowed.clone(), ..free.entries.clone() };
+            Some(Free { block: free.block.clone(), key: free.key.clone(), lists: Arc::new(Lists::parse(&entries).ok()?) })
+        })
+        .collect::<Option<Vec<Free>>>()?;
+    Some(Enforced { lists: Arc::new(Lists::parse(&policy.entries).ok()?), enforcers: policy.enforcers, free })
 }
 
 #[cfg(test)]
@@ -197,10 +220,7 @@ mod tests {
     use crate::state::Enforcers;
 
     fn policy(filters: &[&str]) -> Policy {
-        Policy {
-            entries: Entries { filters: filters.iter().map(|f| f.to_string()).collect(), ..Entries::default() },
-            enforcers: Enforcers::default(),
-        }
+        Policy::new(Entries { filters: filters.iter().map(|f| f.to_string()).collect(), ..Entries::default() }, Enforcers::default())
     }
 
     fn current(remote: &Remote) -> Option<Active> {
@@ -232,13 +252,12 @@ mod tests {
     #[test]
     fn the_programs_come_along_and_are_parsed_with_the_policy() {
         let remote = Remote::new();
-        let with_programs =
-            Policy { entries: Entries { programs: vec!["Steam*".into()], ..Entries::default() }, enforcers: Enforcers::default() };
+        let with_programs = Policy::new(Entries { programs: vec!["Steam*".into()], ..Entries::default() }, Enforcers::default());
         remote.apply(vec![with_programs]);
         let active = current(&remote).unwrap();
         assert!(active.blocks_program("steamwebhelper.exe") && !active.blocks_program("chrome.exe"));
         // A list that cannot be read leaves what is being enforced as it was.
-        let wrong = Policy { entries: Entries { programs: vec!["*".into()], ..Entries::default() }, enforcers: Enforcers::default() };
+        let wrong = Policy::new(Entries { programs: vec!["*".into()], ..Entries::default() }, Enforcers::default());
         remote.apply(vec![wrong]);
         assert!(current(&remote).unwrap().blocks_program("steamwebhelper.exe"));
     }

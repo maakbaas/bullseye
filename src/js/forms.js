@@ -55,6 +55,8 @@ function nameSection(input, ...more) {
 
 // The condition select's choice for no condition (an empty value reads as nothing chosen).
 const ALWAYS = "always";
+// The allowance dropdown's choice for none.
+const NO_ALLOWANCE = "none";
 
 function blockForm() {
   const name = nameField(t("blocks.namePlaceholder"));
@@ -71,9 +73,19 @@ function blockForm() {
   // Changing one that exists: the same detour, to its editor.
   const editCondition = el("cds-button", { kind: "tertiary", size: "md" }, t("blocks.editCondition"), carbonIcon("edit", "icon"));
   editCondition.addEventListener("click", () => condition.value && condition.value !== ALWAYS && make("conditions", condition.value)());
+  // The allowance: one at most, chosen like the condition and made or changed the same way.
+  const allowance = el("cds-dropdown", { autoalign: true, "title-text": t("blocks.allowanceLabel"), "helper-text": t("blocks.allowanceHelper") });
+  const newAllowance = el("cds-button", { kind: "tertiary", size: "md" }, t("blocks.newAllowance"), carbonIcon("add", "icon"));
+  const editAllowance = el("cds-button", { kind: "tertiary", size: "md" }, t("blocks.editAllowance"), carbonIcon("edit", "icon"));
+  newAllowance.addEventListener("click", make("allowances"));
+  editAllowance.addEventListener("click", () => allowance.value && allowance.value !== NO_ALLOWANCE && make("allowances", allowance.value)());
   let off = false;
-  const syncEdit = () => (editCondition.disabled = off || !condition.value || condition.value === ALWAYS);
+  const syncEdit = () => {
+    editCondition.disabled = off || !condition.value || condition.value === ALWAYS;
+    editAllowance.disabled = off || !allowance.value || allowance.value === NO_ALLOWANCE;
+  };
   condition.addEventListener("cds-dropdown-selected", syncEdit);
+  allowance.addEventListener("cds-dropdown-selected", syncEdit);
   let boxes = {};
   let edits = [];
   const section = (title, text, ...content) =>
@@ -83,6 +95,7 @@ function blockForm() {
       nameSection(name),
       section(t("blocks.whatTitle"), t("blocks.whatText"), lists, noLists, el("div", { class: "inline-action" }, newList)),
       section(t("blocks.whenTitle"), t("blocks.whenText"), condition, el("div", { class: "inline-action" }, newCondition, editCondition)),
+      section(t("blocks.allowanceTitle"), t("blocks.allowanceText"), allowance, el("div", { class: "inline-action" }, newAllowance, editAllowance)),
     ],
     fill(block, isNew = false) {
       name.value = block.name;
@@ -107,6 +120,11 @@ function blockForm() {
         ...overview.conditions.map((s) => el("cds-dropdown-item", { value: s.id }, s.name)),
       );
       condition.value = block.condition || ALWAYS;
+      allowance.replaceChildren(
+        el("cds-dropdown-item", { value: NO_ALLOWANCE }, t("blocks.noAllowance")),
+        ...overview.allowances.map((a) => el("cds-dropdown-item", { value: a.id }, a.name)),
+      );
+      allowance.value = block.allowance || NO_ALLOWANCE;
       syncEdit();
     },
     read: (block) => ({
@@ -114,10 +132,11 @@ function blockForm() {
       name: name.value.trim(),
       lists: overview.lists.filter((l) => boxes[l.id] && boxes[l.id].checked).map((l) => l.id),
       condition: condition.value && condition.value !== ALWAYS ? condition.value : null,
+      allowance: allowance.value && allowance.value !== NO_ALLOWANCE ? allowance.value : null,
     }),
     disable(value) {
       off = value;
-      for (const control of [condition, newList, newCondition, ...edits, ...Object.values(boxes)]) control.disabled = off;
+      for (const control of [condition, allowance, newList, newCondition, newAllowance, ...edits, ...Object.values(boxes)]) control.disabled = off;
       syncEdit();
     },
     settle: async () => {},
@@ -571,6 +590,99 @@ function conditionForm() {
   };
 }
 
+// An allowance: a name, its type, and what the type needs: a time budget (how much, for the block or each
+// item, when it is given back) or a Pomodoro cycle (blocked for, allowed for, counted from where). Under
+// it the terms in words, written by the backend (`describe_allowance`), which is also what says what
+// cannot be saved.
+function allowanceForm() {
+  const name = nameField(t("allowances.namePlaceholder"));
+  const dropdown = (label, helper, keys, path) => {
+    const field = el("cds-dropdown", { autoalign: true, "title-text": label, "helper-text": helper });
+    for (const key of keys) field.append(el("cds-dropdown-item", { value: key }, t(`${path}.${key}`)));
+    return field;
+  };
+  const type = el("cds-dropdown", { autoalign: true, "title-text": t("allowances.typeLabel") });
+  type.append(
+    el("cds-dropdown-item", { value: "budget" }, t("allowances.typeBudget")),
+    el("cds-dropdown-item", { value: "pomodoro" }, t("allowances.typeCycle")),
+  );
+  const text = (label, placeholder, helper) => el("cds-text-input", { label, placeholder, "helper-text": helper });
+  const allowed = text(t("allowances.budget.allowedLabel"), t("allowances.budget.allowedPlaceholder"), t("allowances.budget.allowedHelper"));
+  const scope = dropdown(t("allowances.budget.scopeLabel"), t("allowances.budget.scopeHelper"), ["total", "each"], "allowances.budget");
+  const reset = dropdown(t("allowances.budget.resetLabel"), t("allowances.budget.resetHelper"), ["never", "hour", "day", "week", "condition"], "allowances.budget");
+  const blocked = text(t("allowances.cycle.blockedLabel"), t("allowances.cycle.blockedPlaceholder"), t("allowances.cycle.helper"));
+  const cycleAllowed = text(t("allowances.cycle.allowedLabel"), t("allowances.cycle.allowedPlaceholder"), t("allowances.cycle.helper"));
+  const anchor = dropdown(t("allowances.cycle.anchorLabel"), t("allowances.cycle.anchorHelper"), ["start", "clock"], "allowances.cycle");
+  const budgetPart = el("section", {}, allowed, scope, reset);
+  const cyclePart = el("section", {}, blocked, cycleAllowed, anchor);
+  const summary = el("p", { class: "cds--type-body-01 week-summary" });
+  const summaryPart = el("section", {}, summary);
+  let problem = null;
+  let asked = 0;
+  let timer = null;
+
+  const terms = () =>
+    type.value === "pomodoro"
+      ? { type: "pomodoro", blocked: blocked.value.trim(), allowed: cycleAllowed.value.trim(), anchor: anchor.value }
+      : { type: "budget", allowed: allowed.value.trim(), scope: scope.value, reset: reset.value };
+  // The terms in words; or why they cannot be saved. Only the latest answer counts.
+  async function describe() {
+    const mine = ++asked;
+    let words;
+    let wrong = null;
+    try {
+      words = await invoke("describe_allowance", { terms: terms() });
+    } catch (e) {
+      wrong = String(e);
+    }
+    if (mine !== asked) return;
+    problem = wrong;
+    summary.textContent = wrong || words;
+    summary.classList.toggle("problem", !!wrong);
+  }
+  const soon = () => {
+    clearTimeout(timer);
+    timer = setTimeout(describe, 300);
+  };
+  const show = () => {
+    budgetPart.hidden = type.value !== "budget";
+    cyclePart.hidden = type.value !== "pomodoro";
+  };
+  for (const field of [allowed, blocked, cycleAllowed]) field.addEventListener("input", soon);
+  for (const field of [scope, reset, anchor]) field.addEventListener("cds-dropdown-selected", describe);
+  type.addEventListener("cds-dropdown-selected", () => {
+    show();
+    describe();
+  });
+  return {
+    nodes: [nameSection(name, type), budgetPart, cyclePart, summaryPart],
+    fill(allowance) {
+      name.value = allowance.name;
+      type.value = allowance.type || "budget";
+      const budget = allowance.type === "pomodoro" ? {} : allowance;
+      const cycle = allowance.type === "pomodoro" ? allowance : {};
+      allowed.value = budget.allowed || "30m";
+      scope.value = budget.scope || "total";
+      reset.value = budget.reset || "day";
+      blocked.value = cycle.blocked || "50m";
+      cycleAllowed.value = cycle.allowed || "10m";
+      anchor.value = cycle.anchor || "start";
+      show();
+      summary.textContent = t("allowances.describing");
+      describe();
+    },
+    read: (allowance) => ({ id: allowance.id, name: name.value.trim(), ...terms() }),
+    // Nothing is read-only: a locked block's allowance only takes stricter terms, which the service judges.
+    disable() {},
+    settle: async () => {
+      clearTimeout(timer);
+      await describe();
+    },
+    error: () => (name.value.trim() ? problem : t("allowances.nameMissing")),
+    name,
+  };
+}
+
 // The weekly schedule: as text (what the CLI takes too) and as the week, a column per day and a
 // cell per half hour, that can be dragged over. Carbon has no calendar or time-grid component, so
 // the week is plain layout in Carbon's tokens; the text field is the accessible way to set it,
@@ -713,4 +825,4 @@ function weekEditor() {
   };
 }
 
-export { LISTS, SECTIONS, ENFORCERS, ALWAYS, blockForm, listForm, conditionForm };
+export { LISTS, SECTIONS, ENFORCERS, ALWAYS, blockForm, listForm, conditionForm, allowanceForm };

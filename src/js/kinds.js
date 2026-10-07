@@ -1,8 +1,8 @@
-// The three kinds the user makes, each with a page of tiles and an editor: blocks, block lists and
-// conditions. Pages, tiles and the editor are the same code for all three, by this table.
+// The four kinds the user makes, each with a page of tiles and an editor: blocks, block lists,
+// conditions and allowances. Pages, tiles and the editor are the same code for all, by this table.
 
 import { invoke, lockedUsersOf, names, newId, overview, runningOf, t } from "./core.js";
-import { ENFORCERS, LISTS, blockForm, conditionForm, listForm } from "./forms.js";
+import { ENFORCERS, LISTS, allowanceForm, blockForm, conditionForm, listForm } from "./forms.js";
 
 // The first free automatic name of a kind: "Block 1", "Block 2", … (`<kind>.autoName`), ignoring case.
 function freeName(kind, items) {
@@ -13,7 +13,7 @@ function freeName(kind, items) {
   }
 }
 
-// ---- The three kinds. Each has a page of tiles and an editor.
+// ---- The four kinds. Each has a page of tiles and an editor.
 
 // A kind's texts in strings.js: its page, its editor and its empty state.
 const kindTexts = (kind) => ({
@@ -33,7 +33,7 @@ const KINDS = {
     newPath: "#/new",
     ...kindTexts("blocks"),
     items: () => overview.blocks,
-    create: () => ({ id: newId(), name: freeName("blocks", overview.blocks), lists: [], condition: null, lock: { method: "none" } }),
+    create: () => ({ id: newId(), name: freeName("blocks", overview.blocks), lists: [], condition: null, allowance: null, lock: { method: "none" } }),
     save: (block) => invoke("save_block", { block }),
     remove: (id) => invoke("delete_block", { id }),
     duplicate: (id, copyId) => invoke("duplicate", { kind: "block", id, newId: copyId }),
@@ -93,6 +93,25 @@ const KINDS = {
     },
     inUse: (condition) => lockedUsersOf(condition.id).length > 0,
     form: () => conditionForm(),
+  },
+  allowances: {
+    path: "#/allowances",
+    editPath: "#/allowances/edit/",
+    newPath: "#/allowances/new",
+    ...kindTexts("allowances"),
+    items: () => overview.allowances,
+    create: () => ({ id: newId(), name: freeName("allowances", overview.allowances), type: "budget", allowed: "30m", scope: "total", reset: "day" }),
+    save: (allowance) => invoke("save_allowance", { allowance }),
+    remove: (id) => invoke("delete_allowance", { id }),
+    duplicate: (id, copyId) => invoke("duplicate", { kind: "allowance", id, newId: copyId }),
+    // Nothing is read-only: while a locked block has it, the service only takes stricter terms.
+    held: () => null,
+    limited: (allowance) => {
+      const holders = lockedUsersOf(allowance.id);
+      return holders.length ? t("allowances.limited", { names: names(holders) }) : null;
+    },
+    inUse: (allowance) => lockedUsersOf(allowance.id).length > 0,
+    form: () => allowanceForm(),
   },
 };
 

@@ -188,7 +188,9 @@ pub fn test(hook: &Hook) -> Result<String, String> {
     let verdict = match found.outcome {
         Outcome::True => "the condition is active (the true matcher matches)".to_string(),
         Outcome::False => "the condition is not active (the false matcher matches)".to_string(),
-        Outcome::Neither => format!("neither matcher matches, so the fallback applies: {}", if found.active { "active" } else { "not active" }),
+        Outcome::Neither => {
+            format!("neither matcher matches, so the fallback applies: {}", if found.active { "active" } else { "not active" })
+        }
     };
     Ok(format!("HTTP {}, body \"{}\": {verdict}", found.status, found.body))
 }
