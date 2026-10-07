@@ -166,6 +166,7 @@ pub struct Overview {
 
 impl Overview {
     /// What the user has defined, without what runs.
+    #[cfg(test)]
     pub fn library(self) -> Library {
         Library { lists: self.lists, conditions: self.conditions, allowances: self.allowances, blocks: self.blocks }
     }
@@ -184,6 +185,7 @@ pub struct Policy {
 
 impl Policy {
     /// A policy that lets nothing through.
+    #[cfg(test)]
     pub fn new(entries: Entries, enforcers: Enforcers) -> Policy {
         Policy { entries, enforcers, free: Vec::new() }
     }

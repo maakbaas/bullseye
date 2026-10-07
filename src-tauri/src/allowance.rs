@@ -226,6 +226,7 @@ pub struct Allowance {
 /// The keys of the items of a block list's lists, which is what a budget for each item counts by:
 /// `site:youtube.com`, `program:steam.exe`, `app:Microsoft.Xbox_x`, `title:*Chat*`. Read from
 /// `Lists::entries`, so the same entry always has the same key.
+#[cfg(test)]
 pub fn item_keys(entries: &Entries) -> Vec<String> {
     let each = |prefix: &str, list: &[String]| list.iter().map(|entry| format!("{prefix}:{entry}")).collect::<Vec<_>>();
     let mut keys = each("site", &entries.filters);

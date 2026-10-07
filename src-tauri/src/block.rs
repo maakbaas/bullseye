@@ -619,6 +619,7 @@ impl Blocklist {
     /// than only in the UI, so a locked block cannot be swapped for a shorter or unlocked one.
     /// `condition` says when it is active (`None`: always), `lock` how it is locked (`lock.rs`).
     /// Other blocks are not affected.
+    #[cfg(test)]
     pub fn start(&self, id: &str, name: &str, parts: Vec<Part>, condition: Option<Rule>, lock: StartLock) -> Result<(), String> {
         self.start_with(id, name, parts, condition, None, lock)
     }
