@@ -344,8 +344,8 @@ window.STRINGS = {
     typeDrive: "Flash drive",
     typeCombined: "Combination",
     // {names}: the conditions combined, as links.
-    activeAny: "Active when any of {names}",
-    activeAll: "Active when all of {names}",
+    activeAny: "Active when any of {names} is true",
+    activeAll: "Active when all of {names} are true",
     // A combination: which conditions, and whether any or all of them make it active. Never of other combinations.
     combine: {
       modeLabel: "Active when",
