@@ -23,13 +23,13 @@ use crate::duration;
 use crate::lists::Entries;
 use crate::localtime;
 use crate::lock::Lock;
-use crate::proto::{Overview, Request};
+use crate::proto::{Overview, Request, UnlockStatus};
 use crate::schedule::Week;
 use crate::state::Enforcers;
 
 /// Each command the window can invoke, and the CLI commands that do the same. Empty: it is about
 /// the window itself.
-pub const GUI_COMMANDS: [(&str, &[&str]); 24] = [
+pub const GUI_COMMANDS: [(&str, &[&str]); 28] = [
     ("block_status", &["status", "show", "list show", "condition show"]),
     ("save_block", &["new", "edit"]),
     ("delete_block", &["delete"]),
@@ -44,7 +44,11 @@ pub const GUI_COMMANDS: [(&str, &[&str]); 24] = [
     ("duplicate", &["duplicate", "list duplicate", "condition duplicate"]),
     ("start_block", &["start"]),
     ("stop_block", &["stop"]),
+    ("request_stop", &["stop"]),
+    ("abort_stop", &["stop"]),
     ("unlock_all", &["unlock"]),
+    ("unlock_with", &["unlock"]),
+    ("set_unlock_way", &["unlock-way"]),
     ("request_unlock", &["unlock"]),
     ("abort_unlock", &["unlock"]),
     ("set_unlock_delay", &["unlock-delay"]),
@@ -91,6 +95,9 @@ Blocks:
                                it is locked exactly while it is active.
       --lock-password <pw>     Locked with a password: it runs until stopped with that password
                                (or by unlocking). Only a hash of it is kept.
+      --lock-delay <time>      Locked behind a wait, like unlocking: stopping is asked for, counts
+                               down this long (e.g. 30m), can be aborted, and then it can be
+                               stopped.
       --lock-text <text>       Locked until the text is typed in exactly: the window shows it
                                above an input that cannot be pasted into, and that is the only
                                place to stop such a block (or by unlocking).
@@ -104,7 +111,10 @@ Blocks:
   stop <block> [--password <pw>]
                            Stop a running block that is not locked right now; one locked with a
                            password with its password (asked for when not given). One locked
-                           with a text is stopped in the window, by typing the text.
+                           with a text is stopped in the window, by typing the text. One locked
+                           with a delay: the first stop asks for it and starts the wait, the
+                           next one, once it is over, stops the block; `stop <block> --abort`
+                           ends the wait.
 
 Block lists:
   list show <list> [--json]   One block list, and the blocks that use it.
@@ -166,10 +176,18 @@ Moving to another computer:
 Other:
   drives [--json]          The flash drives connected, by name and serial number, for
                            'condition new --drive'.
-  unlock [--abort]         End every running block, as the window's Unlock does. By default
+  unlock [--abort] [--password <pw>]
+                           End every running block, as the window's Unlock does. By default
                            unlocking is free. With an unlock delay it is a countdown: the first
                            'unlock' starts it, a later one ends every block once it is over, and
-                           --abort stops it (back to locked).
+                           --abort stops it (back to locked). The other way to unlock (below)
+                           works instead of the countdown, never as well: with a password
+                           (asked for when not given) unlocking is at once; one set to a text is
+                           used in the window, by typing the text.
+  unlock-way [options]     Show the other way to unlock besides the delay, or set it: --condition
+                           <condition> (locked while it is active, open when it is not),
+                           --password <pw>, --text <text> or --none to remove it. Setting one needs unlocking to be ready, or no
+                           block to be locked; removing it is free.
   unlock-delay [<time>]    Show how long unlocking takes, or set it: 0 to 24 hours, e.g. 30m
                            or 2h 30m, or 0 for none. A longer delay is free; a shorter one needs
                            unlocking to be ready, or no block to be locked.
@@ -211,6 +229,7 @@ enum Command {
     Stop {
         block: String,
         password: Option<String>,
+        abort: bool,
     },
     ListShow {
         list: String,
@@ -267,6 +286,11 @@ enum Command {
     },
     Unlock {
         abort: bool,
+        password: Option<String>,
+    },
+    /// `None`: show the other way to unlock; `Some(None)`: remove it; `Some(Some(lock))`: set it.
+    UnlockWay {
+        way: Option<Option<Lock>>,
     },
     UnlockDelay {
         delay: Option<String>,
@@ -391,7 +415,9 @@ fn parse(args: &[String]) -> Result<Command, String> {
         "list duplicate" => Command::Duplicate { kind: Kind::List, item: named(&mut options, "block list")? },
         "condition duplicate" => Command::Duplicate { kind: Kind::Condition, item: named(&mut options, "condition")? },
         "start" => Command::Start { block: named(&mut options, "block")?, lock: parse_lock(&mut options)?, yes: options.flag("--yes") },
-        "stop" => Command::Stop { block: named(&mut options, "block")?, password: options.value("--password")? },
+        "stop" => {
+            Command::Stop { block: named(&mut options, "block")?, password: options.value("--password")?, abort: options.flag("--abort") }
+        }
         "list show" => Command::ListShow { list: named(&mut options, "block list")?, json: options.flag("--json") },
         "list apps" => Command::ListApps { json: options.flag("--json") },
         "drives" => Command::Drives { json: options.flag("--json") },
@@ -418,7 +444,8 @@ fn parse(args: &[String]) -> Result<Command, String> {
         "condition check" => {
             Command::ConditionCheck { times: options.positional().ok_or("Give the times to check, e.g. \"Mon-Fri 08:00-17:00\"")? }
         }
-        "unlock" => Command::Unlock { abort: options.flag("--abort") },
+        "unlock" => Command::Unlock { abort: options.flag("--abort"), password: options.value("--password")? },
+        "unlock-way" => Command::UnlockWay { way: parse_way(&mut options)? },
         "unlock-delay" => Command::UnlockDelay { delay: options.positional() },
         other => return Err(format!("Unknown command \"{other}\"")),
     };
@@ -436,19 +463,41 @@ fn parse_lock(options: &mut Options) -> Result<Option<Lock>, String> {
     let conditional = options.value("--lock-condition")?.map(|condition| Lock::Condition { condition });
     let password = options.value("--lock-password")?.map(|password| Lock::Password { password: Some(password), hash: None });
     let typed = options.value("--lock-text")?.map(|text| Lock::Text { text });
+    let delayed = options.value("--lock-delay")?.map(|delay| Lock::Delay { delay });
     let unlocked = options.flag("--no-lock").then_some(Lock::None);
-    let mut given: Vec<Lock> = [duration, until, restart, conditional, password, typed, unlocked].into_iter().flatten().collect();
+    let mut given: Vec<Lock> = [duration, until, restart, conditional, password, typed, delayed, unlocked].into_iter().flatten().collect();
     let lock = match given.len() {
         0 => return Ok(None),
         1 => given.remove(0),
         _ => return Err(
-            "Give one of --lock-duration, --lock-until, --lock-until-restart, --lock-condition, --lock-password, --lock-text and --no-lock"
+            "Give one of --lock-duration, --lock-until, --lock-until-restart, --lock-condition, --lock-password, --lock-text, --lock-delay and --no-lock"
                 .into(),
         ),
     };
     // The service checks it again; this is for a clear message before anything is sent.
     lock.check()?;
     Ok(Some(lock))
+}
+
+/// `--condition <condition>`, `--password <pw>`, `--text <text>` or `--none` of `unlock-way`: the other way
+/// to unlock as a lock method, at most one; nothing given is showing it.
+fn parse_way(options: &mut Options) -> Result<Option<Option<Lock>>, String> {
+    let mut given: Vec<Option<Lock>> = Vec::new();
+    given.extend(options.value("--condition")?.map(|condition| Some(Lock::Condition { condition })));
+    given.extend(options.value("--password")?.map(|password| Some(Lock::Password { password: Some(password), hash: None })));
+    given.extend(options.value("--text")?.map(|text| Some(Lock::Text { text })));
+    given.extend(options.flag("--none").then_some(None));
+    match given.len() {
+        0 => Ok(None),
+        1 => {
+            let way = given.remove(0);
+            if let Some(lock) = &way {
+                lock.check()?;
+            }
+            Ok(Some(way))
+        }
+        _ => Err("Give one of --condition, --password, --text and --none".into()),
+    }
 }
 
 /// The options of `new` and `edit`. Only `edit` takes `--name`.
@@ -668,9 +717,36 @@ fn execute(command: Command) -> Result<(), Failure> {
             send(Request::Start { id: block.id.clone() })?;
             println!("Started \"{}\".", block.name);
         }
-        Command::Stop { block, password } => {
+        Command::Stop { block, password, abort } => {
             let overview = overview()?;
             let block = find(&overview.blocks, &block, "block", |b| (&b.id, &b.name))?;
+            // A block locked with a delay: stopping is asked for, waited out, and then done.
+            if let Some(run) = overview.running.iter().find(|r| r.id == block.id && r.stop_delay.is_some()) {
+                if abort {
+                    send(Request::AbortStop { id: block.id.clone() })?;
+                    println!("Stopping \"{}\" aborted: back to locked.", block.name);
+                    return Ok(());
+                }
+                match (run.stop_remaining, &run.stop_remaining_words) {
+                    (Some(0), _) => {}
+                    (Some(_), Some(left)) => {
+                        println!(
+                            "\"{}\" can be stopped in {left}. Run `bullseye-cli stop` again then, or `stop --abort` to end the wait.",
+                            block.name
+                        );
+                        return Ok(());
+                    }
+                    _ => {
+                        send(Request::AskToStop { id: block.id.clone() })?;
+                        println!(
+                            "Stopping \"{}\" was asked for: ready in {}. Run `bullseye-cli stop` again then, or `stop --abort` to end the wait.",
+                            block.name,
+                            run.stop_delay_words.clone().unwrap_or_default()
+                        );
+                        return Ok(());
+                    }
+                }
+            }
             // A block locked with a text stops in the window, by typing the text: typing it is the
             // point, and a command line cannot stop a paste.
             if overview.running.iter().any(|r| r.id == block.id && r.lock_text.is_some()) {
@@ -785,7 +861,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             None => println!("Always active: a block without a condition"),
         },
         Command::Export { file } => {
-            definitions::write_settings(std::path::Path::new(&file), overview()?.library()).map_err(failed)?;
+            definitions::write_settings(std::path::Path::new(&file), remote().library().map_err(failed)?).map_err(failed)?;
             println!("Wrote every block list, condition and block to {file}.");
         }
         Command::Import { file, yes } => {
@@ -829,12 +905,21 @@ fn execute(command: Command) -> Result<(), Failure> {
             let copy = names(&overview()?).into_iter().find(|(id, _)| *id == new_id).map(|(_, name)| name).unwrap_or_default();
             println!("Made \"{copy}\", a copy of the {noun} \"{name}\".");
         }
-        Command::Unlock { abort } => {
+        Command::Unlock { abort, password } => {
             let status = overview()?.unlock;
+            let password_way = matches!(status.way, Some(Lock::Password { .. }));
             if abort {
                 send(Request::AbortUnlock)?;
                 println!("Unlocking aborted: back to locked.");
-            } else if status.remaining == Some(0) {
+            } else if password.is_some() || (password_way && status.remaining != Some(0) && !status.way_open) {
+                // The other way to unlock, with its password: at once, whatever the countdown.
+                let password = match password {
+                    Some(password) => password,
+                    None => read_password("Password to unlock: ").map_err(Failure::Failed)?,
+                };
+                send(Request::UnlockWith { password: Some(password), text: None })?;
+                println!("Unlocked: every block has ended.");
+            } else if status.remaining == Some(0) || status.way_open {
                 send(Request::Unlock)?;
                 // The service tells the app to quit at its next policy request, within a second.
                 println!("Unlocked: every block has ended.");
@@ -848,6 +933,15 @@ fn execute(command: Command) -> Result<(), Failure> {
                 );
             }
         }
+        Command::UnlockWay { way } => match way {
+            None => println!("{}", describe_unlock_way(&overview()?.unlock)),
+            Some(way) => {
+                let overview = overview()?;
+                let way = way.map(|lock| resolve_lock(&overview, lock)).transpose()?;
+                send(Request::SetUnlockWay { way })?;
+                println!("{}", describe_unlock_way(&self::overview()?.unlock));
+            }
+        },
         Command::UnlockDelay { delay } => match delay {
             None => {
                 let status = overview()?.unlock;
@@ -872,6 +966,22 @@ fn execute(command: Command) -> Result<(), Failure> {
         },
     }
     Ok(())
+}
+
+/// The other way to unlock, in words.
+fn describe_unlock_way(status: &UnlockStatus) -> String {
+    let when = |open: &str, closed: &str| match (status.way_open, &status.way_left_words) {
+        (true, _) => open.to_string(),
+        (false, Some(left)) => format!("{closed} (in {left})"),
+        (false, None) => closed.to_string(),
+    };
+    match &status.way {
+        None => "Only the delay unlocks.".into(),
+        Some(Lock::Text { .. }) => "Unlocking is also possible by typing a text in, in the window.".into(),
+        Some(Lock::Password { .. }) => "Unlocking is also possible at once with a password (`unlock --password`).".into(),
+        Some(Lock::Condition { .. }) => when("Unlocking is open: its condition is not active.", "Unlocking is locked while its condition is active"),
+        Some(_) => "Only the delay unlocks.".into(),
+    }
 }
 
 /// Weekly times, as a schedule takes them; "always" is not a schedule (a block without a condition is
@@ -1000,6 +1110,10 @@ fn lock_warning(overview: &Overview, block: &Definition) -> Option<String> {
                 condition.name,
                 drive_detail(&condition.rule)
             ))
+        }
+        Lock::Delay { .. } => {
+            let words = duration::countdown(block.lock.delay().ok()??.as_secs());
+            Some(format!("It can only be stopped by asking to and then waiting {words}."))
         }
         Lock::Text { .. } => Some("It can only be stopped by typing its text in, in the window.".into()),
         Lock::Password { .. } => Some("It can only be stopped with its password.".into()),
@@ -1224,6 +1338,10 @@ fn describe_block(overview: &Overview, block: &Definition, running: Option<&Runn
             Some(c) => format!("condition: cannot be stopped while \"{}\" is active{}", c.name, drive_detail(&c.rule)),
             None => "condition: (condition gone)".into(),
         },
+        Lock::Delay { delay } => match block.lock.delay() {
+            Ok(Some(d)) => format!("delay, {} (stopping is asked for, then waited out)", duration::countdown(d.as_secs())),
+            _ => format!("delay, {delay}"),
+        },
         Lock::Text { .. } => "text: can only be stopped by typing its text in, in the window".into(),
         Lock::Password { .. } => "password: can only be stopped with its password".into(),
     };
@@ -1270,7 +1388,6 @@ mod tests {
     use super::*;
     use crate::block::RunningList;
     use crate::definitions::tests::{block, block_list, weekly};
-    use crate::proto::UnlockStatus;
 
     fn args(line: &[&str]) -> Vec<String> {
         line.iter().map(|arg| arg.to_string()).collect()
@@ -1495,10 +1612,10 @@ mod tests {
             parse(&args(&["condition", "duplicate", "Evenings"])),
             Ok(Command::Duplicate { kind: Kind::Condition, item: "Evenings".into() })
         );
-        assert_eq!(parse(&args(&["stop", "Work"])), Ok(Command::Stop { block: "Work".into(), password: None }));
+        assert_eq!(parse(&args(&["stop", "Work"])), Ok(Command::Stop { block: "Work".into(), password: None, abort: false }));
         assert_eq!(
             parse(&args(&["stop", "Work", "--password", "pw"])),
-            Ok(Command::Stop { block: "Work".into(), password: Some("pw".into()) })
+            Ok(Command::Stop { block: "Work".into(), password: Some("pw".into()), abort: false })
         );
         assert_eq!(
             parse(&args(&["start", "Work", "--lock-password", "partner"])),
@@ -1528,12 +1645,20 @@ mod tests {
             Ok(Command::ConditionDelete { condition: "Work hours".into(), yes: false })
         );
         assert_eq!(parse(&args(&["condition", "check", "weekdays 9-5pm"])), Ok(Command::ConditionCheck { times: "weekdays 9-5pm".into() }));
-        assert_eq!(parse(&args(&["unlock"])), Ok(Command::Unlock { abort: false }));
-        assert_eq!(parse(&args(&["unlock", "--abort"])), Ok(Command::Unlock { abort: true }));
+        assert_eq!(parse(&args(&["unlock"])), Ok(Command::Unlock { abort: false, password: None }));
+        assert_eq!(parse(&args(&["unlock", "--password", "pw"])), Ok(Command::Unlock { abort: false, password: Some("pw".into()) }));
+        assert_eq!(parse(&args(&["unlock-way"])), Ok(Command::UnlockWay { way: None }));
+        assert_eq!(parse(&args(&["unlock-way", "--none"])), Ok(Command::UnlockWay { way: Some(None) }));
+        assert_eq!(
+            parse(&args(&["unlock-way", "--text", "let me out"])),
+            Ok(Command::UnlockWay { way: Some(Some(Lock::Text { text: "let me out".into() })) })
+        );
+        assert!(parse(&args(&["unlock-way", "--text", "x", "--password", "y"])).is_err());
+        assert!(parse(&args(&["unlock-way", "--duration", "1h"])).is_err());
+        assert_eq!(parse(&args(&["unlock", "--abort"])), Ok(Command::Unlock { abort: true, password: None }));
         assert_eq!(parse(&args(&["unlock-delay"])), Ok(Command::UnlockDelay { delay: None }));
         assert_eq!(parse(&args(&["unlock-delay", "2h 30m"])), Ok(Command::UnlockDelay { delay: Some("2h 30m".into()) }));
         assert_eq!(parse(&args(&["unlock-delay", "0"])), Ok(Command::UnlockDelay { delay: Some("0".into()) }));
-        assert!(parse(&args(&["unlock", "--password", "pw"])).is_err());
     }
 
     #[test]
@@ -1585,6 +1710,10 @@ mod tests {
             lock_condition: Week::parse("mon-fri 8-17").unwrap().map(|week| Rule::Schedule { week }),
             until_restart: false,
             lock_text: None,
+            stop_delay: None,
+            stop_delay_words: None,
+            stop_remaining: None,
+            stop_remaining_words: None,
             password: false,
             locked: false,
             condition: Week::parse("mon-fri 8-17").unwrap().map(|week| Rule::Schedule { week }),

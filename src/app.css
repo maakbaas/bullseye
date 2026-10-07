@@ -1,5 +1,7 @@
 /* Layout only: colours, type and spacing all come from Carbon tokens and classes. */
 html, body { min-height: 100%; }
+/* The room of the scrollbar is kept whether or not it is shown, so the content does not shift sideways between pages that scroll and pages that do not. */
+html { scrollbar-gutter: stable; }
 body {
   margin: 0;
   background: var(--cds-background);
@@ -8,15 +10,16 @@ body {
 }
 /* Until the components are defined, show nothing rather than unstyled markup. */
 body:not(.ready) { visibility: hidden; }
-/* Room for the header above. Every view fills the width up to Carbon's lg breakpoint (66rem)
-   and is centred beyond it, so the margins grow evenly instead of jumping. */
-main { padding: calc(3rem + var(--cds-spacing-05)) 0 var(--cds-spacing-09); max-inline-size: 66rem; margin-inline: auto; }
-/* The header stands apart: on the first layer (white on light, a step up from the background on
-   dark), and, as nothing sets it off from a Windows 11 title bar (a browser has its tab strip
-   there), with the same line on top that Carbon gives it below. */
-cds-header { border-block-start: 1px solid var(--cds-border-subtle); background-color: var(--cds-layer-01); }
-/* The tabs, then the page. An icon before a tab's label, as Carbon's tabs with icons. */
-#pages { margin-block-end: var(--cds-spacing-07); }
+/* Two sections: the fixed one on top (heading and tabs: `.pinned`) and the content under the
+   tabs, which is what scrolls. Both fill the width up to Carbon's lg breakpoint (66rem) and are
+   centred beyond it, so the margins grow evenly instead of jumping. */
+/* White (the first layer) on the grey page. */
+.pinned { position: sticky; inset-block-start: 0; z-index: 100; background: var(--cds-layer-01); padding-block-start: var(--cds-spacing-07); }
+.tabbar { margin-block-start: var(--cds-spacing-06); border-block: 1px solid var(--cds-border-subtle); }
+.pinned .cds--css-grid, main { max-inline-size: 66rem; margin-inline: auto; }
+main { padding-block: var(--cds-spacing-06) var(--cds-spacing-09); }
+@media (max-height: 40rem) { .heading .tagline { display: none; } } /* little room: the title alone */
+/* An icon before a tab's label, as Carbon's tabs with icons. */
 #pages cds-tab svg { flex: none; fill: currentColor; margin-inline-end: var(--cds-spacing-03); vertical-align: text-bottom; }
 /* Below Carbon's md breakpoint the tabs are Carbon's icon-only tabs (`icon-only`, set by main.js),
    so all four fit; each names itself in a tooltip and to screen readers (its aria-label). */
@@ -27,13 +30,12 @@ cds-header { border-block-start: 1px solid var(--cds-border-subtle); background-
 /* A page: its header (title, description, main action), then its content. */
 .page-header {
   display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
+  align-items: flex-start;
   justify-content: space-between;
   gap: var(--cds-spacing-05);
-  margin-bottom: var(--cds-spacing-07);
 }
-.page-header p { margin-top: var(--cds-spacing-03); color: var(--cds-text-secondary); max-width: 40rem; }
+/* Under the title row, the button's too, across the whole width, with room above it. */
+.heading .tagline { margin-block-start: var(--cds-spacing-05); color: var(--cds-text-secondary); }
 .trail { display: block; margin-bottom: var(--cds-spacing-03); }
 .notices:empty { display: none; }
 .notices { margin-bottom: var(--cds-spacing-05); }
@@ -73,7 +75,12 @@ cds-header { border-block-start: 1px solid var(--cds-border-subtle); background-
 .block-tile .actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--cds-spacing-04); }
 /* A block's lock, next to Start: the method; its settings are in the modal. */
 .block-tile .lock-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--cds-spacing-04); }
-.block-tile .lock-method { inline-size: 9rem; }
+.block-tile .lock-method { inline-size: 12rem; }
+/* The dropdown of the other way to unlock, in Settings: as wide as the lock dropdown on a tile. */
+.way-method { inline-size: 12rem; }
+/* A dropdown's list shows all its items where there is room (Carbon stops it at five and a half and scrolls),
+   through the list's own part; where there is not, it still scrolls. */
+cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 .modal-fields { display: flex; flex-direction: column; gap: var(--cds-spacing-06); }
 /* Carbon leaves 3rem under a modal's content, which looks high under a form field or a sentence: 1.5rem, the same everywhere. */
 #confirm cds-modal-body { padding-block-end: var(--cds-spacing-06); }
@@ -116,6 +123,8 @@ cds-header { border-block-start: 1px solid var(--cds-border-subtle); background-
 .week .cell.on { background: var(--cds-interactive); }
 .week.disabled .cell { cursor: default; }
 .week.disabled .cell.on { background: var(--cds-border-disabled); }
+/* A line above the buttons, as the block list editor has by its last section (the accordion's own). */
+#view-editor:not([data-kind="lists"]) .form-actions { border-block-start: 1px solid var(--cds-border-subtle-01); padding-block-start: var(--cds-spacing-07); }
 .form-actions { display: flex; flex-wrap: wrap; gap: var(--cds-spacing-05); justify-content: space-between; }
 .form-actions .end { display: flex; flex-wrap: wrap; gap: var(--cds-spacing-05); margin-left: auto; }
 
@@ -137,3 +146,4 @@ cds-header { border-block-start: 1px solid var(--cds-border-subtle); background-
    link, underlined; as a flex item (the host's own display, nothing inside it) that trailing space
    is dropped, so "a, b and c" has its underlines under the names only. */
 cds-link[inline] { display: inline-flex; }
+

@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use crate::block::{Blocklist, Part, StartLock};
 use crate::definitions::{BlockList, Condition, Definition, Definitions, Library, Via};
 use crate::duration;
+use crate::localtime::Zone;
 use crate::lock::Lock;
 use crate::proto::{Overview, Policy, Request, Response, UnlockStatus};
 use crate::sync::LockExt;
@@ -108,7 +109,12 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
                 || text.is_some_and(|text| blocklist.text_matches(&id, &text));
             (done(blocklist.stop(&id, given)), None)
         }
+        Request::AskToStop { id } => (done(blocklist.ask_to_stop(&id)), None),
+        Request::AbortStop { id } => (done(blocklist.abort_stop(&id)), None),
         Request::Unlock => (done(unlock(context)), None),
+        Request::UnlockWith { password, text } => (done(unlock_with(context, password.as_deref(), text.as_deref())), None),
+        Request::SetUnlockWay { way } => (done(set_unlock_way(context, way)), None),
+        Request::Export => (Response::Library(context.definitions.library()), None),
         Request::AskForUnlock => (done(context.unlock.request(blocklist.now())), None),
         Request::AbortUnlock => (done(context.unlock.abort()), None),
         Request::SetUnlockDelay { delay } => (done(set_unlock_delay(context, &delay)), None),
@@ -171,17 +177,26 @@ fn delete_shared(context: &Context, id: &str, delete: impl FnOnce(&Definitions) 
 }
 
 /// Saving a block. One that runs can be changed (its name, block lists and condition) unless it is
-/// locked right now, and the running block follows; its lock stays as it is, as a lock cannot be
+/// locked right now (then only its name), and the running block follows; its lock stays as it is, as a lock cannot be
 /// added to or changed on a block that already runs, only chosen for the next start.
 fn edit_block(context: &Context, block: Definition) -> Result<(), String> {
     let _editing = context.editing.locked();
     if !context.blocklist.running_ids().contains(&block.id) {
         return context.definitions.save_block(block);
     }
-    if context.blocklist.locked_ids().contains(&block.id) {
-        return Err("A locked block cannot be changed until it can be stopped".into());
-    }
     let old = context.definitions.library().block(&block.id).ok_or("No such block")?.clone();
+    if context.blocklist.locked_ids().contains(&block.id) {
+        // Its name can always be changed, locked or not: that loosens nothing.
+        // (A password lock comes back from the service without its hash, so two of them are the same.)
+        let same_lock =
+            block.lock == old.lock || (matches!(block.lock, Lock::Password { .. }) && matches!(old.lock, Lock::Password { .. }));
+        if block.lists != old.lists || block.condition != old.condition || !same_lock {
+            return Err("A locked block cannot be changed until it can be stopped, except for its name".into());
+        }
+        let id = block.id.clone();
+        context.definitions.save_block(Definition { name: block.name, ..old })?;
+        return refresh_running(context, &[id]);
+    }
     if block.lock != old.lock {
         return Err("The lock of a running block cannot be changed: stop it first, or change the lock for its next start".into());
     }
@@ -277,6 +292,7 @@ fn start(context: &Context, id: &str) -> Result<(), String> {
         Lock::Until { .. } => StartLock::Until(lock.until()?.ok_or("No end for the lock")?),
         Lock::Condition { .. } => StartLock::Condition(resolved.lock_condition.clone().ok_or("No condition for the lock")?),
         Lock::UntilRestart => StartLock::UntilRestart,
+        Lock::Delay { .. } => StartLock::Delay(lock.delay()?.ok_or("No delay for the lock")?),
         Lock::Text { text } => StartLock::Text(text.clone()),
         Lock::Password { .. } => StartLock::Password(lock.password_hash().ok_or("Set a password for the password lock")?.to_string()),
     };
@@ -293,7 +309,56 @@ fn start(context: &Context, id: &str) -> Result<(), String> {
 fn unlock_status(context: &Context) -> UnlockStatus {
     let delay = context.unlock.delay();
     let remaining = context.unlock.remaining(context.blocklist.now());
-    UnlockStatus { delay, delay_words: duration::countdown(delay), remaining, remaining_words: remaining.map(duration::countdown) }
+    let now = context.blocklist.now();
+    let way = context.unlock.way();
+    let way_open = way.as_ref().is_some_and(|way| way.is_open(now));
+    let way_left = way.as_ref().and_then(|way| way.left(now));
+    UnlockStatus {
+        delay,
+        delay_words: duration::countdown(delay),
+        remaining,
+        remaining_words: remaining.map(duration::countdown),
+        way: way.map(|way| way.lock.redacted()),
+        way_open,
+        way_left,
+        way_left_words: way_left.map(duration::countdown),
+    }
+}
+
+/// Sets the other way to unlock (`unlock::Way`), from a lock method as the user chose it: what it
+/// depends on is looked up now (a duration becomes a moment, a condition its rule, a restart this start
+/// of Windows). Never the delay, which is always there. Setting one needs unlocking to be ready, or no
+/// block to be locked; removing it is always free.
+fn set_unlock_way(context: &Context, lock: Option<Lock>) -> Result<(), String> {
+    let _editing = context.editing.locked();
+    let now = context.blocklist.now();
+    let idle = context.blocklist.locked().is_none();
+    let Some(lock) = lock.filter(|lock| !matches!(lock, Lock::None)) else {
+        return context.unlock.set_way(None, now, idle);
+    };
+    lock.check()?;
+    let (lock, opening) = match lock {
+        Lock::Condition { ref condition } => {
+            let rule = context.definitions.library().rule_of(condition)?;
+            let opening = unlock::Opening::While { rule, zone: Zone::current().name().to_string() };
+            (lock, Some(opening))
+        }
+        Lock::Text { .. } => (lock, None),
+        // Only its hash is kept; a password lock without a new password keeps the one it has.
+        Lock::Password { password, hash } => {
+            let hash = match (password, hash) {
+                (Some(password), _) => unlock::new_hash(&password)?,
+                (None, Some(hash)) => hash,
+                (None, None) => match context.unlock.way().map(|way| way.lock) {
+                    Some(Lock::Password { hash: Some(kept), .. }) => kept,
+                    _ => return Err("Set a password for this way to unlock".into()),
+                },
+            };
+            (Lock::Password { password: None, hash: Some(hash) }, None)
+        }
+        _ => return Err("The way to unlock can be a condition, a custom text or a password; the delay is always there".into()),
+    };
+    context.unlock.set_way(Some(unlock::Way { lock, opening }), now, idle)
 }
 
 /// Sets how long unlocking takes, from text.
@@ -313,8 +378,17 @@ fn set_unlock_delay(context: &Context, text: &str) -> Result<(), String> {
 /// countdown stands in its way, whatever the blocks are locked with. Unlocking uses up the
 /// request: the next time starts again.
 fn unlock(context: &Context) -> Result<(), String> {
-    if context.unlock.remaining(context.blocklist.now()) != Some(0) {
-        return Err("Unlocking is not ready yet: ask for it, and wait for the countdown".into());
+    unlock_with(context, None, None)
+}
+
+/// As `unlock`, and ready also when the other way to unlock lets go (`unlock::Way`: at once, or an
+/// answer given), **or** the countdown is over: either is enough, never both.
+fn unlock_with(context: &Context, password: Option<&str>, text: Option<&str>) -> Result<(), String> {
+    let now = context.blocklist.now();
+    let by_way =
+        context.unlock.way().is_some_and(|way| way.is_open(now) || way.answered(password, text));
+    if !by_way && context.unlock.remaining(now) != Some(0) {
+        return Err("Unlocking is not ready yet: ask for it and wait for the countdown, or use the other way to unlock".into());
     }
     context.blocklist.reset();
     context.unlock.abort()
@@ -866,6 +940,7 @@ mod tests {
             ("duration", timed("d", &["d.com"], "1h")),
             ("until", definition("u", &["u.com"]).lock(Lock::Until { until: "2040-06-01 00:00".into() })),
             ("condition", definition("c", &["c.com"]).week("daily").lock(Lock::Condition { condition: "c-schedule".into() })),
+            ("delay", definition("l", &["l.com"]).lock(Lock::Delay { delay: "1h".into() })),
             ("text", definition("t", &["t.com"]).lock(Lock::Text { text: "Write this out".into() })),
             ("password", definition("p", &["p.com"]).lock(Lock::Password { password: Some("secret".into()), hash: None })),
         ]
@@ -880,16 +955,81 @@ mod tests {
         for (kind, one) in every_lock() {
             assert_eq!(run(&context, one), Response::Done, "{kind}");
         }
-        assert_eq!(overview(&context).running.len(), 5);
+        assert_eq!(overview(&context).running.len(), 6);
         assert!(overview(&context).running.iter().all(|running| running.locked));
         // Each of them refuses to be stopped...
-        for id in ["d", "u", "c", "t", "p"] {
+        for id in ["d", "u", "c", "l", "t", "p"] {
             assert!(failed(handle(&context, 0, Request::Stop { id: id.into(), password: None, text: None }).0), "{id}");
         }
         // ...and unlocking ends them all at once; what was defined stays.
         assert_eq!(handle(&context, 0, Request::Unlock).0, Response::Done);
         assert!(!context.blocklist.is_running() && policies(&context).is_empty());
-        assert_eq!(overview(&context).blocks.len(), 5);
+        assert_eq!(overview(&context).blocks.len(), 6);
+    }
+
+    #[test]
+    fn another_way_to_unlock_works_instead_of_the_countdown_never_as_well() {
+        let context = context("hatch-way");
+        let ask = |request: Request| handle(&context, 0, request).0;
+        let way = |lock: Lock| Request::SetUnlockWay { way: Some(lock) };
+        // The delay is always there: it is not a way of its own.
+        assert!(failed(ask(way(Lock::Delay { delay: "1h".into() }))));
+        assert_eq!(ask(Request::SetUnlockDelay { delay: "1h".into() }), Response::Done);
+        // Nothing is locked yet, so one can be set; a password is kept as its hash, never sent back.
+        assert_eq!(ask(way(Lock::Password { password: Some("secret".into()), hash: None })), Response::Done);
+        let status = overview(&context).unlock;
+        assert_eq!(status.way, Some(Lock::Password { password: None, hash: None }));
+        assert!(!status.way_open);
+        assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
+        // Locked, the countdown not asked for: refused, also with the wrong password.
+        assert!(failed(ask(Request::Unlock)) && context.blocklist.is_running());
+        assert!(failed(ask(Request::UnlockWith { password: Some("wrong".into()), text: None })) && context.blocklist.is_running());
+        assert!(failed(ask(Request::UnlockWith { password: None, text: Some("secret".into()) })) && context.blocklist.is_running());
+        // The right one ends every block at once, without the countdown.
+        assert_eq!(ask(Request::UnlockWith { password: Some("secret".into()), text: None }), Response::Done);
+        assert!(!context.blocklist.is_running());
+    }
+
+    #[test]
+    fn a_way_to_unlock_that_is_easier_needs_unlocking_ready_while_something_is_locked() {
+        let context = context("hatch-way-locked");
+        let ask = |request: Request| handle(&context, 0, request).0;
+        assert_eq!(ask(Request::SetUnlockDelay { delay: "1h".into() }), Response::Done);
+        assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
+        let text = || Request::SetUnlockWay { way: Some(Lock::Text { text: "let me out".into() }) };
+        // Locked and not ready: setting a way would be a way around the delay.
+        assert!(failed(ask(text())));
+        assert_eq!(overview(&context).unlock.way, None);
+        // Ready (the countdown asked for and, with a 1 s delay, over): it can be set, and removed at any time.
+        assert_eq!(ask(Request::SetUnlockDelay { delay: "1h".into() }), Response::Done);
+        assert_eq!(ask(Request::SetUnlockWay { way: None }), Response::Done);
+        // The text unlocks, ignoring line breaks.
+        let idle = self::context("hatch-way-idle");
+        assert_eq!(handle(&idle, 0, Request::SetUnlockDelay { delay: "1h".into() }).0, Response::Done);
+        assert_eq!(handle(&idle, 0, text()).0, Response::Done);
+        assert_eq!(run(&idle, timed("a", &["a.com"], "1h")), Response::Done);
+        assert!(failed(handle(&idle, 0, Request::UnlockWith { password: None, text: Some("let me".into()) }).0));
+        assert_eq!(handle(&idle, 0, Request::UnlockWith { password: None, text: Some("let me out".into()) }).0, Response::Done);
+        // Removing is free while a block is locked.
+        assert_eq!(run(&idle, timed("b", &["b.com"], "1h")), Response::Done);
+        assert_eq!(handle(&idle, 0, Request::SetUnlockWay { way: None }).0, Response::Done);
+    }
+
+    #[test]
+    fn a_locked_block_can_still_be_renamed_and_nothing_else() {
+        let context = context("rename-locked");
+        let ask = |request: Request| handle(&context, 0, request).0;
+        assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
+        let library = overview(&context);
+        let mut renamed = library.blocks[0].clone();
+        renamed.name = "New name".into();
+        assert_eq!(ask(Request::SaveBlock { block: renamed.clone() }), Response::Done);
+        assert_eq!(overview(&context).running[0].name, "New name");
+        assert_eq!(overview(&context).blocks[0].name, "New name");
+        // Anything more is refused: its lists, its condition.
+        let mut more = renamed;
+        more.condition = Some("somewhere".into());
+        assert!(failed(ask(Request::SaveBlock { block: more })));
     }
 
     #[test]

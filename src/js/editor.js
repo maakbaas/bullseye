@@ -51,9 +51,10 @@ function openEditor(kind, id, { via = null, draft = null } = {}) {
     return;
   }
   editing = { kind, item: structuredClone(item), isNew: !id, via };
+  $("view-editor").dataset.kind = kind;
   const form = (forms[kind] = kindOf.form());
   $("form").replaceChildren(...form.nodes);
-  form.fill(editing.item);
+  form.fill(editing.item, editing.isNew);
   const here = id ? (kindOf.items().find((i) => i.id === id) || item).name : kindOf.newLabel;
   setCrumbs(via ? [...via.crumbs, { label: here }] : [{ label: kindOf.title, href: kindOf.path }, { label: here }]);
   $("editor-title").textContent = id ? kindOf.editTitle : kindOf.newLabel;
@@ -63,7 +64,6 @@ function openEditor(kind, id, { via = null, draft = null } = {}) {
   notify("editor-notices");
   $("editor-notices").dataset.lock = "";
   renderEditorLock();
-  if (!id) setTimeout(() => form.name.focus(), 0);
 }
 
 // What runs keeps what it started with, so what it uses is read-only until it ends.
@@ -76,7 +76,7 @@ function renderEditorLock() {
   forms[editing.kind].disable(!!held);
   // No example entries where entries are fixed or limited, or they read as entries.
   if (forms[editing.kind].examples) forms[editing.kind].examples(!held && !limited);
-  $("save").disabled = !!held;
+  // Only the name can be changed on something a locked block holds; it never loosens anything.
   $("delete").disabled = !!held || (!editing.isNew && kind.inUse(editing.item));
   const box = $("editor-notices");
   const shown = box.dataset.lock === "1";

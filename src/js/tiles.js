@@ -89,6 +89,16 @@ function summaryOf(kind, item) {
   const lockRule = running.lock_condition;
   if (running.password) parts.push(["locked", t("blocks.tile.lockedPassword")]);
   else if (running.lock_text) parts.push(["locked", t("blocks.tile.lockedText")]);
+  else if (running.stop_delay) {
+    const { stop_remaining: left, stop_remaining_words: words } = running;
+    parts.push(
+      left === null
+        ? ["locked", t("blocks.tile.lockedDelay", { delay: running.stop_delay_words })]
+        : left === 0
+          ? ["unlocked", t("blocks.tile.delayReady")]
+          : ["locked", t("blocks.tile.delayWait", { left: words })],
+    );
+  }
   else if (running.until_restart) parts.push(["locked", t("blocks.tile.lockedRestart")]);
   else if (running.remaining_words) parts.push(["locked", t("blocks.tile.lockedFor", { left: running.remaining_words })]);
   else if (lockRule) {
@@ -208,36 +218,26 @@ function renderTiles(kind) {
 // ---- A block's tile: its state, its lock (set here, next to Start) and Start / Stop.
 
 function addBlockControls(parts, id) {
-  const method = el("cds-select", { "label-text": t("blocks.lockLabel"), size: "sm", class: "lock-method" });
-  for (const [key, lock] of Object.entries(LOCKS)) method.append(el("cds-select-item", { value: key, label: lock.label }, lock.label));
-  const toggle = el("cds-button", { kind: "primary", size: "sm" });
+  // A dropdown, not a select: a select is the browser's own and says nothing when the choice that is
+  // already made is chosen again, while a dropdown's items can be clicked (see below).
+  const method = el("cds-dropdown", { autoalign: true, "title-text": t("blocks.lockLabel"), size: "md", class: "lock-method" });
+  for (const [key, lock] of Object.entries(LOCKS)) method.append(el("cds-dropdown-item", { value: key }, lock.label));
+  const toggle = el("cds-button", { kind: "primary", size: "md" });
   const controls = el("div", { class: "lock-controls" }, method);
-  parts.actions.append(controls, toggle);
-  Object.assign(parts, { method, toggle, controls });
-  // Choosing the lock the block already has changes nothing, so the select says nothing and its
-  // settings could not be opened that way. While its list is open the select is therefore blank,
-  // so any choice is a change; it goes back to the block's lock when the list closes without one.
-  let had = null;
-  const restore = () => {
-    if (had === null) return;
-    method.value = had;
-    had = null;
-    parts.choosing = false;
-  };
-  method.addEventListener("pointerdown", () => {
-    if (had !== null) return setTimeout(restore, 0);
-    if (!method.value || parts.choosing) return;
-    had = method.value;
-    parts.choosing = true;
-    method.value = "";
-  });
-  method.addEventListener("focusout", restore);
-  method.addEventListener("keydown", (event) => event.key === "Escape" && restore());
-  method.addEventListener("cds-select-selected", () => {
-    if (!method.value) return;
-    had = null;
-    setLock(id, method.value);
-  });
+  // A delay lock's wait can be ended while it counts down or waits to be used.
+  const abort = el("cds-button", { kind: "tertiary", size: "md", hidden: true }, t("blocks.abortStop"), carbonIcon("locked", "icon"));
+  parts.actions.append(controls, abort, toggle);
+  Object.assign(parts, { method, toggle, controls, abort });
+  abort.addEventListener("click", () => abortStop(id));
+  // Choosing another lock asks for its settings, if it has any. So does choosing the one the block
+  // already has (the dropdown says nothing then, so its items are listened to): its settings again.
+  method.addEventListener("cds-dropdown-selected", (event) => setLock(id, event.detail.item.value));
+  for (const item of method.querySelectorAll("cds-dropdown-item")) {
+    item.addEventListener("click", () => {
+      const block = overview.blocks.find((b) => b.id === id);
+      if (block && block.lock.method === item.value && LOCKS[item.value].form) setLock(id, item.value);
+    });
+  }
   toggle.addEventListener("click", () => startOrStop(id));
 }
 
@@ -308,20 +308,26 @@ function renderBlockControls(parts, block) {
   // Settings to change (in the menu): all locks but No lock.
   parts.lockItem.hidden = !!running || !LOCKS[parts.method.value] || !LOCKS[parts.method.value].form;
   const busy = parts.toggle.dataset.busy === "1";
-  const action = running ? "stop" : "start";
+  // A block locked with a delay is asked to stop first, then waited out.
+  const asking = running && running.stop_delay && running.stop_remaining === null;
+  parts.abort.hidden = !(running && running.stop_delay && running.stop_remaining !== null);
+  // Waiting: keep it locked; once the wait is over, lock it again.
+  const abortLabel = t(running && running.stop_remaining === 0 ? "blocks.relock" : "blocks.abortStop");
+  if (parts.abort.textContent.trim() !== abortLabel) parts.abort.replaceChildren(abortLabel, carbonIcon("locked", "icon"));
+  const action = running ? (asking ? "ask" : "stop") : "start";
   if (parts.toggle.dataset.action !== action) {
     parts.toggle.dataset.action = action;
     parts.toggle.setAttribute("kind", running ? "secondary" : "primary");
-    parts.toggle.replaceChildren(t(running ? "blocks.stop" : "blocks.start"), carbonIcon(running ? "stop" : "play", "icon"));
+    parts.toggle.replaceChildren(t(asking ? "blocks.requestStop" : running ? "blocks.stop" : "blocks.start"), carbonIcon(running ? "stop" : "play", "icon"));
   }
   // A block locked with a password stops with it, one locked with a text by typing it (asked for on Stop).
-  parts.toggle.disabled = busy || (running && running.locked && !running.password && !running.lock_text) || !reachable;
+  parts.toggle.disabled = busy || (running && running.locked && !asking && !running.password && !running.lock_text) || !reachable;
 }
 
 // The dialog of a text lock: the text, and an input to type it into. Pasting and dropping text
 // into the input are refused, so the text has to be typed; the dialog only goes on when what is
 // typed is exactly the text (the service checks it again). Resolves the typed text, or null.
-async function askText(block, expected) {
+async function askText(heading, expected, action = t("blocks.stop")) {
   const shown = el("p", { class: "typed-text cds--type-body-01" }, expected);
   const field = el("cds-textarea", { label: t("blocks.stopTextLabel"), rows: 4, autocomplete: "off", spellcheck: "false" });
   const refuse = (event) => event.preventDefault();
@@ -331,14 +337,26 @@ async function askText(block, expected) {
   setTimeout(() => field.focus(), 150);
   const same = (a, b) => a.replace(/\r\n/g, "\n") === b.replace(/\r\n/g, "\n");
   const given = await ask({
-    heading: t("blocks.stopHeading", { name: quoted(block.name) }),
+    heading,
     body: t("blocks.stopTextBody"),
-    action: t("blocks.stop"),
+    action,
     kind: "danger",
     fields: [shown, field],
     read: async () => (invalid(field, same(field.value, expected) ? null : t("blocks.stopTextDiffers")) ? null : field.value),
   });
   return given || null;
+}
+
+// Ends the wait of a delay lock: locked again.
+async function abortStop(id) {
+  const block = overview.blocks.find((b) => b.id === id);
+  try {
+    await invoke("abort_stop", { id });
+    notify("list-notices");
+  } catch (e) {
+    notify("list-notices", "error", t("blocks.stopFailed", { name: quoted(block.name) }), String(e));
+  }
+  await refresh();
 }
 
 async function startOrStop(id) {
@@ -367,13 +385,14 @@ async function startOrStop(id) {
   // A block locked with a text stops by typing it in.
   let text = null;
   if (running && running.lock_text) {
-    text = await askText(block, running.lock_text);
+    text = await askText(t("blocks.stopHeading", { name: quoted(block.name) }), running.lock_text);
     if (text === null) return;
   }
   parts.toggle.dataset.busy = "1";
   parts.toggle.disabled = true;
   try {
-    if (running) await invoke("stop_block", { id, password, text });
+    if (running && running.stop_delay && running.stop_remaining === null) await invoke("request_stop", { id });
+    else if (running) await invoke("stop_block", { id, password, text });
     else await invoke("start_block", { id });
     notify("list-notices");
   } catch (e) {
@@ -435,4 +454,4 @@ async function duplicate(kind, id) {
   }
 }
 
-export { tiles, renderTiles, confirmDelete };
+export { tiles, renderTiles, confirmDelete, askText };

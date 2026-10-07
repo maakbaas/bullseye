@@ -47,6 +47,12 @@ function nameField(placeholder) {
   return input;
 }
 
+// The name's place in a form: a text box. A new item has a name already, the first free "Block list 3"
+// (`freeName`); `more` goes under it in the same section.
+function nameSection(input, ...more) {
+  return el("section", {}, input, ...more);
+}
+
 // The condition select's choice for no condition (an empty value reads as nothing chosen).
 const ALWAYS = "always";
 
@@ -54,7 +60,7 @@ function blockForm() {
   const name = nameField(t("blocks.namePlaceholder"));
   const lists = el("cds-checkbox-group", { "legend-text": t("blocks.listsLegend") });
   const noLists = el("p", { class: "cds--type-body-01" }, t("blocks.noLists"));
-  const condition = el("cds-select", { "label-text": t("blocks.conditionLabel"), "helper-text": t("blocks.conditionHelper") });
+  const condition = el("cds-dropdown", { autoalign: true, "title-text": t("blocks.conditionLabel"), "helper-text": t("blocks.conditionHelper") });
   // Made here and added to this block: the editor comes back with it.
   const newList = el("cds-button", { kind: "tertiary", size: "md" }, t("blocks.newList"), carbonIcon("add", "icon"));
   const newCondition = el("cds-button", { kind: "tertiary", size: "md" }, t("blocks.newCondition"), carbonIcon("add", "icon"));
@@ -67,18 +73,18 @@ function blockForm() {
   editCondition.addEventListener("click", () => condition.value && condition.value !== ALWAYS && make("conditions", condition.value)());
   let off = false;
   const syncEdit = () => (editCondition.disabled = off || !condition.value || condition.value === ALWAYS);
-  condition.addEventListener("cds-select-selected", syncEdit);
+  condition.addEventListener("cds-dropdown-selected", syncEdit);
   let boxes = {};
   let edits = [];
   const section = (title, text, ...content) =>
     el("section", {}, el("h2", { class: "cds--type-productive-heading-03" }, title), el("p", { class: "cds--type-body-01" }, text), ...content);
   return {
     nodes: [
-      el("section", {}, name),
+      nameSection(name),
       section(t("blocks.whatTitle"), t("blocks.whatText"), lists, noLists, el("div", { class: "inline-action" }, newList)),
       section(t("blocks.whenTitle"), t("blocks.whenText"), condition, el("div", { class: "inline-action" }, newCondition, editCondition)),
     ],
-    fill(block) {
+    fill(block, isNew = false) {
       name.value = block.name;
       boxes = {};
       edits = [];
@@ -97,8 +103,8 @@ function blockForm() {
       lists.hidden = !overview.lists.length;
       noLists.hidden = !!overview.lists.length;
       condition.replaceChildren(
-        el("cds-select-item", { value: ALWAYS, label: t("blocks.always") }, t("blocks.always")),
-        ...overview.conditions.map((s) => el("cds-select-item", { value: s.id, label: s.name }, s.name)),
+        el("cds-dropdown-item", { value: ALWAYS }, t("blocks.always")),
+        ...overview.conditions.map((s) => el("cds-dropdown-item", { value: s.id }, s.name)),
       );
       condition.value = block.condition || ALWAYS;
       syncEdit();
@@ -111,7 +117,7 @@ function blockForm() {
     }),
     disable(value) {
       off = value;
-      for (const control of [name, condition, newList, newCondition, ...edits, ...Object.values(boxes)]) control.disabled = off;
+      for (const control of [condition, newList, newCondition, ...edits, ...Object.values(boxes)]) control.disabled = off;
       syncEdit();
     },
     settle: async () => {},
@@ -214,11 +220,13 @@ function listForm() {
   const name = nameField(t("lists.namePlaceholder"));
   const areas = {};
   const checks = {};
-  // The sections are an accordion: each opens and closes, and only the first, the websites, is
-  // open when the editor opens.
+  // The sections are an accordion: each opens and closes, and the ones with content are open when
+  // the editor opens (`fill`): a section with a list when it has entries (the websites also in a new
+  // block list), one with only enforcers ("other") when one is ticked, which a new block list has.
   const accordion = el("cds-accordion", {});
-  const nodes = [el("section", {}, name), accordion];
-  for (const [position, section] of SECTIONS.entries()) {
+  const items = [];
+  const nodes = [nameSection(name), accordion];
+  for (const section of SECTIONS) {
     const lists = el("div", { class: "lists" });
     for (const key of section.lists) {
       const list = LISTS[key];
@@ -231,23 +239,29 @@ function listForm() {
       checks[enforcer.key] = el("cds-checkbox", { "label-text": enforcer.label });
       group.append(checks[enforcer.key]);
     }
-    accordion.append(
-      el(
-        "cds-accordion-item",
-        { open: position === 0 },
-        el("span", { slot: "title" }, section.title),
-        section.description ? el("p", { class: "cds--type-body-01" }, section.description) : null,
-        lists,
-        group,
-      ),
+    const item = el(
+      "cds-accordion-item",
+      {},
+      el("span", { slot: "title" }, section.title),
+      section.description ? el("p", { class: "cds--type-body-01" }, section.description) : null,
+      lists,
+      group,
     );
+    items.push([section, item]);
+    accordion.append(item);
   }
   return {
     nodes,
-    fill(list) {
+    fill(list, isNew = false) {
       name.value = list.name;
       for (const [key, area] of Object.entries(areas)) area.value = (list[key] || []).join("\n");
       for (const [key, box] of Object.entries(checks)) box.checked = !!(list.enforcers && list.enforcers[key]);
+      for (const [section, item] of items) {
+        const entries = section.lists.some((key) => (list[key] || []).length > 0);
+        const ticked = section.enforcers.some((e) => list.enforcers && list.enforcers[e.key]);
+        // A new block list has the websites open too, to start typing in.
+        item.open = section.lists.length ? entries || (isNew && section.key === "websites") : ticked;
+      }
     },
     read(list) {
       const out = { ...list, name: name.value.trim(), enforcers: { ...list.enforcers } };
@@ -256,7 +270,7 @@ function listForm() {
       return out;
     },
     disable(off) {
-      for (const control of [name, ...Object.values(areas), ...Object.values(checks)]) control.disabled = off;
+      for (const control of [...Object.values(areas), ...Object.values(checks)]) control.disabled = off;
     },
     // The example in an empty list (google.com under Always allowed) is only there for a list
     // that can be filled in freely: elsewhere it reads as an entry.
@@ -274,19 +288,21 @@ function listForm() {
 // list while it is away, so saving does not lose it. Drives are told apart by their hardware's
 // serial number (`drives.rs`).
 function drivePicker() {
-  const select = el("cds-select", { "label-text": t("conditions.drive.field"), "helper-text": t("conditions.drive.helper") });
-  const rescan = el("cds-button", { kind: "ghost", size: "sm" }, t("conditions.drive.scan"));
+  const select = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.drive.field"), "helper-text": t("conditions.drive.helper") });
+  const rescan = el("cds-button", { kind: "tertiary", size: "md" }, t("conditions.drive.scan"), carbonIcon("renew", "icon"));
   let known = new Map();
   let had = {};
   let scanning = false;
   let off = false;
-  const item = (value, label) => el("cds-select-item", { value, label }, label);
+  const item = (value, label) => el("cds-dropdown-item", { value }, label);
   async function scan() {
     const keep = select.value || had.serial || "";
     scanning = true;
     rescan.disabled = true;
     invalid(select, null);
-    select.replaceChildren(item("", t("conditions.drive.scanning")));
+    // Nothing to choose while it looks: the dropdown says so in place of a choice.
+    select.replaceChildren();
+    select.setAttribute("label", t("conditions.drive.scanning"));
     select.value = "";
     let drives = [];
     let fault = null;
@@ -298,8 +314,8 @@ function drivePicker() {
     known = new Map(drives.map((drive) => [drive.serial, drive]));
     const away = had.serial && !known.has(had.serial) ? [{ serial: had.serial, name: had.name || had.serial }] : [];
     for (const drive of away) known.set(drive.serial, drive);
+    select.setAttribute("label", t(drives.length || away.length ? "conditions.drive.choose" : "conditions.drive.none"));
     select.replaceChildren(
-      item("", t(drives.length || away.length ? "conditions.drive.choose" : "conditions.drive.none")),
       ...drives.map((drive) => item(drive.serial, `${drive.name} (${drive.serial})`)),
       ...away.map((drive) => item(drive.serial, t("conditions.drive.away", { name: `${drive.name} (${drive.serial})` }))),
     );
@@ -331,8 +347,8 @@ function drivePicker() {
 // A combination: the conditions it is of, ticked among the others (never a combination, nor
 // itself: no nesting), and whether any one of them or all of them make it active.
 function combinePicker() {
-  const mode = el("cds-select", { "label-text": t("conditions.combine.modeLabel"), "helper-text": t("conditions.combine.modeHelper") });
-  for (const key of ["any", "all"]) mode.append(el("cds-select-item", { value: key, label: t(`conditions.combine.${key}`) }, t(`conditions.combine.${key}`)));
+  const mode = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.combine.modeLabel"), "helper-text": t("conditions.combine.modeHelper") });
+  for (const key of ["any", "all"]) mode.append(el("cds-dropdown-item", { value: key }, t(`conditions.combine.${key}`)));
   const group = el("cds-checkbox-group", { "legend-text": t("conditions.combine.legend") });
   const none = el("p", { class: "cds--type-body-01" }, t("conditions.combine.none"));
   let boxes = [];
@@ -368,11 +384,11 @@ function combinePicker() {
 // chosen type is not kept.
 function conditionForm() {
   const name = nameField(t("conditions.namePlaceholder"));
-  const type = el("cds-select", { "label-text": t("conditions.typeLabel") });
+  const type = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.typeLabel") });
   type.append(
-    el("cds-select-item", { value: "schedule", label: t("conditions.typeSchedule") }, t("conditions.typeSchedule")),
-    el("cds-select-item", { value: "flash_drive", label: t("conditions.typeDrive") }, t("conditions.typeDrive")),
-    el("cds-select-item", { value: "combined", label: t("conditions.typeCombined") }, t("conditions.typeCombined")),
+    el("cds-dropdown-item", { value: "schedule" }, t("conditions.typeSchedule")),
+    el("cds-dropdown-item", { value: "flash_drive" }, t("conditions.typeDrive")),
+    el("cds-dropdown-item", { value: "combined" }, t("conditions.typeCombined")),
   );
   const week = weekEditor();
   const weekPart = el("section", {}, ...week.nodes);
@@ -385,10 +401,10 @@ function conditionForm() {
     drivePart.hidden = type.value !== "flash_drive";
     combinePart.hidden = type.value !== "combined";
   };
-  type.addEventListener("cds-select-selected", show);
+  type.addEventListener("cds-dropdown-selected", show);
   return {
-    nodes: [el("section", {}, name, type), weekPart, drivePart, combinePart],
-    fill(condition) {
+    nodes: [nameSection(name, type), weekPart, drivePart, combinePart],
+    fill(condition, isNew = false) {
       name.value = condition.name;
       type.value = condition.type || "schedule";
       week.fill({ days: condition.days || [0, 1, 2, 3, 4, 5, 6].map(() => []) });
@@ -403,7 +419,6 @@ function conditionForm() {
       return { ...base, type: "schedule", days: week.read().days };
     },
     disable(off) {
-      name.disabled = off;
       type.disabled = off;
       week.disable(off);
       picker.disable(off);

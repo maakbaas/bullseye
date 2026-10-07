@@ -15,6 +15,9 @@ use crate::duration;
 /// The longest text a text lock can ask to be typed: it is shown, and typed, by hand.
 const MAX_TEXT: usize = 1000;
 
+/// The longest wait of a delay lock, as long as the unlock delay can be.
+const MAX_DELAY: Duration = Duration::from_secs(24 * 3600);
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(tag = "method", rename_all = "snake_case")]
 pub enum Lock {
@@ -37,6 +40,10 @@ pub enum Lock {
     /// connected, so the drive is the key. With the block's own condition, it is locked exactly
     /// while it is active.
     Condition { condition: String },
+    /// Locked behind a wait, like unlocking (`unlock.rs`): stopping is asked for, counts down `delay`
+    /// (`2h 30m`) on internet time, can be aborted, and once the wait is over the block can be
+    /// stopped. Until then it cannot be, so it is locked for the delay at least.
+    Delay { delay: String },
     /// Locked until a text of the user's own choosing is typed in: the block can only be stopped
     /// by typing `text` exactly as it is shown (the window shows it above an input that cannot be
     /// pasted into, and the service compares the two). It is no secret, so it is kept as it is.
@@ -101,6 +108,20 @@ impl Lock {
         }
     }
 
+    /// How long stopping a delay lock takes; `None` for the other methods.
+    pub fn delay(&self) -> Result<Option<Duration>, String> {
+        match self {
+            Lock::Delay { delay } => {
+                let wait = duration::parse(delay)?.ok_or("Enter how long stopping the block takes, e.g. 2h 30m")?;
+                if wait > MAX_DELAY {
+                    return Err("Stopping can take at most 24 hours".into());
+                }
+                Ok(Some(wait))
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// The local date and time an until lock ends at; `None` for the other methods.
     pub fn until(&self) -> Result<Option<DateTime>, String> {
         match self {
@@ -113,6 +134,7 @@ impl Lock {
     /// when it is saved rather than when it starts.
     pub fn check(&self) -> Result<(), String> {
         self.duration()?;
+        self.delay()?;
         self.until()?;
         if let Lock::Text { text } = self {
             if text.trim().is_empty() {
@@ -142,6 +164,12 @@ mod tests {
         assert_eq!(until.duration(), Ok(None));
         assert!(Lock::Until { until: "tomorrow".into() }.check().is_err());
         assert!(Lock::UntilRestart.check().is_ok());
+        let delayed = Lock::Delay { delay: "1h".into() };
+        assert_eq!(delayed.delay(), Ok(Some(Duration::from_secs(3600))));
+        assert!(delayed.check().is_ok() && delayed.has_settings());
+        assert!(Lock::Delay { delay: "".into() }.check().is_err());
+        assert!(Lock::Delay { delay: "2d".into() }.check().is_err());
+        assert_eq!(delayed.duration(), Ok(None));
     }
 
     #[test]

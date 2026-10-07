@@ -36,6 +36,7 @@ mod watchdog;
 
 use client::Remote;
 use definitions::{BlockList, Condition, Contents, Definition, Fallout, Kind, Library};
+use lock::Lock;
 use proto::{Overview, Request, Response};
 use schedule::Week;
 use tauri::{
@@ -107,6 +108,18 @@ fn stop_block(id: String, password: Option<String>, text: Option<String>, remote
     remote.command(Request::Stop { id, password, text })
 }
 
+/// Starts the wait before a block locked with a delay can be stopped (`block::RunLock::Delay`).
+#[tauri::command]
+fn request_stop(id: String, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::AskToStop { id })
+}
+
+/// Ends that wait: the block is locked again.
+#[tauri::command]
+fn abort_stop(id: String, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::AbortStop { id })
+}
+
 /// A weekly schedule as text, after checking it, for the condition editor and the block's summary.
 #[tauri::command]
 fn describe_schedule(week: Week) -> Result<String, String> {
@@ -158,7 +171,7 @@ const SETTINGS_FILTER: (&str, &[&str]) = ("Bullseye settings", &["json"]);
 /// `None` when the dialog was cancelled. Async, so the dialog does not wait on the main thread.
 #[tauri::command]
 async fn export_settings(app: tauri::AppHandle, remote: State<'_, Remote>) -> Result<Option<String>, String> {
-    let library = remote.status()?.library();
+    let library = remote.library()?;
     let chosen = app.dialog().file().add_filter(SETTINGS_FILTER.0, SETTINGS_FILTER.1).set_file_name("bullseye.json").blocking_save_file();
     let Some(path) = chosen.map(|path| path.into_path().map_err(|e| e.to_string())).transpose()? else { return Ok(None) };
     definitions::write_settings(&path, library)?;
@@ -188,6 +201,20 @@ struct Opened {
 fn import_settings(path: String, remote: State<Remote>) -> Result<(), String> {
     let library = definitions::read_settings(std::path::Path::new(&path))?;
     remote.command(Request::Import { library })
+}
+
+/// As `unlock_all`, with the answer of the other way to unlock: its text or password (`unlock::Way`).
+#[tauri::command]
+fn unlock_with(password: Option<String>, text: Option<String>, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::UnlockWith { password, text })?;
+    watchdog::note("app", "every block ended by unlocking");
+    Ok(())
+}
+
+/// Sets the other way to unlock besides the delay, as a lock method, or removes it (`None`).
+#[tauri::command]
+fn set_unlock_way(way: Option<Lock>, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::SetUnlockWay { way })
 }
 
 /// Starts the countdown to unlocking (`unlock.rs`); it can be aborted.
@@ -275,7 +302,11 @@ pub fn run() {
             duplicate,
             start_block,
             stop_block,
+            request_stop,
+            abort_stop,
             unlock_all,
+            unlock_with,
+            set_unlock_way,
             request_unlock,
             abort_unlock,
             set_unlock_delay,

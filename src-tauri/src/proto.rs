@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::block::Running;
 use crate::definitions::{BlockList, Condition, Definition, Kind, Library};
 use crate::lists::Entries;
+use crate::lock::Lock;
 use crate::state::Enforcers;
 
 /// The pipe the service listens on.
@@ -66,9 +67,26 @@ pub enum Request {
         #[serde(default)]
         text: Option<String>,
     },
+    /// Starts the wait before the running block `id`, locked with a delay, can be stopped.
+    AskToStop { id: String },
+    /// Ends that wait: the block is locked again.
+    AbortStop { id: String },
     /// Ends every block, whatever its time, once unlocking is ready: at once with no delay,
     /// otherwise when the countdown of `AskForUnlock` is over (`unlock::UnlockDelay`).
     Unlock,
+    /// As `Unlock`, with an answer: the text or password of the other way to unlock
+    /// (`unlock::Way`), which lets go without the countdown.
+    UnlockWith {
+        #[serde(default)]
+        password: Option<String>,
+        #[serde(default)]
+        text: Option<String>,
+    },
+    /// Sets the other way to unlock besides the delay, as a lock method (never the delay), or removes
+    /// it (`None`). Setting one needs unlocking to be ready or no block to be locked.
+    SetUnlockWay { way: Option<Lock> },
+    /// Everything defined, password hashes included, for Export (the status has them left out).
+    Export,
     /// Starts the countdown to unlocking. It can be aborted.
     AskForUnlock,
     /// Stops the countdown, or ends the readiness: back to locked.
@@ -82,12 +100,16 @@ pub enum Request {
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+// The status is the one large answer, built and sent once a second at most.
+#[allow(clippy::large_enum_variant)]
 pub enum Response {
     Done,
     Failed(String),
     /// A block is running that does not allow this (uninstall, update).
     Refused(String),
     Status(Overview),
+    /// The whole library, for Export.
+    Library(Library),
     /// One per running block; none when nothing runs.
     Policy(Vec<Policy>),
 }
@@ -101,6 +123,17 @@ pub struct UnlockStatus {
     /// Seconds until unlocking is ready: `None`: not asked for; `Some(0)`: ready now.
     pub remaining: Option<u64>,
     pub remaining_words: Option<String>,
+    /// The other way to unlock, as chosen (a password without its hash; a text as it is: it is typed).
+    #[serde(default)]
+    pub way: Option<Lock>,
+    /// Whether that way lets go now without an answer (a time that has come, a restart, a condition).
+    #[serde(default)]
+    pub way_open: bool,
+    /// Seconds until it does, where that is known, and in words.
+    #[serde(default)]
+    pub way_left: Option<u64>,
+    #[serde(default)]
+    pub way_left_words: Option<String>,
 }
 
 /// What the UI shows.

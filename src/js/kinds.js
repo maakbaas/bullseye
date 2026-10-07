@@ -4,6 +4,15 @@
 import { invoke, lockedUsersOf, names, newId, overview, runningOf, t } from "./core.js";
 import { ENFORCERS, LISTS, blockForm, conditionForm, listForm } from "./forms.js";
 
+// The first free automatic name of a kind: "Block 1", "Block 2", … (`<kind>.autoName`), ignoring case.
+function freeName(kind, items) {
+  const taken = new Set(items.map((item) => item.name.trim().toLowerCase()));
+  for (let n = 1; ; n++) {
+    const name = t(`${kind}.autoName`, { n });
+    if (!taken.has(name.toLowerCase())) return name;
+  }
+}
+
 // ---- The three kinds. Each has a page of tiles and an editor.
 
 // A kind's texts in strings.js: its page, its editor and its empty state.
@@ -24,7 +33,7 @@ const KINDS = {
     newPath: "#/new",
     ...kindTexts("blocks"),
     items: () => overview.blocks,
-    create: () => ({ id: newId(), name: "", lists: [], condition: null, lock: { method: "none" } }),
+    create: () => ({ id: newId(), name: freeName("blocks", overview.blocks), lists: [], condition: null, lock: { method: "none" } }),
     save: (block) => invoke("save_block", { block }),
     remove: (id) => invoke("delete_block", { id }),
     duplicate: (id, copyId) => invoke("duplicate", { kind: "block", id, newId: copyId }),
@@ -45,7 +54,7 @@ const KINDS = {
     items: () => overview.lists,
     create: () => ({
       id: newId(),
-      name: "",
+      name: freeName("lists", overview.lists),
       ...Object.fromEntries(Object.keys(LISTS).map((key) => [key, []])),
       enforcers: Object.fromEntries(ENFORCERS.map((e) => [e.key, true])),
     }),
@@ -68,7 +77,7 @@ const KINDS = {
     newPath: "#/conditions/new",
     ...kindTexts("conditions"),
     items: () => overview.conditions,
-    create: () => ({ id: newId(), name: "", type: "schedule", days: [0, 1, 2, 3, 4, 5, 6].map(() => []) }),
+    create: () => ({ id: newId(), name: freeName("conditions", overview.conditions), type: "schedule", days: [0, 1, 2, 3, 4, 5, 6].map(() => []) }),
     save: (condition) => invoke("save_condition", { condition }),
     remove: (id) => invoke("delete_condition", { id }),
     duplicate: (id, copyId) => invoke("duplicate", { kind: "condition", id, newId: copyId }),

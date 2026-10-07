@@ -110,8 +110,8 @@ const LOCKS = {
     // A weekly schedule locks at its times; a flash drive locks while it is not connected, so
     // the drive is the key. Only with a condition to choose (`setLock` offers to make one).
     form: (block) => {
-      const select = el("cds-select", { "label-text": t("locks.condition.field"), "helper-text": t("locks.condition.helper") });
-      select.append(...overview.conditions.map((c) => el("cds-select-item", { value: c.id, label: c.name }, c.name)));
+      const select = el("cds-dropdown", { autoalign: true, "title-text": t("locks.condition.field"), "helper-text": t("locks.condition.helper") });
+      select.append(...overview.conditions.map((c) => el("cds-dropdown-item", { value: c.id }, c.name)));
       // The one it had, else the block's own condition, else the first there is.
       const exists = (id) => overview.conditions.some((c) => c.id === id);
       const chosen = [settingsOf(block, "condition").condition, block.condition].find(exists);
@@ -133,6 +133,32 @@ const LOCKS = {
         heading: t("locks.condition.confirmHeading", values),
         body: t("locks.condition.confirmBody", values),
         action: t("locks.condition.confirmAction", values),
+      };
+    },
+  },
+  delay: {
+    label: t("locks.delay.label"),
+    // Like unlocking in Settings: stopping is asked for, counts down, and can be aborted.
+    form: (block) => {
+      const input = el("cds-text-input", { label: t("locks.delay.field"), placeholder: t("locks.delay.placeholder"), "helper-text": t("locks.delay.helper") });
+      input.value = settingsOf(block, "delay").delay || "";
+      return {
+        fields: [input],
+        read: async () => {
+          const delay = input.value.trim();
+          const fault = await invoke("describe_duration", { text: delay }).then(() => null, (e) => String(e));
+          return invalid(input, fault) ? null : { method: "delay", delay };
+        },
+      };
+    },
+    describe: (lock) => t("locks.delay.describe", { delay: durationText(lock.delay) }),
+    confirm: async (block) => {
+      const delay = await invoke("describe_duration", { text: block.lock.delay || "" }).catch(() => block.lock.delay);
+      const values = { name: quoted(block.name), delay };
+      return {
+        heading: t("locks.delay.confirmHeading", values),
+        body: t("locks.delay.confirmBody", values),
+        action: t("locks.delay.confirmAction", values),
       };
     },
   },

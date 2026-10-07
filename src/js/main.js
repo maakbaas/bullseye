@@ -1,8 +1,9 @@
 // The page: which view the address shows (`route`), the tabs, Settings, and starting up.
 
-import { $, applyStrings, ask, invoke, joined, notify, overview, quoted, refresh, t, whenRefreshed } from "./core.js";
+import { $, applyStrings, ask, el, invalid, invoke, joined, notify, overview, quoted, refresh, t, whenRefreshed } from "./core.js";
+import { LOCKS } from "./locks.js";
 import { KINDS } from "./kinds.js";
-import { renderTiles, tiles } from "./tiles.js";
+import { askText, renderTiles, tiles } from "./tiles.js";
 import { closeEditor, openEditor, renderEditorLock } from "./editor.js";
 import { detour } from "./detour.js";
 
@@ -26,7 +27,8 @@ function renderSettings() {
   const { delay, delay_words: delayWords, remaining, remaining_words: left } = overview.unlock;
   const free = delay === 0;
   const requested = remaining !== null;
-  const ready = remaining === 0;
+  // Ready when the countdown is over or the other way to unlock lets go: either is enough.
+  const ready = remaining === 0 || overview.unlock.way_open;
   // Nothing locked right now: nothing to unlock, so no button to ask for it (a countdown that is
   // still there can be aborted).
   const locked = overview.running.some((running) => running.locked);
@@ -37,16 +39,25 @@ function renderSettings() {
     : !requested
       ? t("settings.unlockAsk", { delay: delayWords })
       : ready
-        ? t("settings.unlockReady")
+        ? t(remaining === 0 ? "settings.unlockReady" : "settings.unlockReadyWay")
         : t("settings.unlockWait", { left });
   $("unlock").hidden = !locked;
-  $("unlock").replaceChildren(t(free || ready ? "settings.unlock" : "settings.request"));
+  $("unlock").replaceChildren(t(free || ready ? "settings.unlock" : "settings.request"), carbonIcon(free || ready ? "unlocked" : "time", "icon"));
   // Counting down: nothing to press but Abort.
   $("unlock").disabled = requested && !ready;
   $("abort-unlock").hidden = free || !requested;
+  // A text or password that unlocks at once, when the countdown has not.
+  const way = overview.unlock.way;
+  const answer = way && (way.method === "text" || way.method === "password");
+  $("unlock-answer").hidden = !locked || ready || !answer;
+  const answerLabel = answer ? t("settings.way.answer" + (way.method === "text" ? "Text" : "Password")) : "";
+  if (answer && $("unlock-answer").textContent.trim() !== answerLabel) $("unlock-answer").replaceChildren(answerLabel, carbonIcon("unlocked", "icon"));
+  renderWay();
+  const abortLabel = t(remaining === 0 ? "settings.relock" : "settings.abort");
+  if ($("abort-unlock").textContent.trim() !== abortLabel) $("abort-unlock").replaceChildren(abortLabel, carbonIcon("locked", "icon"));
   // Only when it differs: this draws every second, and a label swapped under a click can lose it.
   const delayLabel = t(free ? "settings.setDelay" : "settings.changeDelay");
-  if ($("set-delay").textContent.trim() !== delayLabel) $("set-delay").replaceChildren(delayLabel);
+  if ($("set-delay").textContent.trim() !== delayLabel) $("set-delay").replaceChildren(delayLabel, carbonIcon("time", "icon"));
 }
 
 // A delay in seconds as it is typed (`1d`, `2h 30m`), to start the field from: the words the
@@ -63,9 +74,9 @@ function typedDelay(seconds) {
 }
 
 async function unlock() {
-  const { delay, remaining } = overview.unlock;
+  const { delay, remaining, way_open: wayOpen } = overview.unlock;
   try {
-    if (delay === 0 || remaining === 0) {
+    if (delay === 0 || remaining === 0 || wayOpen) {
       // The last step, which cannot be taken back: asked once more.
       const sure = await ask({ heading: t("settings.confirmHeading"), body: t("settings.confirmBody"), action: t("settings.unlock"), kind: "danger" });
       if (!sure) return;
@@ -83,6 +94,97 @@ async function unlock() {
   renderSettings();
 }
 $("unlock").addEventListener("click", unlock);
+
+// Unlocking with the answer of the other way to unlock: its text typed in (no pasting), or its password.
+$("unlock-answer").addEventListener("click", async () => {
+  const way = overview.unlock.way;
+  if (!way) return;
+  let password = null;
+  let text = null;
+  if (way.method === "text") {
+    text = await askText(t("settings.way.answerHeading"), way.text, t("settings.unlock"));
+    if (text === null) return;
+  } else {
+    const field = el("cds-password-input", { label: t("blocks.stopPassword"), autocomplete: "off" });
+    password = await ask({
+      heading: t("settings.way.answerHeading"),
+      body: t("settings.way.answerBody"),
+      action: t("settings.unlock"),
+      kind: "danger",
+      fields: [field],
+      read: async () => (invalid(field, field.value ? null : t("blocks.stopPasswordMissing")) ? null : field.value),
+    });
+    if (!password) return;
+  }
+  try {
+    await invoke("unlock_with", { password, text });
+    notify("settings-notices", "success", t("settings.unlocked"));
+  } catch (e) {
+    notify("settings-notices", "error", t("settings.failed"), String(e));
+  }
+  await refresh();
+  renderSettings();
+});
+
+// ---- The other way to unlock (`unlock::Way`): a lock method besides the delay, which is always there.
+
+// Only these of the lock methods (the delay is always there), with the same labels as on a block.
+const WAYS = ["none", "condition", "text", "password"];
+const wayMethod = el("cds-dropdown", { autoalign: true, "title-text": t("settings.way.title"), class: "way-method" });
+for (const key of WAYS) wayMethod.append(el("cds-dropdown-item", { value: key }, LOCKS[key].label));
+$("way-controls").append(wayMethod);
+let choosingWay = false;
+
+// What it is now, in a line.
+function renderWay() {
+  const { way, way_open: open } = overview.unlock;
+  const method = way ? way.method : "none";
+  if (!choosingWay && wayMethod.value !== method) wayMethod.value = method;
+  const key = { none: "stateNone", text: "stateText", password: "statePassword", condition: "stateCondition" }[method];
+  $("way-state").textContent = open ? t("settings.way.stateOpen") : t("settings.way." + key);
+}
+
+// Setting it: the lock method's own form (worded for unlocking), then the service checks it. Cancel
+// keeps what it was.
+async function setWay(method) {
+  notify("way-notices");
+  try {
+    let lock = null;
+    if (method !== "none") {
+      if (method === "condition" && !overview.conditions.length) {
+        notify("way-notices", "error", t("settings.way.failed"), t("settings.way.noConditions"));
+        return;
+      }
+      const current = overview.unlock.way;
+      const form = LOCKS[method].form({ name: "", lock: current || { method: "none" }, kept_locks: [], condition: null });
+      choosingWay = true;
+      lock = await ask({
+        heading: t("settings.way.heading", { method: LOCKS[method].label }),
+        action: t("common.save"),
+        kind: "primary",
+        fields: form.fields,
+        read: form.read,
+      });
+      if (!lock) return;
+    }
+    await invoke("set_unlock_way", { way: lock });
+    notify("way-notices", "success", t(lock ? "settings.way.saved" : "settings.way.removed"));
+  } catch (e) {
+    notify("way-notices", "error", t("settings.way.failed"), String(e));
+  } finally {
+    choosingWay = false;
+    await refresh();
+    renderSettings();
+  }
+}
+wayMethod.addEventListener("cds-dropdown-selected", (event) => setWay(event.detail.item.value));
+// The dropdown says nothing when the way that is set is chosen again: its items are listened to, to open its settings again.
+for (const item of wayMethod.querySelectorAll("cds-dropdown-item")) {
+  item.addEventListener("click", () => {
+    const set = overview.unlock.way ? overview.unlock.way.method : "none";
+    if (item.value === set && LOCKS[item.value] && LOCKS[item.value].form) setWay(item.value);
+  });
+}
 
 // Aborting: back to locked, as if it had not been asked for.
 $("abort-unlock").addEventListener("click", async () => {
@@ -156,6 +258,21 @@ function markPage(page) {
   $("pages").value = page;
 }
 
+// One view of the panel, with its heading in the fixed section above the tabs.
+function showView(view) {
+  for (const name of ["list", "editor", "settings"]) {
+    $(`view-${name}`).hidden = name !== view;
+    $(`head-${name}`).hidden = name !== view;
+  }
+  // The breadcrumb is always there, as in Carbon's own example of one with a single item: a link
+  // with a trailing slash (`openEditor` sets the editor's trail, which has no trailing slash).
+  $("trail").toggleAttribute("no-trailing-slash", view === "editor");
+  if (view !== "editor") {
+    const here = view === "settings" ? { label: t("settings.title"), href: "#/settings" } : { label: KINDS[page].title, href: KINDS[page].path };
+    $("trail").replaceChildren(el("cds-breadcrumb-item", {}, el("cds-breadcrumb-link", { href: here.href }, here.label)));
+  }
+}
+
 function route() {
   const hash = location.hash || "#/";
   let view = "list";
@@ -171,7 +288,7 @@ function route() {
       return;
     }
     page = nested[2];
-    for (const name of ["list", "editor", "settings"]) $(`view-${name}`).hidden = name !== "editor";
+    showView("editor");
     // Still within the block it is made for.
     markPage("blocks");
     openEditor(nested[2], nested[3] ? decodeURIComponent(nested[3]) : null, { via: detour.current });
@@ -191,14 +308,16 @@ function route() {
     }
   }
   page = kind;
-  for (const name of ["list", "editor", "settings"]) $(`view-${name}`).hidden = name !== view;
+  showView(view);
   // The editor belongs to its kind's page.
   markPage(view === "settings" ? "settings" : kind);
   if (view === "list") {
     const kindOf = KINDS[kind];
     $("list-title").textContent = kindOf.title;
     $("list-description").textContent = kindOf.description;
-    $("new-item").replaceChildren(kindOf.newLabel, carbonIcon("add", "icon"));
+    // Always just "New", with the page's own name for screen readers.
+    $("new-item").replaceChildren(t("common.new"), carbonIcon("add", "icon"));
+    $("new-item").setAttribute("aria-label", kindOf.newLabel);
     $("empty-title").textContent = kindOf.empty[0];
     $("empty-text").textContent = kindOf.empty[1];
     notify("list-notices");
@@ -242,6 +361,11 @@ $("pages").addEventListener("cds-tabs-selected", (event) => openPage(event.detai
 // nothing: a click still goes to the page.
 for (const tab of tabs) tab.addEventListener("click", () => openPage(tab.getAttribute("value")));
 $("delete").append(carbonIcon("trash-can", "icon"));
+// Every button on a page has an icon: Carbon keeps room for one at the right of a button's text.
+$("save").append(carbonIcon("checkmark", "icon"));
+$("cancel").append(carbonIcon("close", "icon"));
+$("abort-unlock").append(carbonIcon("locked", "icon"));
+$("set-delay").append(carbonIcon("time", "icon"));
 
 // No browser menu on right-click (Back, Refresh, …: WebView2's own, which make no sense in an
 // app), except in a text field, where it cuts, copies and pastes.

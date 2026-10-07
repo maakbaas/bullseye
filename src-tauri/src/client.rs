@@ -109,6 +109,15 @@ impl Remote {
         }
     }
 
+    /// Everything defined, password hashes included (Export).
+    pub fn library(&self) -> Result<crate::definitions::Library, String> {
+        match self.send(Request::Export)? {
+            Response::Library(library) => Ok(library),
+            Response::Failed(why) => Err(why),
+            other => Err(format!("unexpected answer: {other:?}")),
+        }
+    }
+
     pub fn status(&self) -> Result<Overview, String> {
         match self.send(Request::Status)? {
             Response::Status(status) => Ok(status),

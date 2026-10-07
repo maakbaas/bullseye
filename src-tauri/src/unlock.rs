@@ -10,6 +10,13 @@
 //! so it survives a restart. A longer delay is free to set; a shorter one needs the unlock to be
 //! ready, or setting it low would be a way around the wait. Whatever is wrong with the file (gone,
 //! unreadable, nonsense), the delay is none: a fault opens the hatch, never closes it.
+//!
+//! The delay is always there as the fallback. Besides it there can be **one other way** to unlock
+//! (`Way`), chosen like a block's lock but never the delay: unlocking is ready when the delay is over
+//! **or** that way is satisfied (never both): a text typed in, a password, a time or date that has
+//! come, a restart of Windows, a condition that is active. Setting one makes unlocking easier, so
+//! it needs unlocking to be ready or no block to be locked, like a shorter delay; removing it is
+//! always free.
 
 use std::fs;
 use std::path::PathBuf;
@@ -20,7 +27,10 @@ use pbkdf2::pbkdf2_hmac_array;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
+use crate::condition::Rule;
 use crate::duration;
+use crate::localtime::Zone;
+use crate::lock::Lock;
 use crate::state;
 use crate::sync::LockExt;
 
@@ -62,9 +72,60 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
     (0..text.len()).step_by(2).map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok()).collect()
 }
 
+/// One other way to unlock, besides the delay: the lock method it was chosen as (`lock`, a password
+/// as its hash only) and, for the ones that depend on the world, what that was resolved to when it was
+/// set (`opening`), so it does not change under a running block.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Way {
+    pub lock: Lock,
+    #[serde(default)]
+    pub opening: Option<Opening>,
+}
+
+/// When a `Way` that needs no answer lets go: a condition, as in a block's lock: while it is active
+/// it is locked (unlocking has to wait for the delay), and when it is not, unlocking is open.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Opening {
+    /// Open while this condition is not active, in this time zone.
+    While { rule: Rule, zone: String },
+}
+
+impl Way {
+    /// Whether it lets go at `now` without an answer. What cannot be known counts as locked here
+    /// (`Rule::active` errs towards blocking): the delay is the way out then, so the hatch stays open.
+    pub fn is_open(&self, now: SystemTime) -> bool {
+        match &self.opening {
+            Some(Opening::While { rule, zone }) => !rule.active(&Zone::named(zone), now),
+            None => false,
+        }
+    }
+
+    /// Seconds until it lets go or locks again, where that is known (a condition's next change).
+    pub fn left(&self, now: SystemTime) -> Option<u64> {
+        match &self.opening {
+            Some(Opening::While { rule, zone }) => rule.next_change(&Zone::named(zone), now),
+            None => None,
+        }
+    }
+
+    /// Whether `password` or `text` is the answer of a text or password way.
+    pub fn answered(&self, password: Option<&str>, text: Option<&str>) -> bool {
+        let same = |a: &str, b: &str| a.replace("\r\n", "\n") == b.replace("\r\n", "\n");
+        match &self.lock {
+            Lock::Text { text: expected } => text.is_some_and(|given| same(expected, given)),
+            Lock::Password { hash: Some(hash), .. } => password.is_some_and(|given| check_hash(given, hash)),
+            _ => false,
+        }
+    }
+}
+
 /// What `unlock.json` holds.
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 struct Kept {
+    /// The other way to unlock, if one is set.
+    #[serde(default)]
+    way: Option<Way>,
     /// The countdown, in seconds; 0 (the default) is none.
     #[serde(default)]
     delay: u64,
@@ -147,7 +208,7 @@ impl UnlockDelay {
         kept.requested = Some(at);
         // Not being able to write it down only costs the countdown a restart: it never stops one
         // from starting, as this is the way out.
-        if let Err(why) = self.write(&Kept { delay: kept.delay, requested: Some(at) }) {
+        if let Err(why) = self.write(&kept) {
             eprintln!("unlock: {why}");
         }
         Ok(())
@@ -157,7 +218,7 @@ impl UnlockDelay {
     pub fn abort(&self) -> Result<(), String> {
         let mut kept = self.kept.locked();
         kept.requested = None;
-        if let Err(why) = self.write(&Kept { delay: kept.delay, requested: None }) {
+        if let Err(why) = self.write(&kept) {
             eprintln!("unlock: {why}");
         }
         Ok(())
@@ -183,8 +244,27 @@ impl UnlockDelay {
             return Err("A shorter delay needs unlocking to be ready: request unlock, and wait for the countdown".into());
         }
         let mut kept = self.kept.locked();
-        self.write(&Kept { delay: seconds, requested: kept.requested })?;
-        kept.delay = seconds;
+        let next = Kept { delay: seconds, ..kept.clone() };
+        self.write(&next)?;
+        *kept = next;
+        Ok(())
+    }
+
+    /// The other way to unlock, if one is set.
+    pub fn way(&self) -> Option<Way> {
+        self.kept.locked().way.clone()
+    }
+
+    /// Sets the other way (`None` removes it: always free). Setting one makes unlocking easier, so,
+    /// unless `idle` (no block is locked, so nothing is got around), it needs unlocking to be ready.
+    pub fn set_way(&self, way: Option<Way>, now: SystemTime, idle: bool) -> Result<(), String> {
+        if way.is_some() && !idle && self.remaining(now) != Some(0) {
+            return Err("Another way to unlock needs unlocking to be ready: request unlock and wait for the countdown, or set it while nothing is locked".into());
+        }
+        let mut kept = self.kept.locked();
+        let next = Kept { way, ..kept.clone() };
+        self.write(&next)?;
+        *kept = next;
         Ok(())
     }
 
@@ -401,7 +481,8 @@ mod tests {
         // The delay cannot be saved, and is not taken as set...
         assert!(unlock.set_delay(60, after(0)).is_err());
         // ...but a countdown that is already set runs in memory without a disk.
-        let fine = UnlockDelay { kept: Mutex::new(Kept { delay: 60, requested: None }), path: Some(blocker.join("unlock.json")) };
+        let fine =
+            UnlockDelay { kept: Mutex::new(Kept { delay: 60, requested: None, way: None }), path: Some(blocker.join("unlock.json")) };
         fine.request(after(0)).unwrap();
         assert_eq!(fine.remaining(after(0)), Some(60));
         assert_eq!(fine.remaining(after(60)), Some(0));

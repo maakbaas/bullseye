@@ -28,6 +28,8 @@ window.STRINGS = {
 
   common: {
     cancel: "Cancel",
+    // The button of a list page: short, so it fits at any width.
+    new: "New",
     save: "Save",
     delete: "Delete",
     edit: "Edit",
@@ -59,6 +61,8 @@ window.STRINGS = {
     title: "Blocks",
     noun: "block",
     description: "Block lists under a condition and a lock. Blocks start and run independently",
+    // A new one is named by the first free number.
+    autoName: "Block {n}",
     newLabel: "New block",
     editTitle: "Edit block",
     emptyTitle: "No blocks yet",
@@ -99,6 +103,9 @@ window.STRINGS = {
       unknownLock: "Unknown lock",
       lockedPassword: "Locked with a password",
       lockedText: "Locked until its text is typed",
+      lockedDelay: "Locked, stopping takes {delay}",
+      delayWait: "Can be stopped in {left}",
+      delayReady: "Ready to stop",
       lockedRestart: "Locked until Windows restarts",
       lockedFor: "Locked for the next {left}",
       notLocked: "No active lock",
@@ -124,6 +131,10 @@ window.STRINGS = {
     },
     start: "Start",
     stop: "Stop",
+    requestStop: "Request stop",
+    abortStop: "Keep locked",
+    // Once the wait is over there is nothing left to keep: it locks again.
+    relock: "Lock again",
     lockLabel: "Lock",
     // In a block's ⋮ menu: its lock's settings.
     lockSettings: "Lock settings",
@@ -216,6 +227,16 @@ window.STRINGS = {
       driveDetail: " (while {drive} is unplugged)",
       confirmAction: "Start locked",
     },
+    delay: {
+      label: "Delay",
+      field: "Time to wait before stopping",
+      placeholder: "e.g. 30m",
+      helper: "Stopping is asked for, counts down this long and can be aborted. At most 24 hours",
+      describe: "Locks until stopping has waited {delay}",
+      confirmHeading: "Start {name} locked by a delay?",
+      confirmBody: "Stopping takes {delay} after asking for it, or unlocking in Settings",
+      confirmAction: "Start locked",
+    },
     text: {
       label: "Custom text",
       field: "Text to type",
@@ -246,12 +267,13 @@ window.STRINGS = {
   lists: {
     title: "Block lists",
     noun: "block list",
-    description: "What to block: sites, programs and apps. Blocks can share a list",
+    description: "What to block: sites, programs and apps. Several blocks can share a list",
+    autoName: "Block list {n}",
     newLabel: "New block list",
     editTitle: "Edit block list",
     emptyTitle: "No block lists yet",
     emptyText: "Add sites, programs or apps to close, and how to close them",
-    editorDescription: "Running blocks follow changes made here",
+    editorDescription: "Running blocks follow changes made here; a locked one only accepts stricter ones",
     // {names}: the locked blocks that use it, quoted.
     limited: "{names} uses it and is locked. You can add blocked entries, remove allowed sites and turn enforcers on, nothing else. It cannot be deleted",
     namePlaceholder: "e.g. Social media",
@@ -335,12 +357,13 @@ window.STRINGS = {
   conditions: {
     title: "Conditions",
     noun: "condition",
-    description: "When a block is active: a weekly schedule, an unplugged flash drive or a combination. No condition means always active",
+    description: "When a block is active: a schedule, an unplugged drive or a combination",
+    autoName: "Condition {n}",
     newLabel: "New condition",
     editTitle: "Edit condition",
     emptyTitle: "No conditions yet",
     emptyText: "Blocks without a condition are always active. Add one such as work hours",
-    editorDescription: "Running blocks follow changes made here",
+    editorDescription: "Running blocks follow changes made here; a locked one only accepts stricter ones",
     // {names}: the locked blocks that use it, quoted.
     held: "{names} uses it and is locked. A drive cannot change. It cannot be deleted",
     limited: "{names} uses it and is locked. A schedule can only gain times, a drive cannot change and a combination can only get more active. It cannot be deleted",
@@ -410,19 +433,43 @@ window.STRINGS = {
 
   settings: {
     title: "Settings",
+    description: "Unlocking, the unlock delay, and moving everything to another computer",
     unlockTitle: "Unlock",
-    unlockText: "Ends every running block, locked ones too. Blocks, block lists and conditions stay. The only way to end a locked block early. Request it, wait for the countdown, then unlock. Abort keeps everything locked",
+    unlockText: "Ends every running block, locked ones too. Blocks, block lists and conditions stay. The only way to end a locked block early. Request it, wait for the countdown, then unlock. Keep locked cancels it and keeps everything locked; once it is ready the button reads Lock again",
     // No delay set: the state of a clean install.
     unlockFree: "Ends every running block, locked ones too. Blocks, block lists and conditions stay. Free right now: set an unlock delay below for a countdown",
     // {delay}: how long it takes; {left}: the time left, in words.
     unlockAsk: "Unlocking takes {delay}. Request it to start the countdown",
-    unlockWait: "Unlock ready in {left}. Abort to stay locked",
-    unlockReady: "Unlock ready. Unlock now or abort to stay locked",
+    unlockWait: "Unlock ready in {left}. Keep locked to cancel it",
+    unlockReady: "Unlock ready. Unlock now or lock again",
     unlockNothing: "Nothing is locked",
+    // The other way to unlock lets go: no countdown needed.
+    unlockReadyWay: "Unlock ready: the other way to unlock is open. Unlock now",
+    // The other way to unlock, besides the delay. Its fields are the lock methods' own, worded for unlocking.
+    way: {
+      title: "Another way to unlock",
+      text: "Besides the delay, which is always there. Unlocking is ready when the delay is over or this way lets go, one is enough. Setting one needs unlocking to be ready, or nothing to be locked",
+      heading: "{method} to unlock",
+      saved: "Saved",
+      removed: "Only the delay unlocks now",
+      failed: "Could not set the way to unlock",
+      noConditions: "Make a condition first: this way is locked while a condition is active",
+      stateNone: "Only the delay unlocks",
+      stateText: "Typing the text unlocks at once",
+      statePassword: "The password unlocks at once",
+      stateOpen: "Open now: its condition is not active, so unlocking needs no wait",
+      stateCondition: "Locked while its condition is active",
+      answerText: "Unlock with text",
+      answerPassword: "Unlock with password",
+      answerHeading: "Unlock?",
+      answerBody: "Enter the password to end every running block now",
+      answerTextBody: "Type the text above exactly. Pasting is blocked",
+    },
     unlock: "Unlock",
     request: "Request unlock",
-    abort: "Abort",
-    aborted: "Aborted, everything stays locked",
+    abort: "Keep locked",
+    relock: "Lock again",
+    aborted: "Everything stays locked",
     confirmHeading: "End every running block?",
     confirmBody: "Locked blocks end too. Blocks, block lists and conditions stay",
     failed: "Not unlocked",
@@ -438,7 +485,7 @@ window.STRINGS = {
     delayFree: "Unlocking is free",
     delayFailed: "Delay not changed",
     transferTitle: "Move to another computer",
-    transferText: "Export saves all block lists, conditions and blocks to a file. Import replaces all of them with the file's contents. Password locks are left out and import without a lock",
+    transferText: "Export saves all block lists, conditions and blocks to a file. Import replaces all of them with the file's contents. Password locks go with their hash, so keep the file private",
     export: "Export",
     import: "Import",
     // {file}: the file's name.
@@ -452,8 +499,8 @@ window.STRINGS = {
     importBlocks: { one: "{n} block", other: "{n} blocks" },
     // {names}: the blocks, quoted; {n}: how many.
     importUnlocked: {
-      one: "{names} had a password lock and imports without a lock",
-      other: "{names} had password locks and import without a lock",
+      one: "{names} has a password lock without its hash in the file and imports without a lock",
+      other: "{names} have password locks without their hash in the file and import without a lock",
     },
     // Said too when a block runs without being locked: it ends.
     importStops: "Running blocks without a lock are stopped",

@@ -22,6 +22,7 @@ As in the window, which has a page for each:
   - `until`: the same, until a date and time (local time, read when the block starts).
   - `until restart`: locked until Windows restarts, and it ends then. A shut down with Fast Startup on is not a restart.
   - `condition`: locked while a condition of its choosing is active. Otherwise it can be stopped; it runs until stopped. With the block's own condition, it is locked exactly while the block is active. With a flash drive condition the drive is the key: the block can only be stopped while the drive is plugged in.
+  - `delay`: locked behind a wait, like unlocking. `stop` asks for it and starts the countdown, `stop --abort` ends the wait, and once it is over `stop` stops the block.
   - `text`: locked until a text of your own is typed in exactly. To stop the block, the window shows the text above an input that refuses pasting (and dropping text into it), and only an exact match stops it; the service compares them again. The CLI cannot stop such a block (a terminal cannot refuse a paste), so it says to use the window.
   - `password`: locked with a password, for someone else to set. It runs until stopped with that password (or by unlocking). Only a salted hash of it is kept, and it is never shown again.
 
@@ -40,7 +41,7 @@ A running block keeps what it was started with: while it runs, it cannot be chan
 | `bullseye-cli delete <block> [--yes]` | **Delete** (asks first, unless `--yes`) |
 | `bullseye-cli duplicate <block>` | **Duplicate** |
 | `bullseye-cli start <block> [lock option] [--yes]` | the lock on the block's tile, then **Start** (a locked block asks first, unless `--yes`) |
-| `bullseye-cli stop <block> [--password <pw>]` | **Stop** (a block locked with a password asks for it, as the window does) |
+| `bullseye-cli stop <block> [--password <pw>] [--abort]` | **Stop** (a block locked with a password asks for it, as the window does; one locked with a delay is asked to stop first, `--abort` ends the wait) |
 | `bullseye-cli list show <list> [--json]` | a block list's tile and its editor |
 | `bullseye-cli list apps [--json]` | the installed Store apps the editor offers to tick, by name and package family name |
 | `bullseye-cli list new <name> [options]` | **New block list**, then **Save** |
@@ -56,7 +57,8 @@ A running block keeps what it was started with: while it runs, it cannot be chan
 | `bullseye-cli export <file>` | **Export** in Settings |
 | `bullseye-cli import <file> [--yes]` | **Import** in Settings |
 | `bullseye-cli drives [--json]` | the flash drives the **Flash drive** type of a condition offers, by name and serial number |
-| `bullseye-cli unlock [--abort]` | **Request unlock**, **Unlock** and **Abort** in Settings |
+| `bullseye-cli unlock [--abort] [--password <pw>]` | **Request unlock**, **Unlock** and **Keep locked** / **Lock again** in Settings; `--password` unlocks at once with the password of the other way to unlock |
+| `bullseye-cli unlock-way [--condition <condition> \| --password <pw> \| --text <text> \| --none]` | **Another way to unlock** in Settings: show it, set it or remove it |
 | `bullseye-cli unlock-delay [<time>]` | **Unlock delay** in Settings: show it, or set it |
 | `bullseye-cli help` | |
 | `bullseye-cli version` | |
@@ -74,6 +76,7 @@ Exit codes: `0` done, `1` failed, refused or cancelled (the reason is printed), 
 | `--lock-until-restart` | Lock: until Windows restarts. | |
 | `--lock-condition <condition>` | Lock: while this condition is active. A schedule locks at its times; a flash drive locks while it is not connected. | |
 | `--lock-password <pw>` | Lock: with this password. Only a hash of it is kept. | |
+| `--lock-delay <time>` | Lock: stopping is asked for with `stop`, counts down this long (at most 24 hours) and can be aborted with `stop --abort`; when it is over, `stop` stops the block. Like unlocking. | |
 | `--lock-text <text>` | Lock: until this text is typed in exactly. The window shows it above an input that cannot be pasted into; that is the only place to stop such a block (or by unlocking). The text is no secret: anyone who can see the block sees it. | |
 | `--no-lock` | Not locked. | yes |
 | `--name <name>` | (`edit` only) A new name. | |
@@ -152,7 +155,7 @@ Make a copy, as **Duplicate** in a tile's menu does: named after the original wi
 
 ### `export`, `import`
 
-To move to another computer: `export <file>` writes every block list, condition and block to a settings file (JSON), the same file the window's **Export** saves. `import <file>` replaces all of them with what is in such a file, after asking (or with `--yes`); it is refused while any block runs. A password lock is not in the file, so a block that has one comes without a lock: the question names them. The unlock delay is a setting of Bullseye itself, not of the file.
+To move to another computer: `export <file>` writes every block list, condition and block to a settings file (JSON), the same file the window's **Export** saves. `import <file>` replaces all of them with what is in such a file, after asking (or with `--yes`); it is refused while any block runs. A password lock is in the file with its hash (never the password), so keep the file private; a block whose file has no hash comes without a lock, and the question names them. The unlock delay is a setting of Bullseye itself, not of the file.
 
 ```powershell
 bullseye-cli export D:\bullseye.json
@@ -180,6 +183,17 @@ Shows how long unlocking takes, or sets it: `0` (none, the default) to `24h`, ty
 bullseye-cli unlock-delay
 bullseye-cli unlock-delay 2h
 bullseye-cli unlock-delay 0
+```
+
+### The other way to unlock
+
+Besides the delay, which is always there, one other way to unlock can be set (`unlock-way`), chosen like a block's lock but only a condition, a custom text or a password: unlocking is ready when the delay is over **or** this way lets go, one is enough. `--condition <condition>` is locked while the condition is active (as a block's lock) and open when it is not, `--text <text>` opens when the text is typed in (in the window: a terminal cannot refuse a paste) and `--password <pw>` with the password (`unlock --password`, asked for when not given; only a salted hash is kept). `--none` removes it. Setting one makes unlocking easier, so it needs unlocking to be ready, or no block to be locked; removing it is always free.
+
+```
+bullseye-cli unlock-way
+bullseye-cli unlock-way --password secret
+bullseye-cli unlock-way --condition "Work hours"
+bullseye-cli unlock-way --none
 ```
 
 ### `condition check`

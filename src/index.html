@@ -1,5 +1,6 @@
 <!doctype html>
-<html lang="en" class="cds--g10">
+<!-- spellcheck off for the whole page: names, domains and exe names are not words, and red underlines are noise. It is inherited by every field, also inside the web components. -->
+<html lang="en" class="cds--g10" spellcheck="false">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -28,34 +29,56 @@
   </head>
   <body>
     <!-- Texts: data-t is an element's text, data-t-<attribute> an attribute's (`applyStrings`). -->
-    <cds-header data-t-aria-label="app.name">
-      <cds-header-name href="#/" prefix="" data-t="app.name"></cds-header-name>
-    </cds-header>
-
-    <main>
-      <!-- The pages, as tabs with an icon before the label (`markPage`, `PAGES`). An editor belongs
-           to its kind's tab. -->
+    <!-- The fixed section, always in sight: the page's heading (its breadcrumb, title and description,
+         one per view: `showView`) and the pages as contained tabs with an
+         icon before the label (`markPage`, `PAGES`; an editor belongs to its kind's tab). What
+         scrolls is the content below them. -->
+    <div class="pinned">
       <div class="cds--css-grid">
         <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
-          <cds-tabs id="pages" data-t-aria-label="nav.label">
-            <cds-tab value="blocks" data-icon="locked"><span class="label" data-t="nav.blocks"></span></cds-tab>
-            <cds-tab value="lists" data-icon="list-checked-16"><span class="label" data-t="nav.lists"></span></cds-tab>
-            <cds-tab value="conditions" data-icon="rule-16"><span class="label" data-t="nav.conditions"></span></cds-tab>
-            <cds-tab value="settings" data-icon="settings"><span class="label" data-t="nav.settings"></span></cds-tab>
-          </cds-tabs>
+          <!-- Filled by `openEditor`: the page, then a block being made, then what is made for it. Other
+               pages have just themselves in it (`showView`). -->
+          <cds-breadcrumb class="trail" id="trail" no-trailing-slash></cds-breadcrumb>
+          <div id="head-list" class="heading" hidden>
+            <div class="page-header">
+              <h1 class="cds--type-productive-heading-05" id="list-title"></h1>
+              <cds-button id="new-item" kind="primary" size="md"></cds-button>
+            </div>
+            <p class="cds--type-body-01 tagline" id="list-description"></p>
+          </div>
+          <div id="head-editor" class="heading" hidden>
+            <div class="page-header">
+              <h1 class="cds--type-productive-heading-05" id="editor-title"></h1>
+            </div>
+            <p class="cds--type-body-01 tagline" id="editor-description"></p>
+          </div>
+          <div id="head-settings" class="heading" hidden>
+            <div class="page-header">
+              <h1 class="cds--type-productive-heading-05" data-t="settings.title"></h1>
+            </div>
+            <p class="cds--type-body-01 tagline" data-t="settings.description"></p>
+          </div>
         </div>
       </div>
+      <!-- Full width, with a subtle line above and below (`.tabbar`). -->
+      <div class="tabbar">
+        <div class="cds--css-grid">
+          <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
+              <cds-tabs id="pages" data-t-aria-label="nav.label">
+                <cds-tab value="blocks" data-icon="locked"><span class="label" data-t="nav.blocks"></span></cds-tab>
+                <cds-tab value="lists" data-icon="list-checked-16"><span class="label" data-t="nav.lists"></span></cds-tab>
+                <cds-tab value="conditions" data-icon="rule-16"><span class="label" data-t="nav.conditions"></span></cds-tab>
+                <cds-tab value="settings" data-icon="settings"><span class="label" data-t="nav.settings"></span></cds-tab>
+              </cds-tabs>
+          </div>
+        </div>
+      </div>
+    </div>
 
+    <main>
       <!-- One page per kind (blocks, block lists, conditions): a tile each. Built from KINDS. -->
       <div id="view-list" class="cds--css-grid" hidden>
         <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
-          <div class="page-header">
-            <div>
-              <h1 class="cds--type-productive-heading-05" id="list-title"></h1>
-              <p class="cds--type-body-01" id="list-description"></p>
-            </div>
-            <cds-button id="new-item" kind="primary" size="md"></cds-button>
-          </div>
           <div class="notices" id="list-notices"></div>
         </div>
         <div id="tiles"></div>
@@ -68,14 +91,6 @@
       <!-- Making or changing a block, a block list or a condition: the kind's form goes in #form. -->
       <div id="view-editor" class="cds--css-grid" hidden>
         <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
-          <!-- Filled by `openEditor`: the page, then a block being made, then what is made for it. -->
-          <cds-breadcrumb class="trail" id="trail" no-trailing-slash></cds-breadcrumb>
-          <div class="page-header">
-            <div>
-              <h1 class="cds--type-productive-heading-05" id="editor-title"></h1>
-              <p class="cds--type-body-01" id="editor-description"></p>
-            </div>
-          </div>
           <div class="notices" id="editor-notices"></div>
           <div class="form">
             <div id="form" class="form"></div>
@@ -93,9 +108,6 @@
       <!-- Settings: unlocking, kept apart from the blocks. -->
       <div id="view-settings" class="cds--css-grid" hidden>
         <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
-          <div class="page-header">
-            <h1 class="cds--type-productive-heading-05" data-t="settings.title"></h1>
-          </div>
           <div class="setting">
             <h2 class="cds--type-productive-heading-03" data-t="settings.unlockTitle"></h2>
             <p class="cds--type-body-01" id="unlock-text"></p>
@@ -103,6 +115,7 @@
             <p class="cds--type-body-01" id="unlock-state"></p>
             <div class="row">
               <cds-button id="unlock" kind="danger" size="md"></cds-button>
+              <cds-button id="unlock-answer" kind="tertiary" size="md" hidden></cds-button>
               <cds-button id="abort-unlock" kind="tertiary" size="md" data-t="settings.abort"></cds-button>
             </div>
           </div>
@@ -115,6 +128,14 @@
               <cds-text-input id="delay" data-t-label="settings.delayLabel" data-t-placeholder="settings.delayPlaceholder"></cds-text-input>
               <cds-button id="set-delay" kind="tertiary" size="md" data-t="settings.setDelay"></cds-button>
             </div>
+          </div>
+          <!-- One other way to unlock besides the delay (which is always there): either is enough. -->
+          <div class="setting">
+            <h2 class="cds--type-productive-heading-03" data-t="settings.way.title"></h2>
+            <p class="cds--type-body-01" data-t="settings.way.text"></p>
+            <div class="notices" id="way-notices"></div>
+            <div class="row" id="way-controls"></div>
+            <p class="cds--type-body-01" id="way-state"></p>
           </div>
           <!-- Everything defined, to a file and back: to move to another computer. -->
           <div class="setting">

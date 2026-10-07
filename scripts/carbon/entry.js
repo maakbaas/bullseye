@@ -30,6 +30,8 @@ import '@carbon/web-components/es/components/textarea/textarea.js';
 import '@carbon/web-components/es/components/password-input/password-input.js';
 import '@carbon/web-components/es/components/checkbox/checkbox.js';
 import '@carbon/web-components/es/components/checkbox/checkbox-group.js';
+import '@carbon/web-components/es/components/dropdown/dropdown.js';
+import '@carbon/web-components/es/components/dropdown/dropdown-item.js';
 import '@carbon/web-components/es/components/select/select.js';
 import '@carbon/web-components/es/components/select/select-item.js';
 // The until lock's end: a date and a time of day.
@@ -50,6 +52,8 @@ import '@carbon/web-components/es/components/inline-loading/inline-loading.js';
 // Carbon icons, as `carbonIcon(name)`: an <svg> element, 16 px unless another size is given.
 import { toSVG } from '@carbon/icon-helpers';
 import add16 from '@carbon/icons/es/add/16.js';
+import checkmark16 from '@carbon/icons/es/checkmark/16.js';
+import close16 from '@carbon/icons/es/close/16.js';
 import calendar16 from '@carbon/icons/es/calendar/16.js';
 import edit16 from '@carbon/icons/es/edit/16.js';
 import documentExport16 from '@carbon/icons/es/document--export/16.js';
@@ -58,6 +62,7 @@ import locked16 from '@carbon/icons/es/locked/16.js';
 import overflowMenuVertical16 from '@carbon/icons/es/overflow-menu--vertical/16.js';
 import play16 from '@carbon/icons/es/play/16.js';
 import plug16 from '@carbon/icons/es/plug/16.js';
+import renew16 from '@carbon/icons/es/renew/16.js';
 import rule16 from '@carbon/icons/es/rule/16.js';
 import listChecked16 from '@carbon/icons/es/list--checked/16.js';
 import settings16 from '@carbon/icons/es/settings/16.js';
@@ -73,6 +78,10 @@ const icons = {
   // Export and Import in Settings.
   // Edit, beside a block's block lists and schedule.
   edit: edit16,
+  // Buttons: Save and the dialog's confirm, Cancel, and Scan again.
+  checkmark: checkmark16,
+  close: close16,
+  renew: renew16,
   'document-export': documentExport16,
   'document-import': documentImport16,
   'list-checked-16': listChecked16,

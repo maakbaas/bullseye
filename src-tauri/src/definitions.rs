@@ -247,7 +247,7 @@ impl Library {
 
     /// A condition's rule, checked; a combination with copies of the rules of its conditions, as
     /// a running block holds it.
-    fn rule_of(&self, id: &str) -> Result<Rule, String> {
+    pub fn rule_of(&self, id: &str) -> Result<Rule, String> {
         let rule = self.condition(id).ok_or("A condition of this block is gone")?.rule.clone().checked()?;
         let Rule::Combined { mode, members, .. } = rule else { return Ok(rule) };
         let rules = members
@@ -544,10 +544,20 @@ impl Definitions {
         library.check_combinations()?;
         for block in &mut library.blocks {
             block.name = block.name.trim().to_string();
-            if matches!(block.lock, Lock::Password { .. }) {
-                block.lock = Lock::None;
+            // A password lock comes with its hash from the file, never a password; without a hash it
+            // is no lock.
+            if let Lock::Password { password, hash } = &mut block.lock {
+                *password = None;
+                if hash.is_none() {
+                    block.lock = Lock::None;
+                }
             }
-            block.kept_locks.retain(|lock| !matches!(lock, Lock::Password { .. }));
+            block.kept_locks.retain(|lock| !matches!(lock, Lock::Password { hash: None, .. }));
+            for lock in &mut block.kept_locks {
+                if let Lock::Password { password, .. } = lock {
+                    *password = None;
+                }
+            }
         }
         for block in &library.blocks {
             library.check_block(block)?;
@@ -642,8 +652,8 @@ impl Library {
 const SETTINGS_VERSION: u32 = 1;
 
 /// The file Export writes and Import reads, to move everything the user defined to another
-/// computer: the library with a version. Password locks are in it without their hash: a password
-/// lock is for someone else to set, and a hash in a file the user has could be guessed at offline.
+/// computer: the library with a version. Password locks are in it with their hash (never the password;
+/// a short password could be guessed at from the hash offline, by whoever has the file).
 #[derive(Serialize, Deserialize)]
 struct SettingsFile {
     bullseye_settings: u32,
@@ -657,14 +667,14 @@ pub struct Contents {
     pub lists: usize,
     pub conditions: usize,
     pub blocks: usize,
-    /// Blocks with a password lock, which come without a lock (the file has no password).
+    /// Blocks with a password lock but no hash in the file, which come without a lock.
     pub unlocked: Vec<String>,
 }
 
 impl Library {
     /// The settings file of this library (`SettingsFile`).
     pub fn settings_text(self) -> Result<String, String> {
-        let file = SettingsFile { bullseye_settings: SETTINGS_VERSION, library: self.redacted() };
+        let file = SettingsFile { bullseye_settings: SETTINGS_VERSION, library: self };
         serde_json::to_string_pretty(&file).map_err(|e| e.to_string())
     }
 
@@ -685,7 +695,7 @@ impl Library {
             lists: self.lists.len(),
             conditions: self.conditions.len(),
             blocks: self.blocks.len(),
-            unlocked: self.blocks.iter().filter(|b| matches!(b.lock, Lock::Password { .. })).map(|b| b.name.clone()).collect(),
+            unlocked: self.blocks.iter().filter(|b| matches!(b.lock, Lock::Password { hash: None, .. })).map(|b| b.name.clone()).collect(),
         }
     }
 }
@@ -954,7 +964,7 @@ pub mod tests {
     }
 
     #[test]
-    fn everything_moves_through_a_settings_file_but_passwords() {
+    fn everything_moves_through_a_settings_file_password_hashes_too() {
         let here = Definitions::at(Some(path("export")));
         here.save_list(block_list("l", &["a.com"])).unwrap();
         here.save_condition(weekly("s", "Mon 08:00-09:00")).unwrap();
@@ -965,9 +975,9 @@ pub mod tests {
 
         let text = here.library().settings_text().unwrap();
         let hash = here.library().block("p").unwrap().lock.password_hash().unwrap().to_string();
-        assert!(!text.contains(&hash) && !text.contains("secret"), "{text}");
+        assert!(text.contains(&hash) && !text.contains("secret"), "{text}");
         let read = Library::from_settings_text(&text).unwrap();
-        assert_eq!(read.contents(), Contents { lists: 1, conditions: 1, blocks: 2, unlocked: vec!["Block p".into()] });
+        assert_eq!(read.contents(), Contents { lists: 1, conditions: 1, blocks: 2, unlocked: vec![] });
 
         let there = Definitions::at(Some(path("import")));
         there.save_list(block_list("other", &["b.com"])).unwrap();
@@ -975,9 +985,8 @@ pub mod tests {
         let library = there.library();
         assert!(library.list("other").is_none(), "replaced, not added to");
         assert_eq!(library.block("b").unwrap().lock, Lock::Duration { duration: "1h".into() });
-        // A password lock comes as no lock, and a kept password is not kept.
-        assert_eq!(library.block("p").unwrap().lock, Lock::None);
-        assert!(library.block("b").unwrap().kept_locks.is_empty());
+        // A password lock comes with its hash, so the same password stops it there.
+        assert!(unlock::check_hash("secret", library.block("p").unwrap().lock.password_hash().unwrap()));
         assert_eq!(library.condition("s").unwrap().rule, here.library().condition("s").unwrap().rule);
     }
 

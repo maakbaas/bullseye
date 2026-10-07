@@ -174,6 +174,8 @@ pub enum StartLock {
     /// While this condition is active (`condition.rs`).
     Condition(Rule),
     UntilRestart,
+    /// Until stopping has been asked for and waited out, this long (`Lock::Delay`).
+    Delay(Duration),
     /// Until this text is typed in (`Lock::Text`).
     Text(String),
     /// Until stopped with the password of this hash (`unlock::new_hash`).
@@ -199,6 +201,13 @@ pub enum RunLock {
     /// started in (`boot::id`).
     UntilRestart {
         boot: String,
+    },
+    /// Stopped by asking to and waiting `delay` seconds, on internet time: `asked` is when it was
+    /// asked for (milliseconds since the Unix epoch), `None` while it is not.
+    Delay {
+        delay: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        asked: Option<u64>,
     },
     /// Stopped only by typing `text` in exactly.
     Text {
@@ -269,6 +278,22 @@ impl Block {
         self.lock_rule()?.next_change(&self.zone, now)
     }
 
+    /// How long a delay lock makes stopping take, in seconds.
+    fn stop_delay(&self) -> Option<u64> {
+        match self.lock {
+            RunLock::Delay { delay, .. } => Some(delay),
+            _ => None,
+        }
+    }
+
+    /// Seconds until a delay lock can be stopped: `None` when it was not asked for, `Some(0)` when it
+    /// can be stopped now.
+    fn stop_remaining(&self, now: SystemTime) -> Option<u64> {
+        let RunLock::Delay { delay, asked: Some(asked) } = self.lock else { return None };
+        let ready = asked.saturating_add(delay.saturating_mul(1000));
+        Some(ready.saturating_sub(state::to_unix(now)?).div_ceil(1000))
+    }
+
     /// The text a text lock asks to be typed.
     fn lock_text(&self) -> Option<&str> {
         match &self.lock {
@@ -302,6 +327,11 @@ impl Block {
                 }
             }),
             RunLock::UntilRestart { .. } => Some(format!("“{name}” is locked until Windows restarts")),
+            RunLock::Delay { delay, .. } => match self.stop_remaining(now) {
+                Some(0) => None,
+                Some(left) => Some(format!("“{name}” can be stopped in {}", duration::countdown(left))),
+                None => Some(format!("“{name}” is locked: asking to stop it starts a wait of {}", duration::countdown(*delay))),
+            },
             RunLock::Text { .. } => Some(format!("“{name}” is locked until its text is typed in")),
             RunLock::Password { .. } => Some(format!("“{name}” is locked with a password")),
         }
@@ -332,6 +362,14 @@ pub struct Running {
     pub until_restart: bool,
     /// Locked until this text is typed in (`Lock::Text`): shown by the window when it asks.
     pub lock_text: Option<String>,
+    /// Locked behind a wait before it can be stopped (`Lock::Delay`): how long it takes, in seconds
+    /// and in words.
+    pub stop_delay: Option<u64>,
+    pub stop_delay_words: Option<String>,
+    /// Seconds until it can be stopped, once asked for: `None` while not asked for, `Some(0)` when
+    /// it can be stopped now; and in words.
+    pub stop_remaining: Option<u64>,
+    pub stop_remaining_words: Option<String>,
     /// Locked with a password: stopped only with it (`Lock::Password`).
     pub password: bool,
     /// Whether it cannot be stopped right now (without its password, for a password lock).
@@ -404,6 +442,7 @@ impl Blocklist {
             StartLock::UntilRestart => {
                 RunLock::UntilRestart { boot: self.boot().ok_or("Cannot tell when Windows restarts, so this lock cannot be used")? }
             }
+            StartLock::Delay(wait) => RunLock::Delay { delay: wait.as_secs(), asked: None },
             StartLock::Text(text) => RunLock::Text { text },
             StartLock::Password(hash) => RunLock::Password { hash },
         };
@@ -447,6 +486,35 @@ impl Blocklist {
             }
         }
         inner.blocks.remove(at);
+        self.save_all(&mut inner);
+        Ok(())
+    }
+
+    /// Starts the wait of a block locked with a delay; asking again keeps the wait that runs.
+    pub fn ask_to_stop(&self, id: &str) -> Result<(), String> {
+        let mut inner = self.inner.locked();
+        self.expire(&mut inner);
+        let now = state::to_unix(self.clock.now()).ok_or("Cannot tell the time")?;
+        let block = inner.blocks.iter_mut().find(|b| b.id == id).ok_or("This block is not running")?;
+        match &mut block.lock {
+            RunLock::Delay { asked, .. } => {
+                asked.get_or_insert(now);
+            }
+            _ => return Err("This block is not locked with a delay".into()),
+        }
+        self.save_all(&mut inner);
+        Ok(())
+    }
+
+    /// Ends that wait, also when it is over: locked again.
+    pub fn abort_stop(&self, id: &str) -> Result<(), String> {
+        let mut inner = self.inner.locked();
+        self.expire(&mut inner);
+        let block = inner.blocks.iter_mut().find(|b| b.id == id).ok_or("This block is not running")?;
+        match &mut block.lock {
+            RunLock::Delay { asked, .. } => *asked = None,
+            _ => return Err("This block is not locked with a delay".into()),
+        }
         self.save_all(&mut inner);
         Ok(())
     }
@@ -614,6 +682,10 @@ impl Blocklist {
                 lock_condition: b.lock_rule().cloned(),
                 until_restart: matches!(b.lock, RunLock::UntilRestart { .. }),
                 lock_text: b.lock_text().map(str::to_string),
+                stop_delay: b.stop_delay(),
+                stop_delay_words: b.stop_delay().map(duration::countdown),
+                stop_remaining: b.stop_remaining(now),
+                stop_remaining_words: b.stop_remaining(now).map(duration::countdown),
                 password: b.password_hash().is_some(),
                 locked: b.locked(now).is_some(),
                 condition: b.condition.clone(),
@@ -764,6 +836,35 @@ mod tests {
         start(&list, "a", sites(&["a.com"]), None).unwrap();
         assert!(list.stop("a", false).is_ok());
         assert!(!list.is_running());
+    }
+
+    #[test]
+    fn a_delay_lock_is_stopped_by_asking_and_waiting() {
+        let list = blocklist("delay");
+        let begin =
+            || list.start("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, StartLock::Delay(Duration::from_secs(1)));
+        begin().unwrap();
+        assert!(list.stop("a", false).is_err(), "not asked for");
+        assert_eq!(running(&list, "a").stop_remaining, None);
+        assert!(list.ask_to_stop("a").is_ok());
+        assert!(list.stop("a", false).is_err(), "still waiting");
+        // Asking again does not restart the wait.
+        std::thread::sleep(Duration::from_millis(400));
+        list.ask_to_stop("a").unwrap();
+        assert!(running(&list, "a").stop_remaining.is_some_and(|s| s <= 1));
+        // Aborting locks it again.
+        list.abort_stop("a").unwrap();
+        assert!(list.stop("a", false).is_err());
+        list.ask_to_stop("a").unwrap();
+        std::thread::sleep(Duration::from_millis(1100));
+        assert_eq!(running(&list, "a").stop_remaining, Some(0));
+        assert!(!running(&list, "a").locked);
+        assert!(list.locked().is_none());
+        assert!(list.stop("a", false).is_ok());
+        // Only a delay lock can be asked.
+        start(&list, "b", sites(&["b.com"]), None).unwrap();
+        assert!(list.ask_to_stop("b").is_err() && list.abort_stop("b").is_err());
+        assert!(list.ask_to_stop("gone").is_err());
     }
 
     #[test]
