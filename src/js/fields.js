@@ -103,7 +103,7 @@ function renderRows(parts, session, lines) {
 }
 
 // What a row's menu holds: the targets, each ticked or not (a choice ticks or unticks it, saved at
-// once); or one condition, allowance or lock method to choose, the one it has ticked; and at the
+// once, the menu staying open for the next); or one condition, allowance or lock method to choose, the one it has ticked; and at the
 // end, making a new target or condition, or the settings of the allowance or lock it has. Carbon's
 // overflow menu items are actions, so the tick is a checkmark in front of the name; the others keep
 // its room, so the names line up.
@@ -112,12 +112,14 @@ function fillMenu(parts, id, key, body) {
   const item = (text, act, mark = false, icon = null) => {
     const node = el(
       "cds-overflow-menu-item",
-      {},
+      { title: text },
       el("span", { class: "menu-choice" }, mark ? carbonIcon("checkmark") : icon ? carbonIcon(icon) : el("span", { class: "no-mark" }), el("span", {}, text)),
     );
-    node.addEventListener("click", act);
+    node.addEventListener("click", (event) => act(event, node));
     return node;
   };
+  // A target's checkmark, or the room for one, as its item is open.
+  const mark = (node, on) => node.querySelector(".menu-choice").firstChild.replaceWith(on ? carbonIcon("checkmark") : el("span", { class: "no-mark" }));
   const choices = (options, chosen, choose) => options.map(([value, text]) => item(text, () => value !== chosen && choose(value), value === chosen));
   const end = (text, icon, act) => {
     const node = item(text, act, false, icon);
@@ -126,19 +128,27 @@ function fillMenu(parts, id, key, body) {
   };
   let items;
   if (key === "block") {
+    // What is ticked while it is open: each tick builds on the last, also before the last one's
+    // save has come back.
+    const chosen = new Set(session.targets);
     items = [
       ...overview.targets.map((target) => {
-        const on = session.targets.includes(target.id);
         return item(
           target.name,
-          () => {
+          (event, node) => {
+            // The menu stays open to tick another: the click goes no further than its item (the
+            // overflow menu closes on any click that reaches its list).
+            event.stopPropagation();
             const now = current(id);
-            const ticked = on ? now.targets.filter((t) => t !== target.id) : [...now.targets, target.id];
+            const on = chosen.has(target.id);
             // A session needs a target (the service refuses it too).
-            if (!ticked.length) return notify("list-notices", "error", t("sessions.fields.saveFailed", { name: quoted(now.name) }), t("sessions.noTargets"));
-            save(now, { targets: overview.targets.map((t) => t.id).filter((t) => ticked.includes(t)) });
+            if (on && chosen.size === 1) return notify("list-notices", "error", t("sessions.fields.saveFailed", { name: quoted(now.name) }), t("sessions.noTargets"));
+            if (on) chosen.delete(target.id);
+            else chosen.add(target.id);
+            mark(node, !on);
+            save(now, { targets: overview.targets.map((t) => t.id).filter((t) => chosen.has(t)) });
           },
-          on,
+          session.targets.includes(target.id),
         );
       }),
       end(t("sessions.fields.newTarget"), "add", () => make(id, "targets", (made) => save(current(id), { targets: [...current(id).targets, made.id] }))),
