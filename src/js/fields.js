@@ -46,13 +46,13 @@ function addRows(parts, id) {
     const label = el("span", { class: "row-label" }, t(`sessions.fields.${key}`));
     const value = el("span", { class: "row-value" });
     const now = el("span", { class: "row-now" });
-    // The row's inline action: Carbon's tab-tip popover, its edit button and the open panel one
-    // shape; the panel is filled each time it opens (`fillPanel`). Carbon's popover closes itself on
-    // Escape and on a click elsewhere, and flips above its button where there is no room below.
+    // The row's inline action: Carbon's tab-tip popover as Carbon has it, its edit button and the
+    // open panel one shape, opening downwards; the panel is filled each time it opens (`fillPanel`).
+    // Carbon's popover closes itself on Escape and on a click elsewhere.
     const what = t("sessions.fields.change", { what: t(`sessions.fields.${key}`).toLowerCase() });
-    const button = el("button", { type: "button", class: "cds--popover--tab-tip__button", "aria-label": what, title: what }, carbonIcon("edit"));
+    const button = el("button", { type: "button", "aria-label": what, title: what }, carbonIcon("edit"));
     const panel = el("cds-popover-content", {});
-    const edit = el("cds-popover", { slot: "action", tabtip: true, autoalign: true, align: "bottom-end", class: "row-action" }, button, panel);
+    const edit = el("cds-popover", { slot: "action", tabtip: true, align: "bottom-end", class: "row-action" }, button, panel);
     const close = () => (edit.open = false);
     button.addEventListener("click", async () => {
       if (!edit.open) fillPanel(parts, id, key, panel, close);
@@ -61,10 +61,6 @@ function addRows(parts, id) {
       // The focus to its first control, as a popover's content should have it (and Escape closes it
       // from there).
       await edit.updateComplete;
-      // Carbon joins a tab-tip's button to its panel below it only; where the panel went above
-      // (no room below), the button joins it at its top instead (`.up`, app.css).
-      requestAnimationFrame(() => button.classList.toggle("up", panel.firstElementChild.getBoundingClientRect().bottom <= button.getBoundingClientRect().top + 1));
-      // A clickable list item is a button inside it; it does not hand on the focus itself.
       const first = panel.querySelector("cds-checkbox, cds-contained-list-item[clickable]");
       const inner = first && first.shadowRoot && first.shadowRoot.querySelector("button");
       (inner || first)?.focus();
