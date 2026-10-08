@@ -31,12 +31,12 @@ const LISTS = Object.fromEntries(
 // when it has entries.
 const action = (key) => ({ key, label: t(`targets.actions.${key}.label`), short: window.STRINGS.targets.actions[key].short });
 const SECTIONS = [
-  { key: "websites", lists: ["filters", "allowed"], actions: [action("chromium_tabs"), action("chromium_split_view"), action("chromium_app_windows"), action("firefox_tabs"), action("firefox_split_view")] },
-  { key: "programs", lists: ["programs"], actions: [] },
-  { key: "store", lists: ["store_apps"], actions: [] },
+  { key: "websites", icon: "earth", lists: ["filters", "allowed"], actions: [action("chromium_tabs"), action("chromium_split_view"), action("chromium_app_windows"), action("firefox_tabs"), action("firefox_split_view")] },
+  { key: "programs", icon: "application", lists: ["programs"], actions: [] },
+  { key: "store", icon: "shopping-bag", lists: ["store_apps"], actions: [] },
   // Closing (`choice`, the default: off) or minimizing: radio buttons, not a checkbox.
-  { key: "titles", lists: ["titles", "allowed_titles"], choice: "close", actions: [action("window_titles_minimize")] },
-  { key: "other", lists: [], actions: [action("obsidian_web_viewer")] },
+  { key: "titles", icon: "text-font", lists: ["titles", "allowed_titles"], choice: "close", actions: [action("window_titles_minimize")] },
+  { key: "other", icon: "apps", lists: [], actions: [action("obsidian_web_viewer")] },
 ].map((section) => ({ ...section, title: t(`targets.sections.${section.key}.title`), description: window.STRINGS.targets.sections[section.key].description && t(`targets.sections.${section.key}.description`) }));
 
 const ACTIONS = SECTIONS.flatMap((section) => section.actions);

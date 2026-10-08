@@ -153,7 +153,6 @@ const usersOf = (id) => overview.sessions.filter((b) => b.targets.includes(id) |
 const driveIn = (c) => c.type === "flash_drive" || c.type === "webhook" || (c.rules || []).some(driveIn) || (c.members || []).some((id) => driveIn(overview.conditions.find((m) => m.id === id) || {}));
 const wordingOf = (c) => (c.type === "flash_drive" ? "drive" : driveIn(c) ? "true" : "during");
 // (A webhook is worded like a combination with a drive: "active since <name> is true": it has no time.)
-const holdersOf = (id) => usersOf(id).filter((b) => runningOf(b.id));
 // Those of them that cannot be stopped now: what they use can only get stricter.
 const lockedUsersOf = (id) => usersOf(id).filter((b) => runningOf(b.id) && runningOf(b.id).locked);
 
@@ -248,4 +247,4 @@ function confirmStricter(names, what) {
   return ask({ heading: t("stricter.heading", { names }), body: t("stricter.body", { names, what }), action: t("stricter.action"), kind: "primary" });
 }
 
-export { invoke, $, t, tn, ref, joined, nodesOf, editHref, quoted, names, applyStrings, el, described, weekText, allowanceLabel, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, targetName, usersOf, wordingOf, holdersOf, lockedUsersOf, invalid, errorNote, ask, dismiss, confirmStricter };
+export { invoke, $, t, tn, ref, joined, nodesOf, editHref, quoted, names, applyStrings, el, described, weekText, allowanceLabel, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, targetName, usersOf, wordingOf, lockedUsersOf, invalid, errorNote, ask, dismiss, confirmStricter };

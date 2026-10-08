@@ -80,6 +80,12 @@ import time16 from '@carbon/icons/es/time/16.js';
 import pause16 from '@carbon/icons/es/pause/16.js';
 import trashCan16 from '@carbon/icons/es/trash-can/16.js';
 import unlocked16 from '@carbon/icons/es/unlocked/16.js';
+import earth16 from '@carbon/icons/es/earth/16.js';
+import application16 from '@carbon/icons/es/application/16.js';
+import shoppingBag16 from '@carbon/icons/es/shopping--bag/16.js';
+import textFont16 from '@carbon/icons/es/text--font/16.js';
+import apps16 from '@carbon/icons/es/apps/16.js';
+import webhook16 from '@carbon/icons/es/webhook/16.js';
 
 const icons = {
   add: add16,
@@ -111,6 +117,14 @@ const icons = {
   'pause-16': pause16,
   'trash-can': trashCan16,
   unlocked: unlocked16,
+  // A target tile's rows, one per part of the target editor.
+  earth: earth16,
+  application: application16,
+  'shopping-bag': shoppingBag16,
+  'text-font': textFont16,
+  apps: apps16,
+  // A webhook condition's row on its tile.
+  webhook: webhook16,
 };
 
 window.carbonIcon = (name, slot) => {

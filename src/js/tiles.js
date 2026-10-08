@@ -1,85 +1,69 @@
 // A page of tiles, one per session, target or condition: kept and updated in place, so an open menu
 // survives a refresh. A session's tile also has its lock and Start / Stop. Deleting is asked here.
 
-import { $, allowanceLabel, ask, confirmStricter, el, invalid, invoke, joined, targetName, newId, editHref, nodesOf, notify, overview, quoted, reachable, ref, refresh, runningOf, conditionOf, t, tn, usersOf, weekText, wordingOf } from "./core.js";
-import { LOCKS, conditionLockText } from "./locks.js";
-import { ACTIONS, LISTS, SECTIONS } from "./forms.js";
+import { $, ask, confirmStricter, el, invalid, invoke, joined, targetName, newId, editHref, nodesOf, notify, overview, quoted, reachable, ref, refresh, runningOf, conditionOf, t, tn, usersOf, weekText } from "./core.js";
+import { LOCKS } from "./locks.js";
+import { LISTS, SECTIONS } from "./forms.js";
 import { KINDS } from "./kinds.js";
 import { detour } from "./detour.js";
 import { addRows, renderRows, renameSession } from "./fields.js";
 
-// A condition's line on a session's tile, with its name when the session's definition still has it.
-// "Active during <name>", for a drive "Active while <name> is unplugged", for a combination with a
-// drive in it "Active while <name> is true" (`wordingOf`, as a lock's line is worded), the name a
-// link to its condition; without it (a running session keeps its rule) the drive's own name or a plain
-// word for the kind.
-const ruleLine = (rule, condition) => {
-  const icon = "rule-16"; // the Conditions tab's, whatever the kind
-  const wording = wordingOf(rule);
-  if (condition) {
-    const name = ref(condition.name, editHref("conditions", condition.id));
-    return [icon, tn(`sessions.tile.${{ drive: "activeDriveNamed", true: "activeCombinedNamed", during: "activeNamed" }[wording]}`, { name })];
-  }
-  if (rule.type === "flash_drive") return [icon, t("sessions.tile.activeDrive", { drive: quoted(rule.drive) })];
-  return [icon, t(rule.type === "combined" ? "sessions.tile.activeCombined" : rule.type === "webhook" ? "sessions.tile.activeWebhook" : "sessions.tile.active")];
-};
-
-// A running session's condition line: the rule as `ruleLine` words it, and whether it enforces now, as a
-// lock's line says its state: "Active during <name> for the next 3 hours" / "Inactive outside <name> …"
-// (the time when the condition has a next change), a drive "Active since <name> is unplugged" /
-// "Inactive since <name> is plugged in", a combination with a drive "… since <name> is true / false".
-// The tag says the same in a word, so there is no line of its own for it.
-const runningRuleLine = (running, rule, condition) => {
-  const on = running.enforcing;
-  const change = running.condition_change_words;
-  const name = condition
-    ? ref(condition.name, editHref("conditions", condition.id))
-    : rule.type === "flash_drive"
-      ? quoted(rule.drive)
-      : t("sessions.tile.conditionGone");
-  const wording = wordingOf(rule);
-  if (wording === "drive") return ["rule-16", tn(`sessions.tile.${on ? "activeSinceDrive" : "inactiveSinceDrive"}`, { name })];
-  if (wording === "true") return ["rule-16", tn(`sessions.tile.${on ? "activeSinceTrue" : "inactiveSinceFalse"}`, { name })];
-  return ["rule-16", tn(`sessions.tile.${on ? "activeDuring" : "inactiveOutside"}${change ? "For" : ""}`, { name, change })];
-};
-
-// The sessions that use an item, as links.
-const usedBy = (users) => ({ text: tn("common.usedBy", { n: users.length, names: joined(users.map((b) => ref(b.name, editHref("sessions", b.id)))) }) });
-
-// What a tile says, per kind: lines of text.
-function summaryOf(kind, item) {
-  if (kind === "targets") {
-    const parts = [];
-    for (const [key, list] of Object.entries(LISTS)) if (item[key] && item[key].length) parts.push(list.count(item[key].length));
-    const on = ACTIONS.filter((e) => item.actions && item.actions[e.key]);
-    for (const e of on.filter((e) => !SECTIONS.find((s) => s.actions.includes(e)).lists.length)) parts.push(e.short || e.label);
-    if (!parts.length) parts.push(t("targets.nothing"));
-    const users = usersOf(item.id);
-    parts.push(users.length ? usedBy(users) : t("targets.notUsed"));
-    return parts;
-  }
-  if (kind === "conditions") {
-    const users = usersOf(item.id);
-    let what;
-    if (item.type === "combined") {
-      const members = item.members.map((id) => {
-        const member = overview.conditions.find((c) => c.id === id);
-        return member ? ref(member.name, editHref("conditions", id)) : t("common.gone");
-      });
-      what = { text: tn(item.mode === "any" ? "conditions.activeAny" : "conditions.activeAll", { names: joined(members) }) };
-    } else if (item.type === "webhook") what = t("conditions.activeWebhook", { url: item.url });
-    else what = item.type === "flash_drive" ? t("conditions.activeDrive", { drive: quoted(item.drive) }) : t("conditions.active", { times: weekText(item.days) });
-    return [what, users.length ? usedBy(users) : t("conditions.notUsed")];
-  }
-  return [];
+// A running session's condition when its definition no longer has it (it keeps the rule it started
+// with): the drive's own name, or a word for the kind.
+function ruleName(rule) {
+  if (rule.type === "flash_drive") return t("sessions.tile.activeDrive", { drive: quoted(rule.drive) });
+  return t(rule.type === "combined" ? "sessions.tile.activeCombined" : rule.type === "webhook" ? "sessions.tile.activeWebhook" : "sessions.tile.active");
 }
 
-// A text with items in it (`ref`), as plain text: a row's text is no place for links, as the row
-// opens a menu.
-const plain = (text) => el("span", {}, ...nodesOf(typeof text === "object" && !Array.isArray(text) && text.text ? text.text : text)).textContent;
+// The sessions that use an item, as links; or a word that none does.
+const usersText = (item) => {
+  const users = usersOf(item.id);
+  return users.length ? joined(users.map((b) => ref(b.name, editHref("sessions", b.id)))) : t("tiles.none");
+};
+
+// A target or condition tile's rows, as a session's are (`fields.js`) but only to read: [icon, label,
+// value] each, the value text or parts with links in it.
+function rowsOf(kind, item) {
+  if (kind === "targets") {
+    const rows = [];
+    // A row per part of the editor that has something in it: what its lists hold, or its actions.
+    for (const section of SECTIONS) {
+      const counts = section.lists.filter((key) => item[key] && item[key].length).map((key) => LISTS[key].count(item[key].length));
+      const actions = section.lists.length ? [] : section.actions.filter((e) => item.actions && item.actions[e.key]).map((e) => e.short || e.label);
+      const value = [...counts, ...actions];
+      if (value.length) rows.push([section.icon, t(`tiles.${section.key}`), value.join(t("common.separator"))]);
+    }
+    if (!rows.length) rows.push(["target-16", t("tiles.blocks"), t("targets.nothing")]);
+    return [...rows, ["locked", t("tiles.usedBy"), usersText(item)]];
+  }
+  let when;
+  if (item.type === "combined") {
+    const members = item.members.map((id) => {
+      const member = overview.conditions.find((c) => c.id === id);
+      return member ? ref(member.name, editHref("conditions", id)) : t("common.gone");
+    });
+    when = tn(item.mode === "any" ? "conditions.activeAny" : "conditions.activeAll", { names: joined(members) });
+  } else if (item.type === "webhook") when = t("conditions.activeWebhook", { url: item.url });
+  else if (item.type === "flash_drive") when = t("conditions.activeDrive", { drive: quoted(item.drive) });
+  else when = t("conditions.active", { times: weekText(item.days) });
+  const icon = { flash_drive: "plug-16", webhook: "webhook", combined: "rule-16" }[item.type] || "calendar-16";
+  return [[icon, t("tiles.when"), when], ["locked", t("tiles.usedBy"), usersText(item)]];
+}
+
+// A row to read, as a session's rows are laid out (`app.css`, `.tile-rows`).
+const infoRow = ([icon, label, value]) =>
+  el(
+    "cds-contained-list-item",
+    {},
+    carbonIcon(icon, "icon"),
+    el("span", { class: "row" }, el("span", { class: "row-label" }, label), el("span", { class: "row-text" }, el("span", { class: "row-value" }, ...nodesOf(value)))),
+  );
+
+// A text with items in it (`ref`), as plain text.
+const plain = (text) => el("span", {}, ...nodesOf(text)).textContent;
 
 // What a session's rows say (`fields.js`): the targets' names and the condition's, each a link to
-// its editor. The allowance and lock rows are their dropdowns; their settings are in the status line.
+// its editor. The allowance and lock rows are their dropdowns.
 function sessionLines(item) {
   const running = runningOf(item.id);
   const names = item.targets.map((id) => (overview.targets.some((l) => l.id === id) ? ref(targetName(id), editHref("targets", id)) : targetName(id)));
@@ -87,92 +71,8 @@ function sessionLines(item) {
   const rule = running ? running.condition : condition;
   return {
     block: names.length ? joined(names) : t("sessions.tile.noTargets"),
-    when: condition ? ref(condition.name, editHref("conditions", condition.id)) : rule ? plain(ruleLine(rule, null)[1]) : t("sessions.fields.always"),
+    when: condition ? ref(condition.name, editHref("conditions", condition.id)) : rule ? plain(ruleName(rule)) : t("sessions.fields.always"),
   };
-}
-
-// What a running session does now, in a few words: blocking or not, and until when. Of the condition
-// and the allowance, whichever changes first says when.
-function nowText(running) {
-  const state = running.allowance;
-  const change = running.condition_change_words;
-  if (!running.enforcing) return t(`sessions.status.idle${change ? "For" : ""}`, { change });
-  const type = state && state.terms.type;
-  if (type === "delayed" && state.open && state.change_words) return t("sessions.status.delayed", { change: state.change_words });
-  if (type === "pomodoro") {
-    if (state.open) return t(`sessions.status.allowed${state.change_words ? "For" : ""}`, { change: state.change_words });
-    const conditionFirst = running.condition_change !== null && (state.change === null || running.condition_change < state.change);
-    if (state.change_words && !conditionFirst) return t("sessions.status.blockingUntilAllowed", { change: state.change_words });
-  }
-  if (type === "budget") {
-    if (state.left !== null) {
-      const key = `${state.left === 0 ? "usedUp" : "left"}${state.reset_words ? "Reset" : ""}`;
-      return t(`sessions.status.${key}`, { left: state.left_words, reset: state.reset_words });
-    }
-    // Each item its own budget: what each has left, or the terms while nothing was used.
-    const items = state.items.map((i) => (i.left === 0 ? t("sessions.tile.allowanceItemUsedUp", { item: i.item }) : t("sessions.tile.allowanceItem", { item: i.item, left: i.left_words })));
-    return items.length ? t("sessions.status.items", { items: items.join(t("common.separator")) }) : allowanceLabel(state.terms);
-  }
-  return t(`sessions.status.blocking${change ? "For" : ""}`, { change });
-}
-
-// A session's status line, beside Start / Stop: running, what it does now and how its lock stands;
-// stopped, what its allowance and lock are set to, in the same short sentences. Nothing the rows say already. Parts
-// of text (with links, in the line's own type), or none.
-function statusParts(item) {
-  const running = runningOf(item.id);
-  // Lock methods whose line says no more than the Lock row's dropdown (and the tag, while it runs).
-  const said = ["until_restart", "password", "text"].includes(item.lock.method);
-  if (running) {
-    const [icon, lock] = lockLines(item, running)[0];
-    // "Blocking" alone, with no condition or allowance, says no more than "Running".
-    const now = running.condition || running.allowance || !running.enforcing ? nowText(running) : null;
-    return [now, (icon === "locked" || item.lock.method !== "none") && !said ? lock : null].filter(Boolean);
-  }
-  // Stopped: what the rows' dropdowns do not say (the condition is named in its row).
-  const lock = LOCKS[item.lock && item.lock.method];
-  return [
-    item.allowance ? allowanceLabel(item.allowance) : null,
-    item.lock.method === "none" || said ? null : lock ? lock.describe(item.lock) : t("sessions.tile.unknownLock"),
-  ].filter(Boolean);
-}
-
-// A session's lock line: the lock it will start with, or how its running lock stands.
-function lockLines(item, running) {
-  const parts = [];
-  if (!running) {
-    const lock = LOCKS[item.lock && item.lock.method];
-    parts.push([item.lock && item.lock.method !== "none" ? "locked" : "unlocked", lock ? lock.describe(item.lock) : t("sessions.tile.unknownLock")]);
-    return parts;
-  }
-  const change = running.lock_change_words;
-  const lockRule = running.lock_condition;
-  if (running.password) parts.push(["locked", t("sessions.tile.lockedPassword")]);
-  else if (running.lock_text) parts.push(["locked", t("sessions.tile.lockedText")]);
-  else if (running.stop_delay) {
-    const { stop_remaining: left, stop_remaining_words: words } = running;
-    parts.push(
-      left === null
-        ? ["locked", t("sessions.tile.lockedDelay", { delay: running.stop_delay_words })]
-        : left === 0
-          ? ["unlocked", t("sessions.tile.delayReady")]
-          : ["locked", t("sessions.tile.delayWait", { left: words })],
-    );
-  }
-  else if (running.until_restart) parts.push(["locked", t("sessions.tile.lockedRestart")]);
-  else if (running.remaining_words) parts.push(["locked", t("sessions.tile.lockedFor", { left: running.remaining_words })]);
-  else if (lockRule) {
-    // A condition lock is one line: what it is, as the condition's own line is worded, and the state
-    // it is in now (the icon, and its words), with when that changes if it is known.
-    const lockCondition = overview.conditions.find((c) => c.id === (item.lock && item.lock.condition));
-    const name = lockCondition
-      ? ref(lockCondition.name, editHref("conditions", lockCondition.id))
-      : lockRule.type === "flash_drive"
-        ? quoted(lockRule.drive)
-        : t("locks.condition.goneName");
-    parts.push([running.locked ? "locked" : "unlocked", conditionLockText(wordingOf(lockRule), name, { locked: running.locked, change })]);
-  } else parts.push(["unlocked", t("sessions.tile.notLocked")]);
-  return parts;
 }
 
 // ---- A page of tiles. Tiles are kept and updated in place, so an open menu or a lock being
@@ -227,16 +127,13 @@ function makeTile(kind, id) {
   editIcon.classList.add("title-edit");
   const title = el("h2", { class: "cds--type-productive-heading-03" }, kind === "sessions" ? name : el("cds-link", { href: editHref(kind, id) }, name, editIcon));
   const tag = el("cds-tag", { size: "md" });
-  const summary = el("div", { class: "summary cds--type-body-compact-01" });
   const actions = el("div", { class: "actions" });
   const columns = "session-tile cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16";
   // The state tag beside the title, which saves a row.
   const top = el("div", { class: "top" }, el("div", { class: "heading" }, title, tag), menu, lock);
-  // A session's lines are its rows (`fields.js`), between its head and Start / Stop.
-  // A session's status line (`statusParts`), beside Start / Stop.
-  const status = el("p", { class: "status cds--type-body-compact-01" });
-  const body = el("div", { class: "body" }, el("div", { class: "info" }, kind === "sessions" ? status : summary), actions);
-  const tile = el("cds-tile", { class: columns }, top, body);
+  // Its rows under its head (a session's: `fields.js`), then a session's Start / Stop on the right.
+  const rows = el("cds-contained-list", { class: "tile-rows" });
+  const tile = el("cds-tile", { class: columns }, top, rows, kind === "sessions" ? actions : null);
   // Below its button, or above it where there is no room.
   const menuBody = menu.querySelector("cds-overflow-menu-body");
   menu.addEventListener("click", () => !menu.open && openTowardsRoom(menu, menuBody), true);
@@ -249,7 +146,7 @@ function makeTile(kind, id) {
       if (item.dataset.action === "delete") confirmDelete(kind, id);
     });
   }
-  const parts = { tile, top, name, tag, summary, status, actions, menu, lock, editIcon, deleteItem: menu.querySelector('[data-action="delete"]') };
+  const parts = { tile, top, rows, name, tag, actions, menu, lock, editIcon, deleteItem: menu.querySelector('[data-action="delete"]') };
   if (kind === "sessions") {
     addSessionControls(parts, id);
     addRows(parts, id);
@@ -273,19 +170,6 @@ function renderTiles(kind) {
     const parts = tiles.get(`${kind}:${item.id}`) || makeTile(kind, item.id);
     if (container.children[index] !== parts.tile) container.insertBefore(parts.tile, container.children[index] || null);
     parts.name.textContent = item.name;
-    // A line is its text, or [icon, text].
-    const summary = summaryOf(kind, item);
-    const text = JSON.stringify(summary);
-    if (parts.summary.dataset.text !== text) {
-      parts.summary.dataset.text = text;
-      parts.summary.replaceChildren(
-        ...summary.map((line) =>
-          Array.isArray(line)
-            ? el("span", { class: "line" }, carbonIcon(line[0]), el("span", {}, ...nodesOf(line[1])))
-            : el("span", {}, ...nodesOf(typeof line === "string" ? line : line.text)),
-        ),
-      );
-    }
     // A session keeps its menu even while locked: it can still be renamed and copied.
     const held = kindOf.held(item);
     parts.menu.hidden = !!held;
@@ -295,17 +179,14 @@ function renderTiles(kind) {
     if (kind === "sessions") {
       renderSessionControls(parts, item);
       renderRows(parts, item, sessionLines(item));
-      // One line for the tile, only redrawn when it changed (it has links in it).
-      const status = statusParts(item);
-      const shown = JSON.stringify(status);
-      if (parts.status.dataset.shown !== shown) {
-        parts.status.dataset.shown = shown;
-        // Each part a short sentence of its own, ending with a full stop.
-        parts.status.replaceChildren(...status.flatMap((part, at) => [at ? " " : null, ...nodesOf(part), "."]).filter(Boolean));
+    } else {
+      // Its rows, only redrawn when they changed (an open link keeps its focus).
+      const rows = rowsOf(kind, item);
+      const shown = JSON.stringify(rows);
+      if (parts.rows.dataset.shown !== shown) {
+        parts.rows.dataset.shown = shown;
+        parts.rows.replaceChildren(...rows.map(infoRow));
       }
-      parts.status.hidden = !status.length;
-    }
-    else {
       // Tagged while a locked session uses it (it can then only get stricter); a running session
       // that is not locked leaves it free to change, but not to delete.
       parts.tag.hidden = !kindOf.limited(item);

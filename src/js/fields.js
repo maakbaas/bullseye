@@ -3,7 +3,7 @@
 // lock's settings, a new session and a new name are asked in the modal. New target and New
 // condition go to that kind's editor and come back with it chosen (`detour`).
 
-import { ask, confirmStricter, dismiss, editHref, el, invalid, invoke, newId, nodesOf, notify, overview, quoted, refresh, runningOf, t } from "./core.js";
+import { ask, confirmStricter, dismiss, el, invalid, invoke, newId, nodesOf, notify, overview, quoted, refresh, runningOf, t } from "./core.js";
 import { LOCKS } from "./locks.js";
 import { allowanceSection } from "./forms.js";
 import { KINDS, freeName } from "./kinds.js";
@@ -76,8 +76,8 @@ async function allowed(check, session) {
 
 // The rows of the session `id`, added to its tile's parts (`tiles.js`).
 function addRows(parts, id) {
-  const list = el("cds-contained-list", { class: "session-rows" });
-  parts.rows = {};
+  const list = parts.rows;
+  parts.fields = {};
   for (const { key, icon } of ROWS) {
     const label = el("span", { class: "row-label" }, t(`sessions.fields.${key}`));
     const value = el("span", { class: "row-value" });
@@ -121,9 +121,8 @@ function addRows(parts, id) {
     const box = el("span", { class: "row" }, label, el("span", { class: "row-text" }, select, value));
     const row = el("cds-contained-list-item", {}, carbonIcon(icon, "icon"), box, buttons);
     list.append(row);
-    parts.rows[key] = { row, box, label, value, edit, select };
+    parts.fields[key] = { row, box, label, value, edit, select };
   }
-  parts.top.after(list);
 }
 
 // Whether a running lock can be made stricter: one that ends at a time (a duration or until) can
@@ -136,7 +135,7 @@ function renderRows(parts, session, lines) {
   const running = runningOf(session.id);
   const locked = !!(running && running.locked);
   for (const { key } of ROWS) {
-    const { label, value, edit, select } = parts.rows[key];
+    const { label, value, edit, select } = parts.fields[key];
     // "Target" or "Targets", as many as it has.
     if (key === "block") {
       const named = t("sessions.fields.blockCount", { n: session.targets.length });
