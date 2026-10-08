@@ -45,7 +45,7 @@ const SCRIPT: &str = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; \
     ForEach-Object { [pscustomobject]@{ name = $_.Name; family = ($_.AppID -split '!')[0] } } | \
     ConvertTo-Json -Compress";
 
-/// An app that can be blocked, for the window to offer: an installed one, or one a block list has
+/// An app that can be blocked, for the window to offer: an installed one, or one a target has
 /// that is not installed here (it came from another computer, by Import).
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct StoreApp {
@@ -71,7 +71,7 @@ pub fn readable(family: &str) -> String {
     }
 }
 
-/// What the window offers: the installed apps, and after them the `chosen` ones (a block list's
+/// What the window offers: the installed apps, and after them the `chosen` ones (a target's
 /// entries) that are not installed here, named by `readable`.
 pub fn offered(mut apps: Vec<StoreApp>, chosen: &[String]) -> Vec<StoreApp> {
     for family in chosen.iter().map(|f| f.trim()).filter(|f| !f.is_empty()) {

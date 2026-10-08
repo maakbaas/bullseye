@@ -3,7 +3,7 @@
 # The app only builds for Windows, so `cargo test` in src-tauri runs only there (and in CI).
 # This crate builds the modules that do not need Windows straight from src-tauri/src (`#[path]`,
 # never a copy) with stand-ins for the few that do (src/boot.rs, drives.rs, watchdog.rs,
-# client.rs and the windows-sys crate next to this file). See CLAUDE.md, "Test coverage".
+# client.rs and the windows-sys crate next to this file). See AGENTS.md, "Development".
 #
 #   cargo test --manifest-path scripts/linux-tests/Cargo.toml -- --skip only_the_installed_app --skip the_app_of_a_program
 #   cargo llvm-cov --manifest-path scripts/linux-tests/Cargo.toml --summary-only -- --skip only_the_installed_app --skip the_app_of_a_program

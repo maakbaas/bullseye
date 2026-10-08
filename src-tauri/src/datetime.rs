@@ -1,7 +1,7 @@
 //! A local date and time of day, as the "until" lock takes it (`lock::Lock::Until`): typed as
 //! `2026-10-06 18:00`, written out as `Tuesday 6 October 2026, 18:00`. Which moment it is depends
 //! on the time zone it is read in (`localtime::Zone::instant`), so it stays local time until a
-//! block starts with it.
+//! session starts with it.
 
 use std::fmt;
 

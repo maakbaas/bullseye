@@ -70,7 +70,7 @@ pub fn install(exe: &Path) -> Result<(), String> {
     let service = manager.create_service(&info, access).map_err(|e| format!("cannot create the service: {e}"))?;
     let describe = |what: &str, e: windows_service::Error| format!("{what}: {e}");
     service
-        .set_description("Blocks distracting sites while a block is running. Started with Windows and restarted if it fails.")
+        .set_description("Sessions distracting sites while a session is running. Started with Windows and restarted if it fails.")
         .map_err(|e| describe("cannot set the description", e))?;
     // Windows starts it again at once, every time it fails, however often.
     service

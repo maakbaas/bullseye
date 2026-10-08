@@ -2,7 +2,7 @@
 //! (`lock::Lock::UntilRestart`).
 //!
 //! The id is kept in a volatile registry key, which Windows forgets when it restarts: the first
-//! process to ask after a restart makes a new one, and a block saved with another id has ended.
+//! process to ask after a restart makes a new one, and a session saved with another id has ended.
 //! The service keeps it under HKLM (`SOFTWARE\bullseye-boot`), which a standard user cannot write;
 //! the debug build's embedded service, running as the user, falls back to HKCU. A shut down with
 //! Fast Startup keeps it: Windows hibernates then rather than restarts.

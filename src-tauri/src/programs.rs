@@ -5,7 +5,7 @@
 //! - `*` matches any characters: `*launcher.exe` covers `epiclauncher.exe` and `launcher.exe`.
 //!
 //! Some programs must never be closed, because closing them breaks Windows or this app: they are
-//! listed in `PROTECTED`. An entry that would match any of them is refused when the block starts,
+//! listed in `PROTECTED`. An entry that would match any of them is refused when the session starts,
 //! which also refuses `*` and `*.exe` and the like, so a typo cannot take the desktop down.
 
 use regex::RegexSet;
@@ -44,7 +44,7 @@ const PROTECTED: [&str; 25] = [
 const NOT_IN_A_NAME: [char; 8] = ['\\', '/', ':', '"', '<', '>', '|', '?'];
 
 pub struct ProgramList {
-    /// The normalized entries, kept so a block can be written to disk and resumed (`state.rs`).
+    /// The normalized entries, kept so a session can be written to disk and resumed (`state.rs`).
     entries: Vec<String>,
     matchers: RegexSet,
 }

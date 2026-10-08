@@ -19,8 +19,8 @@ function t(path, values = {}) {
 const quoted = (name) => t("common.quoted", { name });
 // Where an item is edited (the same pages as `KINDS[kind].editPath`).
 const editHref = (kind, id) =>
-  `${{ blocks: "#/edit/", lists: "#/lists/edit/", conditions: "#/conditions/edit/" }[kind]}${encodeURIComponent(id)}`;
-const names = (blocks) => joined(blocks.map((b) => quoted(b.name))).join("");
+  `${{ sessions: "#/edit/", targets: "#/targets/edit/", conditions: "#/conditions/edit/" }[kind]}${encodeURIComponent(id)}`;
+const names = (sessions) => joined(sessions.map((b) => quoted(b.name))).join("");
 
 // A text with items in it, as parts: strings and `{ link, href }` (an item by its name, to its
 // page). A placeholder's value may be a `ref` or a list of them; the rest is as `t`. Parts are
@@ -78,7 +78,7 @@ function described(command, args, standIn) {
   return texts.get(key);
 }
 const weekText = (days) => described("describe_schedule", { week: { days } }, t("common.weeklyStandIn"));
-// A block's allowance (its terms) as a tile's line says it, short (`Allowed 30 minutes a day`).
+// A session's allowance (its terms) as a tile's line says it, short (`Allowed 30 minutes a day`).
 const allowanceLabel = (terms) => (described("describe_allowance", { terms }, null) || { label: "" }).label;
 const durationText = (text) => described("describe_duration", { text: text || "" }, text || "");
 // An until lock's end written out (`Tuesday 6 October 2026, 18:00`); as typed until then, or
@@ -108,7 +108,7 @@ function notify(slot, kind, title, subtitle = "", { closable = true, scroll = tr
   // An error must not appear out of sight (a tile far down a long page, a form scrolled past its top).
   // Only once the notification has drawn: before that the box is empty and has no height to scroll to.
   if (kind === "error" && scroll) {
-    const show = () => requestAnimationFrame(() => note.isConnected && note.scrollIntoView({ block: "center", behavior: "smooth" }));
+    const show = () => requestAnimationFrame(() => note.isConnected && note.scrollIntoView({ session: "center", behavior: "smooth" }));
     if (note.updateComplete) note.updateComplete.then(show);
     else show();
   }
@@ -122,12 +122,12 @@ function whenRefreshed(draw) {
   redraw = draw;
 }
 
-let overview = { lists: [], conditions: [], blocks: [], running: [], unlock: { delay: 0, delay_words: "", remaining: 0, remaining_words: "" }, clock_synced: true };
+let overview = { targets: [], conditions: [], sessions: [], running: [], unlock: { delay: 0, delay_words: "", remaining: 0, remaining_words: "" }, clock_synced: true };
 let reachable = true;
 
 async function refresh() {
   try {
-    overview = await invoke("block_status");
+    overview = await invoke("status");
     if (!reachable) notify("list-notices");
     reachable = true;
   } catch (e) {
@@ -139,17 +139,17 @@ async function refresh() {
 }
 
 const runningOf = (id) => overview.running.find((r) => r.id === id);
-const conditionOf = (block) => overview.conditions.find((c) => c.id === block.condition);
-const listName = (id) => (overview.lists.find((l) => l.id === id) || { name: t("common.gone") }).name;
-// The blocks that use a block list or condition, and those of them that run (which hold it).
-// (A condition is also used by the blocks that use a combination of it.)
+const conditionOf = (session) => overview.conditions.find((c) => c.id === session.condition);
+const targetName = (id) => (overview.targets.find((l) => l.id === id) || { name: t("common.gone") }).name;
+// The sessions that use a target or condition, and those of them that run (which hold it).
+// (A condition is also used by the sessions that use a combination of it.)
 const conditionsOf = (b) => [b.condition, b.lock && b.lock.condition].filter(Boolean);
 const membersOf = (conditionId) => (overview.conditions.find((c) => c.id === conditionId) || {}).members || [];
-const usersOf = (id) => overview.blocks.filter((b) => b.lists.includes(id) || conditionsOf(b).some((c) => c === id || membersOf(c).includes(id)));
-// How a condition is worded wherever one is named (a block's condition line, a lock's line): "drive"
+const usersOf = (id) => overview.sessions.filter((b) => b.targets.includes(id) || conditionsOf(b).some((c) => c === id || membersOf(c).includes(id)));
+// How a condition is worded wherever one is named (a session's condition line, a lock's line): "drive"
 // for a flash drive ("… is unplugged"), "true" for a combination with a drive anywhere in it, and
 // "during" for the rest, schedules alone or combined. Works on a definition (its members are ids) and
-// on the copy a running block holds (its `rules`).
+// on the copy a running session holds (its `rules`).
 const driveIn = (c) => c.type === "flash_drive" || c.type === "webhook" || (c.rules || []).some(driveIn) || (c.members || []).some((id) => driveIn(overview.conditions.find((m) => m.id === id) || {}));
 const wordingOf = (c) => (c.type === "flash_drive" ? "drive" : driveIn(c) ? "true" : "during");
 // (A webhook is worded like a combination with a drive: "active since <name> is true": it has no time.)
@@ -203,4 +203,4 @@ $("confirm-action").addEventListener("click", async () => {
 });
 $("confirm").addEventListener("cds-modal-closed", () => answered(false));
 
-export { invoke, $, t, tn, ref, joined, nodesOf, editHref, quoted, names, applyStrings, el, described, weekText, allowanceLabel, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, listName, usersOf, wordingOf, holdersOf, lockedUsersOf, invalid, ask };
+export { invoke, $, t, tn, ref, joined, nodesOf, editHref, quoted, names, applyStrings, el, described, weekText, allowanceLabel, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, targetName, usersOf, wordingOf, holdersOf, lockedUsersOf, invalid, ask };

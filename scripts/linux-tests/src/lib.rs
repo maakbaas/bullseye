@@ -4,8 +4,8 @@
 
 #[path = "../../../src-tauri/src/allowance.rs"]
 pub mod allowance;
-#[path = "../../../src-tauri/src/block.rs"]
-pub mod block;
+#[path = "../../../src-tauri/src/session.rs"]
+pub mod session;
 #[path = "../../../src-tauri/src/cli.rs"]
 pub mod cli;
 #[path = "../../../src-tauri/src/clock.rs"]

@@ -1,5 +1,5 @@
-// The editor of a block, block list or condition: opening it (also on a detour, `detour.js`), its
-// breadcrumb, saving and deleting, and keeping what a running block uses read-only.
+// The editor of a session, target or condition: opening it (also on a detour, `detour.js`), its
+// breadcrumb, saving and deleting, and keeping what a running session uses read-only.
 
 import { $, el, notify, refresh, t } from "./core.js";
 import { KINDS } from "./kinds.js";
@@ -12,21 +12,21 @@ import { detour } from "./detour.js";
 const forms = {};
 let editing = null; // { kind, item (as opened), isNew }
 
-// From the block editor: the block as it is now is kept, and gets the new item when it is saved.
-// `id`: an existing block list or condition to change, instead of a new one.
+// From the session editor: the session as it is now is kept, and gets the new item when it is saved.
+// `id`: an existing target or condition to change, instead of a new one.
 function detourFor({ kind, id }) {
-  const draft = forms.blocks.read(editing.item);
-  const back = location.hash || KINDS.blocks.path;
+  const draft = forms.sessions.read(editing.item);
+  const back = location.hash || KINDS.sessions.path;
   detour.current = {
     back,
     draft,
     crumbs: [
-      { label: KINDS.blocks.title, href: KINDS.blocks.path },
-      { label: draft.name || (editing.isNew ? KINDS.blocks.newLabel : editing.item.name), href: back },
+      { label: KINDS.sessions.title, href: KINDS.sessions.path },
+      { label: draft.name || (editing.isNew ? KINDS.sessions.newLabel : editing.item.name), href: back },
     ],
     onSaved: async (item) => {
       if (id) return;
-      if (kind === "lists" && !draft.lists.includes(item.id)) draft.lists.push(item.id);
+      if (kind === "targets" && !draft.targets.includes(item.id)) draft.targets.push(item.id);
       if (kind === "conditions") draft.condition = item.id;
     },
   };
@@ -42,7 +42,7 @@ function setCrumbs(crumbs) {
   );
 }
 
-// `via`: the detour this item is made on; `draft`: a block as it was being edited before one.
+// `via`: the detour this item is made on; `draft`: a session as it was being edited before one.
 function openEditor(kind, id, { via = null, draft = null } = {}) {
   const kindOf = KINDS[kind];
   const item = draft || (id ? kindOf.items().find((i) => i.id === id) : kindOf.create());
@@ -76,7 +76,7 @@ function renderEditorLock() {
   forms[editing.kind].disable(!!held);
   // No example entries where entries are fixed or limited, or they read as entries.
   if (forms[editing.kind].examples) forms[editing.kind].examples(!held && !limited);
-  // Only the name can be changed on something a locked block holds; it never loosens anything.
+  // Only the name can be changed on something a locked session holds; it never loosens anything.
   $("delete").disabled = !!held || (!editing.isNew && kind.inUse(editing.item));
   const box = $("editor-notices");
   const shown = box.dataset.lock === "1";
@@ -123,7 +123,7 @@ $("save").addEventListener("click", async () => {
 });
 $("delete").addEventListener("click", () => editing && confirmDelete(editing.kind, editing.item.id));
 
-// The block form's New block list and New condition buttons (`forms.js`).
+// The session form's New target and New condition buttons (`forms.js`).
 $("form").addEventListener("bullseye-make", (event) => detourFor(event.detail));
 
 // Leaving the editor (`main.js`).

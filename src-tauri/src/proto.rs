@@ -9,10 +9,10 @@ use std::io::{Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::block::Running;
-use crate::definitions::{BlockList, Condition, Definition, Kind, Library};
+use crate::definitions::{Condition, Definition, Kind, Library, Target};
 use crate::lists::Entries;
 use crate::lock::Lock;
+use crate::session::Running;
 use crate::state::Enforcers;
 
 /// The pipe the service listens on.
@@ -28,41 +28,41 @@ const MAX_MESSAGE: usize = 1024 * 1024;
 // answered.
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
-    /// What the UI shows: the block lists, conditions and blocks, and which blocks run.
+    /// What the UI shows: the targets, conditions and sessions, and which sessions run.
     Status,
     /// What the app enforces: asked every second, from the thread that closes tabs, which is how
     /// the service knows the closing is going on (`watchdog::AppSlot`).
     Policy,
     /// The app, before it asks for the policy: what it has seen in use since, of what an allowance
-    /// lets through (`Policy::free`), which the service counts against it (`Blocklist::charge`).
+    /// lets through (`Policy::free`), which the service counts against it (`Sessions::charge`).
     Report { used: Vec<Used> },
     /// The app, when it starts: asks the service to take it in as the app. Refused if another app
     /// is running or this is not the installed exe, and then the app ends itself.
     Register,
-    /// Adds a block, or replaces the one with its id. Refused while that block runs.
-    SaveBlock { block: Definition },
-    /// Removes a block. Refused while it runs.
-    DeleteBlock { id: String },
-    /// Adds a block list, or replaces the one with its id. While a locked block uses it, only to be
-    /// stricter (`BlockList::tightened_by`).
-    SaveList { list: BlockList },
-    /// Removes a block list, and takes it out of the blocks that use it. Refused while a running
-    /// block uses it.
-    DeleteList { id: String },
-    /// Adds a condition, or replaces the one with its id. While a locked block uses it, only to be
+    /// Adds a session, or replaces the one with its id. Refused while that session runs.
+    SaveSession { session: Definition },
+    /// Removes a session. Refused while it runs.
+    DeleteSession { id: String },
+    /// Adds a target, or replaces the one with its id. While a locked session uses it, only to be
+    /// stricter (`Target::tightened_by`).
+    SaveTarget { target: Target },
+    /// Removes a target, and takes it out of the sessions that use it. Refused while a running
+    /// session uses it.
+    DeleteTarget { id: String },
+    /// Adds a condition, or replaces the one with its id. While a locked session uses it, only to be
     /// stricter (`Rule::tightened_by`).
     SaveCondition { condition: Condition },
-    /// Removes a condition, and takes it out of the blocks that use it. Refused while a running
-    /// block uses it.
+    /// Removes a condition, and takes it out of the sessions that use it. Refused while a running
+    /// session uses it.
     DeleteCondition { id: String },
-    /// Copies a block, block list or condition as `new_id`, named after it with a number.
+    /// Copies a session, target or condition as `new_id`, named after it with a number.
     Duplicate { kind: Kind, id: String, new_id: String },
-    /// Replaces every block list, condition and block with these, from a settings file (Import).
-    /// Refused while a block is locked; blocks that run unlocked end with it.
+    /// Replaces every target, condition and session with these, from a settings file (Import).
+    /// Refused while a session is locked; sessions that run unlocked end with it.
     Import { library: Library },
-    /// Starts the block defined as `id`, as it is defined now.
+    /// Starts the session defined as `id`, as it is defined now.
     Start { id: String },
-    /// Stops the running block `id`, unless it is locked right now. `password`: the password of its
+    /// Stops the running session `id`, unless it is locked right now. `password`: the password of its
     /// password lock, which stops that one; `text`: the text of its text lock, likewise.
     Stop {
         id: String,
@@ -70,11 +70,11 @@ pub enum Request {
         #[serde(default)]
         text: Option<String>,
     },
-    /// Starts the wait before the running block `id`, locked with a delay, can be stopped.
+    /// Starts the wait before the running session `id`, locked with a delay, can be stopped.
     AskToStop { id: String },
-    /// Ends that wait: the block is locked again.
+    /// Ends that wait: the session is locked again.
     AbortStop { id: String },
-    /// Ends every block, whatever its time, once unlocking is ready: at once with no delay,
+    /// Ends every session, whatever its time, once unlocking is ready: at once with no delay,
     /// otherwise when the countdown of `AskForUnlock` is over (`unlock::UnlockDelay`).
     Unlock,
     /// As `Unlock`, with an answer: the text or password of the other way to unlock
@@ -86,7 +86,7 @@ pub enum Request {
         text: Option<String>,
     },
     /// Sets the other way to unlock besides the delay, as a lock method (never the delay), or removes
-    /// it (`None`). Setting one needs unlocking to be ready or no block to be locked.
+    /// it (`None`). Setting one needs unlocking to be ready or no session to be locked.
     SetUnlockWay { way: Option<Lock> },
     /// Everything defined, password hashes included, for Export (the status has them left out).
     Export,
@@ -95,9 +95,9 @@ pub enum Request {
     /// Stops the countdown, or ends the readiness: back to locked.
     AbortUnlock,
     /// Sets how long unlocking takes, as typed (`2h 30m`, `0`; at most 24 hours). A longer delay is
-    /// free; a shorter one needs unlocking to be ready, or no block to be locked.
+    /// free; a shorter one needs unlocking to be ready, or no session to be locked.
     SetUnlockDelay { delay: String },
-    /// From the installer: end the service and remove it. Refused while a block is locked.
+    /// From the installer: end the service and remove it. Refused while a session is locked.
     PrepareUninstall,
 }
 
@@ -108,12 +108,12 @@ pub enum Request {
 pub enum Response {
     Done,
     Failed(String),
-    /// A block is running that does not allow this (uninstall, update).
+    /// A session is running that does not allow this (uninstall, update).
     Refused(String),
     Status(Overview),
     /// The whole library, for Export.
     Library(Library),
-    /// One per running block; none when nothing runs.
+    /// One per running session; none when nothing runs.
     Policy(Vec<Policy>),
 }
 
@@ -143,10 +143,10 @@ pub struct UnlockStatus {
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Overview {
     /// Everything the user has defined, each kind in the order it was made (`definitions.rs`).
-    pub lists: Vec<BlockList>,
+    pub targets: Vec<Target>,
     pub conditions: Vec<Condition>,
-    pub blocks: Vec<Definition>,
-    /// The blocks that run, as they were started (`Running::id` is the definition's).
+    pub sessions: Vec<Definition>,
+    /// The sessions that run, as they were started (`Running::id` is the definition's).
     pub running: Vec<Running>,
     /// Where unlocking stands (a clean install has no delay: unlock is free).
     pub unlock: UnlockStatus,
@@ -159,17 +159,17 @@ impl Overview {
     /// What the user has defined, without what runs.
     #[cfg(test)]
     pub fn library(self) -> Library {
-        Library { lists: self.lists, conditions: self.conditions, blocks: self.blocks }
+        Library { targets: self.targets, conditions: self.conditions, sessions: self.sessions }
     }
 }
 
-/// What the app has to enforce for one running block.
+/// What the app has to enforce for one running session.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Policy {
     #[serde(flatten)]
     pub entries: Entries,
     pub enforcers: Enforcers,
-    /// What the block's allowance lets through now: not enforced, but to be reported when it is in use.
+    /// What the session's allowance lets through now: not enforced, but to be reported when it is in use.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub free: Vec<FreeEntries>,
 }
@@ -182,11 +182,11 @@ impl Policy {
     }
 }
 
-/// Something an allowance lets through for now (`block::Free`): the entries that are, without the
+/// Something an allowance lets through for now (`session::Free`): the entries that are, without the
 /// always-allowed sites, which the policy's own entries have.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct FreeEntries {
-    pub block: String,
+    pub session: String,
     pub key: String,
     #[serde(flatten)]
     pub entries: Entries,
@@ -195,7 +195,7 @@ pub struct FreeEntries {
 /// One thing the app saw in use that an allowance counts (`Request::Report`).
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Used {
-    pub block: String,
+    pub session: String,
     pub key: String,
 }
 
@@ -229,21 +229,21 @@ mod tests {
 
     #[test]
     fn a_request_survives_the_wire() {
-        use crate::definitions::tests::{block, block_list, weekly};
-        let mut list = block_list("l", &["tweakers.net"]);
+        use crate::definitions::tests::{session, target, weekly};
+        let mut list = target("l", &["tweakers.net"]);
         list.entries.allowed = vec!["gathering.tweakers.net".into()];
         list.entries.programs = vec!["steam*".into()];
         list.entries.store_apps = vec!["Microsoft.XboxApp_8wekyb3d8bbwe".into()];
         list.entries.titles = vec!["*YouTube*".into()];
         let requests = [
-            Request::SaveList { list },
+            Request::SaveTarget { target: list },
             Request::SaveCondition { condition: weekly("s", "mon-fri 8-17") },
-            Request::SaveBlock { block: block("a", &["l"]) },
+            Request::SaveSession { session: session("a", &["l"]) },
             Request::Start { id: "a".into() },
-            Request::DeleteBlock { id: "a".into() },
-            Request::DeleteList { id: "l".into() },
+            Request::DeleteSession { id: "a".into() },
+            Request::DeleteTarget { id: "l".into() },
             Request::DeleteCondition { id: "s".into() },
-            Request::Report { used: vec![Used { block: "a".into(), key: "site:d.com".into() }] },
+            Request::Report { used: vec![Used { session: "a".into(), key: "site:d.com".into() }] },
         ];
         for request in requests {
             let mut wire = Vec::new();
@@ -269,7 +269,7 @@ mod tests {
             },
             enforcers: Enforcers::default(),
             free: vec![FreeEntries {
-                block: "a".into(),
+                session: "a".into(),
                 key: "site:d.com".into(),
                 entries: Entries { filters: vec!["d.com".into()], ..Entries::default() },
             }],

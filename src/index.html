@@ -36,7 +36,7 @@
     <div class="pinned">
       <div class="lane"><div class="cds--css-grid">
         <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
-          <!-- Filled by `openEditor`: the page, then a block being made, then what is made for it. Other
+          <!-- Filled by `openEditor`: the page, then a session being made, then what is made for it. Other
                pages have just themselves in it (`showView`). -->
           <cds-breadcrumb class="trail" id="trail" no-trailing-slash></cds-breadcrumb>
           <div id="head-list" class="heading" hidden>
@@ -65,8 +65,8 @@
         <div class="lane"><div class="cds--css-grid">
           <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
               <cds-tabs id="pages" data-t-aria-label="nav.label">
-                <cds-tab value="blocks" data-icon="locked"><span class="label" data-t="nav.blocks"></span></cds-tab>
-                <cds-tab value="lists" data-icon="list-checked-16"><span class="label" data-t="nav.lists"></span></cds-tab>
+                <cds-tab value="sessions" data-icon="locked"><span class="label" data-t="nav.sessions"></span></cds-tab>
+                <cds-tab value="targets" data-icon="list-checked-16"><span class="label" data-t="nav.targets"></span></cds-tab>
                 <cds-tab value="conditions" data-icon="rule-16"><span class="label" data-t="nav.conditions"></span></cds-tab>
                 <cds-tab value="settings" data-icon="settings"><span class="label" data-t="nav.settings"></span></cds-tab>
               </cds-tabs>
@@ -77,7 +77,7 @@
 
     <div id="scroller">
     <main>
-      <!-- One page per kind (blocks, block lists, conditions): a tile each. Built from KINDS. -->
+      <!-- One page per kind (sessions, targets, conditions): a tile each. Built from KINDS. -->
       <div id="view-list" class="cds--css-grid" hidden>
         <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
           <div class="notices" id="list-notices"></div>
@@ -89,7 +89,7 @@
         </cds-tile>
       </div>
 
-      <!-- Making or changing a block, a block list or a condition: the kind's form goes in #form. -->
+      <!-- Making or changing a session, a target or a condition: the kind's form goes in #form. -->
       <div id="view-editor" class="cds--css-grid" hidden>
         <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
           <div class="notices" id="editor-notices"></div>
@@ -106,7 +106,7 @@
         </div>
       </div>
 
-      <!-- Settings: unlocking, kept apart from the blocks. -->
+      <!-- Settings: unlocking, kept apart from the sessions. -->
       <div id="view-settings" class="cds--css-grid" hidden>
         <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
           <div class="setting">
@@ -161,7 +161,7 @@
       </cds-modal-header>
       <cds-modal-body>
         <cds-modal-body-content id="confirm-body"></cds-modal-body-content>
-        <!-- A form's fields: a lock's settings, or the password that stops a block. -->
+        <!-- A form's fields: a lock's settings, or the password that stops a session. -->
         <div id="confirm-fields" class="modal-fields" hidden></div>
       </cds-modal-body>
       <cds-modal-footer>

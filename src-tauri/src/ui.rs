@@ -4,7 +4,7 @@
 //! The web view behind the window costs about 300 MB and half a dozen extra processes, and the
 //! app is only looked at now and then; the blocking never needs the window. So the app starts in
 //! the tray with no window at all, and gives the memory back after a quiet spell. A window that is
-//! looked at in bursts (check, start a block, look again a minute later) reopens instantly; the
+//! looked at in bursts (check, start a session, look again a minute later) reopens instantly; the
 //! first opening after a long pause takes about half a second.
 
 use std::sync::Mutex;

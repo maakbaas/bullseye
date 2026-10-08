@@ -1,9 +1,9 @@
-//! The lists of a block list, in the two shapes every layer needs, so a new list is made here and
+//! The lists of a target, in the two shapes every layer needs, so a new list is made here and
 //! nowhere else in the backend:
 //! - `Entries`: the lists as text, one entry per line as typed. What is saved (`definitions`,
-//!   `state`), sent over the pipe (`proto`) and shown (`block::Running`) carries these, flattened
+//!   `state`), sent over the pipe (`proto`) and shown (`session::Running`) carries these, flattened
 //!   into its own fields, so each list is a field of the JSON as ever.
-//! - `Lists`: the same, read and checked, ready to match with (`block::Enforced` holds one).
+//! - `Lists`: the same, read and checked, ready to match with (`session::Enforced` holds one).
 //!
 //! **A new list** is a field of both, a line in `Lists::parse`, `Lists::entries` and
 //! `Lists::has`, an arm in `Entries::field`, a `state::Uses` variant for the enforcer that needs
@@ -37,7 +37,7 @@ pub struct Entries {
 }
 
 impl Entries {
-    /// Every list in order, a to z regardless of case, as saving a block list leaves them.
+    /// Every list in order, a to z regardless of case, as saving a target leaves them.
     pub fn sort(&mut self) {
         for list in
             [&mut self.filters, &mut self.allowed, &mut self.programs, &mut self.store_apps, &mut self.titles, &mut self.allowed_titles]
@@ -60,12 +60,12 @@ impl Entries {
     }
 }
 
-/// What a block is told to block, read and checked.
+/// What a session is told to block, read and checked.
 #[derive(Default)]
 pub struct Lists {
     pub sites: FilterList,
     /// The sites that are always allowed, which win over `sites`. They are not something an
-    /// enforcer needs on its own (`Uses::Sites` is about the block list), they only make
+    /// enforcer needs on its own (`Uses::Sites` is about the target), they only make
     /// exceptions to it.
     pub allowed: FilterList,
     pub programs: ProgramList,
@@ -81,7 +81,7 @@ impl Lists {
     /// needs: `programs.rs`).
     pub fn parse(entries: &Entries) -> Result<Lists, String> {
         Ok(Lists {
-            sites: FilterList::parse(&entries.filters).map_err(|_| "invalid block list syntax")?,
+            sites: FilterList::parse(&entries.filters).map_err(|_| "invalid target syntax")?,
             allowed: FilterList::parse(&entries.allowed).map_err(|_| "invalid syntax in the list of allowed sites")?,
             programs: ProgramList::parse(&entries.programs)?,
             store_apps: store_apps(&entries.store_apps)?,
@@ -128,7 +128,7 @@ impl Lists {
 
 /// The Store apps, by their exact package family names, letter case aside: the window ticks them from
 /// the installed ones (`store_apps::installed`), and the CLI takes them as `list apps` shows them.
-/// A `*` is refused, so what a block closes is always an app someone chose.
+/// A `*` is refused, so what a session closes is always an app someone chose.
 fn store_apps(entries: &[String]) -> Result<Patterns, String> {
     let wild: Vec<&str> = entries.iter().map(|e| e.trim()).filter(|e| e.contains('*')).collect();
     if !wild.is_empty() {
@@ -187,7 +187,7 @@ mod tests {
         // On their own they do nothing: an exception, not something to watch.
         let only = Lists::parse(&Entries { allowed_titles: vec!["Calculator".into()], ..Entries::default() }).unwrap();
         assert!(!only.has(Uses::Titles) && !only.blocks_title("Calculator") && !only.blocks_title("Notes"));
-        // What the exceptions of a block list are.
+        // What the exceptions of a target are.
         let entries = Entries {
             filters: vec!["*".into()],
             allowed: vec!["google.com".into()],

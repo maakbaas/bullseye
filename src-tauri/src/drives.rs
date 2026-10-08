@@ -9,7 +9,7 @@
 //! (one is offered, and any of them unlocks).
 //!
 //! A flash drive condition (`condition::Rule::FlashDrive`) is active while the drive is *not*
-//! connected, so the service asks `is_present` whenever it decides whether a block is active or
+//! connected, so the service asks `is_present` whenever it decides whether a session is active or
 //! can be stopped.
 
 use std::sync::Mutex;
@@ -22,7 +22,7 @@ use crate::sync::LockExt;
 /// `MSFT_PhysicalDisk.BusType` of a disk on the USB bus.
 const BUS_USB: u16 = 7;
 
-/// How long a look at the connected drives is good for, so asking whether a block can be stopped
+/// How long a look at the connected drives is good for, so asking whether a session can be stopped
 /// does not ask Windows every time.
 const FRESH: Duration = Duration::from_secs(2);
 

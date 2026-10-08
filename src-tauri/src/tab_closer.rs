@@ -8,23 +8,23 @@
 //! Firefox exposes every tab's page, shown or not, and which are halves of a split view
 //! (`Closer::tick_firefox`).
 //!
-//! Obsidian's web viewer exposes neither its URL nor its tabs, so while a block is running
+//! Obsidian's web viewer exposes neither its URL nor its tabs, so while a session is running
 //! Obsidian is closed whenever it hosts any web content.
 //!
 //! App windows (`chrome --app=<url>`, popups) have no tab strip and an address bar with no room
 //! on screen, but their page's document still carries its URL; the window is closed whole.
 //!
-//! Each of these is an enforcer a block can turn on or off (`state::Enforcers`): blocked
+//! Each of these is an enforcer a session can turn on or off (`state::Enforcers`): blocked
 //! tabs, blocked pages in a split view (a window showing two pages), blocked app windows, and Obsidian. With several
-//! blocks running, each goes by its own enforcers and lists (`block::Active`).
+//! sessions running, each goes by its own enforcers and lists (`session::Active`).
 
 use std::collections::{HashMap, HashSet};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::block::{Active, TitleAction};
 use crate::client::Remote;
 use crate::programs;
+use crate::session::{Active, TitleAction};
 use crate::store_apps;
 use crate::sync::spawn_critical;
 use crate::wake;
@@ -678,7 +678,7 @@ impl Closer {
         }
     }
 
-    /// Closes the programs on the running blocks' lists, and the programs of the Store apps on
+    /// Closes the programs on the running sessions' lists, and the programs of the Store apps on
     /// them (a packaged app's program runs from its own folder, which names the app:
     /// `store_apps::family_of`): asks each to close like the X of its windows does, and ends the
     /// ones still running `KILL_AFTER` later (or that have no window to ask). Programs Windows
@@ -710,7 +710,7 @@ impl Closer {
         self.asked.retain(|pid, _| running.contains(pid));
     }
 
-    /// Closes or minimizes the windows whose title is on the running blocks' lists
+    /// Closes or minimizes the windows whose title is on the running sessions' lists
     /// (`Active::title_action`). Closing is as the X does, and again every `KILL_AFTER` for one that
     /// stays; only the window, never its program, so a browser window goes with all its tabs and
     /// nothing else is ended. Minimizing is asked once; a window still up `MINIMIZE_AFTER` later
@@ -1050,18 +1050,18 @@ fn close_tab(a: &UIAutomation, strip: &UIElement, window: &UIElement, title: &st
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block::Enforced;
     use crate::filters::FilterList;
     use crate::lists::Lists;
     use crate::programs::ProgramList;
+    use crate::session::Enforced;
     use crate::state::Enforcers;
     use std::process::{Child, Command, Stdio};
     use std::sync::Arc;
 
-    /// One block with these sites and programs, and every enforcer on.
+    /// One session with these sites and programs, and every enforcer on.
     fn active(sites: &[&str], programs: &[&str]) -> Active {
         Active {
-            blocks: vec![Enforced::new(
+            sessions: vec![Enforced::new(
                 Arc::new(Lists {
                     sites: FilterList::parse(sites).unwrap(),
                     programs: ProgramList::parse(programs).unwrap(),
@@ -1178,11 +1178,11 @@ mod tests {
         println!("browser windows recognised: {browsers}");
         assert!(browsers >= 1, "open a Chromium browser window first");
 
-        let block = active("example.com");
+        let session = active("example.com");
         let before = browser_windows().len();
         let start = Instant::now();
         let closed = (0..60).any(|_| {
-            let _ = closer.tick(&block);
+            let _ = closer.tick(&session);
             thread::sleep(Duration::from_millis(250));
             browser_windows().len() < before
         });

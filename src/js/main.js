@@ -10,7 +10,7 @@ import { detour } from "./detour.js";
 applyStrings();
 whenRefreshed(render);
 
-let page = "blocks"; // the kind whose page or editor is shown
+let page = "sessions"; // the kind whose page or editor is shown
 
 function render() {
   if (!$("view-settings").hidden) renderSettings();
@@ -80,7 +80,7 @@ async function unlock() {
       // The last step, which cannot be taken back: asked once more.
       const sure = await ask({ heading: t("settings.confirmHeading"), body: t("settings.confirmBody"), action: t("settings.unlock"), kind: "danger" });
       if (!sure) return;
-      // Every block ends; the app stays, with nothing to enforce.
+      // Every session ends; the app stays, with nothing to enforce.
       await invoke("unlock_all");
       notify("settings-notices", "success", t("settings.unlocked"));
     } else {
@@ -105,14 +105,14 @@ $("unlock-answer").addEventListener("click", async () => {
     text = await askText(t("settings.way.answerHeading"), way.text, t("settings.unlock"));
     if (text === null) return;
   } else {
-    const field = el("cds-password-input", { label: t("blocks.stopPassword"), autocomplete: "off" });
+    const field = el("cds-password-input", { label: t("sessions.stopPassword"), autocomplete: "off" });
     password = await ask({
       heading: t("settings.way.answerHeading"),
       body: t("settings.way.answerBody"),
       action: t("settings.unlock"),
       kind: "danger",
       fields: [field],
-      read: async () => (invalid(field, field.value ? null : t("blocks.stopPasswordMissing")) ? null : field.value),
+      read: async () => (invalid(field, field.value ? null : t("sessions.stopPasswordMissing")) ? null : field.value),
     });
     if (!password) return;
   }
@@ -128,7 +128,7 @@ $("unlock-answer").addEventListener("click", async () => {
 
 // ---- The other way to unlock (`unlock::Way`): a lock method besides the delay, which is always there.
 
-// Only these of the lock methods (the delay is always there), with the same labels as on a block.
+// Only these of the lock methods (the delay is always there), with the same labels as on a session.
 const WAYS = ["none", "condition", "text", "password"];
 const wayMethod = el("cds-dropdown", { autoalign: true, "title-text": t("settings.way.title"), class: "way-method" });
 for (const key of WAYS) wayMethod.append(el("cds-dropdown-item", { value: key }, LOCKS[key].label));
@@ -231,18 +231,18 @@ $("import").addEventListener("click", async () => {
   try {
     const opened = await invoke("open_settings");
     if (!opened) return;
-    const { lists, conditions, blocks, unlocked } = opened.contents;
+    const { targets, conditions, sessions, unlocked } = opened.contents;
     const body = [
       t("settings.importBody", {
-        lists: t("settings.importLists", { n: lists }),
+        targets: t("settings.importTargets", { n: targets }),
         conditions: t("settings.importConditions", { n: conditions }),
-        blocks: t("settings.importBlocks", { n: blocks }),
+        sessions: t("settings.importSessions", { n: sessions }),
       }),
     ];
     if (overview.running.length) body.push(t("settings.importStops"));
     if (unlocked.length) body.push(t("settings.importUnlocked", { n: unlocked.length, names: joined(unlocked.map(quoted)).join("") }));
     // Store apps not installed here are left out (the backend tells which: `Library::without_missing_apps`).
-    const apps = opened.left_out.map((app) => t("settings.importAppIn", { app: quoted(app.name), list: quoted(app.list) }));
+    const apps = opened.left_out.map((app) => t("settings.importAppIn", { app: quoted(app.name), target: quoted(app.target) }));
     const leftOut = !opened.apps_checked ? t("settings.importAppsUnknown") : apps.length ? t("settings.importAppsLeftOut", { n: apps.length, apps: joined(apps).join("") }) : "";
     if (leftOut) body.push(leftOut);
     const sure = await ask({ heading: t("settings.importHeading"), body: body.join(" "), action: t("settings.importAction"), kind: "danger" });
@@ -254,8 +254,8 @@ $("import").addEventListener("click", async () => {
     notify("transfer-notices", "error", t("settings.importFailed"), String(e));
   }
 });
-// ---- Pages, by the address after #: #/ (blocks), #/new, #/edit/<id>, the same under
-// #/lists and #/conditions, and #/settings.
+// ---- Pages, by the address after #: #/ (sessions), #/new, #/edit/<id>, the same under
+// #/targets and #/conditions, and #/settings.
 
 // The tab of the page shown; an editor is its kind's.
 function markPage(page) {
@@ -280,32 +280,32 @@ function showView(view) {
 function route() {
   const hash = location.hash || "#/";
   let view = "list";
-  let kind = "blocks";
+  let kind = "sessions";
   let edit = null;
-  // A block list or condition made on a detour (`detour`): from the block editor, or for a
+  // A target or condition made on a detour (`detour`): from the session editor, or for a
   // lock. Without its detour (the page was reloaded), back to where it came from.
-  const nested = hash.match(/^#\/((?:new|edit\/[^/]+|lock\/[^/]+))\/(lists|conditions)\/(?:new|edit\/([^/]+))$/);
+  const nested = hash.match(/^#\/((?:new|edit\/[^/]+|lock\/[^/]+))\/(targets|conditions)\/(?:new|edit\/([^/]+))$/);
   if (nested) {
-    const back = nested[1].startsWith("lock/") ? KINDS.blocks.path : `#/${nested[1]}`;
+    const back = nested[1].startsWith("lock/") ? KINDS.sessions.path : `#/${nested[1]}`;
     if (!detour.current || detour.current.back !== back) {
       location.hash = back;
       return;
     }
     page = nested[2];
     showView("editor");
-    // Still within the block it is made for.
-    markPage("blocks");
+    // Still within the session it is made for.
+    markPage("sessions");
     openEditor(nested[2], nested[3] ? decodeURIComponent(nested[3]) : null, { via: detour.current });
     $("scroller").scrollTo(0, 0);
     return;
   }
-  // Back from a detour: the block as it was being edited, with what was made on it.
+  // Back from a detour: the session as it was being edited, with what was made on it.
   const resumed = detour.current && detour.current.back === hash ? detour.current.draft : null;
   detour.current = null;
-  const match = hash.match(/^#\/(?:(lists|conditions)(?:\/|$))?(new|edit\/(.+))?$/);
+  const match = hash.match(/^#\/(?:(targets|conditions)(?:\/|$))?(new|edit\/(.+))?$/);
   if (hash === "#/settings") view = "settings";
   else if (match) {
-    kind = match[1] || "blocks";
+    kind = match[1] || "sessions";
     if (match[2]) {
       view = "editor";
       edit = match[3] ? decodeURIComponent(match[3]) : "";
@@ -329,7 +329,7 @@ function route() {
     tiles.clear();
     renderTiles(kind);
   }
-  if (view === "editor") openEditor(kind, edit || null, { draft: kind === "blocks" ? resumed : null });
+  if (view === "editor") openEditor(kind, edit || null, { draft: kind === "sessions" ? resumed : null });
   else closeEditor();
   if (view === "settings") {
     $("delay").value = typedDelay(overview.unlock.delay);
@@ -341,7 +341,7 @@ function route() {
 }
 window.addEventListener("hashchange", route);
 $("new-item").addEventListener("click", () => (location.hash = KINDS[page].newPath));
-const PAGES = { blocks: "#/", lists: "#/lists", conditions: "#/conditions", settings: "#/settings" };
+const PAGES = { sessions: "#/", targets: "#/targets", conditions: "#/conditions", settings: "#/settings" };
 // Below Carbon's md breakpoint (672 px) the tabs are icons only, each with its label as tooltip.
 const narrow = matchMedia("(max-width: 41.99rem)");
 const tabs = document.querySelectorAll("#pages cds-tab");

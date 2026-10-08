@@ -1,10 +1,10 @@
-//! The running blocks on disk, so they survive the app ending and the machine restarting.
+//! The running sessions on disk, so they survive the app ending and the machine restarting.
 //!
-//! The file is written when a block starts or ends, and deleted when the last one ends.
+//! The file is written when a session starts or ends, and deleted when the last one ends.
 //!
 //! The end time is a timestamp in internet time (`clock.rs`) rather than a running stopwatch,
 //! because a stopwatch cannot be carried across a restart. Moving the Windows clock does not
-//! change it; deleting the file still ends the block, as an administrator can.
+//! change it; deleting the file still ends the session, as an administrator can.
 
 use std::fs;
 use std::path::PathBuf;
@@ -14,35 +14,35 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::allowance::Run;
-use crate::block::RunLock;
 use crate::condition::Rule;
 use crate::lists::Entries;
+use crate::session::RunLock;
 
-/// A running block as written to disk.
+/// A running session as written to disk.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Saved {
     /// Which definition it was started from (`definitions.rs`).
     pub id: String,
     /// The definition's name when it started.
     pub name: String,
-    /// Its block lists, each with its own enforcers.
+    /// Its targets, each with its own enforcers.
     pub parts: Vec<SavedPart>,
-    /// The latest time the block was known to be running at, so the clock cannot start from an
+    /// The latest time the session was known to be running at, so the clock cannot start from an
     /// earlier one while offline (`clock::at_least`); milliseconds since the Unix epoch.
     pub seen: Option<u64>,
     /// How it is locked; a password lock only as its hash, never the password.
     pub lock: RunLock,
-    /// When the block is active (`condition.rs`); `None` is always.
+    /// When the session is active (`condition.rs`); `None` is always.
     pub condition: Option<Rule>,
     /// The time zone a schedule is read in, by name (`localtime::Zone::named`), fixed when the
-    /// block started.
+    /// session started.
     pub zone: String,
     /// Its allowance and what is used of it (`allowance.rs`); `None`: it has none.
     #[serde(default)]
     pub allowance: Option<Run>,
 }
 
-/// One block list of a running block, as written to disk.
+/// One target of a running session, as written to disk.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SavedPart {
     pub name: String,
@@ -51,21 +51,21 @@ pub struct SavedPart {
     pub enforcers: Enforcers,
 }
 
-/// The ways a block is enforced, chosen when it starts and fixed while it runs, so turning one
-/// off is not a way around a timed block. A list with only one way to act on it has no switch of its
+/// The ways a session is enforced, chosen when it starts and fixed while it runs, so turning one
+/// off is not a way around a timed session. A list with only one way to act on it has no switch of its
 /// own: the programs, the Store apps and the window titles are acted on when the list has entries
 /// (an empty list is "off"). The sites have one switch per browser and view, and Obsidian's web
 /// viewer, which has no list, has its own.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct Enforcers {
-    /// Closes a Chromium tab whose page is on the block list (`tab_closer.rs`).
+    /// Closes a Chromium tab whose page is on the target (`tab_closer.rs`).
     pub chromium_tabs: bool,
     /// Closes a blocked page shown in either half of a Chromium split view.
     pub chromium_split_view: bool,
     /// Closes a blocked page shown in an app window (`chrome --app=<url>`, or a popup): a Chromium
     /// window with no tab strip and no address bar.
     pub chromium_app_windows: bool,
-    /// Closes a Firefox tab whose page is on the block list (`tab_closer.rs`).
+    /// Closes a Firefox tab whose page is on the target (`tab_closer.rs`).
     pub firefox_tabs: bool,
     /// Closes a blocked page shown in either half of a Firefox split view.
     pub firefox_split_view: bool,
@@ -73,7 +73,7 @@ pub struct Enforcers {
     /// lost. Not an enforcer of its own but how that list is acted on.
     #[serde(default)]
     pub window_titles_minimize: bool,
-    /// Closes Obsidian while it shows web content; not linked to the block list.
+    /// Closes Obsidian while it shows web content; not linked to the target.
     pub obsidian_web_viewer: bool,
 }
 
@@ -82,7 +82,7 @@ pub struct Enforcers {
 pub enum Uses {
     /// No list: it does its work on its own (Obsidian's).
     Nothing,
-    /// The block list of sites (`filters.rs`).
+    /// The target of sites (`filters.rs`).
     Sites,
     /// The list of programs (`programs.rs`).
     Programs,
@@ -111,7 +111,7 @@ impl Enforcers {
         ]
     }
 
-    /// Whether `new` loosens these (for a locked block, that is a way out): an enforcer turned off,
+    /// Whether `new` loosens these (for a locked session, that is a way out): an enforcer turned off,
     /// or windows by title minimized where they were closed (closing them where they were minimized
     /// is stricter).
     pub fn turned_off_by(&self, new: &Enforcers) -> bool {
@@ -124,9 +124,9 @@ impl Enforcers {
         self.all().iter().any(|&(on, needs)| on && needs == list)
     }
 
-    /// Whether a block with these enforcers has anything to do, given which lists have entries
+    /// Whether a session with these enforcers has anything to do, given which lists have entries
     /// (`has_entries`): an enforcer that needs a list has nothing to do with an empty one, the
-    /// others do not need one. A block that cannot do anything is not worth starting.
+    /// others do not need one. A session that cannot do anything is not worth starting.
     pub fn can_run(&self, has_entries: impl Fn(Uses) -> bool) -> bool {
         self.all().iter().any(|&(on, needs)| on && has_entries(needs))
     }
@@ -162,10 +162,10 @@ pub fn from_unix(millis: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_millis(millis)
 }
 
-/// The file: the running blocks.
+/// The file: the running sessions.
 #[derive(Serialize, Deserialize)]
 struct OnDisk {
-    blocks: Vec<Saved>,
+    sessions: Vec<Saved>,
 }
 
 /// One state file, so tests can work in a directory of their own.
@@ -178,40 +178,40 @@ impl Store {
         Store { path }
     }
 
-    /// The file this block is kept in, for tests and for telling the user where it is.
+    /// The file this session is kept in, for tests and for telling the user where it is.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn path(&self) -> &std::path::Path {
         &self.path
     }
 
-    /// The saved blocks; none if there is no file, it is unreadable, or it is not ours.
+    /// The saved sessions; none if there is no file, it is unreadable, or it is not ours.
     pub fn load(&self) -> Vec<Saved> {
         let read = fs::read(&self.path).ok().and_then(|bytes| serde_json::from_slice::<OnDisk>(&bytes).ok());
-        read.map(|file| file.blocks).unwrap_or_default()
+        read.map(|file| file.sessions).unwrap_or_default()
     }
 
-    /// Writes the running blocks, replacing what was there; none at all removes the file. Through a
+    /// Writes the running sessions, replacing what was there; none at all removes the file. Through a
     /// temporary file, so that a crash or a power cut can never leave a half-written file behind
     /// that then fails to parse.
-    pub fn save(&self, blocks: &[Saved]) -> Result<(), String> {
-        if blocks.is_empty() {
+    pub fn save(&self, sessions: &[Saved]) -> Result<(), String> {
+        if sessions.is_empty() {
             self.clear();
             return Ok(());
         }
-        let json = serde_json::to_string(&OnDisk { blocks: blocks.to_vec() }).map_err(|e| e.to_string())?;
+        let json = serde_json::to_string(&OnDisk { sessions: sessions.to_vec() }).map_err(|e| e.to_string())?;
         let dir = self.path.parent().ok_or_else(|| format!("no folder for {}", self.path.display()))?;
         fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
         let temporary = self.path.with_extension("new");
         fs::write(&temporary, json).map_err(|e| format!("cannot write {}: {e}", temporary.display()))?;
         // `rename` replaces an existing file in one step, on Windows too, so the file is only
-        // ever the old blocks or the new ones: never partly written, and never briefly absent.
+        // ever the old sessions or the new ones: never partly written, and never briefly absent.
         fs::rename(&temporary, &self.path).map_err(|e| {
             let _ = fs::remove_file(&temporary);
             format!("cannot replace {}: {e}", self.path.display())
         })
     }
 
-    /// Deletes the saved blocks: there are none left to resume.
+    /// Deletes the saved sessions: there are none left to resume.
     pub fn clear(&self) {
         if let Err(e) = fs::remove_file(&self.path) {
             if e.kind() != std::io::ErrorKind::NotFound {
@@ -230,8 +230,8 @@ pub fn use_dir(dir: PathBuf) {
 }
 
 /// The folder the service keeps its files in: `%ProgramData%\bullseye`, which the service
-/// locks down to SYSTEM (`service::lock_down_data_dir`). The running blocks and the definitions
-/// live here, so the user whose blocks they are cannot edit or delete them.
+/// locks down to SYSTEM (`service::lock_down_data_dir`). The running sessions and the definitions
+/// live here, so the user whose sessions they are cannot edit or delete them.
 ///
 /// `None` only if there is no such folder, in which case the service still blocks for as long as
 /// it runs, it just does not survive a restart.
@@ -242,7 +242,7 @@ pub fn dir() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("ProgramData")?).join("bullseye"))
 }
 
-/// The app's own folder, for its log: `%LOCALAPPDATA%\bullseye`. Nothing in it matters to a block.
+/// The app's own folder, for its log: `%LOCALAPPDATA%\bullseye`. Nothing in it matters to a session.
 pub fn user_dir() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("bullseye"))
 }
@@ -283,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn no_file_is_no_block() {
+    fn no_file_is_no_session() {
         let store = store("absent");
         assert!(store.load().is_empty());
         // Clearing something that is not there is not an error.
@@ -291,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn saved_block_comes_back() {
+    fn saved_session_comes_back() {
         let store = store("roundtrip");
         let saved = timed(Some(to_unix(SystemTime::now()).unwrap() + 600_000));
         store.save(std::slice::from_ref(&saved)).unwrap();
@@ -373,12 +373,12 @@ mod tests {
         use_dir(dir.clone());
         assert_eq!(super::dir(), Some(dir.clone()));
         assert_eq!(super::store().map(|store| store.path().to_path_buf()), Some(dir.join("state.json")));
-        crate::definitions::Definitions::new().save_list(crate::definitions::tests::block_list("l", &[])).unwrap();
-        assert!(dir.join("blocks.json").exists());
+        crate::definitions::Definitions::new().save_target(crate::definitions::tests::target("l", &[])).unwrap();
+        assert!(dir.join("sessions.json").exists());
         crate::unlock::UnlockDelay::new().set_delay(3600, SystemTime::now()).unwrap();
         assert!(dir.join("unlock.json").exists());
-        let blocklist = crate::block::Blocklist::new();
-        assert!(!blocklist.is_running());
+        let sessions = crate::session::Sessions::new();
+        assert!(!sessions.is_running());
         // The app's own folder, for its log, is the user's.
         assert_eq!(user_dir(), std::env::var_os("LOCALAPPDATA").map(|local| PathBuf::from(local).join("bullseye")));
         assert!(now().is_some_and(|since| since.as_secs() > 1_700_000_000));
@@ -387,8 +387,8 @@ mod tests {
     #[test]
     fn windows_by_title_are_closed_unless_minimized_and_closing_is_stricter() {
         let minimize = |on| Enforcers { window_titles_minimize: on, ..Enforcers::default() };
-        assert!(!Enforcers::default().window_titles_minimize, "a new block list closes them");
-        // A locked block may go from minimizing to closing, never back; nor turn an enforcer off.
+        assert!(!Enforcers::default().window_titles_minimize, "a new target closes them");
+        // A locked session may go from minimizing to closing, never back; nor turn an enforcer off.
         assert!(!minimize(true).turned_off_by(&minimize(false)), "closing instead of minimizing is stricter");
         assert!(minimize(false).turned_off_by(&minimize(true)), "minimizing instead of closing is not");
         assert!(!minimize(false).turned_off_by(&minimize(false)));

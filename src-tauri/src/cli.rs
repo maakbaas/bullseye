@@ -16,36 +16,36 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Map, Value};
 
 use crate::allowance::{Anchor, Reset, Scope, Status as AllowanceStatus, Terms};
-use crate::block::Running;
 use crate::client::Remote;
 use crate::condition::{Mode, Rule};
-use crate::definitions::{self, BlockList, Condition, Definition, Kind, Library};
+use crate::definitions::{self, Condition, Definition, Kind, Library, Target};
 use crate::duration;
 use crate::lists::{Entries, Lists};
 use crate::localtime;
 use crate::lock::Lock;
 use crate::proto::{Overview, Request, UnlockStatus};
 use crate::schedule::Week;
+use crate::session::Running;
 use crate::state::Enforcers;
 use crate::webhook::{self, Hook, Match, Matcher, Method};
 
 /// Each command the window can invoke, and the CLI commands that do the same. Empty: it is about
 /// the window itself.
 pub const GUI_COMMANDS: [(&str, &[&str]); 30] = [
-    ("block_status", &["status", "show", "list show", "condition show"]),
-    ("save_block", &["new", "edit"]),
-    ("delete_block", &["delete"]),
-    ("save_list", &["list new", "list edit"]),
-    ("delete_list", &["list delete"]),
+    ("status", &["status", "show", "target show", "condition show"]),
+    ("save_session", &["new", "edit"]),
+    ("delete_session", &["delete"]),
+    ("save_target", &["target new", "target edit"]),
+    ("delete_target", &["target delete"]),
     // The installed Store apps the editor offers to tick.
-    ("installed_apps", &["list apps"]),
+    ("installed_apps", &["target apps"]),
     // The flash drives the editor of a flash drive condition offers.
     ("connected_drives", &["drives"]),
     ("save_condition", &["condition new", "condition edit"]),
     ("delete_condition", &["condition delete"]),
-    ("duplicate", &["duplicate", "list duplicate", "condition duplicate"]),
-    ("start_block", &["start"]),
-    ("stop_block", &["stop"]),
+    ("duplicate", &["duplicate", "target duplicate", "condition duplicate"]),
+    ("start_session", &["start"]),
+    ("stop_session", &["stop"]),
     ("request_stop", &["stop"]),
     ("abort_stop", &["stop"]),
     ("unlock_all", &["unlock"]),
@@ -57,13 +57,13 @@ pub const GUI_COMMANDS: [(&str, &[&str]); 30] = [
     ("describe_schedule", &["condition check"]),
     // A webhook condition asked once, as the editor Test button does.
     ("test_webhook", &["condition test"]),
-    // A block's allowance in words: what `show` says of it.
+    // A session's allowance in words: what `show` says of it.
     ("describe_allowance", &["show"]),
     // A lock's length or end in words: what `show` and `start` say of a duration or until lock.
     ("describe_duration", &["show"]),
     ("describe_until", &["show", "start"]),
     // What the question before a deletion says.
-    ("deletion_fallout", &["list delete", "condition delete"]),
+    ("deletion_fallout", &["target delete", "condition delete"]),
     ("export_settings", &["export"]),
     // A settings file's contents: what the question before importing it says.
     ("open_settings", &["import"]),
@@ -75,20 +75,20 @@ const HELP: &str = "\
 Bullseye command line: everything the window can do.
 
 Usage: bullseye <command> [options]
-A <block>, <list> or <condition> is its name (any case) or its id. An option that takes several
+A <session>, <target> or <condition> is its name (any case) or its id. An option that takes several
 items takes the words after it, up to the next option: --sites youtube.com reddit.com. An item
 with a space in it goes in double quotes: --titles \"Team chat\" *YouTube*.
 
-A block is what you start: one or more block lists (what to block), a condition (when it is
+A session is what you start: one or more targets (what to block), a condition (when it is
 active; 'always', a weekly schedule, or a flash drive that is not connected), at most one
 allowance (what lets it go quiet for a while) and a lock (how it is kept from being stopped).
 
-Blocks:
-  status [--json]          Every block (running or not, active or not, locked or not), every
-                           block list and every condition.
-  show <block> [--json]    One block: its lists, condition, lock and state.
-  new <name> [options]     Make a block. Options:
-      --lists <lists>          The block lists it enforces.
+Sessions:
+  status [--json]          Every session (running or not, active or not, locked or not), every
+                           target and every condition.
+  show <session> [--json]  One session: its targets, condition, lock and state.
+  new <name> [options]     Make a session. Options:
+      --targets <targets>      The targets it enforces.
       --condition <condition>  When it is active: a condition's name, or 'always' (the default).
       --allowance <budget|pomodoro|none>
                                What lets it go quiet for a while (none by default): a budget of
@@ -98,16 +98,16 @@ Blocks:
                                what they name.
       --allowed <duration>     Budget: the time allowed, e.g. 30m. Pomodoro: how long
                                everything is allowed for each cycle.
-      --scope <total|each>     Budget: for the whole block (the default) or for each site,
+      --scope <total|each>     Budget: for the whole session (the default) or for each site,
                                program, Store app and window title on its own.
       --reset <never|condition|duration>
                                Budget: when what was used is given back: never while the
-                               block runs (the default), each time the block's condition turns
-                               on, or every so long, e.g. 1d or 12h, counted by --anchor.
+                               session runs (the default), each time the session's condition
+                               turns on, or every so long, e.g. 1d or 12h, counted by --anchor.
       --blocked <duration>     Pomodoro: how long it is blocked for before it allows.
       --anchor <start|clock>   What a Pomodoro, or a budget's reset every so long, is counted
-                               from: the block's start (the default), or midnight on the clock,
-                               so an hour starts at xx:00 (it must then fit a day evenly).
+                               from: the session's start (the default), or midnight on the
+                               clock, so an hour starts at xx:00 (it must then fit a day evenly).
       --lock-duration <duration>
                                Locked for this long once started, e.g. 2h 30m: it cannot be
                                stopped and ends by itself.
@@ -117,8 +117,8 @@ Blocks:
                                Fast Startup is not a restart.
       --lock-condition <condition>
                                Locked while this condition is active: it cannot be stopped then,
-                               and runs until stopped otherwise. With the block's own condition,
-                               it is locked exactly while it is active.
+                               and runs until stopped otherwise. With the session's own
+                               condition, it is locked exactly while it is active.
       --lock-password <pw>     Locked with a password: it runs until stopped with that password
                                (or by unlocking). Only a hash of it is kept.
       --lock-delay <time>      Locked behind a wait, like unlocking: stopping is asked for, counts
@@ -126,40 +126,44 @@ Blocks:
                                stopped.
       --lock-text <text>       Locked until the text is typed in exactly: the window shows it
                                above an input that cannot be pasted into, and that is the only
-                               place to stop such a block (or by unlocking).
+                               place to stop such a session (or by unlocking).
       --no-lock                Not locked: it can be stopped at any time (the default).
-  edit <block> [options]   Change a block: the options of new, which replace what they name
-                           (--lists replaces all its lists), and --name <name>. A running block
-                           takes the change at once (not its lock); while it is locked, only its
-                           name and a stricter allowance: a budget shorter or reset less often,
-                           or none; a cycle cannot change.
-  add <block> --lists <lists>
-                           Add block lists to a block, keeping the ones it has.
-  remove <block> --lists <lists>
-                           Take block lists out of a block.
-  delete <block> [--force] Delete a block that is not running. Asks first, unless --force.
-  duplicate <block>        Make a copy of a block, named after it with a number: \"Work (2)\".
-  start <block> [--force]  Start a block. The lock options of new set its lock first, as the lock
-                           on its tile in the window does. A locked block asks first, unless --force.
-  stop <block> [--password <pw>]
-                           Stop a running block that is not locked right now; one locked with a
-                           password with its password (asked for when not given). One locked
+  edit <session> [options] Change a session: the options of new, which replace what they name
+                           (--targets replaces all its targets), and --name <name>. A running
+                           session takes the change at once (not its lock); while it is locked,
+                           only its name and a stricter allowance: a budget shorter or reset
+                           less often, or none; a cycle cannot change.
+  add <session> --targets <targets>
+                           Add targets to a session, keeping the ones it has.
+  remove <session> --targets <targets>
+                           Take targets out of a session.
+  delete <session> [--force]
+                           Delete a session that is not running. Asks first, unless --force.
+  duplicate <session>      Make a copy of a session, named after it with a number: \"Work (2)\".
+  start <session> [--force]
+                           Start a session. The lock options of new set its lock first, as the
+                           lock on its tile in the window does. A locked session asks first,
+                           unless --force.
+  stop <session> [--password <pw>]
+                           Stop a running session that is not locked right now; one locked with
+                           a password with its password (asked for when not given). One locked
                            with a text is stopped in the window, by typing the text. One locked
                            with a delay: the first stop asks for it and starts the wait, the
-                           next one, once it is over, stops the block; `stop <block> --abort`
+                           next one, once it is over, stops the session; `stop <session> --abort`
                            ends the wait.
 
-Block lists:
-  list show <list> [--json]   One block list, and the blocks that use it.
-  list apps [--json]          The Store apps installed, by name and package family name, to
+Targets:
+  target show <target> [--json]
+                              One target, and the sessions that use it.
+  target apps [--json]        The Store apps installed, by name and package family name, to
                               block with --store-apps.
-  list new <name> [options]   Make a block list. Options:
+  target new <name> [options] Make a target. Options:
       --sites <sites>          The sites to block: each with its subdomains and everything under
                                it, e.g. youtube.com. * as a wildcard.
       --allowed-sites <sites>  Sites that are always allowed, also when blocked.
       --programs <names>       Programs to close, by exe name, e.g. steam.exe.
       --store-apps <families>  Store apps to close, by their exact package family names, e.g.
-                               Microsoft.WindowsCalculator_8wekyb3d8bbwe, as 'list apps' shows
+                               Microsoft.WindowsCalculator_8wekyb3d8bbwe, as 'target apps' shows
                                them; no *.
       --titles <titles>        Windows to close, by their title, * as a wildcard, e.g.
                                *YouTube*. The whole window closes, tabs and all.
@@ -171,33 +175,35 @@ Block lists:
                                --allowed-titles-file.
       --enforcers <names>      The enforcers, or 'all' (the default). Names:
                                {enforcers}
-  list edit <list> [options]  Change a block list: the options of list new, which replace what
+  target edit <target> [options]
+                              Change a target: the options of target new, which replace what
                               they name, --name <name> and --clear <lists>, the lists to empty:
                               sites, allowed-sites, programs, store-apps, titles,
-                              allowed-titles. While a locked block uses it, only stricter: more
+                              allowed-titles. While a locked session uses it, only stricter: more
                               to block, fewer allowed, more enforcers.
-  list add <list> [options]   Add entries to the lists of a block list, keeping what it has: the
-                              list options of list new (--sites, --programs, …), and
-                              --enforcers to turn on. While a locked block uses it, adding
+  target add <target> [options]
+                              Add entries to the lists of a target, keeping what it has: the
+                              list options of target new (--sites, --programs, …), and
+                              --enforcers to turn on. While a locked session uses it, adding
                               entries to block is allowed.
-  list remove <list> [options]
-                              Take entries out of a block list, however they are written
+  target remove <target> [options]
+                              Take entries out of a target, however they are written
                               (Steam is steam.exe), and turn --enforcers off. One that is not
                               in it is refused, as a typo.
-  list delete <list> [--force]
-                              Delete a block list that no running block uses; it is taken out of
-                              the blocks that use it (a block left without one is deleted).
-  list duplicate <list>       Make a copy of a block list, named after it with a number.
+  target delete <target> [--force]
+                              Delete a target that no running session uses; it is taken out of
+                              the sessions that use it (a session left without one is deleted).
+  target duplicate <target>   Make a copy of a target, named after it with a number.
 
 Conditions:
-  condition show <condition>        One condition, and the blocks that use it.
+  condition show <condition>        One condition, and the sessions that use it.
   condition new <name> (--times <times> | --drive <drive> | --webhook <url> [webhook options] | --any <conditions> | --all <conditions>)
                                     Make a condition: a weekly schedule, e.g. --times
                                     \"Mon-Fri 08:00-17:00; Sat 10-12\"; or a flash drive, by name
                                     or serial number ('drives' lists them): active while it is
                                     not connected; or a combination of two or more other
-                                    conditions (--any or --all, separated by spaces): active when any
-                                    of them is, or when all are. Not of other combinations. A
+                                    conditions (--any or --all, separated by spaces): active when
+                                    any of them is, or when all are. Not of other combinations. A
                                     webhook asks one web address (it can hold GET parameters) every
                                     --every <time> (at least 1m, the default), with --method
                                     get|post (default get). It is what --fallback active|inactive
@@ -206,7 +212,7 @@ Conditions:
                                     (the whole body, white space around it aside): then it is the
                                     other.
   condition edit <condition> [--name <name>] [--times <times> | --drive <drive> | --webhook <url> [webhook options] | --any <conditions> | --all <conditions>]
-                                    Change a condition. While a locked block uses it, a schedule
+                                    Change a condition. While a locked session uses it, a schedule
                                     can only get more times, a drive cannot change, and a
                                     combination can only get more active.
   condition add <condition> --conditions <conditions>
@@ -214,8 +220,8 @@ Conditions:
   condition remove <condition> --conditions <conditions>
                                     Take conditions out of a combination (at least two stay).
   condition delete <condition> [--force]
-                                    Delete a condition that no running block uses, directly or
-                                    in a combination; blocks it was the condition of are always
+                                    Delete a condition that no running session uses, directly or
+                                    in a combination; sessions it was the condition of are always
                                     active, and those it locked are not locked any more. It is
                                     taken out of its combinations, and one left with a single
                                     condition is deleted too.
@@ -225,33 +231,34 @@ Conditions:
   condition check <times>           Check times and show them per day, as a schedule takes them.
 
 Moving to another computer:
-  export <file>            Write every block list, condition and block to a settings
+  export <file>            Write every target, condition and session to a settings
                            file, as Export in Settings does. Password locks are in it without
                            their password.
-  import <file> [--force]  Replace every block list, condition and block with those in a settings
-                           file, as Import in Settings does; not while a block is locked, and
-                           blocks that run unlocked end with it. A block with a password lock
+  import <file> [--force]  Replace every target, condition and session with those in a settings
+                           file, as Import in Settings does; not while a session is locked, and
+                           sessions that run unlocked end with it. A session with a password lock
                            comes without a lock. Asks first, unless --force.
 
 Other:
   drives [--json]          The flash drives connected, by name and serial number, for
                            'condition new --drive'.
   unlock [--abort] [--password <pw>]
-                           End every running block, as the window's Unlock does. By default
+                           End every running session, as the window's Unlock does. By default
                            unlocking is free. With an unlock delay it is a countdown: the first
-                           'unlock' starts it, a later one ends every block once it is over, and
-                           --abort stops it (back to locked). The other way to unlock (below)
+                           'unlock' starts it, a later one ends every session once it is over,
+                           and --abort stops it (back to locked). The other way to unlock (below)
                            works instead of the countdown, never as well: with a password
                            (asked for when not given) unlocking is at once; one set to a text is
                            used in the window, by typing the text.
   unlock-way [options]     Show the other way to unlock besides the delay, or set it: --condition
                            <condition> (locked while it is active, open when it is not),
-                           --password <pw>, --text <text> or --none to remove it. Setting one needs unlocking to be ready, or no
-                           block to be locked; removing it is free.
+                           --password <pw>, --text <text> or --none to remove it. Setting one
+                           needs unlocking to be ready, or no session to be locked; removing it
+                           is free.
   unlock-delay [<time>]    Show how long unlocking takes, or set it: 0 to 24 hours, e.g. 30m
                            or 2h 30m, or 0 for none. A longer delay is free; a shorter one needs
-                           unlocking to be ready, or no block to be locked.
-  help                    Show this.
+                           unlocking to be ready, or no session to be locked.
+  help                     Show this.
   version                  Show the version.
 
 Durations: 30s, 10m, 2h, 1d, or several together: 2h 30m, 1d 12h.
@@ -266,63 +273,63 @@ enum Command {
         json: bool,
     },
     Show {
-        block: String,
+        session: String,
         json: bool,
     },
     New {
         name: String,
-        changes: BlockChanges,
+        changes: SessionChanges,
     },
     Edit {
-        block: String,
-        changes: BlockChanges,
+        session: String,
+        changes: SessionChanges,
     },
     Delete {
-        block: String,
+        session: String,
         force: bool,
     },
     Start {
-        block: String,
+        session: String,
         lock: Option<Lock>,
         force: bool,
     },
     Stop {
-        block: String,
+        session: String,
         password: Option<String>,
         abort: bool,
     },
-    ListShow {
-        list: String,
+    TargetShow {
+        target: String,
         json: bool,
     },
-    ListApps {
+    TargetApps {
         json: bool,
     },
     Drives {
         json: bool,
     },
-    ListNew {
+    TargetNew {
         name: String,
-        changes: ListChanges,
+        changes: TargetChanges,
     },
-    ListEdit {
-        list: String,
-        changes: ListChanges,
+    TargetEdit {
+        target: String,
+        changes: TargetChanges,
     },
-    ListDelete {
-        list: String,
+    TargetDelete {
+        target: String,
         force: bool,
     },
-    /// `add` / `remove`: block lists of a block.
-    BlockItems {
-        block: String,
-        lists: Vec<String>,
+    /// `add` / `remove`: targets of a session.
+    SessionItems {
+        session: String,
+        targets: Vec<String>,
         add: bool,
     },
-    /// `list add` / `list remove`: entries of a block list's lists, by their field of `Entries`,
+    /// `target add` / `target remove`: entries of a target's lists, by their field of `Entries`,
     /// and enforcers.
-    ListItems {
-        list: String,
+    TargetItems {
+        target: String,
         entries: BTreeMap<&'static str, Vec<String>>,
         enforcers: Vec<String>,
         add: bool,
@@ -394,12 +401,12 @@ enum RuleChoice {
     Webhook(Hook),
 }
 
-/// What `new` and `edit` set on a block; `None` leaves it. Lists and the condition by name or id,
+/// What `new` and `edit` set on a session; `None` leaves it. Lists and the condition by name or id,
 /// looked up when the command runs.
 #[derive(Debug, PartialEq, Default)]
-struct BlockChanges {
+struct SessionChanges {
     name: Option<String>,
-    lists: Option<Vec<String>>,
+    targets: Option<Vec<String>>,
     /// `Some(None)`: always.
     condition: Option<Option<String>>,
     /// What `--allowance` and its options set; `None`: they were not given.
@@ -407,7 +414,7 @@ struct BlockChanges {
     lock: Option<Lock>,
 }
 
-/// What `--allowance` and its options of `new` and `edit` set on a block's allowance; `None` leaves
+/// What `--allowance` and its options of `new` and `edit` set on a session's allowance; `None` leaves
 /// it (with no allowance yet, the default). Read when the command runs (`build_terms`).
 #[derive(Debug, PartialEq, Default)]
 struct AllowanceChanges {
@@ -422,9 +429,9 @@ struct AllowanceChanges {
     anchor: Option<Anchor>,
 }
 
-/// What `list new` and `list edit` set on a block list; `None` leaves it.
+/// What `target new` and `target edit` set on a target; `None` leaves it.
 #[derive(Debug, PartialEq, Default)]
-struct ListChanges {
+struct TargetChanges {
     name: Option<String>,
     /// The lists to set, by their field of `Entries`.
     lists: BTreeMap<&'static str, Vec<String>>,
@@ -443,8 +450,8 @@ const LIST_OPTIONS: [(&str, &str); 6] = [
     ("--allowed-titles", "allowed_titles"),
 ];
 
-impl ListChanges {
-    fn apply(self, list: &mut BlockList) {
+impl TargetChanges {
+    fn apply(self, list: &mut Target) {
         if let Some(name) = self.name {
             list.name = name;
         }
@@ -496,10 +503,10 @@ pub fn main() -> i32 {
 
 fn parse(args: &[String]) -> Result<Command, String> {
     let Some((command, rest)) = args.split_first() else { return Ok(Command::Help) };
-    // `list` and `condition` take a second word.
+    // `target` and `condition` take a second word.
     let (command, rest) = match (command.as_str(), rest.split_first()) {
-        ("list" | "condition", Some((verb, rest))) => (format!("{command} {verb}"), rest),
-        ("list" | "condition", None) => {
+        ("target" | "condition", Some((verb, rest))) => (format!("{command} {verb}"), rest),
+        ("target" | "condition", None) => {
             return Err(format!(
                 "`{command}` needs show, new, edit, add, remove, delete, duplicate{}",
                 if command == "condition" { " or check" } else { "" }
@@ -513,45 +520,49 @@ fn parse(args: &[String]) -> Result<Command, String> {
         "help" | "--help" | "-h" | "/?" => Command::Help,
         "version" | "--version" | "-V" => Command::Version,
         "status" => Command::Status { json: options.flag("--json") },
-        "show" => Command::Show { block: named(&mut options, "block")?, json: options.flag("--json") },
+        "show" => Command::Show { session: named(&mut options, "session")?, json: options.flag("--json") },
         "new" => {
-            let name = options.positional().ok_or("Give the new block a name")?;
-            Command::New { name, changes: parse_block_changes(&mut options, false)? }
+            let name = options.positional().ok_or("Give the new session a name")?;
+            Command::New { name, changes: parse_session_changes(&mut options, false)? }
         }
-        "edit" => Command::Edit { block: named(&mut options, "block")?, changes: parse_block_changes(&mut options, true)? },
-        "add" | "remove" => Command::BlockItems {
-            block: named(&mut options, "block")?,
-            lists: options.items("--lists")?.ok_or(format!("Give the block lists to {command}: --lists <lists>"))?,
+        "edit" => Command::Edit { session: named(&mut options, "session")?, changes: parse_session_changes(&mut options, true)? },
+        "add" | "remove" => Command::SessionItems {
+            session: named(&mut options, "session")?,
+            targets: options.items("--targets")?.ok_or(format!("Give the targets to {command}: --targets <targets>"))?,
             add: command == "add",
         },
-        "delete" => Command::Delete { block: named(&mut options, "block")?, force: options.flag("--force") },
+        "delete" => Command::Delete { session: named(&mut options, "session")?, force: options.flag("--force") },
         "export" => Command::Export { file: options.positional().ok_or("Give the file to write, e.g. bullseye.json")? },
         "import" => Command::Import { file: options.positional().ok_or("Give the settings file to read")?, force: options.flag("--force") },
-        "duplicate" => Command::Duplicate { kind: Kind::Block, item: named(&mut options, "block")? },
-        "list duplicate" => Command::Duplicate { kind: Kind::List, item: named(&mut options, "block list")? },
+        "duplicate" => Command::Duplicate { kind: Kind::Session, item: named(&mut options, "session")? },
+        "target duplicate" => Command::Duplicate { kind: Kind::Target, item: named(&mut options, "target")? },
         "condition duplicate" => Command::Duplicate { kind: Kind::Condition, item: named(&mut options, "condition")? },
-        "start" => Command::Start { block: named(&mut options, "block")?, lock: parse_lock(&mut options)?, force: options.flag("--force") },
-        "stop" => {
-            Command::Stop { block: named(&mut options, "block")?, password: options.value("--password")?, abort: options.flag("--abort") }
+        "start" => {
+            Command::Start { session: named(&mut options, "session")?, lock: parse_lock(&mut options)?, force: options.flag("--force") }
         }
-        "list show" => Command::ListShow { list: named(&mut options, "block list")?, json: options.flag("--json") },
-        "list apps" => Command::ListApps { json: options.flag("--json") },
+        "stop" => Command::Stop {
+            session: named(&mut options, "session")?,
+            password: options.value("--password")?,
+            abort: options.flag("--abort"),
+        },
+        "target show" => Command::TargetShow { target: named(&mut options, "target")?, json: options.flag("--json") },
+        "target apps" => Command::TargetApps { json: options.flag("--json") },
         "drives" => Command::Drives { json: options.flag("--json") },
-        "list new" => {
-            let name = options.positional().ok_or("Give the new block list a name")?;
-            Command::ListNew { name, changes: parse_list_changes(&mut options, false)? }
+        "target new" => {
+            let name = options.positional().ok_or("Give the new target a name")?;
+            Command::TargetNew { name, changes: parse_target_changes(&mut options, false)? }
         }
-        "list edit" => Command::ListEdit { list: named(&mut options, "block list")?, changes: parse_list_changes(&mut options, true)? },
-        "list add" | "list remove" => {
-            let list = named(&mut options, "block list")?;
+        "target edit" => Command::TargetEdit { target: named(&mut options, "target")?, changes: parse_target_changes(&mut options, true)? },
+        "target add" | "target remove" => {
+            let list = named(&mut options, "target")?;
             let entries = parse_list_entries(&mut options, &[])?;
             let enforcers = options.items("--enforcers")?.unwrap_or_default();
             if entries.is_empty() && enforcers.is_empty() {
-                return Err(format!("Give what to {}: --sites, --programs, --titles, … or --enforcers", &command[5..]));
+                return Err(format!("Give what to {}: --sites, --programs, --titles, … or --enforcers", &command[7..]));
             }
-            Command::ListItems { list, entries, enforcers, add: command == "list add" }
+            Command::TargetItems { target: list, entries, enforcers, add: command == "target add" }
         }
-        "list delete" => Command::ListDelete { list: named(&mut options, "block list")?, force: options.flag("--force") },
+        "target delete" => Command::TargetDelete { target: named(&mut options, "target")?, force: options.flag("--force") },
         "condition show" => Command::ConditionShow { condition: named(&mut options, "condition")? },
         "condition new" => {
             let name = options.positional().ok_or("Give the new condition a name")?;
@@ -634,17 +645,17 @@ fn parse_way(options: &mut Options) -> Result<Option<Option<Lock>>, String> {
 }
 
 /// The options of `new` and `edit`. Only `edit` takes `--name`.
-fn parse_block_changes(options: &mut Options, editing: bool) -> Result<BlockChanges, String> {
-    Ok(BlockChanges {
+fn parse_session_changes(options: &mut Options, editing: bool) -> Result<SessionChanges, String> {
+    Ok(SessionChanges {
         name: if editing { options.value("--name")? } else { None },
-        lists: options.items("--lists")?,
+        targets: options.items("--targets")?,
         condition: options.value("--condition")?.map(|c| (!c.eq_ignore_ascii_case("always")).then_some(c)),
         allowance: parse_allowance_changes(options)?,
         lock: parse_lock(options)?,
     })
 }
 
-/// `--allowance`, `--allowed`, `--scope`, `--reset`, `--blocked` and `--anchor` of a block; `None` when
+/// `--allowance`, `--allowed`, `--scope`, `--reset`, `--blocked` and `--anchor` of a session; `None` when
 /// none of them is given. The words are checked here; whether they make terms is `build_terms`'s to
 /// say when the command runs.
 fn parse_allowance_changes(options: &mut Options) -> Result<Option<AllowanceChanges>, String> {
@@ -700,7 +711,7 @@ fn parse_allowance_changes(options: &mut Options) -> Result<Option<AllowanceChan
 }
 
 /// An allowance's terms from what was given, over the ones it has (`old`, when editing): what is not
-/// named stays, and a new one has defaults (the whole block, never reset, counted from the start).
+/// named stays, and a new one has defaults (the whole session, never reset, counted from the start).
 /// `--blocked` makes a Pomodoro, `--scope` or `--reset` a budget, and `--allowed` or `--anchor` alone
 /// keep the kind there is. Checked, so a mistake is told before anything is sent.
 fn build_terms(changes: AllowanceChanges, old: Option<&Terms>) -> Result<Terms, String> {
@@ -793,9 +804,9 @@ fn parse_webhook(options: &mut Options) -> Result<Option<Hook>, String> {
     Ok(Some(hook))
 }
 
-/// The options of `list new` and `list edit`. Only `list edit` takes `--name` and `--clear`.
-fn parse_list_changes(options: &mut Options, editing: bool) -> Result<ListChanges, String> {
-    let mut changes = ListChanges::default();
+/// The options of `target new` and `target edit`. Only `target edit` takes `--name` and `--clear`.
+fn parse_target_changes(options: &mut Options, editing: bool) -> Result<TargetChanges, String> {
+    let mut changes = TargetChanges::default();
     let cleared = if editing { options.items("--clear")?.unwrap_or_default() } else { Vec::new() };
     let names: Vec<&str> = LIST_OPTIONS.iter().map(|(option, _)| &option[2..]).collect();
     for list in &cleared {
@@ -843,7 +854,7 @@ fn enforcer_names() -> Vec<String> {
     }
 }
 
-/// The enforcers named (`chromium_tabs firefox_tabs`), or `all`: every enforcer as a new block list has them (windows by
+/// The enforcers named (`chromium_tabs firefox_tabs`), or `all`: every enforcer as a new target has them (windows by
 /// title closed, not minimized: `window_titles_minimize` says to minimize them).
 fn parse_enforcers(given: &[String]) -> Result<Enforcers, String> {
     let names = enforcer_names();
@@ -961,77 +972,77 @@ fn execute(command: Command) -> Result<(), Failure> {
                 out(&describe_overview(&overview));
             }
         }
-        Command::Show { block, json } => {
+        Command::Show { session, json } => {
             let overview = overview()?;
-            let block = find(&overview.blocks, &block, "block", |b| (&b.id, &b.name))?;
-            let running = overview.running.iter().find(|r| r.id == block.id);
+            let session = find(&overview.sessions, &session, "session", |b| (&b.id, &b.name))?;
+            let running = overview.running.iter().find(|r| r.id == session.id);
             if json {
-                let both = serde_json::json!({ "block": block, "running": running });
+                let both = serde_json::json!({ "session": session, "running": running });
                 say!("{}", serde_json::to_string_pretty(&both).map_err(|e| failed(e.to_string()))?);
             } else {
-                out(&describe_block(&overview, block, running));
+                out(&describe_session(&overview, session, running));
             }
         }
         Command::New { name, changes } => {
             let overview = overview()?;
-            let mut block = Definition {
+            let mut session = Definition {
                 id: new_id(),
                 name,
-                lists: Vec::new(),
+                targets: Vec::new(),
                 condition: None,
                 allowance: None,
                 lock: Lock::None,
                 kept_locks: Vec::new(),
             };
-            apply_block_changes(&overview, &mut block, changes)?;
-            let (id, name) = (block.id.clone(), block.name.clone());
-            send(Request::SaveBlock { block })?;
-            say!("Made the block \"{name}\" (id {id}). Start it with: bullseye start \"{name}\"");
+            apply_session_changes(&overview, &mut session, changes)?;
+            let (id, name) = (session.id.clone(), session.name.clone());
+            send(Request::SaveSession { session })?;
+            say!("Made the session \"{name}\" (id {id}). Start it with: bullseye start \"{name}\"");
         }
-        Command::Edit { block, changes } => {
+        Command::Edit { session, changes } => {
             let overview = overview()?;
-            let mut block = find(&overview.blocks, &block, "block", |b| (&b.id, &b.name))?.clone();
-            apply_block_changes(&overview, &mut block, changes)?;
-            let name = block.name.clone();
-            send(Request::SaveBlock { block })?;
-            say!("Saved the block \"{name}\".");
+            let mut session = find(&overview.sessions, &session, "session", |b| (&b.id, &b.name))?.clone();
+            apply_session_changes(&overview, &mut session, changes)?;
+            let name = session.name.clone();
+            send(Request::SaveSession { session })?;
+            say!("Saved the session \"{name}\".");
         }
-        Command::Delete { block, force } => {
+        Command::Delete { session, force } => {
             let overview = overview()?;
-            let block = find(&overview.blocks, &block, "block", |b| (&b.id, &b.name))?;
-            if !confirm(&format!("Delete the block \"{}\"? This cannot be undone.", block.name), force)? {
+            let session = find(&overview.sessions, &session, "session", |b| (&b.id, &b.name))?;
+            if !confirm(&format!("Delete the session \"{}\"? This cannot be undone.", session.name), force)? {
                 return Err(failed("Not deleted."));
             }
-            send(Request::DeleteBlock { id: block.id.clone() })?;
-            say!("Deleted the block \"{}\".", block.name);
+            send(Request::DeleteSession { id: session.id.clone() })?;
+            say!("Deleted the session \"{}\".", session.name);
         }
-        Command::Start { block, lock, force } => {
+        Command::Start { session, lock, force } => {
             let overview = overview()?;
-            let mut block = find(&overview.blocks, &block, "block", |b| (&b.id, &b.name))?.clone();
-            // As the lock on the block's tile: set on the block, then started with it.
+            let mut session = find(&overview.sessions, &session, "session", |b| (&b.id, &b.name))?.clone();
+            // As the lock on the session's tile: set on the session, then started with it.
             let lock = lock.map(|lock| resolve_lock(&overview, lock)).transpose()?;
-            if let Some(lock) = lock.filter(|lock| *lock != block.lock) {
-                block.lock = lock;
-                send(Request::SaveBlock { block: block.clone() })?;
+            if let Some(lock) = lock.filter(|lock| *lock != session.lock) {
+                session.lock = lock;
+                send(Request::SaveSession { session: session.clone() })?;
             }
-            // As in the window: a block that cannot be stopped is only started after a second yes.
-            if let Some(how) = lock_warning(&overview, &block) {
-                let question = format!("Start \"{}\"? {how} Only unlocking ends it early.", block.name);
+            // As in the window: a session that cannot be stopped is only started after a second yes.
+            if let Some(how) = lock_warning(&overview, &session) {
+                let question = format!("Start \"{}\"? {how} Only unlocking ends it early.", session.name);
                 if !confirm(&question, force)? {
                     return Err(failed("Not started."));
                 }
             }
-            send(Request::Start { id: block.id.clone() })?;
-            say!("Started \"{}\".", block.name);
+            send(Request::Start { id: session.id.clone() })?;
+            say!("Started \"{}\".", session.name);
         }
-        Command::Stop { block, password, abort } => {
+        Command::Stop { session, password, abort } => {
             let overview = overview()?;
-            let block = find(&overview.blocks, &block, "block", |b| (&b.id, &b.name))?;
-            // A block locked with a delay: stopping is asked for, waited out, and then done.
-            if let Some(run) = overview.running.iter().find(|r| r.id == block.id && r.stop_delay.is_some()) {
+            let session = find(&overview.sessions, &session, "session", |b| (&b.id, &b.name))?;
+            // A session locked with a delay: stopping is asked for, waited out, and then done.
+            if let Some(run) = overview.running.iter().find(|r| r.id == session.id && r.stop_delay.is_some()) {
                 if abort {
-                    send(Request::AbortStop { id: block.id.clone() })?;
-                    say!("Stopping \"{}\" aborted: back to locked.", block.name);
+                    send(Request::AbortStop { id: session.id.clone() })?;
+                    say!("Stopping \"{}\" aborted: back to locked.", session.name);
                     return Ok(());
                 }
                 match (run.stop_remaining, &run.stop_remaining_words) {
@@ -1039,42 +1050,42 @@ fn execute(command: Command) -> Result<(), Failure> {
                     (Some(_), Some(left)) => {
                         say!(
                             "\"{}\" can be stopped in {left}. Run `bullseye stop` again then, or `stop --abort` to end the wait.",
-                            block.name
+                            session.name
                         );
                         return Ok(());
                     }
                     _ => {
-                        send(Request::AskToStop { id: block.id.clone() })?;
+                        send(Request::AskToStop { id: session.id.clone() })?;
                         say!(
                             "Stopping \"{}\" was asked for: ready in {}. Run `bullseye stop` again then, or `stop --abort` to end the wait.",
-                            block.name,
+                            session.name,
                             run.stop_delay_words.clone().unwrap_or_default()
                         );
                         return Ok(());
                     }
                 }
             }
-            // A block locked with a text stops in the window, by typing the text: typing it is the
+            // A session locked with a text stops in the window, by typing the text: typing it is the
             // point, and a command line cannot stop a paste.
-            if overview.running.iter().any(|r| r.id == block.id && r.lock_text.is_some()) {
-                return Err(failed(format!("\"{}\" is locked until its text is typed in: stop it in the window", block.name)));
+            if overview.running.iter().any(|r| r.id == session.id && r.lock_text.is_some()) {
+                return Err(failed(format!("\"{}\" is locked until its text is typed in: stop it in the window", session.name)));
             }
-            // A block locked with a password stops with it: asked for when it was not given.
-            let password_locked = overview.running.iter().any(|r| r.id == block.id && r.password);
+            // A session locked with a password stops with it: asked for when it was not given.
+            let password_locked = overview.running.iter().any(|r| r.id == session.id && r.password);
             let password = match password {
-                None if password_locked => Some(read_password(&format!("Password of \"{}\": ", block.name)).map_err(Failure::Failed)?),
+                None if password_locked => Some(read_password(&format!("Password of \"{}\": ", session.name)).map_err(Failure::Failed)?),
                 given => given,
             };
-            send(Request::Stop { id: block.id.clone(), password, text: None })?;
-            say!("Stopped \"{}\".", block.name);
+            send(Request::Stop { id: session.id.clone(), password, text: None })?;
+            say!("Stopped \"{}\".", session.name);
         }
-        Command::ListShow { list, json } => {
+        Command::TargetShow { target: list, json } => {
             let overview = overview()?;
-            let list = find(&overview.lists, &list, "block list", |l| (&l.id, &l.name))?;
+            let list = find(&overview.targets, &list, "target", |l| (&l.id, &l.name))?;
             if json {
                 say!("{}", serde_json::to_string_pretty(list).map_err(|e| failed(e.to_string()))?);
             } else {
-                out(&describe_list(&overview, list));
+                out(&describe_target(&overview, list));
             }
         }
         Command::Drives { json } => {
@@ -1089,7 +1100,7 @@ fn execute(command: Command) -> Result<(), Failure> {
                 }
             }
         }
-        Command::ListApps { json } => {
+        Command::TargetApps { json } => {
             let apps = crate::store_apps::installed().map_err(Failure::Failed)?;
             if json {
                 say!("{}", serde_json::to_string_pretty(&apps).map_err(|e| failed(e.to_string()))?);
@@ -1099,30 +1110,29 @@ fn execute(command: Command) -> Result<(), Failure> {
                 }
             }
         }
-        Command::ListNew { name, changes } => {
-            let mut list = BlockList { id: new_id(), name, entries: Entries::default(), enforcers: Enforcers::default() };
+        Command::TargetNew { name, changes } => {
+            let mut list = Target { id: new_id(), name, entries: Entries::default(), enforcers: Enforcers::default() };
             changes.apply(&mut list);
             let name = list.name.clone();
-            send(Request::SaveList { list })?;
-            say!("Made the block list \"{name}\". Use it with: bullseye new <block> --lists \"{name}\"");
+            send(Request::SaveTarget { target: list })?;
+            say!("Made the target \"{name}\". Use it with: bullseye new <session> --targets \"{name}\"");
         }
-        Command::ListEdit { list, changes } => {
+        Command::TargetEdit { target: list, changes } => {
             let overview = overview()?;
-            let mut list = find(&overview.lists, &list, "block list", |l| (&l.id, &l.name))?.clone();
+            let mut list = find(&overview.targets, &list, "target", |l| (&l.id, &l.name))?.clone();
             changes.apply(&mut list);
             let name = list.name.clone();
-            send(Request::SaveList { list })?;
-            say!("Saved the block list \"{name}\".");
+            send(Request::SaveTarget { target: list })?;
+            say!("Saved the target \"{name}\".");
         }
-        Command::ListDelete { list, force } => {
+        Command::TargetDelete { target: list, force } => {
             let overview = overview()?;
-            let list = find(&overview.lists, &list, "block list", |l| (&l.id, &l.name))?;
-            if !confirm(&format!("Delete the block list \"{}\"?{} This cannot be undone.", list.name, fallout(&overview, &list.id)), force)?
-            {
+            let list = find(&overview.targets, &list, "target", |l| (&l.id, &l.name))?;
+            if !confirm(&format!("Delete the target \"{}\"?{} This cannot be undone.", list.name, fallout(&overview, &list.id)), force)? {
                 return Err(failed("Not deleted."));
             }
-            send(Request::DeleteList { id: list.id.clone() })?;
-            say!("Deleted the block list \"{}\".", list.name);
+            send(Request::DeleteTarget { id: list.id.clone() })?;
+            say!("Deleted the target \"{}\".", list.name);
         }
         Command::ConditionTest { condition } => {
             let overview = overview()?;
@@ -1145,7 +1155,7 @@ fn execute(command: Command) -> Result<(), Failure> {
         Command::ConditionNew { name, rule } => {
             let rule = resolve_rule(&overview()?, rule)?;
             send(Request::SaveCondition { condition: Condition { id: new_id(), name: name.clone(), rule } })?;
-            say!("Made the condition \"{name}\". Use it with: bullseye new <block> --condition \"{name}\"");
+            say!("Made the condition \"{name}\". Use it with: bullseye new <session> --condition \"{name}\"");
         }
         Command::ConditionEdit { condition, name, rule } => {
             let overview = overview()?;
@@ -1160,21 +1170,21 @@ fn execute(command: Command) -> Result<(), Failure> {
             send(Request::SaveCondition { condition })?;
             say!("Saved the condition \"{name}\".");
         }
-        Command::BlockItems { block, lists, add } => {
+        Command::SessionItems { session, targets: lists, add } => {
             let overview = overview()?;
-            let mut block = find(&overview.blocks, &block, "block", |b| (&b.id, &b.name))?.clone();
+            let mut session = find(&overview.sessions, &session, "session", |b| (&b.id, &b.name))?.clone();
             let ids = lists
                 .iter()
-                .map(|l| find(&overview.lists, l, "block list", |l| (&l.id, &l.name)).map(|l| (l.id.clone(), l.name.clone())))
+                .map(|l| find(&overview.targets, l, "target", |l| (&l.id, &l.name)).map(|l| (l.id.clone(), l.name.clone())))
                 .collect::<Result<Vec<_>, _>>()?;
-            block.lists = changed(&block.lists, &ids, add, |name| format!("\"{name}\" is not a block list of \"{}\"", block.name))?;
-            let name = block.name.clone();
-            send(Request::SaveBlock { block })?;
-            say!("Saved the block \"{name}\".");
+            session.targets = changed(&session.targets, &ids, add, |name| format!("\"{name}\" is not a target of \"{}\"", session.name))?;
+            let name = session.name.clone();
+            send(Request::SaveSession { session })?;
+            say!("Saved the session \"{name}\".");
         }
-        Command::ListItems { list, entries, enforcers, add } => {
+        Command::TargetItems { target: list, entries, enforcers, add } => {
             let overview = overview()?;
-            let mut list = find(&overview.lists, &list, "block list", |l| (&l.id, &l.name))?.clone();
+            let mut list = find(&overview.targets, &list, "target", |l| (&l.id, &l.name))?.clone();
             for (key, given) in entries {
                 let what =
                     LIST_OPTIONS.iter().find(|(_, k)| *k == key).map(|(option, _)| option[2..].replace('-', " ")).unwrap_or_default();
@@ -1196,8 +1206,8 @@ fn execute(command: Command) -> Result<(), Failure> {
                 list.enforcers = switched(list.enforcers, &enforcers, add).map_err(Failure::Usage)?;
             }
             let name = list.name.clone();
-            send(Request::SaveList { list })?;
-            say!("Saved the block list \"{name}\".");
+            send(Request::SaveTarget { target: list })?;
+            say!("Saved the target \"{name}\".");
         }
         Command::ConditionItems { condition, members, add } => {
             let overview = overview()?;
@@ -1228,11 +1238,11 @@ fn execute(command: Command) -> Result<(), Failure> {
         }
         Command::ConditionCheck { times } => match Week::parse(&times).map_err(Failure::Usage)? {
             Some(week) => out(&per_day(&week)),
-            None => say!("Always active: a block without a condition"),
+            None => say!("Always active: a session without a condition"),
         },
         Command::Export { file } => {
             definitions::write_settings(std::path::Path::new(&file), remote().library().map_err(failed)?).map_err(failed)?;
-            say!("Wrote every block list, condition and block to {file}.");
+            say!("Wrote every target, condition and session to {file}.");
         }
         Command::Import { file, force } => {
             let library = definitions::read_settings(std::path::Path::new(&file)).map_err(failed)?;
@@ -1243,10 +1253,10 @@ fn execute(command: Command) -> Result<(), Failure> {
             let (library, left_out) = library.without_missing_apps(installed.as_deref());
             let count = |n: usize, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
             let mut question = format!(
-                "Replace every block list, condition and block with the {}, {} and {} in {file}? This cannot be undone.",
-                count(contents.lists, "block list"),
+                "Replace every target, condition and session with the {}, {} and {} in {file}? This cannot be undone.",
+                count(contents.targets, "target"),
                 count(contents.conditions, "condition"),
-                count(contents.blocks, "block"),
+                count(contents.sessions, "session"),
             );
             if !contents.unlocked.is_empty() {
                 let names = contents.unlocked.iter().map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ");
@@ -1269,14 +1279,14 @@ fn execute(command: Command) -> Result<(), Failure> {
             // The item's id and name, then the copy's name, which the service gives it.
             let names = |overview: &Overview| -> Vec<(String, String)> {
                 match kind {
-                    Kind::Block => overview.blocks.iter().map(|b| (b.id.clone(), b.name.clone())).collect(),
-                    Kind::List => overview.lists.iter().map(|l| (l.id.clone(), l.name.clone())).collect(),
+                    Kind::Session => overview.sessions.iter().map(|b| (b.id.clone(), b.name.clone())).collect(),
+                    Kind::Target => overview.targets.iter().map(|l| (l.id.clone(), l.name.clone())).collect(),
                     Kind::Condition => overview.conditions.iter().map(|c| (c.id.clone(), c.name.clone())).collect(),
                 }
             };
             let noun = match kind {
-                Kind::Block => "block",
-                Kind::List => "block list",
+                Kind::Session => "session",
+                Kind::Target => "target",
                 Kind::Condition => "condition",
             };
             let items = names(&overview()?);
@@ -1299,11 +1309,11 @@ fn execute(command: Command) -> Result<(), Failure> {
                     None => read_password("Password to unlock: ").map_err(Failure::Failed)?,
                 };
                 send(Request::UnlockWith { password: Some(password), text: None })?;
-                say!("Unlocked: every block has ended.");
+                say!("Unlocked: every session has ended.");
             } else if status.remaining == Some(0) || status.way_open {
                 send(Request::Unlock)?;
                 // The service tells the app to quit at its next policy request, within a second.
-                say!("Unlocked: every block has ended.");
+                say!("Unlocked: every session has ended.");
             } else if let Some(left) = status.remaining_words {
                 say!("Unlocking is not ready yet: {left} to go. Run `bullseye unlock` again then, or `bullseye unlock --abort` to stop.");
             } else {
@@ -1358,7 +1368,7 @@ fn left_out_words(left_out: &[definitions::LeftOut], checked: bool) -> String {
     if left_out.is_empty() {
         return String::new();
     }
-    let apps: Vec<String> = left_out.iter().map(|app| format!("\"{}\" in \"{}\" ({})", app.name, app.list, app.family)).collect();
+    let apps: Vec<String> = left_out.iter().map(|app| format!("\"{}\" in \"{}\" ({})", app.name, app.target, app.family)).collect();
     format!("Left out, as not installed on this PC: {}.", apps.join(", "))
 }
 
@@ -1380,12 +1390,12 @@ fn describe_unlock_way(status: &UnlockStatus) -> String {
     }
 }
 
-/// Weekly times, as a schedule takes them; "always" is not a schedule (a block without a condition is
+/// Weekly times, as a schedule takes them; "always" is not a schedule (a session without a condition is
 /// always active).
 fn times_of(text: &str) -> Result<Week, Failure> {
     match Week::parse(text).map_err(failed)? {
         Some(week) => Ok(week),
-        None => Err(failed("Give the times, e.g. \"Mon-Fri 08:00-17:00\"; a block that is always active needs no condition")),
+        None => Err(failed("Give the times, e.g. \"Mon-Fri 08:00-17:00\"; a session that is always active needs no condition")),
     }
 }
 
@@ -1425,7 +1435,7 @@ fn combination(overview: &Overview, mode: Mode, given: &[String]) -> Result<Rule
     Ok(Rule::Combined { mode, members, rules: Vec::new() })
 }
 
-/// What a block's lock says of its condition besides its name: nothing for a schedule (the times are
+/// What a session's lock says of its condition besides its name: nothing for a schedule (the times are
 /// on the Conditions page, and only there), and the drive for a flash drive, which is what makes
 /// "active" mean something.
 fn drive_detail(rule: &Rule) -> String {
@@ -1468,31 +1478,31 @@ fn describe_rule(overview: &Overview, rule: &Rule) -> String {
 }
 
 /// `new` and `edit`'s changes, with lists and the condition looked up by name or id, and the
-/// allowance's terms over the ones the block has.
-fn apply_block_changes(overview: &Overview, block: &mut Definition, changes: BlockChanges) -> Result<(), Failure> {
+/// allowance's terms over the ones the session has.
+fn apply_session_changes(overview: &Overview, session: &mut Definition, changes: SessionChanges) -> Result<(), Failure> {
     if let Some(name) = changes.name {
-        block.name = name;
+        session.name = name;
     }
-    if let Some(lists) = changes.lists {
-        block.lists = lists
+    if let Some(lists) = changes.targets {
+        session.targets = lists
             .iter()
-            .map(|l| find(&overview.lists, l, "block list", |l| (&l.id, &l.name)).map(|l| l.id.clone()))
+            .map(|l| find(&overview.targets, l, "target", |l| (&l.id, &l.name)).map(|l| l.id.clone()))
             .collect::<Result<_, _>>()?;
     }
     if let Some(condition) = changes.condition {
-        block.condition = match condition {
+        session.condition = match condition {
             Some(c) => Some(find(&overview.conditions, &c, "condition", |c| (&c.id, &c.name))?.id.clone()),
             None => None,
         };
     }
     if let Some(allowance) = changes.allowance {
-        block.allowance = match allowance.kind.as_deref() {
+        session.allowance = match allowance.kind.as_deref() {
             Some("none") => None,
-            _ => Some(build_terms(allowance, block.allowance.as_ref()).map_err(failed)?),
+            _ => Some(build_terms(allowance, session.allowance.as_ref()).map_err(failed)?),
         };
     }
     if let Some(lock) = changes.lock {
-        block.lock = resolve_lock(overview, lock)?;
+        session.lock = resolve_lock(overview, lock)?;
     }
     Ok(())
 }
@@ -1550,12 +1560,12 @@ fn resolve_lock(overview: &Overview, lock: Lock) -> Result<Lock, Failure> {
     }
 }
 
-/// What the start of a locked block asks about, as the window's confirmation; `None`: not locked.
-fn lock_warning(overview: &Overview, block: &Definition) -> Option<String> {
-    match &block.lock {
+/// What the start of a locked session asks about, as the window's confirmation; `None`: not locked.
+fn lock_warning(overview: &Overview, session: &Definition) -> Option<String> {
+    match &session.lock {
         Lock::None => None,
         Lock::Duration { .. } => {
-            let words = duration::countdown(block.lock.duration().ok()??.as_secs());
+            let words = duration::countdown(session.lock.duration().ok()??.as_secs());
             Some(format!("It cannot be stopped, changed or deleted for {words}."))
         }
         Lock::Until { until } => match localtime::until(until) {
@@ -1575,7 +1585,7 @@ fn lock_warning(overview: &Overview, block: &Definition) -> Option<String> {
             ))
         }
         Lock::Delay { .. } => {
-            let words = duration::countdown(block.lock.delay().ok()??.as_secs());
+            let words = duration::countdown(session.lock.delay().ok()??.as_secs());
             Some(format!("It can only be stopped by asking to and then waiting {words}."))
         }
         Lock::Text { .. } => Some("It can only be stopped by typing its text in, in the window.".into()),
@@ -1682,7 +1692,7 @@ fn read_password(prompt: &str) -> Result<String, String> {
     Ok(password)
 }
 
-/// The state of a block in one line, as its tile shows it.
+/// The state of a session in one line, as its tile shows it.
 fn state(running: Option<&Running>) -> String {
     let Some(running) = running else { return "Not running".into() };
     let mut parts = vec!["Running".to_string()];
@@ -1715,7 +1725,7 @@ fn state(running: Option<&Running>) -> String {
     parts.join(" · ")
 }
 
-/// What a running block's allowance is doing, in a few words: a cycle's phase and how long it lasts,
+/// What a running session's allowance is doing, in a few words: a cycle's phase and how long it lasts,
 /// or what a budget has left.
 fn allowance_words(status: &AllowanceStatus) -> String {
     match &status.terms {
@@ -1747,27 +1757,27 @@ fn table(rows: &[(String, String)]) -> String {
     rows.iter().map(|(name, what)| format!("  {name:width$}  {what}\n")).collect()
 }
 
-/// The names of the blocks that use a block list or condition (`Library::users_of`).
+/// The names of the sessions that use a target or condition (`Library::users_of`).
 fn users(overview: &Overview, id: &str) -> String {
-    let library = Library { blocks: overview.blocks.clone(), ..Library::default() };
+    let library = Library { sessions: overview.sessions.clone(), ..Library::default() };
     let names: Vec<&str> = library.users_of(id).iter().map(|b| b.name.as_str()).collect();
     if names.is_empty() {
-        "(no block)".into()
+        "(no session)".into()
     } else {
         names.join(", ")
     }
 }
 
-/// What deleting a block list or condition does to the blocks that use it, in sentences each with a
-/// space in front, as the window's question says it; empty when no block uses it.
+/// What deleting a target or condition does to the sessions that use it, in sentences each with a
+/// space in front, as the window's question says it; empty when no session uses it.
 fn fallout(overview: &Overview, id: &str) -> String {
-    let library = Library { blocks: overview.blocks.clone(), conditions: overview.conditions.clone(), ..Library::default() };
+    let library = Library { sessions: overview.sessions.clone(), conditions: overview.conditions.clone(), ..Library::default() };
     let fallout = library.fallout(id);
     let quoted = |names: &[String]| names.iter().map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ");
     let mut text = String::new();
     for (names, what) in [
-        (&fallout.deleted, "is deleted too, as it has no other block list"),
-        (&fallout.without_it, "keeps its other block lists"),
+        (&fallout.deleted, "is deleted too, as it has no other target"),
+        (&fallout.without_it, "keeps its other targets"),
         (&fallout.always, "is always active from then on"),
         (&fallout.unlocked, "has no lock from then on"),
         (&fallout.shrinks, "goes on without it"),
@@ -1780,19 +1790,19 @@ fn fallout(overview: &Overview, id: &str) -> String {
     text
 }
 
-/// Everything, as the window's pages show it: the blocks, the block lists, the conditions.
+/// Everything, as the window's pages show it: the sessions, the targets, the conditions.
 fn describe_overview(overview: &Overview) -> String {
-    let blocks: Vec<(String, String)> =
-        overview.blocks.iter().map(|b| (b.name.clone(), state(overview.running.iter().find(|r| r.id == b.id)))).collect();
+    let sessions: Vec<(String, String)> =
+        overview.sessions.iter().map(|b| (b.name.clone(), state(overview.running.iter().find(|r| r.id == b.id)))).collect();
     let lists: Vec<(String, String)> =
-        overview.lists.iter().map(|l| (l.name.clone(), format!("used by {}", users(overview, &l.id)))).collect();
+        overview.targets.iter().map(|l| (l.name.clone(), format!("used by {}", users(overview, &l.id)))).collect();
     let conditions: Vec<(String, String)> =
         overview.conditions.iter().map(|c| (c.name.clone(), describe_rule(overview, &c.rule))).collect();
     let mut text = String::new();
     for (title, rows, empty) in [
-        ("Blocks", blocks, "  None yet. Make one with: bullseye new <name> --lists <block lists>\n"),
-        ("Block lists", lists, "  None yet. Make one with: bullseye list new <name> --sites <sites>\n"),
-        ("Conditions", conditions, "  None (blocks without one are always active).\n"),
+        ("Sessions", sessions, "  None yet. Make one with: bullseye new <name> --targets <targets>\n"),
+        ("Targets", lists, "  None yet. Make one with: bullseye target new <name> --sites <sites>\n"),
+        ("Conditions", conditions, "  None (sessions without one are always active).\n"),
     ] {
         text.push_str(&format!("{title}:\n"));
         text.push_str(&if rows.is_empty() { empty.to_string() } else { table(&rows) });
@@ -1818,25 +1828,25 @@ fn enforcers_on(enforcers: Enforcers) -> Vec<String> {
     }
 }
 
-/// One block, everything about it.
-fn describe_block(overview: &Overview, block: &Definition, running: Option<&Running>) -> String {
+/// One session, everything about it.
+fn describe_session(overview: &Overview, session: &Definition, running: Option<&Running>) -> String {
     let lists: Vec<&str> =
-        block.lists.iter().map(|l| overview.lists.iter().find(|n| &n.id == l).map(|n| n.name.as_str()).unwrap_or("(gone)")).collect();
-    let condition = match &block.condition {
+        session.targets.iter().map(|l| overview.targets.iter().find(|n| &n.id == l).map(|n| n.name.as_str()).unwrap_or("(gone)")).collect();
+    let condition = match &session.condition {
         None => "always active".to_string(),
         Some(id) => match overview.conditions.iter().find(|c| &c.id == id) {
             Some(c) => c.name.clone(),
             None => "(gone)".into(),
         },
     };
-    let allowance = block.allowance.as_ref().map_or("none".to_string(), Terms::describe);
-    let lock = match &block.lock {
+    let allowance = session.allowance.as_ref().map_or("none".to_string(), Terms::describe);
+    let lock = match &session.lock {
         Lock::None => "none: can be stopped at any time".to_string(),
-        Lock::Duration { duration } => match block.lock.duration() {
+        Lock::Duration { duration } => match session.lock.duration() {
             Ok(Some(d)) => format!("duration, {} (cannot be stopped for that long once started)", duration::countdown(d.as_secs())),
             _ => format!("duration, {duration}"),
         },
-        Lock::Until { until } => match block.lock.until() {
+        Lock::Until { until } => match session.lock.until() {
             Ok(Some(at)) => format!("until {at} (cannot be stopped until then once started)"),
             _ => format!("until {until}"),
         },
@@ -1845,7 +1855,7 @@ fn describe_block(overview: &Overview, block: &Definition, running: Option<&Runn
             Some(c) => format!("condition: cannot be stopped while \"{}\" is active{}", c.name, drive_detail(&c.rule)),
             None => "condition: (condition gone)".into(),
         },
-        Lock::Delay { delay } => match block.lock.delay() {
+        Lock::Delay { delay } => match session.lock.delay() {
             Ok(Some(d)) => format!("delay, {} (stopping is asked for, then waited out)", duration::countdown(d.as_secs())),
             _ => format!("delay, {delay}"),
         },
@@ -1853,18 +1863,18 @@ fn describe_block(overview: &Overview, block: &Definition, running: Option<&Runn
         Lock::Password { .. } => "password: can only be stopped with its password".into(),
     };
     format!(
-        "Name:        {}\nId:          {}\nState:       {}\nBlock lists: {}\nCondition:   {condition}\nAllowance:   {allowance}\nLock:        {lock}\n",
-        block.name,
-        block.id,
+        "Name:        {}\nId:          {}\nState:       {}\nTargets:     {}\nCondition:   {condition}\nAllowance:   {allowance}\nLock:        {lock}\n",
+        session.name,
+        session.id,
         state(running),
         entries(&lists.iter().map(|l| l.to_string()).collect::<Vec<_>>()),
     )
 }
 
-/// One block list, everything about it.
-fn describe_list(overview: &Overview, list: &BlockList) -> String {
+/// One target, everything about it.
+fn describe_target(overview: &Overview, list: &Target) -> String {
     format!(
-        "Name:           {}\nId:             {}\nBlock list:     {}\nAlways allowed: {}\nPrograms:       {}\nStore apps:     {}\nWindow titles:  {}\nAllowed titles: {}\nEnforcers:      {}\nUsed by:        {}\n",
+        "Name:           {}\nId:             {}\nSites:          {}\nAlways allowed: {}\nPrograms:       {}\nStore apps:     {}\nWindow titles:  {}\nAllowed titles: {}\nEnforcers:      {}\nUsed by:        {}\n",
         list.name,
         list.id,
         entries(&list.entries.filters),
@@ -1894,10 +1904,10 @@ fn per_day(week: &Week) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block::{Blocklist, RunningList};
-    use crate::definitions::tests::{block, block_list, weekly};
+    use crate::definitions::tests::{session, target, weekly};
     use crate::definitions::Definitions;
     use crate::handler::{handle, Context};
+    use crate::session::{RunningTarget, Sessions};
     use crate::state::Store;
     use crate::watchdog::AppSlot;
     use std::cell::RefCell;
@@ -1919,8 +1929,8 @@ mod tests {
     fn serve(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("cli-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let blocklist = Blocklist::with_store(Store::new(dir.join("state.json")));
-        let context = Arc::new(Context::new(blocklist, Definitions::at(Some(dir.join("blocks.json"))), Arc::new(AppSlot::new(false))));
+        let sessions = Sessions::with_store(Store::new(dir.join("state.json")));
+        let context = Arc::new(Context::new(sessions, Definitions::at(Some(dir.join("sessions.json"))), Arc::new(AppSlot::new(false))));
         REMOTE.with(|remote| *remote.borrow_mut() = Some(Remote::local(Arc::new(move |request| handle(&context, 0, request).0))));
         dir
     }
@@ -1947,25 +1957,25 @@ mod tests {
     }
 
     #[test]
-    fn blocks_lists_and_conditions_are_made_shown_changed_and_deleted() {
+    fn sessions_targets_and_conditions_are_made_shown_changed_and_deleted() {
         serve("lifecycle");
-        assert!(ok(&["status"]).contains("Blocks:\n  None yet"));
+        assert!(ok(&["status"]).contains("Sessions:\n  None yet"));
         assert_eq!(
-            ok(&["list", "new", "Social", "--sites", "youtube.com", "--allowed-sites", "music.youtube.com"]),
-            "Made the block list \"Social\". Use it with: bullseye new <block> --lists \"Social\"\n"
+            ok(&["target", "new", "Social", "--sites", "youtube.com", "--allowed-sites", "music.youtube.com"]),
+            "Made the target \"Social\". Use it with: bullseye new <session> --targets \"Social\"\n"
         );
         assert!(ok(&["condition", "new", "Work", "--times", "Mon-Fri 08:00-17:00"]).starts_with("Made the condition \"Work\"."));
-        let made = ok(&["new", "Evening", "--lists", "Social", "--condition", "Work", "--allowance", "budget", "--allowed", "30m"]);
+        let made = ok(&["new", "Evening", "--targets", "Social", "--condition", "Work", "--allowance", "budget", "--allowed", "30m"]);
         assert!(
-            made.starts_with("Made the block \"Evening\" (id cli-") && made.ends_with("Start it with: bullseye start \"Evening\"\n"),
+            made.starts_with("Made the session \"Evening\" (id cli-") && made.ends_with("Start it with: bullseye start \"Evening\"\n"),
             "{made}"
         );
 
         // Shown as the pages show them, and as JSON for scripts.
         let shown = ok(&["show", "evening"]);
-        assert!(shown.contains("Block lists: Social\nCondition:   Work\nAllowance:   30 minutes in total, never reset\n"), "{shown}");
+        assert!(shown.contains("Targets:     Social\nCondition:   Work\nAllowance:   30 minutes in total, never reset\n"), "{shown}");
         let json: Value = serde_json::from_str(&ok(&["show", "Evening", "--json"])).unwrap();
-        assert_eq!(json["block"]["allowance"]["type"], "budget");
+        assert_eq!(json["session"]["allowance"]["type"], "budget");
         assert!(json["running"].is_null());
         let status = ok(&["status"]);
         assert!(
@@ -1974,27 +1984,27 @@ mod tests {
                 && status.contains("  Work  Mon-Fri 08:00-17:00")
         );
         let json: Value = serde_json::from_str(&ok(&["status", "--json"])).unwrap();
-        assert_eq!(json["blocks"].as_array().map(Vec::len), Some(1));
-        assert!(ok(&["list", "show", "Social"]).contains("Always allowed: music.youtube.com"));
-        assert!(ok(&["list", "show", "Social"]).contains("Allowed titles: (none)"));
-        let json: Value = serde_json::from_str(&ok(&["list", "show", "Social", "--json"])).unwrap();
+        assert_eq!(json["sessions"].as_array().map(Vec::len), Some(1));
+        assert!(ok(&["target", "show", "Social"]).contains("Always allowed: music.youtube.com"));
+        assert!(ok(&["target", "show", "Social"]).contains("Allowed titles: (none)"));
+        let json: Value = serde_json::from_str(&ok(&["target", "show", "Social", "--json"])).unwrap();
         assert_eq!(json["filters"][0], "youtube.com");
         let condition = ok(&["condition", "show", "Work"]);
         assert!(condition.starts_with("Work\nMon-Fri 08:00-17:00\n") && condition.ends_with("Used by: Evening\n"), "{condition}");
         assert!(ok(&["condition", "check", "Mon 8-9"]).starts_with("Mon 08:00-09:00\n"));
-        assert_eq!(ok(&["condition", "check", "always"]), "Always active: a block without a condition\n");
+        assert_eq!(ok(&["condition", "check", "always"]), "Always active: a session without a condition\n");
         assert!(cli(&["condition", "check", "Mon 25-26"]).is_err());
 
         // Changed, copied.
-        assert_eq!(ok(&["edit", "Evening", "--name", "Night"]), "Saved the block \"Night\".\n");
-        assert_eq!(ok(&["duplicate", "Night"]), "Made \"Night (2)\", a copy of the block \"Night\".\n");
-        assert_eq!(ok(&["list", "duplicate", "Social"]), "Made \"Social (2)\", a copy of the block list \"Social\".\n");
+        assert_eq!(ok(&["edit", "Evening", "--name", "Night"]), "Saved the session \"Night\".\n");
+        assert_eq!(ok(&["duplicate", "Night"]), "Made \"Night (2)\", a copy of the session \"Night\".\n");
+        assert_eq!(ok(&["target", "duplicate", "Social"]), "Made \"Social (2)\", a copy of the target \"Social\".\n");
         assert_eq!(ok(&["condition", "duplicate", "Work"]), "Made \"Work (2)\", a copy of the condition \"Work\".\n");
         assert_eq!(
-            ok(&["list", "edit", "Social (2)", "--sites", "reddit.com", "--clear", "allowed-sites"]),
-            "Saved the block list \"Social (2)\".\n"
+            ok(&["target", "edit", "Social (2)", "--sites", "reddit.com", "--clear", "allowed-sites"]),
+            "Saved the target \"Social (2)\".\n"
         );
-        let copy = ok(&["list", "show", "Social (2)"]);
+        let copy = ok(&["target", "show", "Social (2)"]);
         assert!(copy.contains("reddit.com") && !copy.contains("music.youtube.com"), "{copy}");
         assert_eq!(ok(&["condition", "edit", "Work (2)", "--name", "Weekend", "--times", "Sat-Sun"]), "Saved the condition \"Weekend\".\n");
         ok(&["condition", "new", "Either", "--any", "Work", "Weekend"]);
@@ -2007,14 +2017,14 @@ mod tests {
         assert_eq!(ok(&["stop", "Night"]), "Stopped \"Night\".\n");
 
         // Deleted.
-        assert_eq!(ok(&["delete", "Night (2)", "--force"]), "Deleted the block \"Night (2)\".\n");
-        assert_eq!(ok(&["list", "delete", "Social (2)", "--force"]), "Deleted the block list \"Social (2)\".\n");
+        assert_eq!(ok(&["delete", "Night (2)", "--force"]), "Deleted the session \"Night (2)\".\n");
+        assert_eq!(ok(&["target", "delete", "Social (2)", "--force"]), "Deleted the target \"Social (2)\".\n");
         assert_eq!(ok(&["condition", "delete", "Either", "--force"]), "Deleted the condition \"Either\".\n");
 
         // What is not there, or not of the kind.
-        assert!(refused(&["show", "Nope"]).starts_with("No block called \"Nope\""));
-        assert!(refused(&["new", "X", "--lists", "Nope"]).starts_with("No block list called \"Nope\""));
-        assert!(refused(&["list", "new", "Games", "--store-apps", "Microsoft.Xbox*"]).contains("exact package family name"));
+        assert!(refused(&["show", "Nope"]).starts_with("No session called \"Nope\""));
+        assert!(refused(&["new", "X", "--targets", "Nope"]).starts_with("No target called \"Nope\""));
+        assert!(refused(&["target", "new", "Games", "--store-apps", "Microsoft.Xbox*"]).contains("exact package family name"));
         assert!(refused(&["new", "X", "--condition", "Nope"]).starts_with("No condition called \"Nope\""));
         assert_eq!(refused(&["condition", "test", "Work"]), "\"Work\" is not a webhook condition");
     }
@@ -2022,54 +2032,65 @@ mod tests {
     #[test]
     fn items_are_added_and_removed() {
         serve("add-remove");
-        ok(&["list", "new", "Social", "--sites", "youtube.com", "reddit.com", "--programs", "Steam", "--enforcers", "chromium_tabs"]);
-        ok(&["list", "new", "Games", "--programs", "game.exe"]);
-        ok(&["list", "new", "News", "--sites", "nu.nl"]);
-        let list = |name: &str| ok(&["list", "show", name]);
+        ok(&["target", "new", "Social", "--sites", "youtube.com", "reddit.com", "--programs", "Steam", "--enforcers", "chromium_tabs"]);
+        ok(&["target", "new", "Games", "--programs", "game.exe"]);
+        ok(&["target", "new", "News", "--sites", "nu.nl"]);
+        let list = |name: &str| ok(&["target", "show", name]);
 
-        // A block list: entries added as typed (the service keeps them in order), and taken out however they are
+        // A target: entries added as typed (the service keeps them in order), and taken out however they are
         // written, as the list reads them (Steam is steam.exe); what is there already stays once.
         assert_eq!(
-            ok(&["list", "add", "Social", "--sites", "x.com", "YouTube.com", "--titles", "Inbox, 3 unread", "--enforcers", "firefox_tabs"]),
-            "Saved the block list \"Social\".\n"
+            ok(&[
+                "target",
+                "add",
+                "Social",
+                "--sites",
+                "x.com",
+                "YouTube.com",
+                "--titles",
+                "Inbox, 3 unread",
+                "--enforcers",
+                "firefox_tabs"
+            ]),
+            "Saved the target \"Social\".\n"
         );
         let shown = list("Social");
-        assert!(shown.contains("Block list:     reddit.com, x.com, youtube.com"), "{shown}");
+        assert!(shown.contains("Sites:          reddit.com, x.com, youtube.com"), "{shown}");
         assert!(
             shown.contains("Window titles:  Inbox, 3 unread") && shown.contains("firefox_tabs") && shown.contains("chromium_tabs"),
             "{shown}"
         );
-        ok(&["list", "remove", "Social", "--sites", "Reddit.com", "--programs", "steam.exe", "--enforcers", "chromium_tabs"]);
+        ok(&["target", "remove", "Social", "--sites", "Reddit.com", "--programs", "steam.exe", "--enforcers", "chromium_tabs"]);
         let shown = list("Social");
-        assert!(shown.contains("Block list:     x.com, youtube.com") && shown.contains("Programs:       (none)"), "{shown}");
+        assert!(shown.contains("Sites:          x.com, youtube.com") && shown.contains("Programs:       (none)"), "{shown}");
         assert!(!shown.contains("chromium_tabs") && shown.contains("firefox_tabs"), "{shown}");
         // What is not there is a typo, and nothing is saved.
         assert_eq!(
-            refused(&["list", "remove", "Social", "--sites", "x.com", "tiktok.com"]),
+            refused(&["target", "remove", "Social", "--sites", "x.com", "tiktok.com"]),
             "\"tiktok.com\" is not in the sites of \"Social\""
         );
         assert!(list("Social").contains("x.com, youtube.com"));
         assert_eq!(
-            refused(&["list", "remove", "Social", "--allowed-titles", "Notes"]),
+            refused(&["target", "remove", "Social", "--allowed-titles", "Notes"]),
             "\"Notes\" is not in the allowed titles of \"Social\""
         );
-        assert!(refused(&["list", "add", "Social", "--enforcers", "lasers"]).starts_with("Unknown enforcer \"lasers\""));
-        assert_eq!(refused(&["list", "add", "Social"]), "Give what to add: --sites, --programs, --titles, … or --enforcers");
+        assert!(refused(&["target", "add", "Social", "--enforcers", "lasers"]).starts_with("Unknown enforcer \"lasers\""));
+        assert_eq!(refused(&["target", "add", "Social"]), "Give what to add: --sites, --programs, --titles, … or --enforcers");
         // All the enforcers, on and off.
-        ok(&["list", "add", "Social", "--enforcers", "all"]);
+        ok(&["target", "add", "Social", "--enforcers", "all"]);
         assert!(list("Social").contains("chromium_tabs"));
-        ok(&["list", "remove", "Social", "--enforcers", "all"]);
+        ok(&["target", "remove", "Social", "--enforcers", "all"]);
         assert!(list("Social").contains("Enforcers:      (none)"), "{}", list("Social"));
 
-        // A block's block lists.
-        ok(&["new", "Work", "--lists", "Social"]);
-        ok(&["add", "work", "--lists", "Games", "News", "Social"]);
-        assert!(ok(&["show", "Work"]).contains("Block lists: Social, Games, News"), "{}", ok(&["show", "Work"]));
-        ok(&["remove", "Work", "--lists", "social"]);
-        assert!(ok(&["show", "Work"]).contains("Block lists: Games, News"));
-        assert_eq!(refused(&["remove", "Work", "--lists", "Social"]), "\"Social\" is not a block list of \"Work\"");
-        assert!(refused(&["add", "Work", "--lists", "Nope"]).starts_with("No block list called \"Nope\""));
-        assert_eq!(refused(&["add", "Work"]), "Give the block lists to add: --lists <lists>");
+        // A session's targets.
+        ok(&["new", "Work", "--targets", "Social"]);
+        ok(&["add", "work", "--targets", "Games", "News", "Social"]);
+        assert!(ok(&["show", "Work"]).contains("Targets:     Social, Games, News"), "{}", ok(&["show", "Work"]));
+        ok(&["remove", "Work", "--targets", "social"]);
+        assert!(ok(&["show", "Work"]).contains("Targets:     Games, News"));
+        assert_eq!(refused(&["remove", "Work", "--targets", "Social"]), "\"Social\" is not a target of \"Work\"");
+        assert!(refused(&["add", "Work", "--targets", "Nope"]).starts_with("No target called \"Nope\""));
+        assert_eq!(refused(&["add", "Work"]), "Give the targets to add: --targets <targets>");
 
         // The conditions of a combination, and nothing else.
         for name in ["Mornings", "Evenings", "Weekend"] {
@@ -2092,7 +2113,7 @@ mod tests {
         assert_eq!(refused(&["condition", "remove", "Either"]), "Give the conditions to remove: --conditions <conditions>");
         // The service still holds to its rules: a combination of fewer than two is refused.
         assert!(!refused(&["condition", "remove", "Either", "--conditions", "Weekend"]).is_empty());
-        assert_eq!(refused(&["list"]), "`list` needs show, new, edit, add, remove, delete, duplicate");
+        assert_eq!(refused(&["target"]), "`target` needs show, new, edit, add, remove, delete, duplicate");
     }
 
     #[test]
@@ -2112,9 +2133,9 @@ mod tests {
     #[test]
     fn locks_are_set_shown_and_held_by_the_service() {
         serve("locks");
-        ok(&["list", "new", "L", "--sites", "a.com"]);
+        ok(&["target", "new", "L", "--sites", "a.com"]);
         ok(&["condition", "new", "Always", "--times", "Mon-Sun 00:00-24:00"]);
-        let new = |name: &str, lock: &[&str]| ok(&[&["new", name, "--lists", "L"][..], lock].concat());
+        let new = |name: &str, lock: &[&str]| ok(&[&["new", name, "--targets", "L"][..], lock].concat());
         new("Timed", &["--lock-duration", "1h"]);
         new("Slow", &["--lock-delay", "1h"]);
         new("Typed", &["--lock-text", "let me out"]);
@@ -2150,21 +2171,21 @@ mod tests {
         assert!(ok(&["stop", "Slow"]).starts_with("\"Slow\" can be stopped in "));
         assert_eq!(ok(&["stop", "Slow", "--abort"]), "Stopping \"Slow\" aborted: back to locked.\n");
         // A password: set with start, as the tile sets it, and stopped with it.
-        ok(&["new", "Pw", "--lists", "L"]);
+        ok(&["new", "Pw", "--targets", "L"]);
         assert_eq!(ok(&["start", "Pw", "--lock-password", "secret", "--force"]), "Started \"Pw\".\n");
         assert!(ok(&["status"]).contains("Pw       Running · active · locked with a password"));
         assert!(cli(&["stop", "Pw", "--password", "wrong"]).is_err());
         assert_eq!(ok(&["stop", "Pw", "--password", "secret"]), "Stopped \"Pw\".\n");
         // Without a delay, unlocking is free and ends them all.
-        assert_eq!(ok(&["unlock"]), "Unlocked: every block has ended.\n");
+        assert_eq!(ok(&["unlock"]), "Unlocked: every session has ended.\n");
         assert!(!ok(&["status"]).contains("Running"));
     }
 
     #[test]
     fn unlocking_counts_down_and_has_another_way() {
         serve("unlock");
-        ok(&["list", "new", "L", "--sites", "a.com"]);
-        ok(&["new", "Timed", "--lists", "L", "--lock-duration", "1h"]);
+        ok(&["target", "new", "L", "--sites", "a.com"]);
+        ok(&["new", "Timed", "--targets", "L", "--lock-duration", "1h"]);
         assert_eq!(ok(&["unlock-delay"]), "Unlocking takes no time: it is free.\n");
         assert_eq!(ok(&["unlock-delay", "1h"]), "Unlocking now takes 1 hour.\n");
         assert_eq!(ok(&["unlock-delay"]), "Unlocking takes 1 hour.\n");
@@ -2178,9 +2199,9 @@ mod tests {
         assert!(cli(&["unlock-way", "--text", "let me out"]).is_err());
 
         serve("unlock-way");
-        ok(&["list", "new", "L", "--sites", "a.com"]);
+        ok(&["target", "new", "L", "--sites", "a.com"]);
         ok(&["condition", "new", "Always", "--times", "Mon-Sun 00:00-24:00"]);
-        ok(&["new", "Timed", "--lists", "L", "--lock-duration", "1h"]);
+        ok(&["new", "Timed", "--targets", "L", "--lock-duration", "1h"]);
         assert_eq!(ok(&["unlock-way", "--text", "let me out"]), "Unlocking is also possible by typing a text in, in the window.\n");
         assert_eq!(ok(&["unlock-way", "--condition", "Always"]), "Unlocking is locked while its condition is active\n");
         assert_eq!(
@@ -2190,7 +2211,7 @@ mod tests {
         ok(&["unlock-delay", "1h"]);
         ok(&["start", "Timed", "--force"]);
         assert!(cli(&["unlock", "--password", "wrong"]).is_err());
-        assert_eq!(ok(&["unlock", "--password", "secret"]), "Unlocked: every block has ended.\n");
+        assert_eq!(ok(&["unlock", "--password", "secret"]), "Unlocked: every session has ended.\n");
         assert_eq!(ok(&["unlock-way", "--none"]), "Only the delay unlocks.\n");
         assert_eq!(ok(&["unlock-delay", "0"]), "Unlocking is free again.\n");
     }
@@ -2200,9 +2221,9 @@ mod tests {
         let dir = serve("export");
         let file = dir.join("bullseye.json");
         let path = file.to_string_lossy().to_string();
-        ok(&["list", "new", "L", "--sites", "a.com"]);
-        ok(&["new", "B", "--lists", "L", "--lock-password", "secret", "--allowance", "pomodoro", "--blocked", "50m", "--allowed", "10m"]);
-        assert_eq!(ok(&["export", &path]), format!("Wrote every block list, condition and block to {path}.\n"));
+        ok(&["target", "new", "L", "--sites", "a.com"]);
+        ok(&["new", "B", "--targets", "L", "--lock-password", "secret", "--allowance", "pomodoro", "--blocked", "50m", "--allowed", "10m"]);
+        assert_eq!(ok(&["export", &path]), format!("Wrote every target, condition and session to {path}.\n"));
         serve("import");
         // (The file has no Store apps, so none are left out and nothing is said of them.)
         assert_eq!(ok(&["import", &path, "--force"]), format!("Imported {path}.\n"));
@@ -2262,14 +2283,14 @@ mod tests {
     #[test]
     fn a_combination_of_all_and_a_list_renamed() {
         serve("all");
-        ok(&["list", "new", "L", "--sites", "a.com"]);
-        assert_eq!(ok(&["list", "edit", "L", "--name", "Media"]), "Saved the block list \"Media\".\n");
+        ok(&["target", "new", "L", "--sites", "a.com"]);
+        assert_eq!(ok(&["target", "edit", "L", "--name", "Media"]), "Saved the target \"Media\".\n");
         ok(&["condition", "new", "Work", "--times", "Mon-Fri 08:00-17:00"]);
         ok(&["condition", "new", "Late", "--times", "Mon-Sun 16:00-18:00"]);
         ok(&["condition", "new", "Both", "--all", "Work", "Late"]);
         assert!(ok(&["condition", "show", "Both"]).contains("all of \"Work\", \"Late\""));
         // A lock until a date and time asks first, with the time it ends.
-        ok(&["new", "Later", "--lists", "Media", "--lock-until", "2099-01-01 00:00"]);
+        ok(&["new", "Later", "--targets", "Media", "--lock-until", "2099-01-01 00:00"]);
         assert_eq!(ok(&["start", "Later", "--force"]), "Started \"Later\".\n");
         assert!(ok(&["status"]).contains("Later  Running · active · locked for the next"));
     }
@@ -2278,13 +2299,13 @@ mod tests {
     fn a_file_with_a_password_lock_but_no_hash_imports_without_a_lock() {
         let dir = serve("import-unlocked");
         let file = dir.join("old.json");
-        let mut locked = block("b", &["l"]);
+        let mut locked = session("b", &["l"]);
         locked.lock = Lock::Password { password: None, hash: None };
-        let library = Library { lists: vec![block_list("l", &["a.com"])], blocks: vec![locked], ..Library::default() };
+        let library = Library { targets: vec![target("l", &["a.com"])], sessions: vec![locked], ..Library::default() };
         std::fs::create_dir_all(&dir).unwrap();
         definitions::write_settings(&file, library).unwrap();
         ok(&["import", &file.to_string_lossy(), "--force"]);
-        assert!(ok(&["show", "Block b"]).contains("Lock:        none"));
+        assert!(ok(&["show", "Session b"]).contains("Lock:        none"));
     }
 
     #[test]
@@ -2303,12 +2324,12 @@ mod tests {
         assert_eq!(with(Lock::Duration { duration: "1h".into() }, false, None), "Only the delay unlocks.");
     }
 
-    /// A running block as the status gives it, always active and not locked.
+    /// A running session as the status gives it, always active and not locked.
     fn a_running(id: &str) -> Running {
         Running {
             id: id.into(),
             name: id.into(),
-            lists: vec![],
+            targets: vec![],
             remaining: None,
             lock_condition: None,
             until_restart: false,
@@ -2331,7 +2352,7 @@ mod tests {
     }
 
     #[test]
-    fn a_running_block_reads_like_its_tile() {
+    fn a_running_session_reads_like_its_tile() {
         let drive = Some(Rule::FlashDrive { serial: "x".into(), drive: "Key".into() });
         let locked = Running { locked: true, lock_condition: drive.clone(), ..a_running("a") };
         assert_eq!(state(Some(&locked)), "Running · active · locked until the flash drive \"Key\" is connected");
@@ -2380,12 +2401,12 @@ mod tests {
     }
 
     #[test]
-    fn a_block_with_parts_gone_or_unreadable_is_still_shown() {
+    fn a_session_with_parts_gone_or_unreadable_is_still_shown() {
         let mut overview = library();
-        let mut b = block("b2", &["gone"]);
+        let mut b = session("b2", &["gone"]);
         b.condition = Some("gone".into());
         let lock_of = |lock: Lock| {
-            let shown = describe_block(&overview, &Definition { lock, ..b.clone() }, None);
+            let shown = describe_session(&overview, &Definition { lock, ..b.clone() }, None);
             shown.lines().find(|l| l.starts_with("Lock:")).unwrap_or_default().to_string()
         };
         assert_eq!(lock_of(Lock::Duration { duration: "soon".into() }), "Lock:        duration, soon");
@@ -2393,13 +2414,13 @@ mod tests {
         assert_eq!(lock_of(Lock::Delay { delay: "a while".into() }), "Lock:        delay, a while");
         assert_eq!(lock_of(Lock::Condition { condition: "gone".into() }), "Lock:        condition: (condition gone)");
         assert_eq!(lock_of(Lock::Password { password: None, hash: None }), "Lock:        password: can only be stopped with its password");
-        let shown = describe_block(&overview, &b, None);
-        assert!(shown.contains("Block lists: (gone)\nCondition:   (gone)\n"), "{shown}");
+        let shown = describe_session(&overview, &b, None);
+        assert!(shown.contains("Targets:     (gone)\nCondition:   (gone)\n"), "{shown}");
         // A flash drive, as a lock's condition and as a condition.
         let drive =
             Condition { id: "d".into(), name: "Key".into(), rule: Rule::FlashDrive { serial: "x".into(), drive: "Kingston".into() } };
         overview.conditions.push(drive.clone());
-        let shown = describe_block(&overview, &Definition { lock: Lock::Condition { condition: "d".into() }, ..b.clone() }, None);
+        let shown = describe_session(&overview, &Definition { lock: Lock::Condition { condition: "d".into() }, ..b.clone() }, None);
         assert!(shown.contains("cannot be stopped while \"Key\" is active (the flash drive \"Kingston\" is not connected)"), "{shown}");
         assert_eq!(describe_rule(&overview, &drive.rule), "while the flash drive \"Kingston\" is not connected");
         assert_eq!(
@@ -2424,7 +2445,7 @@ mod tests {
     #[test]
     fn an_import_says_which_store_apps_it_leaves_out() {
         let claude =
-            definitions::LeftOut { list: "Claude".into(), family: "AnthropicPBC.Claude_fnn82j28hfe8t".into(), name: "Claude".into() };
+            definitions::LeftOut { target: "Claude".into(), family: "AnthropicPBC.Claude_fnn82j28hfe8t".into(), name: "Claude".into() };
         assert_eq!(
             left_out_words(std::slice::from_ref(&claude), true),
             "Left out, as not installed on this PC: \"Claude\" in \"Claude\" (AnthropicPBC.Claude_fnn82j28hfe8t)."
@@ -2441,18 +2462,18 @@ mod tests {
     }
 
     fn library() -> Overview {
-        let mut social = block_list("l1", &["youtube.com"]);
+        let mut social = target("l1", &["youtube.com"]);
         social.name = "Social".into();
         let mut work = weekly("s1", "mon-fri 8-17");
         work.name = "Work hours".into();
-        let mut b = block("b1", &["l1"]);
+        let mut b = session("b1", &["l1"]);
         b.name = "Work".into();
         b.condition = Some("s1".into());
         b.lock = Lock::Condition { condition: "s1".into() };
         Overview {
-            lists: vec![social],
+            targets: vec![social],
             conditions: vec![work],
-            blocks: vec![b],
+            sessions: vec![b],
             running: vec![],
             unlock: UnlockStatus::default(),
             clock_synced: true,
@@ -2497,7 +2518,7 @@ mod tests {
     fn windows_by_title_are_closed_unless_minimized() {
         let parse_enforcers = |names: &str| parse_enforcers(&names.split(' ').map(str::to_string).collect::<Vec<_>>());
         let all = parse_enforcers("all").unwrap();
-        assert_eq!(all, Enforcers::default(), "all is every enforcer as a new block list has them: closing windows by title");
+        assert_eq!(all, Enforcers::default(), "all is every enforcer as a new target has them: closing windows by title");
         assert!(!all.window_titles_minimize);
         let down = parse_enforcers("chromium_tabs window_titles_minimize").unwrap();
         assert!(down.window_titles_minimize && down.chromium_tabs && !down.firefox_tabs);
@@ -2509,9 +2530,9 @@ mod tests {
     }
 
     #[test]
-    fn a_new_block_list_with_everything() {
+    fn a_new_target_with_everything() {
         let line = args(&[
-            "list",
+            "target",
             "new",
             "Social",
             "--sites",
@@ -2531,9 +2552,9 @@ mod tests {
             "chromium_tabs",
             "window_titles_minimize",
         ]);
-        let Ok(Command::ListNew { name, changes }) = parse(&line) else { panic!("not a new list") };
+        let Ok(Command::TargetNew { name, changes }) = parse(&line) else { panic!("not a new list") };
         assert_eq!(name, "Social");
-        let mut list = block_list("x", &[]);
+        let mut list = target("x", &[]);
         changes.apply(&mut list);
         assert_eq!(list.entries.filters, vec!["youtube.com", "reddit.com"]);
         assert_eq!(list.entries.allowed, vec!["youtube.com/watch*"]);
@@ -2556,14 +2577,14 @@ mod tests {
     }
 
     #[test]
-    fn a_new_block_finds_its_lists_and_condition_by_name() {
-        let line = args(&["new", "Evening", "--lists", "social", "l1", "--condition", "WORK HOURS", "--lock-duration", "2h 30m"]);
+    fn a_new_session_finds_its_targets_and_condition_by_name() {
+        let line = args(&["new", "Evening", "--targets", "social", "l1", "--condition", "WORK HOURS", "--lock-duration", "2h 30m"]);
         let Ok(Command::New { name, changes }) = parse(&line) else { panic!("not new") };
         assert_eq!(name, "Evening");
-        let mut b = block("x", &[]);
-        assert!(apply_block_changes(&library(), &mut b, changes).is_ok());
+        let mut b = session("x", &[]);
+        assert!(apply_session_changes(&library(), &mut b, changes).is_ok());
         assert_eq!(
-            (b.lists, b.condition, b.lock),
+            (b.targets, b.condition, b.lock),
             (vec!["l1".to_string(), "l1".to_string()], Some("s1".to_string()), Lock::Duration { duration: "2h 30m".into() })
         );
 
@@ -2571,36 +2592,36 @@ mod tests {
         let Ok(Command::Edit { changes, .. }) = parse(&args(&["edit", "Work", "--condition", "always", "--no-lock"])) else {
             panic!("not edit")
         };
-        let mut b = library().blocks[0].clone();
-        assert!(apply_block_changes(&library(), &mut b, changes).is_ok());
+        let mut b = library().sessions[0].clone();
+        assert!(apply_session_changes(&library(), &mut b, changes).is_ok());
         assert_eq!((b.condition, b.lock), (None, Lock::None));
-        let Ok(Command::Edit { changes, .. }) = parse(&args(&["edit", "Work", "--lists", "Games"])) else { panic!("not edit") };
-        assert!(apply_block_changes(&library(), &mut library().blocks[0].clone(), changes).is_err());
+        let Ok(Command::Edit { changes, .. }) = parse(&args(&["edit", "Work", "--targets", "Games"])) else { panic!("not edit") };
+        assert!(apply_session_changes(&library(), &mut library().sessions[0].clone(), changes).is_err());
     }
 
     #[test]
     fn start_can_set_the_lock_as_the_tile_does() {
         assert_eq!(
             parse(&args(&["start", "Work", "--lock-condition", "Work hours", "--force"])),
-            Ok(Command::Start { block: "Work".into(), lock: Some(Lock::Condition { condition: "Work hours".into() }), force: true })
+            Ok(Command::Start { session: "Work".into(), lock: Some(Lock::Condition { condition: "Work hours".into() }), force: true })
         );
-        assert_eq!(parse(&args(&["start", "Work"])), Ok(Command::Start { block: "Work".into(), lock: None, force: false }));
+        assert_eq!(parse(&args(&["start", "Work"])), Ok(Command::Start { session: "Work".into(), lock: None, force: false }));
         assert_eq!(
             parse(&args(&["start", "Work", "--lock-until", "2026-10-06 18:00"])),
-            Ok(Command::Start { block: "Work".into(), lock: Some(Lock::Until { until: "2026-10-06 18:00".into() }), force: false })
+            Ok(Command::Start { session: "Work".into(), lock: Some(Lock::Until { until: "2026-10-06 18:00".into() }), force: false })
         );
         assert_eq!(
             parse(&args(&["start", "Work", "--lock-until-restart"])),
-            Ok(Command::Start { block: "Work".into(), lock: Some(Lock::UntilRestart), force: false })
+            Ok(Command::Start { session: "Work".into(), lock: Some(Lock::UntilRestart), force: false })
         );
         assert!(parse(&args(&["start", "Work", "--lock-until", "tomorrow"])).is_err());
         assert!(parse(&args(&["start", "Work", "--lock-until-restart", "--no-lock"])).is_err());
         // What starting asks, per lock.
         let overview = library();
-        let warning = lock_warning(&overview, &overview.blocks[0]).unwrap();
+        let warning = lock_warning(&overview, &overview.sessions[0]).unwrap();
         assert!(warning.contains("while its lock condition \"Work hours\" is active."), "{warning}");
         assert!(!warning.contains("08:00"), "{warning}");
-        let timed = Definition { lock: Lock::Duration { duration: "2h5m".into() }, ..overview.blocks[0].clone() };
+        let timed = Definition { lock: Lock::Duration { duration: "2h5m".into() }, ..overview.sessions[0].clone() };
         assert!(lock_warning(&overview, &timed).unwrap().contains("for 2 hours and 5 minutes."));
         assert_eq!(lock_warning(&overview, &Definition { lock: Lock::None, ..timed }), None);
     }
@@ -2644,25 +2665,25 @@ mod tests {
         assert_eq!(options.value("--name"), Ok(Some("Either".into())));
         assert_eq!(options.finish(), Ok(()));
         // The commands take them so.
-        let Ok(Command::ListNew { changes, .. }) = parse(&args(&["list", "new", "A", "--titles", "Inbox, 3 unread", "*Chat*"])) else {
+        let Ok(Command::TargetNew { changes, .. }) = parse(&args(&["target", "new", "A", "--titles", "Inbox, 3 unread", "*Chat*"])) else {
             panic!("not new")
         };
         assert_eq!(changes.lists.get("titles"), Some(&vec!["Inbox, 3 unread".to_string(), "*Chat*".into()]));
-        let Ok(Command::ListEdit { changes, .. }) = parse(&args(&["list", "edit", "A", "--clear", "sites", "allowed-titles"])) else {
+        let Ok(Command::TargetEdit { changes, .. }) = parse(&args(&["target", "edit", "A", "--clear", "sites", "allowed-titles"])) else {
             panic!("not edit")
         };
         assert_eq!(changes.lists.keys().copied().collect::<Vec<_>>(), vec!["allowed_titles", "filters"]);
         assert_eq!(changes.lists.get("filters"), Some(&Vec::new()));
-        let Ok(Command::New { changes, .. }) = parse(&args(&["new", "B", "--lists", "Social", "Games"])) else { panic!("not new") };
-        assert_eq!(changes.lists, Some(vec!["Social".to_string(), "Games".into()]));
+        let Ok(Command::New { changes, .. }) = parse(&args(&["new", "B", "--targets", "Social", "Games"])) else { panic!("not new") };
+        assert_eq!(changes.targets, Some(vec!["Social".to_string(), "Games".into()]));
     }
 
     #[test]
     fn lists_come_from_files_too() {
         let path = std::env::temp_dir().join(format!("cli-{}-sites.txt", std::process::id()));
         std::fs::write(&path, "a.com\r\n\r\nb.com\n").unwrap();
-        let line = args(&["list", "new", "A", "--sites-file", path.to_str().unwrap(), "--sites", "c.com"]);
-        let Ok(Command::ListNew { changes, .. }) = parse(&line) else { panic!("not new") };
+        let line = args(&["target", "new", "A", "--sites-file", path.to_str().unwrap(), "--sites", "c.com"]);
+        let Ok(Command::TargetNew { changes, .. }) = parse(&line) else { panic!("not new") };
         assert_eq!(changes.lists.get("filters"), Some(&vec!["c.com".to_string(), "a.com".into(), "b.com".into()]));
         let _ = std::fs::remove_file(path);
     }
@@ -2672,19 +2693,19 @@ mod tests {
         for bad in [
             &["frobnicate"][..],
             &["new"],
-            &["new", "--lists", "a"],
+            &["new", "--targets", "a"],
             &["new", "A", "--lock-duration", "soon"],
             &["new", "A", "--lock-duration", ""],
             &["new", "A", "--lock-duration", "1h", "--no-lock"],
             &["new", "A", "--name", "B"],
             &["new", "A", "--sites", "a.com"],
-            &["list"],
-            &["list", "new"],
-            &["list", "new", "A", "--sites"],
-            &["list", "new", "A", "--enforcers", "chromium_tabs,lasers"],
-            &["list", "new", "A", "--clear", "sites"],
-            &["list", "edit", "A", "--clear", "everything"],
-            &["list", "frob", "A"],
+            &["target"],
+            &["target", "new"],
+            &["target", "new", "A", "--sites"],
+            &["target", "new", "A", "--enforcers", "chromium_tabs,lasers"],
+            &["target", "new", "A", "--clear", "sites"],
+            &["target", "edit", "A", "--clear", "everything"],
+            &["target", "frob", "A"],
             &["condition", "new", "A"],
             &["condition", "new", "A", "--times", "mon 9-17", "--drive", "Kingston"],
             &["condition", "check"],
@@ -2692,7 +2713,7 @@ mod tests {
             &["start"],
             &["start", "A", "B"],
             &["stop", "A", "now"],
-            &["list", "new", "A", "--sites-file", "Z:/no/such/file.txt"],
+            &["target", "new", "A", "--sites-file", "Z:/no/such/file.txt"],
         ] {
             assert!(parse(&args(bad)).is_err(), "{bad:?}");
         }
@@ -2703,26 +2724,26 @@ mod tests {
         assert_eq!(parse(&[]), Ok(Command::Help));
         assert_eq!(parse(&args(&["--version"])), Ok(Command::Version));
         assert_eq!(parse(&args(&["status", "--json"])), Ok(Command::Status { json: true }));
-        assert_eq!(parse(&args(&["show", "Work", "--json"])), Ok(Command::Show { block: "Work".into(), json: true }));
-        assert_eq!(parse(&args(&["delete", "Work", "--force"])), Ok(Command::Delete { block: "Work".into(), force: true }));
+        assert_eq!(parse(&args(&["show", "Work", "--json"])), Ok(Command::Show { session: "Work".into(), json: true }));
+        assert_eq!(parse(&args(&["delete", "Work", "--force"])), Ok(Command::Delete { session: "Work".into(), force: true }));
         assert_eq!(parse(&args(&["export", "b.json"])), Ok(Command::Export { file: "b.json".into() }));
         assert_eq!(parse(&args(&["import", "b.json", "--force"])), Ok(Command::Import { file: "b.json".into(), force: true }));
         assert!(parse(&args(&["import"])).is_err());
-        assert_eq!(parse(&args(&["duplicate", "Work"])), Ok(Command::Duplicate { kind: Kind::Block, item: "Work".into() }));
-        assert_eq!(parse(&args(&["list", "duplicate", "Social"])), Ok(Command::Duplicate { kind: Kind::List, item: "Social".into() }));
+        assert_eq!(parse(&args(&["duplicate", "Work"])), Ok(Command::Duplicate { kind: Kind::Session, item: "Work".into() }));
+        assert_eq!(parse(&args(&["target", "duplicate", "Social"])), Ok(Command::Duplicate { kind: Kind::Target, item: "Social".into() }));
         assert_eq!(
             parse(&args(&["condition", "duplicate", "Evenings"])),
             Ok(Command::Duplicate { kind: Kind::Condition, item: "Evenings".into() })
         );
-        assert_eq!(parse(&args(&["stop", "Work"])), Ok(Command::Stop { block: "Work".into(), password: None, abort: false }));
+        assert_eq!(parse(&args(&["stop", "Work"])), Ok(Command::Stop { session: "Work".into(), password: None, abort: false }));
         assert_eq!(
             parse(&args(&["stop", "Work", "--password", "pw"])),
-            Ok(Command::Stop { block: "Work".into(), password: Some("pw".into()), abort: false })
+            Ok(Command::Stop { session: "Work".into(), password: Some("pw".into()), abort: false })
         );
         assert_eq!(
             parse(&args(&["start", "Work", "--lock-password", "partner"])),
             Ok(Command::Start {
-                block: "Work".into(),
+                session: "Work".into(),
                 lock: Some(Lock::Password { password: Some("partner".into()), hash: None }),
                 force: false
             })
@@ -2730,7 +2751,7 @@ mod tests {
         assert!(parse(&args(&["start", "Work", "--lock-password", "pw", "--no-lock"])).is_err());
         assert_eq!(
             parse(&args(&["start", "Work", "--lock-text", "I will not scroll", "--force"])),
-            Ok(Command::Start { block: "Work".into(), lock: Some(Lock::Text { text: "I will not scroll".into() }), force: true })
+            Ok(Command::Start { session: "Work".into(), lock: Some(Lock::Text { text: "I will not scroll".into() }), force: true })
         );
         assert!(parse(&args(&["start", "Work", "--lock-text", "x", "--lock-password", "pw"])).is_err());
         // A flash drive is named here and looked up among the connected ones when the command runs.
@@ -2739,8 +2760,11 @@ mod tests {
             Ok(Command::ConditionNew { name: "Key".into(), rule: RuleChoice::Drive("Kingston".into()) })
         );
         assert_eq!(parse(&args(&["drives", "--json"])), Ok(Command::Drives { json: true }));
-        assert_eq!(parse(&args(&["list", "show", "Social"])), Ok(Command::ListShow { list: "Social".into(), json: false }));
-        assert_eq!(parse(&args(&["list", "delete", "Social", "--force"])), Ok(Command::ListDelete { list: "Social".into(), force: true }));
+        assert_eq!(parse(&args(&["target", "show", "Social"])), Ok(Command::TargetShow { target: "Social".into(), json: false }));
+        assert_eq!(
+            parse(&args(&["target", "delete", "Social", "--force"])),
+            Ok(Command::TargetDelete { target: "Social".into(), force: true })
+        );
         assert_eq!(parse(&args(&["condition", "show", "Work hours"])), Ok(Command::ConditionShow { condition: "Work hours".into() }));
         assert_eq!(
             parse(&args(&["condition", "delete", "Work hours"])),
@@ -2764,9 +2788,9 @@ mod tests {
     }
 
     #[test]
-    fn deleting_says_what_it_does_to_the_blocks() {
+    fn deleting_says_what_it_does_to_the_sessions() {
         let overview = library();
-        assert_eq!(fallout(&overview, "l1"), " \"Work\" is deleted too, as it has no other block list.");
+        assert_eq!(fallout(&overview, "l1"), " \"Work\" is deleted too, as it has no other target.");
         assert_eq!(fallout(&overview, "s1"), " \"Work\" is always active from then on. \"Work\" has no lock from then on.");
         assert_eq!(fallout(&overview, "other"), "");
     }
@@ -2774,36 +2798,36 @@ mod tests {
     #[test]
     fn things_are_found_by_id_or_name() {
         let lists = vec![
-            block_list("a1", &[]),
-            BlockList { name: "Games".into(), ..block_list("b2", &[]) },
-            BlockList { name: "games".into(), ..block_list("c3", &[]) },
+            target("a1", &[]),
+            Target { name: "Games".into(), ..target("b2", &[]) },
+            Target { name: "games".into(), ..target("c3", &[]) },
         ];
-        fn key(l: &BlockList) -> (&String, &String) {
+        fn key(l: &Target) -> (&String, &String) {
             (&l.id, &l.name)
         }
-        assert_eq!(find(&lists, "a1", "block list", key).ok().map(|l| l.id.as_str()), Some("a1"));
-        assert_eq!(find(&lists, "list A1", "block list", key).ok().map(|l| l.id.as_str()), Some("a1"));
-        assert!(matches!(find(&lists, "Games", "block list", key), Err(Failure::Failed(why)) if why.contains("b2, c3")));
-        assert!(find(&lists, "Nope", "block list", key).is_err());
+        assert_eq!(find(&lists, "a1", "target", key).ok().map(|l| l.id.as_str()), Some("a1"));
+        assert_eq!(find(&lists, "list A1", "target", key).ok().map(|l| l.id.as_str()), Some("a1"));
+        assert!(matches!(find(&lists, "Games", "target", key), Err(Failure::Failed(why)) if why.contains("b2, c3")));
+        assert!(find(&lists, "Nope", "target", key).is_err());
         assert!(new_id().chars().all(|c| c.is_ascii_alphanumeric() || c == '-') && new_id().len() <= 64);
     }
 
     #[test]
     fn the_status_reads_like_the_pages() {
         let empty = Overview {
-            lists: vec![],
+            targets: vec![],
             conditions: vec![],
-            blocks: vec![],
+            sessions: vec![],
             running: vec![],
             unlock: UnlockStatus::default(),
             clock_synced: true,
         };
-        assert!(describe_overview(&empty).contains("Blocks:\n  None yet"));
+        assert!(describe_overview(&empty).contains("Sessions:\n  None yet"));
         let mut overview = library();
         overview.running.push(Running {
             id: "b1".into(),
             name: "Work".into(),
-            lists: vec![RunningList {
+            targets: vec![RunningTarget {
                 name: "Social".into(),
                 entries: Entries { filters: vec!["youtube.com".into()], ..Entries::default() },
                 enforcers: Enforcers::default(),
@@ -2830,38 +2854,38 @@ mod tests {
         overview.clock_synced = false;
         let text = describe_overview(&overview);
         assert!(text.contains("  Work  Running · inactive for the next 1 hour · unlocked for the next 1 hour"), "{text}");
-        assert!(text.contains("Block lists:\n  Social  used by Work"), "{text}");
+        assert!(text.contains("Targets:\n  Social  used by Work"), "{text}");
         assert!(text.contains("Conditions:\n  Work hours  Mon-Fri 08:00-17:00"), "{text}");
         assert!(text.contains("Waiting for internet time"), "{text}");
 
-        let block = describe_block(&overview, &overview.blocks[0], overview.running.first());
-        assert!(block.contains("Block lists: Social") && block.contains("Condition:   Work hours\n"), "{block}");
-        assert!(!block.contains("08:00-17:00"), "{block}");
-        assert!(block.contains("Lock:        condition: cannot be stopped while \"Work hours\" is active"), "{block}");
+        let session = describe_session(&overview, &overview.sessions[0], overview.running.first());
+        assert!(session.contains("Targets:     Social") && session.contains("Condition:   Work hours\n"), "{session}");
+        assert!(!session.contains("08:00-17:00"), "{session}");
+        assert!(session.contains("Lock:        condition: cannot be stopped while \"Work hours\" is active"), "{session}");
         assert_eq!(
             resolve_lock(&overview, Lock::Condition { condition: "work HOURS".into() }).ok(),
             Some(Lock::Condition { condition: "s1".into() })
         );
-        let list = describe_list(&overview, &overview.lists[0]);
-        assert!(list.contains("Block list:     youtube.com") && list.contains("Used by:        Work"), "{list}");
+        let list = describe_target(&overview, &overview.targets[0]);
+        assert!(list.contains("Sites:          youtube.com") && list.contains("Used by:        Work"), "{list}");
     }
 
-    /// What `new` and `edit` say of the allowance, as terms over the ones the block has.
+    /// What `new` and `edit` say of the allowance, as terms over the ones the session has.
     fn allowance_of(line: &[&str], old: Option<Terms>) -> Result<Option<Terms>, String> {
         let changes = match parse(&args(line))? {
             Command::New { changes, .. } | Command::Edit { changes, .. } => changes,
             other => panic!("not new or edit: {other:?}"),
         };
-        let mut b = library().blocks[0].clone();
+        let mut b = library().sessions[0].clone();
         b.allowance = old;
-        match apply_block_changes(&library(), &mut b, changes) {
+        match apply_session_changes(&library(), &mut b, changes) {
             Ok(()) => Ok(b.allowance),
             Err(Failure::Failed(why) | Failure::Usage(why)) => Err(why),
         }
     }
 
     #[test]
-    fn a_block_has_its_allowance_set_by_its_options() {
+    fn a_session_has_its_allowance_set_by_its_options() {
         let budget = |allowed: &str, scope, reset| {
             Some(Terms::Budget { allowed: allowed.into(), scope, reset, every: String::new(), anchor: Anchor::Start })
         };
@@ -2896,7 +2920,7 @@ mod tests {
         assert!(allowance_of(&["new", "A", "--allowed", "1h", "--reset", "7h", "--anchor", "clock"], None)
             .unwrap_err()
             .contains("fits a day evenly"));
-        // The defaults: the whole block, never reset; the kind can be left out.
+        // The defaults: the whole session, never reset; the kind can be left out.
         assert_eq!(allowance_of(&["new", "A", "--allowed", "1h"], None), Ok(budget("1h", Scope::Total, Reset::Never)));
         // A cycle is told by its own options.
         assert_eq!(
@@ -2927,12 +2951,12 @@ mod tests {
             assert!(parse(&args(bad)).is_err(), "{bad:?}");
         }
 
-        // It is shown on the block, and what it is doing with a running one.
+        // It is shown on the session, and what it is doing with a running one.
         let mut overview = library();
-        overview.blocks[0].allowance = cycle("50m", "10m", Anchor::Clock);
-        let shown = describe_block(&overview, &overview.blocks[0], None);
+        overview.sessions[0].allowance = cycle("50m", "10m", Anchor::Clock);
+        let shown = describe_session(&overview, &overview.sessions[0], None);
         assert!(shown.contains("Allowance:   Blocked for 50 minutes, then allowed for 10 minutes, on the clock"), "{shown}");
-        assert!(describe_block(&library(), &library().blocks[0], None).contains("Allowance:   none\n"));
+        assert!(describe_session(&library(), &library().sessions[0], None).contains("Allowance:   none\n"));
         let status = AllowanceStatus {
             terms: Terms::Pomodoro { blocked: "50m".into(), allowed: "10m".into(), anchor: Anchor::Clock },
             open: true,

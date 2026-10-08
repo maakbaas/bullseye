@@ -1,5 +1,5 @@
 // The lock methods (`lock::Lock`), by `method`: their form in the dialog, the tile's line for a
-// block that is not running, and what starting a block with one asks first.
+// session that is not running, and what starting a session with one asks first.
 
 import { durationText, el, invalid, invoke, localDate, overview, quoted, editHref, ref, t, tn, untilText, wordingOf } from "./core.js";
 
@@ -15,15 +15,15 @@ function conditionLockText(wording, name, state) {
   return tn(`locks.condition.${locked ? "lockedDuring" : "unlockedOutside"}${change ? "For" : ""}`, { name, change });
 }
 
-// How a started block is kept from being stopped (`lock::Lock`), by `method`. Set on the
-// block's tile, next to Start. `confirm` says what starting it asks first (null: nothing).
+// How a started session is kept from being stopped (`lock::Lock`), by `method`. Set on the
+// session's tile, next to Start. `confirm` says what starting it asks first (null: nothing).
 // What a password lock's fields show for a password that is set: 8 dots, masked or revealed.
 const KEPT = "•".repeat(8);
 
-// A lock method's settings for a block: its lock's if it has that method, else the ones the
+// A lock method's settings for a session: its lock's if it has that method, else the ones the
 // service kept from when it last had it (`kept_locks`; a password only as being set), else none.
-const settingsOf = (block, method) =>
-  (block.lock && block.lock.method === method ? block.lock : (block.kept_locks || []).find((lock) => lock.method === method)) || {};
+const settingsOf = (session, method) =>
+  (session.lock && session.lock.method === method ? session.lock : (session.kept_locks || []).find((lock) => lock.method === method)) || {};
 
 const LOCKS = {
   none: {
@@ -33,9 +33,9 @@ const LOCKS = {
   },
   duration: {
     label: t("locks.duration.label"),
-    form: (block) => {
+    form: (session) => {
       const input = el("cds-text-input", { label: t("locks.duration.field"), placeholder: t("locks.duration.placeholder"), "helper-text": t("locks.duration.helper") });
-      input.value = settingsOf(block, "duration").duration || "";
+      input.value = settingsOf(session, "duration").duration || "";
       return {
         fields: [input],
         read: async () => {
@@ -46,9 +46,9 @@ const LOCKS = {
       };
     },
     describe: (lock) => t("locks.duration.describe", { duration: durationText(lock.duration) }),
-    confirm: async (block) => {
-      const duration = await invoke("describe_duration", { text: block.lock.duration || "" }).catch(() => block.lock.duration);
-      const values = { name: quoted(block.name), duration };
+    confirm: async (session) => {
+      const duration = await invoke("describe_duration", { text: session.lock.duration || "" }).catch(() => session.lock.duration);
+      const values = { name: quoted(session.name), duration };
       return {
         heading: t("locks.duration.confirmHeading", values),
         body: t("locks.duration.confirmBody", values),
@@ -60,8 +60,8 @@ const LOCKS = {
     label: t("locks.until.label"),
     // Carbon's date picker and time picker side by side; the backend reads the two together
     // (`describe_until`), so a wrong or past time is said in its words.
-    form: (block) => {
-      const [day, time] = (settingsOf(block, "until").until || "").split(" ");
+    form: (session) => {
+      const [day, time] = (settingsOf(session, "until").until || "").split(" ");
       const datePicker = el("cds-date-picker", { "date-format": "Y-m-d", "min-date": localDate(new Date()) });
       const dateInput = el("cds-date-picker-input", { kind: "single", "label-text": t("locks.until.date"), placeholder: t("locks.until.datePlaceholder") });
       datePicker.append(dateInput);
@@ -83,11 +83,11 @@ const LOCKS = {
       };
     },
     describe: (lock) => t("locks.until.describe", { when: untilText(lock.until) }),
-    confirm: async (block) => {
+    confirm: async (session) => {
       // A time that has passed does not start; the service says so.
-      const end = await invoke("describe_until", { text: block.lock.until || "" }).catch(() => null);
+      const end = await invoke("describe_until", { text: session.lock.until || "" }).catch(() => null);
       if (!end) return null;
-      const values = { name: quoted(block.name), when: end.when, left: end.left };
+      const values = { name: quoted(session.name), when: end.when, left: end.left };
       return {
         heading: t("locks.until.confirmHeading", values),
         body: t("locks.until.confirmBody", values),
@@ -98,23 +98,23 @@ const LOCKS = {
   until_restart: {
     label: t("locks.until_restart.label"),
     describe: () => t("locks.until_restart.describe"),
-    confirm: async (block) => ({
-      heading: t("locks.until_restart.confirmHeading", { name: quoted(block.name) }),
-      body: t("locks.until_restart.confirmBody", { name: quoted(block.name) }),
-      action: t("locks.until_restart.confirmAction", { name: quoted(block.name) }),
+    confirm: async (session) => ({
+      heading: t("locks.until_restart.confirmHeading", { name: quoted(session.name) }),
+      body: t("locks.until_restart.confirmBody", { name: quoted(session.name) }),
+      action: t("locks.until_restart.confirmAction", { name: quoted(session.name) }),
     }),
   },
   condition: {
     label: t("locks.condition.label"),
-    // A condition of its own: with the block's own condition, it is locked exactly while active.
+    // A condition of its own: with the session's own condition, it is locked exactly while active.
     // A weekly schedule locks at its times; a flash drive locks while it is not connected, so
     // the drive is the key. Only with a condition to choose (`setLock` offers to make one).
-    form: (block) => {
+    form: (session) => {
       const select = el("cds-dropdown", { autoalign: true, "title-text": t("locks.condition.field"), "helper-text": t("locks.condition.helper") });
       select.append(...overview.conditions.map((c) => el("cds-dropdown-item", { value: c.id }, c.name)));
-      // The one it had, else the block's own condition, else the first there is.
+      // The one it had, else the session's own condition, else the first there is.
       const exists = (id) => overview.conditions.some((c) => c.id === id);
-      const chosen = [settingsOf(block, "condition").condition, block.condition].find(exists);
+      const chosen = [settingsOf(session, "condition").condition, session.condition].find(exists);
       select.value = chosen || (overview.conditions[0] || {}).id || "";
       return { fields: [select], read: async () => (invalid(select, select.value ? null : t("locks.condition.missing")) ? null : { method: "condition", condition: select.value }) };
     },
@@ -123,12 +123,12 @@ const LOCKS = {
       if (!condition) return t("locks.condition.describeGone");
       return conditionLockText(wordingOf(condition), ref(condition.name, editHref("conditions", condition.id)));
     },
-    confirm: async (block) => {
+    confirm: async (session) => {
       // Without its condition the service refuses the start, and says why.
-      const condition = overview.conditions.find((c) => c.id === block.lock.condition);
+      const condition = overview.conditions.find((c) => c.id === session.lock.condition);
       if (!condition) return null;
       const detail = condition.type === "flash_drive" ? t("locks.condition.driveDetail", { drive: quoted(condition.drive) }) : "";
-      const values = { name: quoted(block.name), condition: quoted(condition.name), detail };
+      const values = { name: quoted(session.name), condition: quoted(condition.name), detail };
       return {
         heading: t("locks.condition.confirmHeading", values),
         body: t("locks.condition.confirmBody", values),
@@ -139,9 +139,9 @@ const LOCKS = {
   delay: {
     label: t("locks.delay.label"),
     // Like unlocking in Settings: stopping is asked for, counts down, and can be aborted.
-    form: (block) => {
+    form: (session) => {
       const input = el("cds-text-input", { label: t("locks.delay.field"), placeholder: t("locks.delay.placeholder"), "helper-text": t("locks.delay.helper") });
-      input.value = settingsOf(block, "delay").delay || "";
+      input.value = settingsOf(session, "delay").delay || "";
       return {
         fields: [input],
         read: async () => {
@@ -152,9 +152,9 @@ const LOCKS = {
       };
     },
     describe: (lock) => t("locks.delay.describe", { delay: durationText(lock.delay) }),
-    confirm: async (block) => {
-      const delay = await invoke("describe_duration", { text: block.lock.delay || "" }).catch(() => block.lock.delay);
-      const values = { name: quoted(block.name), delay };
+    confirm: async (session) => {
+      const delay = await invoke("describe_duration", { text: session.lock.delay || "" }).catch(() => session.lock.delay);
+      const values = { name: quoted(session.name), delay };
       return {
         heading: t("locks.delay.confirmHeading", values),
         body: t("locks.delay.confirmBody", values),
@@ -164,31 +164,31 @@ const LOCKS = {
   },
   text: {
     label: t("locks.text.label"),
-    // A text of its own: stopping the block means typing it in exactly as it is shown, with
+    // A text of its own: stopping the session means typing it in exactly as it is shown, with
     // nothing pasted (`askText` in tiles.js). It is no secret, so it is kept as typed here.
-    form: (block) => {
+    form: (session) => {
       const area = el("cds-textarea", { label: t("locks.text.field"), placeholder: t("locks.text.placeholder"), "helper-text": t("locks.text.helper"), rows: 4, "max-count": "1000" });
-      area.value = settingsOf(block, "text").text || "";
+      area.value = settingsOf(session, "text").text || "";
       return { fields: [area], read: async () => (invalid(area, area.value.trim() ? null : t("locks.text.missing")) ? null : { method: "text", text: area.value }) };
     },
     describe: () => t("locks.text.describe"),
-    confirm: async (block) => ({
-      heading: t("locks.text.confirmHeading", { name: quoted(block.name) }),
-      body: t("locks.text.confirmBody", { name: quoted(block.name) }),
-      action: t("locks.text.confirmAction", { name: quoted(block.name) }),
+    confirm: async (session) => ({
+      heading: t("locks.text.confirmHeading", { name: quoted(session.name) }),
+      body: t("locks.text.confirmBody", { name: quoted(session.name) }),
+      action: t("locks.text.confirmAction", { name: quoted(session.name) }),
     }),
   },
   password: {
     label: t("locks.password.label"),
-    // Sent once; the service keeps only a salted hash and never sends either back, so a block
+    // Sent once; the service keeps only a salted hash and never sends either back, so a session
     // that has one just says so. Typed twice, as nothing ever shows it again: a typo would leave a lock only the unlock
     // password opens.
-    form: (block) => {
+    form: (session) => {
       // A password already set is never known here (only its hash is kept), so the fields hold
       // 8 dots in its place, as text of normal weight rather than a placeholder. They go as soon
       // as either field is entered and come back if both are left empty; saved as they are, the
-      // block keeps its password.
-      const set = settingsOf(block, "password").method === "password";
+      // session keeps its password.
+      const set = settingsOf(session, "password").method === "password";
       const password = el("cds-password-input", { label: t("locks.password.field"), autocomplete: "new-password", "helper-text": t(set ? "locks.password.helperSet" : "locks.password.helper") });
       const repeat = el("cds-password-input", { label: t("locks.password.repeat"), autocomplete: "new-password" });
       const fields = [password, repeat];
@@ -218,10 +218,10 @@ const LOCKS = {
       };
     },
     describe: () => t("locks.password.describe"),
-    confirm: async (block) => ({
-      heading: t("locks.password.confirmHeading", { name: quoted(block.name) }),
-      body: t("locks.password.confirmBody", { name: quoted(block.name) }),
-      action: t("locks.password.confirmAction", { name: quoted(block.name) }),
+    confirm: async (session) => ({
+      heading: t("locks.password.confirmHeading", { name: quoted(session.name) }),
+      body: t("locks.password.confirmBody", { name: quoted(session.name) }),
+      action: t("locks.password.confirmAction", { name: quoted(session.name) }),
     }),
   },
 };

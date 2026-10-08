@@ -1,4 +1,4 @@
-//! Unlocking: ending every running block at once, as the Settings page and `bullseye unlock`
+//! Unlocking: ending every running session at once, as the Settings page and `bullseye unlock`
 //! do, and the passwords of password locks (`new_hash`).
 //!
 //! **This is the escape hatch, so it must never be unusable.** Unlocking takes a *countdown*: the
@@ -12,10 +12,10 @@
 //! unreadable, nonsense), the delay is none: a fault opens the hatch, never closes it.
 //!
 //! The delay is always there as the fallback. Besides it there can be **one other way** to unlock
-//! (`Way`), chosen like a block's lock but never the delay: unlocking is ready when the delay is over
+//! (`Way`), chosen like a session's lock but never the delay: unlocking is ready when the delay is over
 //! **or** that way is satisfied (never both): a text typed in, a password, a time or date that has
 //! come, a restart of Windows, a condition that is active. Setting one makes unlocking easier, so
-//! it needs unlocking to be ready or no block to be locked, like a shorter delay; removing it is
+//! it needs unlocking to be ready or no session to be locked, like a shorter delay; removing it is
 //! always free.
 
 use std::fs;
@@ -74,7 +74,7 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
 
 /// One other way to unlock, besides the delay: the lock method it was chosen as (`lock`, a password
 /// as its hash only) and, for the ones that depend on the world, what that was resolved to when it was
-/// set (`opening`), so it does not change under a running block.
+/// set (`opening`), so it does not change under a running session.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Way {
     pub lock: Lock,
@@ -82,7 +82,7 @@ pub struct Way {
     pub opening: Option<Opening>,
 }
 
-/// When a `Way` that needs no answer lets go: a condition, as in a block's lock: while it is active
+/// When a `Way` that needs no answer lets go: a condition, as in a session's lock: while it is active
 /// it is locked (unlocking has to wait for the delay), and when it is not, unlocking is open.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -230,7 +230,7 @@ impl UnlockDelay {
         self.set(seconds, now, false)
     }
 
-    /// As `set_delay`, for when no block is locked: there is nothing to unlock, and no way to ask
+    /// As `set_delay`, for when no session is locked: there is nothing to unlock, and no way to ask
     /// for unlocking either (the window has no button for it), so a shorter delay is free too.
     pub fn set_delay_idle(&self, seconds: u64, now: SystemTime) -> Result<(), String> {
         self.set(seconds, now, true)
@@ -256,7 +256,7 @@ impl UnlockDelay {
     }
 
     /// Sets the other way (`None` removes it: always free). Setting one makes unlocking easier, so,
-    /// unless `idle` (no block is locked, so nothing is got around), it needs unlocking to be ready.
+    /// unless `idle` (no session is locked, so nothing is got around), it needs unlocking to be ready.
     pub fn set_way(&self, way: Option<Way>, now: SystemTime, idle: bool) -> Result<(), String> {
         if way.is_some() && !idle && self.remaining(now) != Some(0) {
             return Err("Another way to unlock needs unlocking to be ready: request unlock and wait for the countdown, or set it while nothing is locked".into());

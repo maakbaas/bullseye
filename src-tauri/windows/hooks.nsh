@@ -1,7 +1,7 @@
 ; Hooks into Tauri's NSIS installer (tauri.conf.json > bundle > windows > nsis > installerHooks).
 ; The installer runs as an administrator (installMode "perMachine"). The work itself is in the
 ; app (src/setup.rs); these only run it and act on its exit code:
-; 0 done, 1 failed, 2 refused because a block is locked.
+; 0 done, 1 failed, 2 refused because a session is locked.
 ;
 ; Bullseye is only installed on a clean machine: there is no update path.
 
@@ -26,7 +26,7 @@
     ; The service is registered but did not answer or did not end. Stopping here, rather than
     ; deleting files under a service that may still be running, avoids a half-removed install.
     ; (No service at all is exit code 0, so that case goes on.)
-    MessageBox MB_ICONSTOP "Bullseye's service did not respond, so nothing was removed.$\n$\nSee C:\ProgramData\bullseye\service.log, or use the recovery steps in the Bullseye source (CLAUDE.md)." /SD IDOK
+    MessageBox MB_ICONSTOP "Bullseye's service did not respond, so nothing was removed.$\n$\nSee C:\ProgramData\bullseye\service.log, or use the recovery steps in the Bullseye source (AGENTS.md)." /SD IDOK
     SetErrorLevel 1
     Quit
   ${EndIf}

@@ -1,9 +1,9 @@
 //! The app's side of the service: asks the service what to show and what to enforce.
 //!
-//! The app holds no block of its own. `tab_closer.rs` asks `Remote::active` every second, which
-//! has the same shape as `Blocklist::active`: every running block's part.
+//! The app holds no session of its own. `tab_closer.rs` asks `Remote::active` every second, which
+//! has the same shape as `Sessions::active`: every running session's part.
 //! If the service cannot be reached (it is restarting, or being updated), the last answer keeps
-//! being enforced: a gap in the service must not open the block.
+//! being enforced: a gap in the service must not open the session.
 //!
 //! In a debug build (`npm run dev`) the service's logic can run inside the app instead
 //! (`Remote::local`): no service, no pipe, no installer, and nothing that has to stay alive. Release
@@ -13,11 +13,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::block::{Active, Enforced, Free, Usage};
 use crate::lists::Lists;
 use crate::pipe;
 use crate::proto::{self, Overview, Policy, Request, Response, Used};
 use crate::registration;
+use crate::session::{Active, Enforced, Free, Usage};
 use crate::sync::LockExt;
 use crate::watchdog::note;
 
@@ -135,7 +135,7 @@ impl Remote {
         // says what is to be enforced now.
         let used = self.usage.take();
         if !used.is_empty() {
-            let report = used.iter().map(|(block, key)| Used { block: block.clone(), key: key.clone() }).collect();
+            let report = used.iter().map(|(session, key)| Used { session: session.clone(), key: key.clone() }).collect();
             if self.send(Request::Report { used: report }).is_err() {
                 self.usage.put_back(used);
             }
@@ -175,7 +175,7 @@ impl Remote {
 
     fn fail(&self, why: &str) {
         if !self.failing.swap(true, Ordering::Relaxed) {
-            note("app", &format!("the service did not answer, going on with the last block: {why}"));
+            note("app", &format!("the service did not answer, going on with the last session: {why}"));
         }
     }
 
@@ -192,15 +192,15 @@ impl Remote {
             return;
         }
         match policies.iter().map(parse).collect::<Option<Vec<Enforced>>>() {
-            Some(blocks) => *cache = Some(Cached { policies, active: Active { blocks, used: self.usage.clone() } }),
+            Some(sessions) => *cache = Some(Cached { policies, active: Active { sessions, used: self.usage.clone() } }),
             // Cannot happen with a service of this version; keep what is being enforced.
-            None => note("app", "the service sent a block list that cannot be read"),
+            None => note("app", "the service sent a target that cannot be read"),
         }
     }
 }
 
 fn parse(policy: &Policy) -> Option<Enforced> {
-    // What an allowance lets through is matched with the block list's always-allowed sites and titles as exceptions.
+    // What an allowance lets through is matched with the target's always-allowed sites and titles as exceptions.
     let free = policy
         .free
         .iter()
@@ -208,7 +208,7 @@ fn parse(policy: &Policy) -> Option<Enforced> {
             let exceptions = Lists::exceptions(&policy.entries);
             let entries =
                 crate::lists::Entries { allowed: exceptions.allowed, allowed_titles: exceptions.allowed_titles, ..free.entries.clone() };
-            Some(Free { block: free.block.clone(), key: free.key.clone(), lists: Arc::new(Lists::parse(&entries).ok()?) })
+            Some(Free { session: free.session.clone(), key: free.key.clone(), lists: Arc::new(Lists::parse(&entries).ok()?) })
         })
         .collect::<Option<Vec<Free>>>()?;
     Some(Enforced { lists: Arc::new(Lists::parse(&policy.entries).ok()?), enforcers: policy.enforcers, free })
@@ -235,14 +235,14 @@ mod tests {
         assert!(current(&remote).is_none());
 
         remote.apply(vec![policy(&["tweakers.net"])]);
-        let list = current(&remote).unwrap().blocks[0].lists.clone();
+        let list = current(&remote).unwrap().sessions[0].lists.clone();
         assert!(list.sites.is_blocked("https://tweakers.net/nieuws"));
 
         // The same policy again keeps the same parsed list.
         remote.apply(vec![policy(&["tweakers.net"])]);
-        assert!(Arc::ptr_eq(&list, &current(&remote).unwrap().blocks[0].lists));
+        assert!(Arc::ptr_eq(&list, &current(&remote).unwrap().sessions[0].lists));
 
-        // A different one replaces it, a second block comes along; none at all ends the blocks.
+        // A different one replaces it, a second session comes along; none at all ends the sessions.
         remote.apply(vec![policy(&["b.com"]), policy(&["c.com"])]);
         let active = current(&remote).unwrap();
         assert!(active.blocks_page("https://b.com/x", false) && active.blocks_page("https://c.com/", false));
@@ -266,24 +266,24 @@ mod tests {
 
     #[test]
     fn a_local_remote_is_a_service_of_its_own_without_a_pipe() {
-        use crate::block::Blocklist;
-        use crate::definitions::{tests::block, tests::block_list, Definition, Definitions};
+        use crate::definitions::{tests::session, tests::target, Definition, Definitions};
         use crate::lock::Lock;
+        use crate::session::Sessions;
         use crate::state::Store;
         let dir = std::env::temp_dir().join(format!("client-{}-local", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let blocklist = Blocklist::with_store(Store::new(dir.join("state.json")));
-        let remote = Remote::local(service::local_handler(blocklist, Definitions::at(Some(dir.join("blocks.json")))));
+        let sessions = Sessions::with_store(Store::new(dir.join("state.json")));
+        let remote = Remote::local(service::local_handler(sessions, Definitions::at(Some(dir.join("sessions.json")))));
         assert!(remote.is_local());
         assert!(remote.active().is_none());
 
-        remote.command(Request::SaveList { list: block_list("a", &["a.com"]) }).unwrap();
-        let block = Definition { lock: Lock::Duration { duration: "1h".into() }, ..block("a", &["a"]) };
-        remote.command(Request::SaveBlock { block }).unwrap();
+        remote.command(Request::SaveTarget { target: target("a", &["a.com"]) }).unwrap();
+        let session = Definition { lock: Lock::Duration { duration: "1h".into() }, ..session("a", &["a"]) };
+        remote.command(Request::SaveSession { session }).unwrap();
         remote.command(Request::Start { id: "a".into() }).unwrap();
         assert!(remote.active().unwrap().blocks_page("https://a.com/x", false));
         assert!(remote.status().unwrap().running[0].remaining.is_some());
-        // The same rules as with the real service: a timed block cannot be stopped early, unlocking
+        // The same rules as with the real service: a timed session cannot be stopped early, unlocking
         // (free until a delay is set) ends it.
         assert!(remote.command(Request::Stop { id: "a".into(), password: None, text: None }).is_err());
         remote.command(Request::Unlock).unwrap();

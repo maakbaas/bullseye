@@ -1,33 +1,33 @@
-// What block lists are made of (`LISTS`, `SECTIONS`) and the editors' forms: a block, a block list,
+// What targets are made of (`LISTS`, `SECTIONS`) and the editors' forms: a session, a target,
 // a condition (with its week grid or its flash drive). Every form has `nodes`, `fill(item)`, `read(item)`,
 // `disable(off)`, `settle()` and `error()`.
 
 import { el, invalid, invoke, lines, overview, t } from "./core.js";
 
-// ---- What things are made of. Three kinds, each a list of its own: block lists (what to
-// block), conditions (when) and blocks (one or more block lists, a condition, an allowance and a
-// lock: what is started; the allowance and the lock are set on the block itself). The editors, tiles and summaries are built from these tables, so a new kind of
-// list, enforcer or lock method is an entry here (plus its backend side, see CLAUDE.md).
+// ---- What things are made of. Three kinds, each a list of its own: targets (what to
+// session), conditions (when) and sessions (one or more targets, a condition, an allowance and a
+// lock: what is started; the allowance and the lock are set on the session itself). The editors, tiles and summaries are built from these tables, so a new kind of
+// list, enforcer or lock method is an entry here (plus its backend side, see AGENTS.md).
 
-// The lists a block list can have (`definitions::BlockList`), by field name.
+// The lists a target can have (`definitions::Target`), by field name.
 const LISTS = Object.fromEntries(
   ["filters", "allowed", "programs", "store_apps", "titles", "allowed_titles"].map((key) => [
     key,
     {
-      label: t(`lists.${key}.label`),
-      placeholder: t(`lists.${key}.placeholder`),
-      helper: t(`lists.${key}.helper`),
-      count: (n) => t(`lists.${key}.count`, { n }),
+      label: t(`targets.${key}.label`),
+      placeholder: t(`targets.${key}.placeholder`),
+      helper: t(`targets.${key}.helper`),
+      count: (n) => t(`targets.${key}.count`, { n }),
       // The Store apps are ticked from the installed ones, not typed (`appPicker`).
       picker: key === "store_apps",
     },
   ]),
 );
 
-// The enforcers (`state::Enforcers`), grouped into the block list editor's sections with the
+// The enforcers (`state::Enforcers`), grouped into the target editor's sections with the
 // lists they use. Programs, Store apps and windows by title have none to switch on: a list acts
 // when it has entries.
-const enforcer = (key) => ({ key, label: t(`lists.enforcers.${key}.label`), short: window.STRINGS.lists.enforcers[key].short });
+const enforcer = (key) => ({ key, label: t(`targets.enforcers.${key}.label`), short: window.STRINGS.targets.enforcers[key].short });
 const SECTIONS = [
   { key: "websites", lists: ["filters", "allowed"], enforcers: [enforcer("chromium_tabs"), enforcer("chromium_split_view"), enforcer("chromium_app_windows"), enforcer("firefox_tabs"), enforcer("firefox_split_view")] },
   { key: "programs", lists: ["programs"], enforcers: [] },
@@ -35,7 +35,7 @@ const SECTIONS = [
   // Closing (`choice`, the default: off) or minimizing: radio buttons, not a checkbox.
   { key: "titles", lists: ["titles", "allowed_titles"], choice: "close", enforcers: [enforcer("window_titles_minimize")] },
   { key: "other", lists: [], enforcers: [enforcer("obsidian_web_viewer")] },
-].map((section) => ({ ...section, title: t(`lists.sections.${section.key}.title`), description: window.STRINGS.lists.sections[section.key].description && t(`lists.sections.${section.key}.description`) }));
+].map((section) => ({ ...section, title: t(`targets.sections.${section.key}.title`), description: window.STRINGS.targets.sections[section.key].description && t(`targets.sections.${section.key}.description`) }));
 
 const ENFORCERS = SECTIONS.flatMap((section) => section.enforcers);
 
@@ -49,7 +49,7 @@ function nameField(placeholder) {
   return input;
 }
 
-// The name's place in a form: a text box. A new item has a name already, the first free "Block list 3"
+// The name's place in a form: a text box. A new item has a name already, the first free "Target 3"
 // (`freeName`); `more` goes under it in the same section.
 function nameSection(input, ...more) {
   return el("section", {}, input, ...more);
@@ -62,22 +62,22 @@ const section = (title, text, ...content) =>
 
 // The condition select's choice for no condition (an empty value reads as nothing chosen).
 const ALWAYS = "always";
-function blockForm() {
-  const name = nameField(t("blocks.namePlaceholder"));
-  const lists = el("cds-checkbox-group", { "legend-text": t("blocks.listsLegend") });
-  const noLists = el("p", { class: "cds--type-body-01" }, t("blocks.noLists"));
-  const condition = el("cds-dropdown", { autoalign: true, "title-text": t("blocks.conditionLabel"), "helper-text": t("blocks.conditionHelper") });
-  // Made here and added to this block: the editor comes back with it.
-  const newList = el("cds-button", { kind: "tertiary", size: "md" }, t("blocks.newList"), carbonIcon("add", "icon"));
-  const newCondition = el("cds-button", { kind: "tertiary", size: "md" }, t("blocks.newCondition"), carbonIcon("add", "icon"));
+function sessionForm() {
+  const name = nameField(t("sessions.namePlaceholder"));
+  const lists = el("cds-checkbox-group", { "legend-text": t("sessions.targetsLegend") });
+  const noTargets = el("p", { class: "cds--type-body-01" }, t("sessions.noTargets"));
+  const condition = el("cds-dropdown", { autoalign: true, "title-text": t("sessions.conditionLabel"), "helper-text": t("sessions.conditionHelper") });
+  // Made here and added to this session: the editor comes back with it.
+  const newTarget = el("cds-button", { kind: "tertiary", size: "md" }, t("sessions.newTarget"), carbonIcon("add", "icon"));
+  const newCondition = el("cds-button", { kind: "tertiary", size: "md" }, t("sessions.newCondition"), carbonIcon("add", "icon"));
   // The editor makes it (`editor.js`, the `bullseye-make` event).
-  const make = (kind, id = null) => () => newList.dispatchEvent(new CustomEvent("bullseye-make", { detail: { kind, id }, bubbles: true }));
-  newList.addEventListener("click", make("lists"));
+  const make = (kind, id = null) => () => newTarget.dispatchEvent(new CustomEvent("bullseye-make", { detail: { kind, id }, bubbles: true }));
+  newTarget.addEventListener("click", make("targets"));
   newCondition.addEventListener("click", make("conditions"));
   // Changing one that exists: the same detour, to its editor.
-  const editCondition = el("cds-button", { kind: "tertiary", size: "md" }, t("blocks.editCondition"), carbonIcon("edit", "icon"));
+  const editCondition = el("cds-button", { kind: "tertiary", size: "md" }, t("sessions.editCondition"), carbonIcon("edit", "icon"));
   editCondition.addEventListener("click", () => condition.value && condition.value !== ALWAYS && make("conditions", condition.value)());
-  // The allowance, set here on the block like its lock is on the tile (`allowanceSection`).
+  // The allowance, set here on the session like its lock is on the tile (`allowanceSection`).
   const allowance = allowanceSection();
   let off = false;
   const syncEdit = () => {
@@ -89,52 +89,52 @@ function blockForm() {
   return {
     nodes: [
       nameSection(name),
-      section(t("blocks.whatTitle"), t("blocks.whatText"), lists, noLists, el("div", { class: "inline-action" }, newList)),
-      section(t("blocks.whenTitle"), t("blocks.whenText"), condition, el("div", { class: "inline-action" }, newCondition, editCondition)),
-      section(t("blocks.allowanceTitle"), t("blocks.allowanceText"), ...allowance.nodes),
+      section(t("sessions.whatTitle"), t("sessions.whatText"), lists, noTargets, el("div", { class: "inline-action" }, newTarget)),
+      section(t("sessions.whenTitle"), t("sessions.whenText"), condition, el("div", { class: "inline-action" }, newCondition, editCondition)),
+      section(t("sessions.allowanceTitle"), t("sessions.allowanceText"), ...allowance.nodes),
     ],
-    fill(block, isNew = false) {
-      name.value = block.name;
+    fill(session, isNew = false) {
+      name.value = session.name;
       boxes = {};
       edits = [];
       lists.replaceChildren(
-        ...overview.lists.map((list) => {
+        ...overview.targets.map((list) => {
           const box = el("cds-checkbox", { "label-text": list.name });
-          box.checked = block.lists.includes(list.id);
+          box.checked = session.targets.includes(list.id);
           boxes[list.id] = box;
-          const edit = el("cds-icon-button", { kind: "ghost", size: "sm", align: "right" }, carbonIcon("edit"), el("span", { slot: "tooltip-content" }, t("blocks.editList")));
-          edit.addEventListener("click", make("lists", list.id));
+          const edit = el("cds-icon-button", { kind: "ghost", size: "sm", align: "right" }, carbonIcon("edit"), el("span", { slot: "tooltip-content" }, t("sessions.editTarget")));
+          edit.addEventListener("click", make("targets", list.id));
           edits.push(edit);
           edit.disabled = off;
           return el("div", { class: "list-row" }, box, edit);
         }),
       );
-      lists.hidden = !overview.lists.length;
-      noLists.hidden = !!overview.lists.length;
+      lists.hidden = !overview.targets.length;
+      noTargets.hidden = !!overview.targets.length;
       condition.replaceChildren(
-        el("cds-dropdown-item", { value: ALWAYS }, t("blocks.always")),
+        el("cds-dropdown-item", { value: ALWAYS }, t("sessions.always")),
         ...overview.conditions.map((s) => el("cds-dropdown-item", { value: s.id }, s.name)),
       );
-      condition.value = block.condition || ALWAYS;
-      allowance.fill(block.allowance);
+      condition.value = session.condition || ALWAYS;
+      allowance.fill(session.allowance);
       syncEdit();
     },
-    read: (block) => ({
-      ...block,
+    read: (session) => ({
+      ...session,
       name: name.value.trim(),
-      lists: overview.lists.filter((l) => boxes[l.id] && boxes[l.id].checked).map((l) => l.id),
+      targets: overview.targets.filter((l) => boxes[l.id] && boxes[l.id].checked).map((l) => l.id),
       condition: condition.value && condition.value !== ALWAYS ? condition.value : null,
       allowance: allowance.read(),
     }),
-    // A locked block: only its name and its allowance stay open, as the service takes a new name and a
+    // A locked session: only its name and its allowance stay open, as the service takes a new name and a
     // stricter allowance from it (and judges which is stricter).
     disable(value) {
       off = value;
-      for (const control of [condition, newList, newCondition, ...edits, ...Object.values(boxes)]) control.disabled = off;
+      for (const control of [condition, newTarget, newCondition, ...edits, ...Object.values(boxes)]) control.disabled = off;
       syncEdit();
     },
     settle: () => allowance.settle(),
-    error: () => (name.value.trim() ? allowance.error() : t("blocks.nameMissing")),
+    error: () => (name.value.trim() ? allowance.error() : t("sessions.nameMissing")),
     name,
   };
 }
@@ -167,7 +167,7 @@ function sameHeight(areas) {
   });
 }
 
-// The Store apps of a block list: the installed ones (`installed_apps`, which takes a second or
+// The Store apps of a target: the installed ones (`installed_apps`, which takes a second or
 // two) to tick, with the ones on the list that are not installed here (not any more, or imported
 // from another computer), named by the backend from their family name, so saving keeps them. It
 // stands in for a text area: `value` is the ticked family names, one per line, and `disabled` is
@@ -176,7 +176,7 @@ function appPicker(list) {
   // The label is above the box, which has a background of its own; the group is named for readers.
   const group = el("cds-checkbox-group", { "aria-label": list.label });
   const label = el("p", { class: "cds--type-label-01" }, list.label);
-  const status = el("p", { class: "cds--type-helper-text-01" }, t("lists.store_apps.loading"));
+  const status = el("p", { class: "cds--type-helper-text-01" }, t("targets.store_apps.loading"));
   const scroll = el("div", { class: "apps" }, group);
   const picker = el("div", { class: "app-picker" }, label, scroll, status);
   let chosen = new Set();
@@ -185,7 +185,7 @@ function appPicker(list) {
   const same = (a, b) => a.toLowerCase() === b.toLowerCase();
   function draw() {
     const known = new Set(installed.map((app) => app.family.toLowerCase()));
-    const name = (app) => (app.installed ? app.name : t("lists.store_apps.notInstalled", { name: app.name }));
+    const name = (app) => (app.installed ? app.name : t("targets.store_apps.notInstalled", { name: app.name }));
     const rows = [...installed.map((app) => [app.family, name(app)]), ...[...chosen].filter((family) => !known.has(family.toLowerCase())).map((family) => [family, family])];
     group.replaceChildren(
       ...rows.map(([family, label]) => {
@@ -229,7 +229,7 @@ function appPicker(list) {
         draw();
       },
       (e) => {
-        status.textContent = `${t("lists.store_apps.failed")}: ${e}`;
+        status.textContent = `${t("targets.store_apps.failed")}: ${e}`;
         draw();
       },
     );
@@ -238,12 +238,12 @@ function appPicker(list) {
 }
 
 // A section whose enforcers exclude each other: radio buttons, the first for all of them off
-// (`section.choice`, its label in `lists.enforcers`). Each enforcer gets a stand-in for its
+// (`section.choice`, its label in `targets.enforcers`). Each enforcer gets a stand-in for its
 // checkbox in `checks` (`checked`, `disabled`), so the form reads and fills them as the others.
 function choiceOf(section, legend, checks) {
   const group = el("cds-radio-button-group", { "legend-text": legend, name: `enforcers-${section.key}`, orientation: "vertical" });
   group.append(
-    el("cds-radio-button", { "label-text": t(`lists.enforcers.${section.choice}`), value: "off" }),
+    el("cds-radio-button", { "label-text": t(`targets.enforcers.${section.choice}`), value: "off" }),
     ...section.enforcers.map((enforcer) => el("cds-radio-button", { "label-text": enforcer.label, value: enforcer.key })),
   );
   group.value = "off";
@@ -264,13 +264,13 @@ function choiceOf(section, legend, checks) {
   return group;
 }
 
-function listForm() {
-  const name = nameField(t("lists.namePlaceholder"));
+function targetForm() {
+  const name = nameField(t("targets.namePlaceholder"));
   const areas = {};
   const checks = {};
   // The sections are an accordion: each opens and closes, and the ones with content are open when
   // the editor opens (`fill`): a section with a list when it has entries (the websites also in a new
-  // block list), one with only enforcers ("other") when one is ticked, which a new block list has.
+  // target), one with only enforcers ("other") when one is ticked, which a new target has.
   const accordion = el("cds-accordion", {});
   const items = [];
   const nodes = [nameSection(name), accordion];
@@ -282,7 +282,7 @@ function listForm() {
       lists.append(areas[key]);
     }
     sameHeight(section.lists.map((key) => areas[key]));
-    const legend = t(section.lists.length ? "lists.howLegend" : "lists.enforcersLegend");
+    const legend = t(section.lists.length ? "targets.howLegend" : "targets.enforcersLegend");
     const group = section.choice ? choiceOf(section, legend, checks) : section.enforcers.length ? el("cds-checkbox-group", { "legend-text": legend }) : null;
     if (!section.choice && group) {
       for (const enforcer of section.enforcers) {
@@ -310,7 +310,7 @@ function listForm() {
       for (const [section, item] of items) {
         const entries = section.lists.some((key) => (list[key] || []).length > 0);
         const ticked = section.enforcers.some((e) => list.enforcers && list.enforcers[e.key]);
-        // A new block list has the websites open too, to start typing in.
+        // A new target has the websites open too, to start typing in.
         item.open = section.lists.length ? entries || (isNew && section.key === "websites") : ticked;
       }
     },
@@ -329,7 +329,7 @@ function listForm() {
       for (const [key, area] of Object.entries(areas)) if (!LISTS[key].picker) area.placeholder = show ? LISTS[key].placeholder : "";
     },
     settle: async () => {},
-    error: () => (name.value.trim() ? null : t("lists.nameMissing")),
+    error: () => (name.value.trim() ? null : t("targets.nameMissing")),
     name,
   };
 }
@@ -622,8 +622,8 @@ function conditionForm() {
   };
 }
 
-// A block's allowance, a section of the block form: its type (none, a time budget or a Pomodoro
-// cycle) and what the type needs: how much time, for the block or each item, and when it is given
+// A session's allowance, a section of the session form: its type (none, a time budget or a Pomodoro
+// cycle) and what the type needs: how much time, for the session or each item, and when it is given
 // back; or blocked for, allowed for, counted from where. Under it the terms in words, written by the
 // backend (`describe_allowance`), which is also what says what cannot be saved. `fill(terms or null)`,
 // `read()` (the terms, or null for none), `settle()` and `error()`.
@@ -638,7 +638,7 @@ function allowanceSection() {
   const allowed = text(t("allowance.budget.allowedLabel"), t("allowance.budget.allowedPlaceholder"), t("allowance.budget.allowedHelper"));
   const scope = dropdown(t("allowance.budget.scopeLabel"), t("allowance.budget.scopeHelper"), ["total", "each"], "allowance.budget");
   const reset = dropdown(t("allowance.budget.resetLabel"), t("allowance.budget.resetHelper"), ["never", "every", "condition"], "allowance.budget");
-  // Given back every so long: how long, and counted from the block's start or the clock.
+  // Given back every so long: how long, and counted from the session's start or the clock.
   const every = text(t("allowance.budget.everyLabel"), t("allowance.budget.everyPlaceholder"), t("allowance.budget.everyHelper"));
   const resetAnchor = dropdown(t("allowance.budget.anchorLabel"), t("allowance.budget.anchorHelper"), ["start", "clock"], "allowance.budget");
   const everyPart = el("div", { class: "fields" }, every, resetAnchor);
@@ -700,7 +700,7 @@ function allowanceSection() {
   });
   return {
     nodes: [type, budgetPart, cyclePart, summary],
-    // Both types' fields start from what the block has, else from an example of each.
+    // Both types' fields start from what the session has, else from an example of each.
     fill(allowance) {
       type.value = (allowance && allowance.type) || "none";
       const budget = allowance && allowance.type === "budget" ? allowance : {};
@@ -773,7 +773,7 @@ function weekEditor() {
     grid.classList.toggle("disabled", disabled);
   }
 
-  // The week written out by the backend, as the CLI and the block tiles say it; or why it
+  // The week written out by the backend, as the CLI and the session tiles say it; or why it
   // cannot be saved (nothing marked).
   async function describe() {
     // Nothing marked yet (a new schedule): said plainly, not as an error, though it cannot be
@@ -867,4 +867,4 @@ function weekEditor() {
   };
 }
 
-export { LISTS, SECTIONS, ENFORCERS, ALWAYS, blockForm, listForm, conditionForm };
+export { LISTS, SECTIONS, ENFORCERS, ALWAYS, sessionForm, targetForm, conditionForm };

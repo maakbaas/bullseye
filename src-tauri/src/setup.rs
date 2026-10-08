@@ -5,8 +5,8 @@
 //! `bullseye-app.exe`, runs from any terminal.
 //!
 //! The installer cannot stop the service itself (nobody but SYSTEM can), so it asks it, over the
-//! pipe. The service refuses while a block is locked, so this is no way around a block: the way out
-//! of a locked block stays waiting for it to end or the unlock password.
+//! pipe. The service refuses while a session is locked, so this is no way around a session: the way out
+//! of a locked session stays waiting for it to end or the unlock password.
 
 use std::thread;
 use std::time::Duration;
@@ -48,7 +48,7 @@ pub fn install() -> i32 {
 }
 
 /// Removes the service and everything it kept, ends the app and takes its folder off `PATH`.
-/// Refused while a block is locked, and then `PATH` stays as it is.
+/// Refused while a session is locked, and then `PATH` stays as it is.
 pub fn uninstall() -> i32 {
     let done = remove_service();
     if done == OK {

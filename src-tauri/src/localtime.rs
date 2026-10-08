@@ -1,11 +1,11 @@
 //! Local time for schedules (`schedule.rs`): the weekday and time of day that a moment in internet
-//! time (`clock.rs`) is, in the block's time zone.
+//! time (`clock.rs`) is, in the session's time zone.
 //!
 //! It also goes the other way, for the "until" lock (`lock::Lock::Until`): the moment a local date
 //! and time is (`Zone::instant`).
 //!
-//! The time zone is the one Windows had when the block started, and it stays the block's until the
-//! block ends, also across a restart (`state::Saved::zone`). Standard users may change Windows'
+//! The time zone is the one Windows had when the session started, and it stays the session's until the
+//! session ends, also across a restart (`state::Saved::zone`). Standard users may change Windows'
 //! time zone, so following it would let a schedule be moved out of the way; daylight saving is
 //! still followed, as Windows' rules for that zone say.
 

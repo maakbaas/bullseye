@@ -8,7 +8,7 @@
 //!   Chromium or Firefox window coming to the foreground. (A Firefox tab that navigates in the
 //!   background changes no title: that one waits for the pass every second.) Out of context, so no code goes into other
 //!   processes; the hook's thread only checks the window's class and sets an event.
-//! - **From the service**, a program starting (`spawn_process_watch`) that a running block would
+//! - **From the service**, a program starting (`spawn_process_watch`) that a running session would
 //!   close: one in its program list, or Obsidian while its enforcer is on. WMI's process start
 //!   trace needs administrator rights, which the app does not have, so the service listens and
 //!   sets a named event (`SERVICE_EVENT`) that the app waits on. Only SYSTEM can create or set it
@@ -35,11 +35,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WINEVENT_SKIPOWNPROCESS,
 };
 
-use crate::block::Blocklist;
+use crate::session::Sessions;
 use crate::sync::spawn_critical;
 use crate::watchdog::{note, wide};
 
-/// What the service sets when a program starts that a running block closes.
+/// What the service sets when a program starts that a running session closes.
 const SERVICE_EVENT: &str = r"Global\bullseye-wake";
 /// Everything for SYSTEM; interactive users may only wait on it (`SYNCHRONIZE`).
 const SDDL: &str = "D:(A;;GA;;;SY)(A;;0x00100000;;;IU)";
@@ -76,7 +76,7 @@ fn service() -> Option<HANDLE> {
     service.as_ref().map(|event| event.0)
 }
 
-/// Whether any window coming up is worth a look, not only a browser's: while a block minimizes
+/// Whether any window coming up is worth a look, not only a browser's: while a session minimizes
 /// windows by their title (`watch_every_window`).
 static EVERY_WINDOW: AtomicBool = AtomicBool::new(false);
 
@@ -193,10 +193,10 @@ struct ProcessStart {
     process_name: String,
 }
 
-/// The service's watch on programs starting: sets `SERVICE_EVENT` when a running block would close
+/// The service's watch on programs starting: sets `SERVICE_EVENT` when a running session would close
 /// the one that started. Without WMI (it can fail to start, or the service runs without rights in
 /// a test) it says so and stops; the pass every second still closes them.
-pub fn spawn_process_watch(blocklist: Blocklist) {
+pub fn spawn_process_watch(sessions: Sessions) {
     thread::spawn(move || {
         let Some(event) = create_service_event() else { return };
         let not_heard =
@@ -211,7 +211,7 @@ pub fn spawn_process_watch(blocklist: Blocklist) {
             Err(e) => return not_heard(e),
         };
         for start in starts.flatten() {
-            let Some(active) = blocklist.active() else { continue };
+            let Some(active) = sessions.active() else { continue };
             let name = start.process_name;
             if active.blocks_program(&name) || (active.closes_obsidian() && name.eq_ignore_ascii_case("obsidian.exe")) {
                 // SAFETY: the event made above, open for as long as the service runs.

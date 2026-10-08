@@ -6,13 +6,13 @@
 use std::sync::{Arc, Mutex};
 
 use crate::allowance;
-use crate::block::{Blocklist, Part, StartLock};
-use crate::definitions::{BlockList, Condition, Definition, Definitions, Library, Via};
+use crate::definitions::{Condition, Definition, Definitions, Library, Target, Via};
 use crate::duration;
 use crate::lists::Entries;
 use crate::localtime::Zone;
 use crate::lock::Lock;
 use crate::proto::{FreeEntries, Overview, Policy, Request, Response, UnlockStatus};
+use crate::session::{Part, Sessions, StartLock};
 use crate::sync::LockExt;
 use crate::unlock::{self, UnlockDelay};
 use crate::watchdog::AppSlot;
@@ -22,20 +22,20 @@ pub struct Shutdown;
 
 /// What `handle` works with.
 pub struct Context {
-    blocklist: Blocklist,
+    sessions: Sessions,
     definitions: Definitions,
     /// Which process is the app (`watchdog.rs`).
     slot: Arc<AppSlot>,
     /// How long unlocking takes: none to begin with, so unlock is free until a delay is set.
     unlock: UnlockDelay,
-    /// Held while the definitions change or a block starts, so a block cannot start while a list or
+    /// Held while the definitions change or a session starts, so a session cannot start while a list or
     /// condition it uses is being changed (the check and the change are one step).
     editing: Mutex<()>,
 }
 
 impl Context {
-    pub fn new(blocklist: Blocklist, definitions: Definitions, slot: Arc<AppSlot>) -> Context {
-        Context { blocklist, definitions, slot, unlock: UnlockDelay::default(), editing: Mutex::default() }
+    pub fn new(sessions: Sessions, definitions: Definitions, slot: Arc<AppSlot>) -> Context {
+        Context { sessions, definitions, slot, unlock: UnlockDelay::default(), editing: Mutex::default() }
     }
 
     /// With the unlock delay kept in its own file (the service's, `UnlockDelay::new`).
@@ -49,20 +49,20 @@ impl Context {
 /// afterwards. Everything in the request is checked here again: it comes from any local user's
 /// program, not necessarily ours.
 pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Option<Shutdown>) {
-    let blocklist = &context.blocklist;
+    let sessions = &context.sessions;
     let done = |result: Result<(), String>| match result {
         Ok(()) => Response::Done,
         Err(why) => Response::Failed(why),
     };
     match request {
         Request::Status => {
-            let status = blocklist.status();
+            let status = sessions.status();
             // Password locks without their hashes: a client never sees them.
             let library = context.definitions.library().redacted();
             let overview = Overview {
-                lists: library.lists,
+                targets: library.targets,
                 conditions: library.conditions,
-                blocks: library.blocks,
+                sessions: library.sessions,
                 running: status.running,
                 unlock: unlock_status(context),
                 clock_synced: status.clock_synced,
@@ -78,20 +78,20 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
             // This request comes from the thread that closes tabs: hearing it is how the service
             // knows that is going on. It counts only from the process taken in as the app.
             context.slot.heard(caller);
-            let policies = blocklist
+            let policies = sessions
                 .active()
-                .map(|active| active.blocks)
+                .map(|active| active.sessions)
                 .unwrap_or_default()
                 .into_iter()
-                .map(|block| Policy {
-                    entries: block.lists.entries(),
-                    enforcers: block.enforcers,
+                .map(|session| Policy {
+                    entries: session.lists.entries(),
+                    enforcers: session.enforcers,
                     // What an allowance lets through: the always-allowed sites and titles are the policy's own.
-                    free: block
+                    free: session
                         .free
                         .iter()
                         .map(|free| FreeEntries {
-                            block: free.block.clone(),
+                            session: free.session.clone(),
                             key: free.key.clone(),
                             entries: Entries { allowed: Vec::new(), allowed_titles: Vec::new(), ..free.lists.entries() },
                         })
@@ -99,27 +99,27 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
                 })
                 .collect();
             // What the app reports from here counts from now.
-            blocklist.polled();
+            sessions.polled();
             (Response::Policy(policies), None)
         }
         // What the app saw in use of what an allowance lets through. Anyone may say so, but it only ever
-        // counts against a block, never for it; a key the block does not count is ignored.
+        // counts against a session, never for it; a key the session does not count is ignored.
         Request::Report { used } => {
-            let used: Vec<(String, String)> = used.into_iter().take(1000).map(|used| (used.block, used.key)).collect();
-            blocklist.charge(&used);
+            let used: Vec<(String, String)> = used.into_iter().take(1000).map(|used| (used.session, used.key)).collect();
+            sessions.charge(&used);
             (Response::Done, None)
         }
-        // A running block is a copy of its definition and its parts, and one rule decides what may
-        // be done to it and to what it uses: while a locked block is involved, a change may only make
-        // it stricter and nothing may be deleted (`edit_block`, `edit_shared`, `delete_block`,
-        // `delete_shared`); otherwise the change is made and the running blocks follow.
-        Request::SaveBlock { block } => (done(edit_block(context, block)), None),
-        Request::DeleteBlock { id } => (done(delete_block(context, &id)), None),
-        Request::SaveList { list } => (done(edit_shared(context, Proposed::List(list))), None),
-        Request::DeleteList { id } => (done(delete_shared(context, &id, |d| d.delete_list(&id))), None),
+        // A running session is a copy of its definition and its parts, and one rule decides what may
+        // be done to it and to what it uses: while a locked session is involved, a change may only make
+        // it stricter and nothing may be deleted (`edit_session`, `edit_shared`, `delete_session`,
+        // `delete_shared`); otherwise the change is made and the running sessions follow.
+        Request::SaveSession { session } => (done(edit_session(context, session)), None),
+        Request::DeleteSession { id } => (done(delete_session(context, &id)), None),
+        Request::SaveTarget { target: list } => (done(edit_shared(context, Proposed::List(list))), None),
+        Request::DeleteTarget { id } => (done(delete_shared(context, &id, |d| d.delete_target(&id))), None),
         Request::SaveCondition { condition } => (done(edit_shared(context, Proposed::Condition(condition))), None),
         Request::DeleteCondition { id } => (done(delete_shared(context, &id, |d| d.delete_condition(&id))), None),
-        // A copy changes nothing that exists, so also of what a running block holds.
+        // A copy changes nothing that exists, so also of what a running session holds.
         Request::Duplicate { kind, id, new_id } => {
             let _editing = context.editing.locked();
             (done(context.definitions.duplicate(kind, &id, &new_id)), None)
@@ -129,133 +129,133 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
         // A password lock stops with its own password, a text lock with its text typed in; the
         // others take none.
         Request::Stop { id, password, text } => {
-            let given = password.is_some_and(|password| blocklist.password_matches(&id, &password))
-                || text.is_some_and(|text| blocklist.text_matches(&id, &text));
-            (done(blocklist.stop(&id, given)), None)
+            let given = password.is_some_and(|password| sessions.password_matches(&id, &password))
+                || text.is_some_and(|text| sessions.text_matches(&id, &text));
+            (done(sessions.stop(&id, given)), None)
         }
-        Request::AskToStop { id } => (done(blocklist.ask_to_stop(&id)), None),
-        Request::AbortStop { id } => (done(blocklist.abort_stop(&id)), None),
+        Request::AskToStop { id } => (done(sessions.ask_to_stop(&id)), None),
+        Request::AbortStop { id } => (done(sessions.abort_stop(&id)), None),
         Request::Unlock => (done(unlock(context)), None),
         Request::UnlockWith { password, text } => (done(unlock_with(context, password.as_deref(), text.as_deref())), None),
         Request::SetUnlockWay { way } => (done(set_unlock_way(context, way)), None),
         Request::Export => (Response::Library(context.definitions.library()), None),
-        Request::AskForUnlock => (done(context.unlock.request(blocklist.now())), None),
+        Request::AskForUnlock => (done(context.unlock.request(sessions.now())), None),
         Request::AbortUnlock => (done(context.unlock.abort()), None),
         Request::SetUnlockDelay { delay } => (done(set_unlock_delay(context, &delay)), None),
-        // Refused while a block cannot be stopped, judged by internet time, like the block itself.
-        Request::PrepareUninstall => match blocklist.locked() {
+        // Refused while a session cannot be stopped, judged by internet time, like the session itself.
+        Request::PrepareUninstall => match sessions.locked() {
             Some(why) => (Response::Refused(why), None),
             None => (Response::Done, Some(Shutdown)),
         },
     }
 }
 
-/// Everything replaced (Import): not while a block is locked, as that would be a way out of it.
-/// Blocks that run without being locked end with it, as what they were is gone.
+/// Everything replaced (Import): not while a session is locked, as that would be a way out of it.
+/// Sessions that run without being locked end with it, as what they were is gone.
 fn import(context: &Context, library: Library) -> Result<(), String> {
     let _editing = context.editing.locked();
-    if let Some(why) = context.blocklist.locked() {
-        return Err(format!("{why}; importing replaces everything, so it waits until no block is locked"));
+    if let Some(why) = context.sessions.locked() {
+        return Err(format!("{why}; importing replaces everything, so it waits until no session is locked"));
     }
     context.definitions.replace(library)?;
-    for id in context.blocklist.running_ids() {
+    for id in context.sessions.running_ids() {
         // One that has become locked since stays as it is: it is a copy, and cannot be stopped.
-        let _ = context.blocklist.stop(&id, false);
+        let _ = context.sessions.stop(&id, false);
     }
     Ok(())
 }
 
-/// Deleting a block that runs: it ends with it, unless it is locked (it could not be stopped).
-fn delete_block(context: &Context, id: &str) -> Result<(), String> {
+/// Deleting a session that runs: it ends with it, unless it is locked (it could not be stopped).
+fn delete_session(context: &Context, id: &str) -> Result<(), String> {
     let _editing = context.editing.locked();
-    if context.blocklist.running_ids().iter().any(|r| r == id) {
-        if context.blocklist.locked_ids().iter().any(|r| r == id) {
-            return Err("A locked block cannot be deleted until it can be stopped".into());
+    if context.sessions.running_ids().iter().any(|r| r == id) {
+        if context.sessions.locked_ids().iter().any(|r| r == id) {
+            return Err("A locked session cannot be deleted until it can be stopped".into());
         }
-        context.blocklist.stop(id, false)?;
+        context.sessions.stop(id, false)?;
     }
-    context.definitions.delete_block(id)
+    context.definitions.delete_session(id)
 }
 
-/// Deleting a block list or condition. Unless a locked block uses it (it would loosen that block)
-/// it goes, and the running blocks that used it follow what is left: a block that is left without
-/// a block list is deleted by it and so ends, one that lost its condition is always active, and
-/// one that lost its lock condition has no lock now (`Blocklist::refresh`).
+/// Deleting a target or condition. Unless a locked session uses it (it would loosen that session)
+/// it goes, and the running sessions that used it follow what is left: a session that is left without
+/// a target is deleted by it and so ends, one that lost its condition is always active, and
+/// one that lost its lock condition has no lock now (`Sessions::refresh`).
 fn delete_shared(context: &Context, id: &str, delete: impl FnOnce(&Definitions) -> Result<(), String>) -> Result<(), String> {
     let _editing = context.editing.locked();
-    let running = context.blocklist.running_ids();
+    let running = context.sessions.running_ids();
     let library = context.definitions.library();
     let users: Vec<String> = library.users_of(id).into_iter().filter(|b| running.contains(&b.id)).map(|b| b.id.clone()).collect();
-    let locked = context.blocklist.locked_ids();
-    if let Some(block) = library.users_of(id).into_iter().find(|b| users.contains(&b.id) && locked.contains(&b.id)) {
-        return Err(format!("“{}” is locked and uses this; it can be deleted once that can be stopped", block.name));
+    let locked = context.sessions.locked_ids();
+    if let Some(session) = library.users_of(id).into_iter().find(|b| users.contains(&b.id) && locked.contains(&b.id)) {
+        return Err(format!("“{}” is locked and uses this; it can be deleted once that can be stopped", session.name));
     }
     delete(&context.definitions)?;
     let library = context.definitions.library();
     for user in users {
-        if library.block(&user).is_none() || refresh_running(context, std::slice::from_ref(&user)).is_err() {
-            let _ = context.blocklist.stop(&user, false);
+        if library.session(&user).is_none() || refresh_running(context, std::slice::from_ref(&user)).is_err() {
+            let _ = context.sessions.stop(&user, false);
         }
     }
     Ok(())
 }
 
-/// Saving a block. One that runs can be changed (its name, block lists, condition and allowance)
+/// Saving a session. One that runs can be changed (its name, targets, condition and allowance)
 /// unless it is locked right now (then only its name, and its allowance only to be stricter:
-/// `allowance::tightened`), and the running block follows; its lock stays as it is, as a lock cannot
-/// be added to or changed on a block that already runs, only chosen for the next start.
-fn edit_block(context: &Context, block: Definition) -> Result<(), String> {
+/// `allowance::tightened`), and the running session follows; its lock stays as it is, as a lock cannot
+/// be added to or changed on a session that already runs, only chosen for the next start.
+fn edit_session(context: &Context, session: Definition) -> Result<(), String> {
     let _editing = context.editing.locked();
-    if !context.blocklist.running_ids().contains(&block.id) {
-        return context.definitions.save_block(block);
+    if !context.sessions.running_ids().contains(&session.id) {
+        return context.definitions.save_session(session);
     }
-    let old = context.definitions.library().block(&block.id).ok_or("No such block")?.clone();
-    if context.blocklist.locked_ids().contains(&block.id) {
+    let old = context.definitions.library().session(&session.id).ok_or("No such session")?.clone();
+    if context.sessions.locked_ids().contains(&session.id) {
         // Its name can always be changed, locked or not: that loosens nothing.
         // (A password lock comes back from the service without its hash, so two of them are the same.)
         let same_lock =
-            block.lock == old.lock || (matches!(block.lock, Lock::Password { .. }) && matches!(old.lock, Lock::Password { .. }));
-        if block.lists != old.lists || block.condition != old.condition || !same_lock {
-            return Err("A locked block cannot be changed until it can be stopped, except for its name and a stricter allowance".into());
+            session.lock == old.lock || (matches!(session.lock, Lock::Password { .. }) && matches!(old.lock, Lock::Password { .. }));
+        if session.targets != old.targets || session.condition != old.condition || !same_lock {
+            return Err("A locked session cannot be changed until it can be stopped, except for its name and a stricter allowance".into());
         }
-        allowance::tightened(old.allowance.as_ref(), block.allowance.as_ref())?;
-        let id = block.id.clone();
-        context.definitions.save_block(Definition { name: block.name, allowance: block.allowance, ..old })?;
+        allowance::tightened(old.allowance.as_ref(), session.allowance.as_ref())?;
+        let id = session.id.clone();
+        context.definitions.save_session(Definition { name: session.name, allowance: session.allowance, ..old })?;
         return refresh_running(context, &[id]);
     }
-    if block.lock != old.lock {
-        return Err("The lock of a running block cannot be changed: stop it first, or change the lock for its next start".into());
+    if session.lock != old.lock {
+        return Err("The lock of a running session cannot be changed: stop it first, or change the lock for its next start".into());
     }
-    if block.lists.is_empty() {
-        return Err("A running block needs at least one block list".into());
+    if session.targets.is_empty() {
+        return Err("A running session needs at least one target".into());
     }
-    let id = block.id.clone();
-    context.definitions.save_block(block)?;
+    let id = session.id.clone();
+    context.definitions.save_session(session)?;
     refresh_running(context, &[id])
 }
 
-/// Gives the running blocks `ids` what their definitions are now (`Blocklist::refresh`).
+/// Gives the running sessions `ids` what their definitions are now (`Sessions::refresh`).
 fn refresh_running(context: &Context, ids: &[String]) -> Result<(), String> {
     let library = context.definitions.library();
     for id in ids {
         let resolved = library.resolve(id)?;
         let parts = parts_of(&resolved.lists)?;
-        context.blocklist.refresh(id, &resolved.block.name, parts, resolved.condition, resolved.lock_condition, resolved.allowance);
+        context.sessions.refresh(id, &resolved.session.name, parts, resolved.condition, resolved.lock_condition, resolved.allowance);
     }
     Ok(())
 }
 
-/// A block list or condition as it is to be saved.
+/// A target or condition as it is to be saved.
 enum Proposed {
-    List(BlockList),
+    List(Target),
     Condition(Condition),
 }
 
-/// Saving a block list or condition. While running blocks use it, what runs is kept the same as
+/// Saving a target or condition. While running sessions use it, what runs is kept the same as
 /// what is defined: if none of them is locked right now (it could be stopped anyway) the change
 /// is made and goes to them, and if one is locked the change may only make things stricter (more
-/// to block, more times: `BlockList::tightened_by`, `Rule::tightened_by`), which then goes to
-/// all of them. Otherwise a locked block could be loosened by editing what it uses.
+/// to block, more times: `Target::tightened_by`, `Rule::tightened_by`), which then goes to
+/// all of them. Otherwise a locked session could be loosened by editing what it uses.
 fn edit_shared(context: &Context, proposed: Proposed) -> Result<(), String> {
     let _editing = context.editing.locked();
     let library = context.definitions.library();
@@ -263,26 +263,26 @@ fn edit_shared(context: &Context, proposed: Proposed) -> Result<(), String> {
         Proposed::List(new) => new.id.clone(),
         Proposed::Condition(new) => new.id.clone(),
     };
-    let running = context.blocklist.running_ids();
+    let running = context.sessions.running_ids();
     let users: Vec<String> = library.users_of(&id).into_iter().filter(|b| running.contains(&b.id)).map(|b| b.id.clone()).collect();
-    let locked: Vec<String> = context.blocklist.locked_ids().into_iter().filter(|b| users.contains(b)).collect();
+    let locked: Vec<String> = context.sessions.locked_ids().into_iter().filter(|b| users.contains(b)).collect();
     if !locked.is_empty() {
         match &proposed {
             Proposed::List(new) => {
-                if let Some(old) = library.list(&new.id) {
+                if let Some(old) = library.target(&new.id) {
                     old.tightened_by(new)?;
                 }
             }
             Proposed::Condition(new) => {
                 if let Some(old) = library.condition(&new.id) {
-                    for (block, via) in library.usages(&new.id).into_iter().filter(|(block, _)| locked.contains(&block.id)) {
+                    for (session, via) in library.usages(&new.id).into_iter().filter(|(session, _)| locked.contains(&session.id)) {
                         // In a combination that needs all its conditions, more active time in
                         // this one is not more in the combination: it stays as it is.
                         if via == Via::All {
                             if old.rule != new.rule.clone().checked()? {
                                 return Err(format!(
                                     "“{}” is locked and has this in a combination that needs all of its conditions, so it cannot change",
-                                    block.name
+                                    session.name
                                 ));
                             }
                         } else {
@@ -294,24 +294,24 @@ fn edit_shared(context: &Context, proposed: Proposed) -> Result<(), String> {
         }
     }
     match proposed {
-        Proposed::List(list) => context.definitions.save_list(list)?,
+        Proposed::List(list) => context.definitions.save_target(list)?,
         Proposed::Condition(condition) => context.definitions.save_condition(condition)?,
     }
-    // What the blocks that run use is what is defined now.
+    // What the sessions that run use is what is defined now.
     refresh_running(context, &users)
 }
 
-/// What a running block enforces of its block lists: each with its own lists and enforcers.
-fn parts_of(lists: &[BlockList]) -> Result<Vec<Part>, String> {
+/// What a running session enforces of its targets: each with its own lists and enforcers.
+fn parts_of(lists: &[Target]) -> Result<Vec<Part>, String> {
     lists.iter().map(|list| Ok(Part { name: list.name.clone(), lists: list.lists()?, enforcers: list.enforcers })).collect()
 }
 
-/// Starts a block as it is defined now, with its block lists and condition, checked again where it
+/// Starts a session as it is defined now, with its targets and condition, checked again where it
 /// counts.
 fn start(context: &Context, id: &str) -> Result<(), String> {
     let _editing = context.editing.locked();
     let resolved = context.definitions.library().resolve(id)?;
-    let lock = &resolved.block.lock;
+    let lock = &resolved.session.lock;
     let lock = match lock {
         Lock::None => StartLock::None,
         Lock::Duration { .. } => StartLock::For(lock.duration()?.ok_or("No duration for the lock")?),
@@ -326,16 +326,16 @@ fn start(context: &Context, id: &str) -> Result<(), String> {
     // An enforcer has nothing to do with an empty list of its own kind, while one that needs no
     // list (Obsidian's) always does. What matters is that something can run.
     if !parts.iter().any(Part::can_run) {
-        return Err("Nothing to block: add a site or program to its block lists, or turn on an enforcer that needs no list".into());
+        return Err("Nothing to block: add a site or program to its targets, or turn on an enforcer that needs no list".into());
     }
-    context.blocklist.start_with(id, &resolved.block.name, parts, resolved.condition, resolved.allowance, lock)
+    context.sessions.start_with(id, &resolved.session.name, parts, resolved.condition, resolved.allowance, lock)
 }
 
 /// Where unlocking stands now.
 fn unlock_status(context: &Context) -> UnlockStatus {
     let delay = context.unlock.delay();
-    let remaining = context.unlock.remaining(context.blocklist.now());
-    let now = context.blocklist.now();
+    let remaining = context.unlock.remaining(context.sessions.now());
+    let now = context.sessions.now();
     let way = context.unlock.way();
     let way_open = way.as_ref().is_some_and(|way| way.is_open(now));
     let way_left = way.as_ref().and_then(|way| way.left(now));
@@ -354,11 +354,11 @@ fn unlock_status(context: &Context) -> UnlockStatus {
 /// Sets the other way to unlock (`unlock::Way`), from a lock method as the user chose it: what it
 /// depends on is looked up now (a duration becomes a moment, a condition its rule, a restart this start
 /// of Windows). Never the delay, which is always there. Setting one needs unlocking to be ready, or no
-/// block to be locked; removing it is always free.
+/// session to be locked; removing it is always free.
 fn set_unlock_way(context: &Context, lock: Option<Lock>) -> Result<(), String> {
     let _editing = context.editing.locked();
-    let now = context.blocklist.now();
-    let idle = context.blocklist.locked().is_none();
+    let now = context.sessions.now();
+    let idle = context.sessions.locked().is_none();
     let Some(lock) = lock.filter(|lock| !matches!(lock, Lock::None)) else {
         return context.unlock.set_way(None, now, idle);
     };
@@ -390,18 +390,18 @@ fn set_unlock_way(context: &Context, lock: Option<Lock>) -> Result<(), String> {
 /// Sets how long unlocking takes, from text.
 fn set_unlock_delay(context: &Context, text: &str) -> Result<(), String> {
     let seconds = unlock::parse_delay(text)?;
-    let now = context.blocklist.now();
-    // With no block locked there is nothing to get around, and nothing to unlock.
-    if context.blocklist.locked().is_some() {
+    let now = context.sessions.now();
+    // With no session locked there is nothing to get around, and nothing to unlock.
+    if context.sessions.locked().is_some() {
         context.unlock.set_delay(seconds, now)
     } else {
         context.unlock.set_delay_idle(seconds, now)
     }
 }
 
-/// Ends every block, once unlocking is ready: always with no delay, else when the countdown is
+/// Ends every session, once unlocking is ready: always with no delay, else when the countdown is
 /// over. The app stays: it has nothing to enforce then. **The escape hatch**: nothing but the
-/// countdown stands in its way, whatever the blocks are locked with. Unlocking uses up the
+/// countdown stands in its way, whatever the sessions are locked with. Unlocking uses up the
 /// request: the next time starts again.
 fn unlock(context: &Context) -> Result<(), String> {
     unlock_with(context, None, None)
@@ -410,20 +410,20 @@ fn unlock(context: &Context) -> Result<(), String> {
 /// As `unlock`, and ready also when the other way to unlock lets go (`unlock::Way`: at once, or an
 /// answer given), **or** the countdown is over: either is enough, never both.
 fn unlock_with(context: &Context, password: Option<&str>, text: Option<&str>) -> Result<(), String> {
-    let now = context.blocklist.now();
+    let now = context.sessions.now();
     let by_way = context.unlock.way().is_some_and(|way| way.is_open(now) || way.answered(password, text));
     if !by_way && context.unlock.remaining(now) != Some(0) {
         return Err("Unlocking is not ready yet: ask for it and wait for the countdown, or use the other way to unlock".into());
     }
-    context.blocklist.reset();
+    context.sessions.reset();
     context.unlock.abort()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::definitions::tests::{block, block_list, weekly};
-    use crate::definitions::{BlockList, Condition, Definition, Kind};
+    use crate::definitions::tests::{session, target, weekly};
+    use crate::definitions::{Condition, Definition, Kind, Target};
     use crate::state::{Enforcers, Store};
     use std::fs;
     use std::time::Duration;
@@ -431,16 +431,16 @@ mod tests {
     fn context(name: &str) -> Context {
         let dir = std::env::temp_dir().join(format!("service-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        let blocklist = Blocklist::with_store(Store::new(dir.join("state.json")));
-        Context::new(blocklist, Definitions::at(Some(dir.join("blocks.json"))), Arc::new(AppSlot::new(false)))
+        let sessions = Sessions::with_store(Store::new(dir.join("state.json")));
+        Context::new(sessions, Definitions::at(Some(dir.join("sessions.json"))), Arc::new(AppSlot::new(false)))
     }
 
-    /// What most tests need: a block with one block list of its own (both with the block's id) and,
+    /// What most tests need: a session with one target of its own (both with the session's id) and,
     /// maybe, a condition of its own.
     #[derive(Clone)]
     struct One {
-        list: BlockList,
-        block: Definition,
+        list: Target,
+        session: Definition,
         condition: Option<Condition>,
     }
 
@@ -458,37 +458,37 @@ mod tests {
             self
         }
         fn lock(mut self, lock: Lock) -> One {
-            self.block.lock = lock;
+            self.session.lock = lock;
             self
         }
         fn week(mut self, text: &str) -> One {
-            let condition = weekly(&format!("{}-schedule", self.block.id), text);
-            self.block.condition = Some(condition.id.clone());
+            let condition = weekly(&format!("{}-schedule", self.session.id), text);
+            self.session.condition = Some(condition.id.clone());
             self.condition = Some(condition);
             self
         }
     }
 
-    /// A block of one list with these sites and every enforcer, always active, not locked.
+    /// A session of one list with these sites and every enforcer, always active, not locked.
     fn definition(id: &str, filters: &[&str]) -> One {
-        One { list: block_list(id, filters), block: block(id, &[id]), condition: None }
+        One { list: target(id, filters), session: session(id, &[id]), condition: None }
     }
 
     fn timed(id: &str, filters: &[&str], duration: &str) -> One {
         definition(id, filters).lock(Lock::Duration { duration: duration.into() })
     }
 
-    /// Saves the list, the condition and the block; the first answer that is not Done, or Done.
+    /// Saves the list, the condition and the session; the first answer that is not Done, or Done.
     fn save(context: &Context, one: One) -> Response {
-        let mut requests = vec![Request::SaveList { list: one.list }];
+        let mut requests = vec![Request::SaveTarget { target: one.list }];
         requests.extend(one.condition.map(|condition| Request::SaveCondition { condition }));
-        requests.push(Request::SaveBlock { block: one.block });
+        requests.push(Request::SaveSession { session: one.session });
         requests.into_iter().map(|r| handle(context, 0, r).0).find(|r| *r != Response::Done).unwrap_or(Response::Done)
     }
 
-    /// Saves it all and starts the block.
+    /// Saves it all and starts the session.
     fn run(context: &Context, one: One) -> Response {
-        let id = one.block.id.clone();
+        let id = one.session.id.clone();
         assert_eq!(save(context, one), Response::Done);
         handle(context, 0, Request::Start { id }).0
     }
@@ -536,16 +536,16 @@ mod tests {
         for one in [timed("c", &["a.com"], "soon"), definition("d", &["has space.com"])] {
             assert!(failed(save(&context, one)));
         }
-        // A block with no block list, and one that is not defined.
-        assert_eq!(handle(&context, 0, Request::SaveBlock { block: block("e", &[]) }).0, Response::Done);
+        // A session with no target, and one that is not defined.
+        assert_eq!(handle(&context, 0, Request::SaveSession { session: session("e", &[]) }).0, Response::Done);
         assert!(failed(handle(&context, 0, Request::Start { id: "e".into() }).0));
         assert!(failed(handle(&context, 0, Request::Start { id: "nope".into() }).0));
         assert!(policies(&context).is_empty());
-        assert_eq!(overview(&context).blocks.len(), 3);
+        assert_eq!(overview(&context).sessions.len(), 3);
     }
 
     #[test]
-    fn an_empty_list_starts_a_block_when_an_enforcer_without_the_list_is_on() {
+    fn an_empty_list_starts_a_session_when_an_enforcer_without_the_list_is_on() {
         let context = context("empty-list");
         let obsidian_only = Enforcers {
             chromium_tabs: false,
@@ -557,7 +557,7 @@ mod tests {
             window_titles_minimize: false,
         };
         assert_eq!(run(&context, definition("a", &[]).enforcers(obsidian_only)), Response::Done);
-        // The block keeps what it was started with: no entries, and Obsidian's enforcer only.
+        // The session keeps what it was started with: no entries, and Obsidian's enforcer only.
         let policy = &policies(&context)[0];
         assert!(policy.entries.filters.is_empty());
         assert_eq!(policy.enforcers, obsidian_only);
@@ -567,21 +567,21 @@ mod tests {
     }
 
     #[test]
-    fn blocks_are_defined_started_and_stopped_on_their_own() {
+    fn sessions_are_defined_started_and_stopped_on_their_own() {
         let context = context("several");
         assert_eq!(run(&context, timed("work", &["a.com"], "1h")), Response::Done);
         assert_eq!(run(&context, definition("evening", &["b.com"])), Response::Done);
         assert_eq!(save(&context, definition("idle", &["c.com"])), Response::Done);
         let overview = overview(&context);
-        assert_eq!(overview.blocks.iter().map(|b| b.id.as_str()).collect::<Vec<_>>(), vec!["evening", "idle", "work"]);
+        assert_eq!(overview.sessions.iter().map(|b| b.id.as_str()).collect::<Vec<_>>(), vec!["evening", "idle", "work"]);
         assert_eq!(overview.running.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["work", "evening"]);
         assert_eq!(policies(&context).len(), 2);
 
-        // A running block cannot be changed, deleted or started again; an idle one can.
-        assert!(failed(handle(&context, 0, Request::SaveBlock { block: block("work", &["idle"]) }).0));
-        assert!(failed(handle(&context, 0, Request::DeleteBlock { id: "work".into() }).0));
+        // A running session cannot be changed, deleted or started again; an idle one can.
+        assert!(failed(handle(&context, 0, Request::SaveSession { session: session("work", &["idle"]) }).0));
+        assert!(failed(handle(&context, 0, Request::DeleteSession { id: "work".into() }).0));
         assert!(failed(handle(&context, 0, Request::Start { id: "work".into() }).0));
-        assert_eq!(handle(&context, 0, Request::DeleteBlock { id: "idle".into() }).0, Response::Done);
+        assert_eq!(handle(&context, 0, Request::DeleteSession { id: "idle".into() }).0, Response::Done);
 
         // The unlocked one stops, and can then be changed; the timed one cannot stop.
         assert_eq!(handle(&context, 0, Request::Stop { id: "evening".into(), password: None, text: None }).0, Response::Done);
@@ -591,39 +591,39 @@ mod tests {
     }
 
     #[test]
-    fn a_list_or_condition_an_unlocked_running_block_uses_can_change_and_goes_to_it() {
+    fn a_target_or_condition_an_unlocked_running_session_uses_can_change_and_goes_to_it() {
         let context = context("shared");
-        // Two blocks share the list "social"; one also has a list of its own and a schedule.
-        assert_eq!(handle(&context, 0, Request::SaveList { list: block_list("social", &["youtube.com"]) }).0, Response::Done);
+        // Two sessions share the list "social"; one also has a list of its own and a schedule.
+        assert_eq!(handle(&context, 0, Request::SaveTarget { target: target("social", &["youtube.com"]) }).0, Response::Done);
         assert_eq!(save(&context, definition("games", &[]).programs(&["steam"]).week("daily")), Response::Done);
-        let mut evening = block("evening", &["social", "games"]);
+        let mut evening = session("evening", &["social", "games"]);
         evening.condition = Some("games-schedule".into());
-        assert_eq!(handle(&context, 0, Request::SaveBlock { block: evening }).0, Response::Done);
-        assert_eq!(handle(&context, 0, Request::SaveBlock { block: block("work", &["social"]) }).0, Response::Done);
+        assert_eq!(handle(&context, 0, Request::SaveSession { session: evening }).0, Response::Done);
+        assert_eq!(handle(&context, 0, Request::SaveSession { session: session("work", &["social"]) }).0, Response::Done);
         assert_eq!(handle(&context, 0, Request::Start { id: "evening".into() }).0, Response::Done);
         // Both lists end up in what the app enforces.
         assert_eq!(policies(&context).len(), 2);
 
         // It is not locked, so what it uses can be changed, in either direction, and the running
-        // block gets the change.
-        assert_eq!(handle(&context, 0, Request::SaveList { list: block_list("social", &["reddit.com"]) }).0, Response::Done);
+        // session gets the change.
+        assert_eq!(handle(&context, 0, Request::SaveTarget { target: target("social", &["reddit.com"]) }).0, Response::Done);
         let filters: Vec<_> = policies(&context).iter().flat_map(|p| p.entries.filters.clone()).collect();
         assert_eq!(filters, vec!["reddit.com".to_string()]);
         assert_eq!(handle(&context, 0, Request::SaveCondition { condition: weekly("games-schedule", "weekends") }).0, Response::Done);
         assert!(overview(&context).running[0].condition.as_ref().is_some_and(|rule| rule.week().unwrap().days[0].is_empty()));
-        // So can deleting it: the running block keeps what is left, and is always active once its
+        // So can deleting it: the running session keeps what is left, and is always active once its
         // condition is gone.
         assert_eq!(handle(&context, 0, Request::DeleteCondition { id: "games-schedule".into() }).0, Response::Done);
         assert!(overview(&context).running[0].condition.is_none());
-        assert_eq!(handle(&context, 0, Request::DeleteList { id: "games".into() }).0, Response::Done);
-        assert_eq!(overview(&context).running[0].lists.len(), 1);
-        // Deleting the last block list of a running block deletes the block, which ends it.
-        assert_eq!(handle(&context, 0, Request::DeleteList { id: "social".into() }).0, Response::Done);
-        assert!(overview(&context).running.is_empty() && overview(&context).blocks.is_empty());
+        assert_eq!(handle(&context, 0, Request::DeleteTarget { id: "games".into() }).0, Response::Done);
+        assert_eq!(overview(&context).running[0].targets.len(), 1);
+        // Deleting the last target of a running session deletes the session, which ends it.
+        assert_eq!(handle(&context, 0, Request::DeleteTarget { id: "social".into() }).0, Response::Done);
+        assert!(overview(&context).running.is_empty() && overview(&context).sessions.is_empty());
     }
 
     #[test]
-    fn an_allowance_is_set_on_the_block_and_only_gets_stricter_while_it_is_locked() {
+    fn an_allowance_is_set_on_the_session_and_only_gets_stricter_while_it_is_locked() {
         use crate::allowance::{Anchor, Reset, Scope, Terms};
         let context = context("allowance");
         let budget = |allowed: &str| {
@@ -637,14 +637,14 @@ mod tests {
         };
         let with = |id: &str, allowance: Option<Terms>| {
             let mut one = definition(id, &["a.com"]).lock(Lock::Duration { duration: "1h".into() });
-            one.block.allowance = allowance;
+            one.session.allowance = allowance;
             one
         };
-        // Terms that cannot be read are refused with the block.
+        // Terms that cannot be read are refused with the session.
         assert!(failed(save(&context, with("w", budget("soon")))));
         assert_eq!(run(&context, with("w", budget("30m"))), Response::Done);
         // Kept checked, as it was given.
-        assert_eq!(overview(&context).blocks[0].allowance, budget("30m"));
+        assert_eq!(overview(&context).sessions[0].allowance, budget("30m"));
 
         // With time left the site is not enforced but watched, and the status says so.
         let policy = &policies(&context)[0];
@@ -653,8 +653,8 @@ mod tests {
         assert_eq!(policy.free[0].entries.filters, vec!["a.com"]);
         assert!(overview(&context).running[0].allowance.is_some());
 
-        // The block is locked: its allowance can get stricter (and the running block follows), not looser.
-        let saved = |one: One| handle(&context, 0, Request::SaveBlock { block: one.block }).0;
+        // The session is locked: its allowance can get stricter (and the running session follows), not looser.
+        let saved = |one: One| handle(&context, 0, Request::SaveSession { session: one.session }).0;
         assert!(failed(saved(with("w", budget("1h")))));
         let pomodoro = Terms::Pomodoro { blocked: "50m".into(), allowed: "10m".into(), anchor: crate::allowance::Anchor::Start };
         assert!(failed(saved(with("w", Some(pomodoro)))));
@@ -665,56 +665,56 @@ mod tests {
         assert!(overview(&context).running[0].allowance.is_none() && policies(&context)[0].free.is_empty());
         assert!(failed(saved(with("w", budget("10m")))));
 
-        // An unlocked running block takes any allowance, at once.
+        // An unlocked running session takes any allowance, at once.
         assert_eq!(handle(&context, 0, Request::Unlock).0, Response::Done);
         assert_eq!(run(&context, definition("o", &["b.com"])), Response::Done);
         assert!(overview(&context).running[0].allowance.is_none());
         let mut open = definition("o", &["b.com"]);
-        open.block.allowance = budget("2h");
+        open.session.allowance = budget("2h");
         assert_eq!(saved(open), Response::Done);
         assert!(overview(&context).running[0].allowance.is_some());
     }
 
     #[test]
-    fn what_a_locked_block_uses_can_only_get_stricter() {
+    fn what_a_locked_session_uses_can_only_get_stricter() {
         let context = context("stricter");
-        assert_eq!(handle(&context, 0, Request::SaveList { list: block_list("social", &["youtube.com"]) }).0, Response::Done);
+        assert_eq!(handle(&context, 0, Request::SaveTarget { target: target("social", &["youtube.com"]) }).0, Response::Done);
         assert_eq!(handle(&context, 0, Request::SaveCondition { condition: weekly("office", "mon-fri 8-17") }).0, Response::Done);
-        let mut work = block("work", &["social"]);
+        let mut work = session("work", &["social"]);
         work.condition = Some("office".into());
         work.lock = Lock::Duration { duration: "1h".into() };
-        assert_eq!(handle(&context, 0, Request::SaveBlock { block: work }).0, Response::Done);
+        assert_eq!(handle(&context, 0, Request::SaveSession { session: work }).0, Response::Done);
         assert_eq!(handle(&context, 0, Request::Start { id: "work".into() }).0, Response::Done);
 
         // Less to block, another site instead, an enforcer off, an allowed site added: all refused.
-        assert!(failed(handle(&context, 0, Request::SaveList { list: block_list("social", &[]) }).0));
-        assert!(failed(handle(&context, 0, Request::SaveList { list: block_list("social", &["reddit.com"]) }).0));
-        let mut loose = block_list("social", &["youtube.com"]);
+        assert!(failed(handle(&context, 0, Request::SaveTarget { target: target("social", &[]) }).0));
+        assert!(failed(handle(&context, 0, Request::SaveTarget { target: target("social", &["reddit.com"]) }).0));
+        let mut loose = target("social", &["youtube.com"]);
         loose.enforcers.chromium_tabs = false;
-        assert!(failed(handle(&context, 0, Request::SaveList { list: loose }).0));
-        let mut allow = block_list("social", &["youtube.com"]);
+        assert!(failed(handle(&context, 0, Request::SaveTarget { target: loose }).0));
+        let mut allow = target("social", &["youtube.com"]);
         allow.entries.allowed = vec!["google.com".into()];
-        assert!(failed(handle(&context, 0, Request::SaveList { list: allow }).0));
-        let mut allow_title = block_list("social", &["youtube.com"]);
+        assert!(failed(handle(&context, 0, Request::SaveTarget { target: allow }).0));
+        let mut allow_title = target("social", &["youtube.com"]);
         allow_title.entries.allowed_titles = vec!["Notes".into()];
         assert_eq!(
-            handle(&context, 0, Request::SaveList { list: allow_title }).0,
+            handle(&context, 0, Request::SaveTarget { target: allow_title }).0,
             Response::Failed(
-                "A locked block uses this block list, so always-allowed window titles can be taken out but not added: Notes".into()
+                "A locked session uses this target, so always-allowed window titles can be taken out but not added: Notes".into()
             )
         );
         // Fewer times, a schedule made something else: refused.
         assert!(failed(handle(&context, 0, Request::SaveCondition { condition: weekly("office", "mon-fri 9-17") }).0));
 
-        // More to block, and more times, are fine, and go to the running block.
-        assert_eq!(handle(&context, 0, Request::SaveList { list: block_list("social", &["youtube.com", "reddit.com"]) }).0, Response::Done);
-        let mut filters = overview(&context).running[0].lists[0].entries.filters.clone();
+        // More to block, and more times, are fine, and go to the running session.
+        assert_eq!(handle(&context, 0, Request::SaveTarget { target: target("social", &["youtube.com", "reddit.com"]) }).0, Response::Done);
+        let mut filters = overview(&context).running[0].targets[0].entries.filters.clone();
         filters.sort();
         assert_eq!(filters, vec!["reddit.com".to_string(), "youtube.com".to_string()]);
         assert_eq!(handle(&context, 0, Request::SaveCondition { condition: weekly("office", "mon-sat 8-17") }).0, Response::Done);
         assert!(overview(&context).running[0].condition.as_ref().is_some_and(|rule| !rule.week().unwrap().days[5].is_empty()));
         // And what it uses cannot be deleted.
-        assert!(failed(handle(&context, 0, Request::DeleteList { id: "social".into() }).0));
+        assert!(failed(handle(&context, 0, Request::DeleteTarget { id: "social".into() }).0));
     }
 
     #[test]
@@ -737,13 +737,13 @@ mod tests {
         assert!(failed(save(combination("x", Mode::Any, &["daily", "either"]))));
         assert!(failed(save(combination("x", Mode::Any, &["x", "sat"]))));
 
-        // Two locked blocks, one by each combination, copy what it holds when they start.
-        assert_eq!(handle(&context, 0, Request::SaveList { list: block_list("social", &["youtube.com"]) }).0, Response::Done);
+        // Two locked sessions, one by each combination, copy what it holds when they start.
+        assert_eq!(handle(&context, 0, Request::SaveTarget { target: target("social", &["youtube.com"]) }).0, Response::Done);
         for (id, condition) in [("w", "either"), ("v", "both")] {
-            let mut block = block(id, &["social"]);
-            block.condition = Some(condition.into());
-            block.lock = Lock::Duration { duration: "1h".into() };
-            assert_eq!(handle(&context, 0, Request::SaveBlock { block }).0, Response::Done);
+            let mut session = session(id, &["social"]);
+            session.condition = Some(condition.into());
+            session.lock = Lock::Duration { duration: "1h".into() };
+            assert_eq!(handle(&context, 0, Request::SaveSession { session }).0, Response::Done);
             assert_eq!(handle(&context, 0, Request::Start { id: id.into() }).0, Response::Done);
         }
         let running = overview(&context).running;
@@ -758,54 +758,54 @@ mod tests {
         assert!(failed(save(combination("either", Mode::Any, &["daily"]))));
         assert!(failed(save(combination("both", Mode::All, &["daily", "sat", "sun"]))));
         assert_eq!(save(combination("both", Mode::All, &["daily", "sat"])), Response::Done);
-        // What goes to the running block is what it holds now.
+        // What goes to the running session is what it holds now.
         let running = overview(&context).running;
         let either = running.iter().find(|r| r.id == "w").unwrap();
         assert!(matches!(&either.condition, Some(Rule::Combined { rules, .. }) if rules.len() == 3));
     }
 
     #[test]
-    fn a_running_block_that_is_not_locked_can_be_changed_but_not_given_a_lock() {
+    fn a_running_session_that_is_not_locked_can_be_changed_but_not_given_a_lock() {
         let context = context("edit-running");
         assert_eq!(run(&context, definition("a", &["a.com"])), Response::Done);
-        assert_eq!(handle(&context, 0, Request::SaveList { list: block_list("b", &["b.com"]) }).0, Response::Done);
-        // Its name and block lists can change, and the running block follows.
-        let mut changed = block("a", &["b"]);
+        assert_eq!(handle(&context, 0, Request::SaveTarget { target: target("b", &["b.com"]) }).0, Response::Done);
+        // Its name and targets can change, and the running session follows.
+        let mut changed = session("a", &["b"]);
         changed.name = "Renamed".into();
-        assert_eq!(handle(&context, 0, Request::SaveBlock { block: changed }).0, Response::Done);
+        assert_eq!(handle(&context, 0, Request::SaveSession { session: changed }).0, Response::Done);
         let running = &overview(&context).running[0];
         assert_eq!(running.name, "Renamed");
-        assert_eq!(running.lists[0].entries.filters, vec!["b.com".to_string()]);
-        // A lock is not added to a block that runs, and it cannot be left with nothing to block.
-        let mut locked = block("a", &["b"]);
+        assert_eq!(running.targets[0].entries.filters, vec!["b.com".to_string()]);
+        // A lock is not added to a session that runs, and it cannot be left with nothing to block.
+        let mut locked = session("a", &["b"]);
         locked.lock = Lock::Duration { duration: "1h".into() };
-        assert!(failed(handle(&context, 0, Request::SaveBlock { block: locked }).0));
-        assert!(failed(handle(&context, 0, Request::SaveBlock { block: block("a", &[]) }).0));
+        assert!(failed(handle(&context, 0, Request::SaveSession { session: locked }).0));
+        assert!(failed(handle(&context, 0, Request::SaveSession { session: session("a", &[]) }).0));
         // Deleting it ends it.
-        assert_eq!(handle(&context, 0, Request::DeleteBlock { id: "a".into() }).0, Response::Done);
-        assert!(overview(&context).running.is_empty() && overview(&context).blocks.is_empty());
+        assert_eq!(handle(&context, 0, Request::DeleteSession { id: "a".into() }).0, Response::Done);
+        assert!(overview(&context).running.is_empty() && overview(&context).sessions.is_empty());
     }
 
-    /// A schedule that is not on right now by the clock the block list goes by (UTC): one span of ten
+    /// A schedule that is not on right now by the clock the target goes by (UTC): one span of ten
     /// minutes today, well away from now; `later` puts it somewhere else, equally away from now.
     fn quiet_now(context: &Context, id: &str, later: bool) -> Condition {
         use crate::condition::Rule;
         use crate::localtime::Zone;
         use crate::schedule::{Span, Week};
-        let now = Zone::fixed(0).local(context.blocklist.now()).unwrap();
+        let now = Zone::fixed(0).local(context.sessions.now()).unwrap();
         let start = (if now.minute < 700 { 800 } else { 100 }) + (if later { 200 } else { 0 });
         let mut week = Week::default();
         week.days[now.weekday] = vec![Span(start, start + 10)];
         Condition { id: id.into(), name: format!("Quiet {id}"), rule: Rule::Schedule { week } }
     }
 
-    /// A block locked by the condition `gate`, which is not on now: it runs, and is free.
+    /// A session locked by the condition `gate`, which is not on now: it runs, and is free.
     fn run_free(context: &Context) {
-        assert_eq!(handle(context, 0, Request::SaveList { list: block_list("social", &["youtube.com"]) }).0, Response::Done);
+        assert_eq!(handle(context, 0, Request::SaveTarget { target: target("social", &["youtube.com"]) }).0, Response::Done);
         assert_eq!(handle(context, 0, Request::SaveCondition { condition: quiet_now(context, "gate", false) }).0, Response::Done);
-        let mut work = block("w", &["social"]);
+        let mut work = session("w", &["social"]);
         work.lock = Lock::Condition { condition: "gate".into() };
-        assert_eq!(handle(context, 0, Request::SaveBlock { block: work }).0, Response::Done);
+        assert_eq!(handle(context, 0, Request::SaveSession { session: work }).0, Response::Done);
         assert_eq!(handle(context, 0, Request::Start { id: "w".into() }).0, Response::Done);
         assert!(!overview(context).running[0].locked);
     }
@@ -814,38 +814,38 @@ mod tests {
     fn a_lock_condition_that_is_off_can_be_changed_and_one_that_locks_can_only_get_stricter() {
         let context = context("free-lock");
         run_free(&context);
-        // Off, so the block could be stopped now: the condition may change in any direction.
+        // Off, so the session could be stopped now: the condition may change in any direction.
         assert_eq!(handle(&context, 0, Request::SaveCondition { condition: quiet_now(&context, "gate", true) }).0, Response::Done);
         assert!(!overview(&context).running[0].locked);
-        // Switched on, it locks the block at once, and from then on can only get more times.
+        // Switched on, it locks the session at once, and from then on can only get more times.
         assert_eq!(handle(&context, 0, Request::SaveCondition { condition: weekly("gate", "daily") }).0, Response::Done);
         assert!(overview(&context).running[0].locked);
         assert!(failed(handle(&context, 0, Request::SaveCondition { condition: quiet_now(&context, "gate", false) }).0));
         // And nothing locked is deleted, nor ended by an import.
         assert!(failed(handle(&context, 0, Request::DeleteCondition { id: "gate".into() }).0));
-        assert!(failed(handle(&context, 0, Request::DeleteBlock { id: "w".into() }).0));
-        assert!(failed(handle(&context, 0, Request::DeleteList { id: "social".into() }).0));
+        assert!(failed(handle(&context, 0, Request::DeleteSession { id: "w".into() }).0));
+        assert!(failed(handle(&context, 0, Request::DeleteTarget { id: "social".into() }).0));
         let library = overview(&context).library();
         assert!(failed(handle(&context, 0, Request::Import { library }).0));
         assert_eq!(overview(&context).running.len(), 1);
     }
 
     #[test]
-    fn deleting_the_lock_condition_of_a_block_that_is_free_leaves_it_with_no_lock() {
+    fn deleting_the_lock_condition_of_a_session_that_is_free_leaves_it_with_no_lock() {
         let context = context("free-lock-deleted");
         run_free(&context);
         assert_eq!(handle(&context, 0, Request::DeleteCondition { id: "gate".into() }).0, Response::Done);
         let running = &overview(&context).running[0];
         assert!(!running.locked && running.lock_condition.is_none());
-        assert_eq!(overview(&context).blocks[0].lock, Lock::None);
+        assert_eq!(overview(&context).sessions[0].lock, Lock::None);
     }
 
     #[test]
-    fn with_no_block_locked_the_delay_can_be_shortened_freely() {
+    fn with_no_session_locked_the_delay_can_be_shortened_freely() {
         let context = context("hatch-shorten-unlocked");
         let ask = |request: Request| handle(&context, 0, request).0;
         assert_eq!(ask(Request::SetUnlockDelay { delay: "1h".into() }), Response::Done);
-        // A block that is running but not locked is nothing to get around.
+        // A session that is running but not locked is nothing to get around.
         assert_eq!(run(&context, definition("a", &["a.com"])), Response::Done);
         assert_eq!(ask(Request::SetUnlockDelay { delay: "10m".into() }), Response::Done);
     }
@@ -878,7 +878,7 @@ mod tests {
     }
 
     #[test]
-    fn programs_alone_can_start_a_block_and_what_windows_needs_is_refused() {
+    fn programs_alone_can_start_a_session_and_what_windows_needs_is_refused() {
         let programs_only = Enforcers {
             chromium_tabs: false,
             chromium_split_view: false,
@@ -909,10 +909,10 @@ mod tests {
     }
 
     #[test]
-    fn allowed_sites_travel_with_the_block_and_must_be_valid() {
+    fn allowed_sites_travel_with_the_session_and_must_be_valid() {
         let context = context("allowed");
         let one = |allowed: &[&str]| timed("a", &["*"], "1h").allowed(allowed);
-        // An allowed entry that cannot match is refused like a bad block entry.
+        // An allowed entry that cannot match is refused like a bad entry.
         assert!(failed(save(&context, one(&["has space.com"]))));
 
         // Everything blocked but one site: the app is told about both.
@@ -920,7 +920,7 @@ mod tests {
         let policy = &policies(&context)[0];
         assert_eq!(policy.entries.filters, vec!["*"]);
         assert_eq!(policy.entries.allowed, vec!["google.com"]);
-        assert_eq!(overview(&context).running[0].lists[0].entries.allowed, vec!["google.com"]);
+        assert_eq!(overview(&context).running[0].targets[0].entries.allowed, vec!["google.com"]);
     }
 
     #[test]
@@ -941,11 +941,11 @@ mod tests {
     }
 
     #[test]
-    fn a_timed_block_cannot_be_shortened_stopped_or_uninstalled() {
+    fn a_timed_session_cannot_be_shortened_stopped_or_uninstalled() {
         let context = context("timed");
         assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
         // Not shortened through its definition, not stopped.
-        assert!(failed(handle(&context, 0, Request::SaveBlock { block: timed("a", &["a.com"], "1s").block }).0));
+        assert!(failed(handle(&context, 0, Request::SaveSession { session: timed("a", &["a.com"], "1s").session }).0));
         assert!(failed(handle(&context, 0, Request::Stop { id: "a".into(), password: None, text: None }).0));
         // Uninstalling does not get through, and the service keeps running.
         let (response, shutdown) = handle(&context, 0, Request::PrepareUninstall);
@@ -959,7 +959,7 @@ mod tests {
         let context = context("lock-schedule");
         // A lock schedule that does not exist is refused.
         assert!(failed(save(&context, definition("a", &["a.com"]).lock(Lock::Condition { condition: "nope".into() }))));
-        // Its own schedule, active all week, so locked now while the block's schedule is Always:
+        // Its own schedule, active all week, so locked now while the session's schedule is Always:
         // no stop, no uninstall.
         assert_eq!(handle(&context, 0, Request::SaveCondition { condition: weekly("daily", "daily") }).0, Response::Done);
         assert_eq!(run(&context, definition("a", &["a.com"]).lock(Lock::Condition { condition: "daily".into() })), Response::Done);
@@ -998,19 +998,19 @@ mod tests {
     }
 
     #[test]
-    fn without_a_block_the_installer_gets_through() {
+    fn without_a_session_the_installer_gets_through() {
         let context = context("idle");
         let (response, shutdown) = handle(&context, 0, Request::PrepareUninstall);
         assert_eq!(response, Response::Done);
         assert!(shutdown.is_some());
-        // An unlocked block does not stop an uninstall either.
+        // An unlocked session does not stop an uninstall either.
         assert_eq!(run(&context, definition("a", &["a.com"])), Response::Done);
         assert!(handle(&context, 0, Request::PrepareUninstall).1.is_some());
     }
 
-    // ---- The escape hatch (`unlock.rs`): it must never break, whatever the blocks are locked with.
+    // ---- The escape hatch (`unlock.rs`): it must never break, whatever the sessions are locked with.
 
-    /// Every way of locking a block that a test can start (a restart lock needs Windows' boot id).
+    /// Every way of locking a session that a test can start (a restart lock needs Windows' boot id).
     fn every_lock() -> Vec<(&'static str, One)> {
         vec![
             ("duration", timed("d", &["d.com"], "1h")),
@@ -1023,7 +1023,7 @@ mod tests {
     }
 
     #[test]
-    fn with_no_delay_unlocking_ends_every_block_whatever_its_lock() {
+    fn with_no_delay_unlocking_ends_every_session_whatever_its_lock() {
         let context = context("hatch-free");
         // A clean install: no delay, nothing asked for, ready.
         let status = overview(&context).unlock;
@@ -1039,8 +1039,8 @@ mod tests {
         }
         // ...and unlocking ends them all at once; what was defined stays.
         assert_eq!(handle(&context, 0, Request::Unlock).0, Response::Done);
-        assert!(!context.blocklist.is_running() && policies(&context).is_empty());
-        assert_eq!(overview(&context).blocks.len(), 6);
+        assert!(!context.sessions.is_running() && policies(&context).is_empty());
+        assert_eq!(overview(&context).sessions.len(), 6);
     }
 
     #[test]
@@ -1058,12 +1058,12 @@ mod tests {
         assert!(!status.way_open);
         assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
         // Locked, the countdown not asked for: refused, also with the wrong password.
-        assert!(failed(ask(Request::Unlock)) && context.blocklist.is_running());
-        assert!(failed(ask(Request::UnlockWith { password: Some("wrong".into()), text: None })) && context.blocklist.is_running());
-        assert!(failed(ask(Request::UnlockWith { password: None, text: Some("secret".into()) })) && context.blocklist.is_running());
-        // The right one ends every block at once, without the countdown.
+        assert!(failed(ask(Request::Unlock)) && context.sessions.is_running());
+        assert!(failed(ask(Request::UnlockWith { password: Some("wrong".into()), text: None })) && context.sessions.is_running());
+        assert!(failed(ask(Request::UnlockWith { password: None, text: Some("secret".into()) })) && context.sessions.is_running());
+        // The right one ends every session at once, without the countdown.
         assert_eq!(ask(Request::UnlockWith { password: Some("secret".into()), text: None }), Response::Done);
-        assert!(!context.blocklist.is_running());
+        assert!(!context.sessions.is_running());
     }
 
     #[test]
@@ -1086,7 +1086,7 @@ mod tests {
         assert_eq!(run(&idle, timed("a", &["a.com"], "1h")), Response::Done);
         assert!(failed(handle(&idle, 0, Request::UnlockWith { password: None, text: Some("let me".into()) }).0));
         assert_eq!(handle(&idle, 0, Request::UnlockWith { password: None, text: Some("let me out".into()) }).0, Response::Done);
-        // Removing is free while a block is locked.
+        // Removing is free while a session is locked.
         assert_eq!(run(&idle, timed("b", &["b.com"], "1h")), Response::Done);
         assert_eq!(handle(&idle, 0, Request::SetUnlockWay { way: None }).0, Response::Done);
     }
@@ -1116,7 +1116,7 @@ mod tests {
         assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
         let status = overview(&context).unlock;
         assert!(!status.way_open && status.way == Some(Lock::Condition { condition: "always".into() }));
-        assert!(failed(ask(Request::Unlock)) && context.blocklist.is_running());
+        assert!(failed(ask(Request::Unlock)) && context.sessions.is_running());
 
         // Never active: open, so unlocking needs no countdown and no answer.
         let open = self::context("hatch-way-open");
@@ -1132,7 +1132,7 @@ mod tests {
         assert_eq!(run(&open, timed("a", &["a.com"], "1h")), Response::Done);
         assert!(overview(&open).unlock.way_open);
         assert_eq!(ask(Request::Unlock), Response::Done);
-        assert!(!open.blocklist.is_running());
+        assert!(!open.sessions.is_running());
     }
 
     #[test]
@@ -1154,12 +1154,12 @@ mod tests {
     }
 
     #[test]
-    fn what_the_app_reports_is_counted_against_the_block() {
+    fn what_the_app_reports_is_counted_against_the_session() {
         use crate::allowance::{Anchor, Reset, Scope, Terms};
         use crate::proto::Used;
         let context = context("report");
         let mut one = definition("a", &["a.com"]);
-        one.block.allowance = Some(Terms::Budget {
+        one.session.allowance = Some(Terms::Budget {
             allowed: "1s".into(),
             scope: Scope::Total,
             reset: Reset::Never,
@@ -1169,7 +1169,7 @@ mod tests {
         assert_eq!(run(&context, one), Response::Done);
         assert_eq!(policies(&context)[0].free.len(), 1, "let through while there is time");
         std::thread::sleep(Duration::from_millis(1100));
-        let used = |block: &str| Used { block: block.into(), key: crate::allowance::TOTAL.into() };
+        let used = |session: &str| Used { session: session.into(), key: crate::allowance::TOTAL.into() };
         assert_eq!(handle(&context, 0, Request::Report { used: vec![used("a"), used("other")] }).0, Response::Done);
         let policy = &policies(&context)[0];
         assert!(policy.free.is_empty() && policy.entries.filters == vec!["a.com"], "used up: enforced again");
@@ -1196,27 +1196,27 @@ mod tests {
             Response::Done
         );
         let Response::Library(library) = handle(&context, 0, Request::Export).0 else { panic!("no library") };
-        assert_eq!(library.lists.len(), 1);
-        assert!(matches!(&library.blocks[0].lock, Lock::Password { hash: Some(hash), password: None } if !hash.is_empty()));
+        assert_eq!(library.targets.len(), 1);
+        assert!(matches!(&library.sessions[0].lock, Lock::Password { hash: Some(hash), password: None } if !hash.is_empty()));
         // The status, unlike the export, never has the hash.
-        assert_eq!(overview(&context).blocks[0].lock, Lock::Password { password: None, hash: None });
+        assert_eq!(overview(&context).sessions[0].lock, Lock::Password { password: None, hash: None });
     }
 
     #[test]
-    fn a_locked_block_can_still_be_renamed_and_nothing_else() {
+    fn a_locked_session_can_still_be_renamed_and_nothing_else() {
         let context = context("rename-locked");
         let ask = |request: Request| handle(&context, 0, request).0;
         assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
         let library = overview(&context);
-        let mut renamed = library.blocks[0].clone();
+        let mut renamed = library.sessions[0].clone();
         renamed.name = "New name".into();
-        assert_eq!(ask(Request::SaveBlock { block: renamed.clone() }), Response::Done);
+        assert_eq!(ask(Request::SaveSession { session: renamed.clone() }), Response::Done);
         assert_eq!(overview(&context).running[0].name, "New name");
-        assert_eq!(overview(&context).blocks[0].name, "New name");
+        assert_eq!(overview(&context).sessions[0].name, "New name");
         // Anything more is refused: its lists, its condition.
         let mut more = renamed;
         more.condition = Some("somewhere".into());
-        assert!(failed(ask(Request::SaveBlock { block: more })));
+        assert!(failed(ask(Request::SaveSession { session: more })));
     }
 
     #[test]
@@ -1235,13 +1235,13 @@ mod tests {
         assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
         assert_eq!(ask(Request::SetUnlockDelay { delay: "1s".into() }), Response::Done);
         assert_eq!((status().delay, status().remaining), (1, None));
-        // Not asked for: refused, and the block stays.
-        assert!(failed(ask(Request::Unlock)) && context.blocklist.is_running());
+        // Not asked for: refused, and the session stays.
+        assert!(failed(ask(Request::Unlock)) && context.sessions.is_running());
         // Asked for: counting down, and still refused.
         assert_eq!(ask(Request::AskForUnlock), Response::Done);
         assert_eq!(status().remaining, Some(1));
         assert!(status().remaining_words.is_some());
-        assert!(failed(ask(Request::Unlock)) && context.blocklist.is_running());
+        assert!(failed(ask(Request::Unlock)) && context.sessions.is_running());
         // Aborted: back to locked, as if never asked.
         assert_eq!(ask(Request::AbortUnlock), Response::Done);
         assert_eq!(status().remaining, None);
@@ -1253,12 +1253,12 @@ mod tests {
         // Ready, it can still be aborted instead: locked again.
         assert_eq!(ask(Request::AbortUnlock), Response::Done);
         assert_eq!(status().remaining, None);
-        assert!(failed(ask(Request::Unlock)) && context.blocklist.is_running());
-        // Or used: every block ends, and the request is used up: the next time starts again.
+        assert!(failed(ask(Request::Unlock)) && context.sessions.is_running());
+        // Or used: every session ends, and the request is used up: the next time starts again.
         assert_eq!(ask(Request::AskForUnlock), Response::Done);
         std::thread::sleep(Duration::from_millis(1100));
         assert_eq!(ask(Request::Unlock), Response::Done);
-        assert!(!context.blocklist.is_running());
+        assert!(!context.sessions.is_running());
         assert_eq!(status().remaining, None);
         assert!(failed(ask(Request::Unlock)));
     }
@@ -1270,7 +1270,7 @@ mod tests {
         let delay = |text: &str| Request::SetUnlockDelay { delay: text.into() };
         assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
         assert_eq!(ask(delay("1h")), Response::Done);
-        // Shorter, none: refused while unlocking is not ready; the block stays locked.
+        // Shorter, none: refused while unlocking is not ready; the session stays locked.
         for shorter in ["0", "none", "", "30m", "59m 59s"] {
             assert!(failed(ask(delay(shorter))), "{shorter:?}");
         }
@@ -1286,7 +1286,7 @@ mod tests {
         // Asking for unlocking does not shorten the wait, and unlocking stays refused.
         assert_eq!(ask(Request::AskForUnlock), Response::Done);
         assert!(failed(ask(delay("1h"))) && failed(ask(Request::Unlock)));
-        assert!(context.blocklist.is_running());
+        assert!(context.sessions.is_running());
     }
 
     #[test]
@@ -1298,7 +1298,7 @@ mod tests {
         assert_eq!(ask(delay("10m")), Response::Done);
         assert_eq!(ask(delay("0")), Response::Done);
         assert_eq!(overview(&context).unlock.delay, 0);
-        // As soon as a block runs, the wait is binding again.
+        // As soon as a session runs, the wait is binding again.
         assert_eq!(ask(delay("1h")), Response::Done);
         assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
         assert!(failed(ask(delay("10m"))));
@@ -1324,8 +1324,8 @@ mod tests {
         let file = dir.join("unlock.json");
         // A service starting up over the same file.
         let service = |name: &str| -> Context {
-            let blocklist = Blocklist::with_store(Store::new(dir.join(format!("{name}.json"))));
-            Context::new(blocklist, Definitions::at(None), Arc::new(AppSlot::new(false))).with_unlock(UnlockDelay::at(Some(file.clone())))
+            let sessions = Sessions::with_store(Store::new(dir.join(format!("{name}.json"))));
+            Context::new(sessions, Definitions::at(None), Arc::new(AppSlot::new(false))).with_unlock(UnlockDelay::at(Some(file.clone())))
         };
         let first = service("one");
         assert_eq!(handle(&first, 0, Request::SetUnlockDelay { delay: "1s".into() }).0, Response::Done);
@@ -1367,7 +1367,7 @@ mod tests {
         let one = definition("p", &["a.com"]).lock(Lock::Password { password: Some("partner".into()), hash: None });
         assert_eq!(run(&context, one), Response::Done);
         // What a client sees has neither the password nor its hash.
-        assert_eq!(overview(&context).blocks[0].lock, Lock::Password { password: None, hash: None });
+        assert_eq!(overview(&context).sessions[0].lock, Lock::Password { password: None, hash: None });
         assert!(overview(&context).running[0].password);
         // Not stopped without it, nor with a wrong one; not uninstalled; then stopped with it.
         let stop = |password: Option<&str>| Request::Stop { id: "p".into(), password: password.map(str::to_string), text: None };
@@ -1376,15 +1376,15 @@ mod tests {
         assert!(matches!(handle(&context, 0, Request::PrepareUninstall).0, Response::Refused(_)));
         assert_eq!(handle(&context, 0, stop(Some("partner"))).0, Response::Done);
         // Saved again without a new password (renamed, say), it keeps its password.
-        let mut renamed = overview(&context).blocks[0].clone();
+        let mut renamed = overview(&context).sessions[0].clone();
         renamed.name = "Renamed".into();
-        assert_eq!(handle(&context, 0, Request::SaveBlock { block: renamed }).0, Response::Done);
+        assert_eq!(handle(&context, 0, Request::SaveSession { session: renamed }).0, Response::Done);
         assert_eq!(handle(&context, 0, Request::Start { id: "p".into() }).0, Response::Done);
         assert_eq!(handle(&context, 0, stop(Some("partner"))).0, Response::Done);
     }
 
     #[test]
-    fn a_weekly_block_runs_by_its_schedule_and_messages_say_minutes_and_hours() {
+    fn a_weekly_session_runs_by_its_schedule_and_messages_say_minutes_and_hours() {
         let context = context("weekly");
         // Every day all day: active now, whatever the day.
         assert_eq!(run(&context, timed("w", &["a.com"], "2h 5m").week("daily")), Response::Done);
@@ -1418,24 +1418,24 @@ mod tests {
     }
 
     #[test]
-    fn importing_waits_until_no_block_is_locked_and_ends_the_others() {
+    fn importing_waits_until_no_session_is_locked_and_ends_the_others() {
         let context = context("import");
         assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
         let library = overview(&context).library();
         assert!(failed(handle(&context, 0, Request::Import { library: library.clone() }).0));
-        // A copy of the running block, or of its list, is not running.
-        let copy = Request::Duplicate { kind: Kind::Block, id: "a".into(), new_id: "a2".into() };
+        // A copy of the running session, or of its list, is not running.
+        let copy = Request::Duplicate { kind: Kind::Session, id: "a".into(), new_id: "a2".into() };
         assert_eq!(handle(&context, 0, copy).0, Response::Done);
-        let list = library.blocks[0].lists[0].clone();
-        assert_eq!(handle(&context, 0, Request::Duplicate { kind: Kind::List, id: list, new_id: "l2".into() }).0, Response::Done);
+        let list = library.sessions[0].targets[0].clone();
+        assert_eq!(handle(&context, 0, Request::Duplicate { kind: Kind::Target, id: list, new_id: "l2".into() }).0, Response::Done);
         assert_eq!(overview(&context).running.len(), 1);
 
-        // A block that runs without a lock does not stand in the way, and ends with the import.
+        // A session that runs without a lock does not stand in the way, and ends with the import.
         let context = self::context("import-unlocked");
         assert_eq!(run(&context, definition("a", &["a.com"])), Response::Done);
         let library = overview(&context).library();
         assert_eq!(handle(&context, 0, Request::Import { library }).0, Response::Done);
         assert!(overview(&context).running.is_empty());
-        assert_eq!(overview(&context).blocks.len(), 1);
+        assert_eq!(overview(&context).sessions.len(), 1);
     }
 }

@@ -3,7 +3,6 @@
 //! (`cli.rs`, `CLI.md`).
 
 mod allowance;
-mod block;
 mod boot;
 pub mod cli;
 mod client;
@@ -25,6 +24,7 @@ mod proto;
 mod registration;
 mod schedule;
 mod service;
+mod session;
 mod setup;
 mod state;
 mod store_apps;
@@ -38,7 +38,7 @@ mod watchdog;
 mod webhook;
 
 use client::Remote;
-use definitions::{BlockList, Condition, Contents, Definition, Fallout, Kind, Library};
+use definitions::{Condition, Contents, Definition, Fallout, Kind, Library, Target};
 use lock::Lock;
 use proto::{Overview, Request, Response};
 use schedule::Week;
@@ -51,73 +51,73 @@ use tauri_plugin_dialog::DialogExt;
 // The page's commands. **Each one has a CLI command that does the same** (`cli::GUI_COMMANDS`, which a
 // test checks against the page): a new one needs one there too, and a line in `CLI.md`.
 
-/// Every block list, condition and block, and which blocks run.
+/// Every target, condition and session, and which sessions run.
 #[tauri::command]
-fn block_status(remote: State<Remote>) -> Result<Overview, String> {
+fn status(remote: State<Remote>) -> Result<Overview, String> {
     remote.status()
 }
 
-/// Adds a block, or changes the one with its id. The service checks it again (`handler.rs`) and
-/// refuses it while that block runs.
+/// Adds a session, or changes the one with its id. The service checks it again (`handler.rs`) and
+/// refuses it while that session runs.
 #[tauri::command]
-fn save_block(block: Definition, remote: State<Remote>) -> Result<(), String> {
-    remote.command(Request::SaveBlock { block })
+fn save_session(session: Definition, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::SaveSession { session })
 }
 
 #[tauri::command]
-fn delete_block(id: String, remote: State<Remote>) -> Result<(), String> {
-    remote.command(Request::DeleteBlock { id })
+fn delete_session(id: String, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::DeleteSession { id })
 }
 
-/// Adds a block list, or changes the one with its id; while a locked block uses it, only to be stricter.
+/// Adds a target, or changes the one with its id; while a locked session uses it, only to be stricter.
 #[tauri::command]
-fn save_list(list: BlockList, remote: State<Remote>) -> Result<(), String> {
-    remote.command(Request::SaveList { list })
+fn save_target(target: Target, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::SaveTarget { target })
 }
 
-/// Takes it out of the blocks that use it too; refused while a running block uses it.
+/// Takes it out of the sessions that use it too; refused while a running session uses it.
 #[tauri::command]
-fn delete_list(id: String, remote: State<Remote>) -> Result<(), String> {
-    remote.command(Request::DeleteList { id })
+fn delete_target(id: String, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::DeleteTarget { id })
 }
 
-/// Adds a condition, or changes the one with its id; while a locked block uses it, only to be stricter.
+/// Adds a condition, or changes the one with its id; while a locked session uses it, only to be stricter.
 #[tauri::command]
 fn save_condition(condition: Condition, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::SaveCondition { condition })
 }
 
-/// Takes it out of the blocks that use it too; refused while a running block uses it.
+/// Takes it out of the sessions that use it too; refused while a running session uses it.
 #[tauri::command]
 fn delete_condition(id: String, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::DeleteCondition { id })
 }
 
-/// A copy of a block, block list or condition, as `new_id`, named after it with a number.
+/// A copy of a session, target or condition, as `new_id`, named after it with a number.
 #[tauri::command]
 fn duplicate(kind: Kind, id: String, new_id: String, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::Duplicate { kind, id, new_id })
 }
 
-/// Starts a block as it is defined. The service owns it from then on: it goes on even if this app
+/// Starts a session as it is defined. The service owns it from then on: it goes on even if this app
 /// is ended or Windows restarts.
 #[tauri::command]
-fn start_block(id: String, remote: State<Remote>) -> Result<(), String> {
+fn start_session(id: String, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::Start { id })
 }
 
 #[tauri::command]
-fn stop_block(id: String, password: Option<String>, text: Option<String>, remote: State<Remote>) -> Result<(), String> {
+fn stop_session(id: String, password: Option<String>, text: Option<String>, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::Stop { id, password, text })
 }
 
-/// Starts the wait before a block locked with a delay can be stopped (`block::RunLock::Delay`).
+/// Starts the wait before a session locked with a delay can be stopped (`session::RunLock::Delay`).
 #[tauri::command]
 fn request_stop(id: String, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::AskToStop { id })
 }
 
-/// Ends that wait: the block is locked again.
+/// Ends that wait: the session is locked again.
 #[tauri::command]
 fn abort_stop(id: String, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::AbortStop { id })
@@ -130,14 +130,14 @@ async fn test_webhook(hook: webhook::Hook) -> Result<webhook::Probe, String> {
     tauri::async_runtime::spawn_blocking(move || webhook::probe(&hook)).await.map_err(|e| e.to_string())?
 }
 
-/// A weekly schedule as text, after checking it, for the condition editor and the block's summary.
+/// A weekly schedule as text, after checking it, for the condition editor and the session's summary.
 #[tauri::command]
 fn describe_schedule(week: Week) -> Result<String, String> {
     week.normalized().map(|week| week.describe())
 }
 
-/// A block's allowance in words, after checking them: in full (`30 minutes in total, reset every day`)
-/// for the block editor, and as the tile's short label (`Allowed 30 minutes a day`). Needs no service.
+/// A session's allowance in words, after checking them: in full (`30 minutes in total, reset every day`)
+/// for the session editor, and as the tile's short label (`Allowed 30 minutes a day`). Needs no service.
 #[tauri::command]
 fn describe_allowance(terms: allowance::Terms) -> Result<allowance::Described, String> {
     terms.described()
@@ -160,7 +160,7 @@ fn describe_until(text: String) -> Result<localtime::Until, String> {
     localtime::until(&text)
 }
 
-/// The Store apps installed, for the block list editor to offer to tick (`store_apps.rs`), and the
+/// The Store apps installed, for the target editor to offer to tick (`store_apps.rs`), and the
 /// ones it has (`chosen`) that are not installed here, by the name in their family name.
 /// PowerShell takes a second or two to list them, so not on the thread that draws the window.
 #[tauri::command]
@@ -176,11 +176,11 @@ async fn connected_drives() -> Result<Vec<drives::Drive>, String> {
     tauri::async_runtime::spawn_blocking(drives::connected).await.map_err(|e| e.to_string())?
 }
 
-/// What deleting the block list or condition `id` does to `blocks` and `conditions` (the window's copy of them),
+/// What deleting the target or condition `id` does to `sessions` and `conditions` (the window's copy of them),
 /// for the question before it: the service's own rule, so what is asked is what happens.
 #[tauri::command]
-fn deletion_fallout(blocks: Vec<Definition>, conditions: Vec<Condition>, id: String) -> Fallout {
-    Library { blocks, conditions, ..Library::default() }.fallout(&id)
+fn deletion_fallout(sessions: Vec<Definition>, conditions: Vec<Condition>, id: String) -> Fallout {
+    Library { sessions, conditions, ..Library::default() }.fallout(&id)
 }
 
 /// What the Save and Open dialogs of Export and Import show.
@@ -227,9 +227,9 @@ struct Opened {
     apps_checked: bool,
 }
 
-/// Import: replaces every block list, condition and block with those in the settings file at
+/// Import: replaces every target, condition and session with those in the settings file at
 /// `path`, without the Store apps not installed here (`Library::without_missing_apps`). Refused
-/// while a block is locked; blocks that run unlocked end with it.
+/// while a session is locked; sessions that run unlocked end with it.
 #[tauri::command]
 async fn import_settings(path: String, remote: State<'_, Remote>) -> Result<(), String> {
     let library = definitions::read_settings(std::path::Path::new(&path))?;
@@ -242,7 +242,7 @@ async fn import_settings(path: String, remote: State<'_, Remote>) -> Result<(), 
 #[tauri::command]
 fn unlock_with(password: Option<String>, text: Option<String>, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::UnlockWith { password, text })?;
-    watchdog::note("app", "every block ended by unlocking");
+    watchdog::note("app", "every session ended by unlocking");
     Ok(())
 }
 
@@ -270,13 +270,13 @@ fn set_unlock_delay(delay: String, remote: State<Remote>) -> Result<(), String> 
     remote.command(Request::SetUnlockDelay { delay })
 }
 
-/// Ends every running block, locked or not, once unlocking is ready (`unlock.rs`: at once with no
+/// Ends every running session, locked or not, once unlocking is ready (`unlock.rs`: at once with no
 /// delay, else after the countdown). The app stays open, with nothing to enforce; the definitions
 /// stay too.
 #[tauri::command]
 fn unlock_all(remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::Unlock)?;
-    watchdog::note("app", "every block ended by unlocking");
+    watchdog::note("app", "every session ended by unlocking");
     Ok(())
 }
 
@@ -327,16 +327,16 @@ pub fn run() {
         .manage(remote)
         .manage(ui::Ui::new())
         .invoke_handler(tauri::generate_handler![
-            block_status,
-            save_block,
-            delete_block,
-            save_list,
-            delete_list,
+            status,
+            save_session,
+            delete_session,
+            save_target,
+            delete_target,
             save_condition,
             delete_condition,
             duplicate,
-            start_block,
-            stop_block,
+            start_session,
+            stop_session,
             request_stop,
             abort_stop,
             unlock_all,

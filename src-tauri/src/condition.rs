@@ -1,15 +1,15 @@
-//! Conditions: when a block is active, and what a condition lock locks by. A condition has a name
+//! Conditions: when a session is active, and what a condition lock locks by. A condition has a name
 //! (`definitions::Condition`) and a rule, of one of three kinds:
 //! - a **weekly schedule** (`schedule.rs`): active at the times it has;
 //! - a **flash drive** (`drives.rs`): active while that drive is *not* connected, so the drive is
-//!   the key that switches a block off (as a lock, the block can only be stopped while it is
+//!   the key that switches a session off (as a lock, the session can only be stopped while it is
 //!   plugged in);
 //! - a **combination** of two or more of the others: active when any of them is, or when all are
-//!   (`Mode`). Never a combination of combinations. A block can use one anywhere it can use a
+//!   (`Mode`). Never a combination of combinations. A session can use one anywhere it can use a
 //!   condition, as its condition or its lock's.
 //!
-//! A block that is not active keeps running, and stays locked, but enforces nothing. A running
-//! block holds a copy of the rule it started with (`block::Block`).
+//! A session that is not active keeps running, and stays locked, but enforces nothing. A running
+//! session holds a copy of the rule it started with (`session::Session`).
 //!
 //! **A new kind of condition** is a variant of `Rule`, with what it means in `active` and
 //! `next_change`, an editor in the window (`src/js/forms.js`) and an option in the CLI (`cli.rs`).
@@ -47,7 +47,7 @@ pub enum Rule {
     /// Active or not by what a web address answers, asked every so often (`webhook.rs`).
     Webhook(Hook),
     /// Two or more of the other conditions, put together by `mode`; never one of its own kind, so
-    /// no nesting. As defined it holds their ids (`members`); a running block holds copies of what
+    /// no nesting. As defined it holds their ids (`members`); a running session holds copies of what
     /// they were when it started (`rules`, in the order of `members`, which a definition has empty:
     /// `definitions::Library::rule_of` fills them in).
     Combined {
@@ -95,7 +95,7 @@ impl Rule {
     }
 
     /// Whether it is active at `now`, in the time zone a schedule is read in. If the local time
-    /// cannot be known, or the connected drives cannot be asked, it is: a block errs on the side
+    /// cannot be known, or the connected drives cannot be asked, it is: a session errs on the side
     /// of blocking, and a lock on the side of locking.
     pub fn active(&self, zone: &Zone, now: SystemTime) -> bool {
         match self {
@@ -153,7 +153,7 @@ impl Rule {
         }
     }
 
-    /// Whether `new` is active whenever this is, which is all a locked block may be changed by: a
+    /// Whether `new` is active whenever this is, which is all a locked session may be changed by: a
     /// schedule that keeps every time it has (and may add more), a drive that is the same one
     /// (named differently, maybe). A condition of another type, or another drive, is not stricter
     /// or looser but something else. The error says what is wrong, for a person.
@@ -165,7 +165,7 @@ impl Rule {
                 if covered {
                     Ok(())
                 } else {
-                    Err("A locked block uses this schedule, so it can only get more times, never lose any".into())
+                    Err("A locked session uses this schedule, so it can only get more times, never lose any".into())
                 }
             }
             (Rule::FlashDrive { serial: old, .. }, Rule::FlashDrive { serial: new, .. }) if old.trim().eq_ignore_ascii_case(new.trim()) => {
@@ -183,13 +183,13 @@ impl Rule {
                 if more {
                     Ok(())
                 } else {
-                    Err("A locked block uses this combination, so it can only get more active: conditions added to an \"any\", taken out of an \"all\", or an \"all\" made an \"any\"".into())
+                    Err("A locked session uses this combination, so it can only get more active: conditions added to an \"any\", taken out of an \"all\", or an \"all\" made an \"any\"".into())
                 }
             }
             // What a web address will answer cannot be compared: only the same one is allowed.
             (Rule::Webhook(old), Rule::Webhook(new)) if *old == new => Ok(()),
-            (Rule::Webhook(_), _) => Err("A locked block uses this webhook condition, so it cannot change".into()),
-            _ => Err("A locked block uses this condition, so its type and its drive cannot change".into()),
+            (Rule::Webhook(_), _) => Err("A locked session uses this webhook condition, so it cannot change".into()),
+            _ => Err("A locked session uses this condition, so its type and its drive cannot change".into()),
         }
     }
 
@@ -306,7 +306,7 @@ mod tests {
         assert!(combined(Mode::All, &["a", "b"], std::slice::from_ref(&day)).checked().is_err());
         let nested = combined(Mode::Any, &["a", "b"], &[day.clone(), combined(Mode::All, &["c", "d"], &[])]);
         assert!(nested.checked().is_err());
-        // As JSON: a definition has no rules, a running block's has them.
+        // As JSON: a definition has no rules, a running session's has them.
         let json = serde_json::to_string(&combined(Mode::All, &["a", "b"], &[])).unwrap();
         assert_eq!(json, r#"{"type":"combined","mode":"all","members":["a","b"]}"#);
         assert_eq!(serde_json::from_str::<Rule>(&json).unwrap(), combined(Mode::All, &["a", "b"], &[]));

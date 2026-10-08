@@ -25,7 +25,7 @@ impl<T> LockExt<T> for Mutex<T> {
 
 /// Starts a thread that is part of what keeps the app or the service working: the ticker, the
 /// supervisor, the pipe, the tab closer. If it crashes, the whole process ends. Windows then
-/// starts the service again (and the service starts the app again), and the block is read back
+/// starts the service again (and the service starts the app again), and the session is read back
 /// from disk, which beats a process that looks healthy while one of its jobs is no longer done.
 pub fn spawn_critical(name: &'static str, work: impl FnOnce() + Send + 'static) {
     thread::Builder::new()

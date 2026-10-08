@@ -1,12 +1,12 @@
-//! A weekly schedule: one kind of condition (`condition::Rule::Schedule`) for when a block is
-//! active. The condition is part of the block, like its lists and enforcers: copied when the block
-//! starts and fixed while it runs. Outside the schedule the block keeps running (and stays locked, `lock.rs`) but enforces
-//! nothing, so a block started at 16:00 with a 2-hour lock and a schedule of 08:00-17:00 blocks
-//! until 17:00, and from then on nothing until the lock has ended the block at 18:00.
+//! A weekly schedule: one kind of condition (`condition::Rule::Schedule`) for when a session is
+//! active. The condition is part of the session, like its lists and enforcers: copied when the session
+//! starts and fixed while it runs. Outside the schedule the session keeps running (and stays locked, `lock.rs`) but enforces
+//! nothing, so a session started at 16:00 with a 2-hour lock and a schedule of 08:00-17:00 blocks
+//! until 17:00, and from then on nothing until the lock has ended the session at 18:00.
 //!
 //! A week is a list of spans per weekday, in minutes since local midnight. The UI edits it in a
 //! weekly grid; the CLI and the UI's text field write it as text (`parse`, `describe`):
-//! `Mon-Fri 08:00-17:00; Sat 10:00-12:00, 14:00-16:00`. Local time is the block's own time zone
+//! `Mon-Fri 08:00-17:00; Sat 10:00-12:00, 14:00-16:00`. Local time is the session's own time zone
 //! (`localtime.rs`), measured on internet time (`clock.rs`).
 
 use serde::{Deserialize, Serialize};
@@ -20,7 +20,7 @@ const NAMES: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Span(pub u16, pub u16);
 
-/// The times a block is active, per weekday, Monday first.
+/// The times a session is active, per weekday, Monday first.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Week {
     pub days: [Vec<Span>; 7],
@@ -39,7 +39,7 @@ pub struct LocalTime {
 impl Week {
     /// The same schedule with each day's spans checked, sorted and merged where they touch, so two
     /// schedules that mean the same are equal. Refused if a span is empty or outside the day, or
-    /// if there is no time at all in it (a block that is never active).
+    /// if there is no time at all in it (a session that is never active).
     pub fn normalized(mut self) -> Result<Week, String> {
         for (day, spans) in self.days.iter_mut().enumerate() {
             if let Some(Span(start, end)) = spans.iter().find(|Span(start, end)| start >= end || *end > DAY) {
@@ -56,17 +56,17 @@ impl Week {
             *spans = merged;
         }
         if self.days.iter().all(Vec::is_empty) {
-            return Err("The schedule has no time in it, so the block would never be active".into());
+            return Err("The schedule has no time in it, so the session would never be active".into());
         }
         Ok(self)
     }
 
-    /// Whether the block is active at this moment.
+    /// Whether the session is active at this moment.
     pub fn is_on(&self, at: LocalTime) -> bool {
         self.days[at.weekday % 7].iter().any(|&Span(start, end)| start <= at.minute && at.minute < end)
     }
 
-    /// Seconds until the schedule next turns the block on or off, if it ever does. Counted in local
+    /// Seconds until the schedule next turns the session on or off, if it ever does. Counted in local
     /// wall time, so it is off by an hour across a daylight saving change; it is only shown.
     pub fn next_change(&self, at: LocalTime) -> Option<u64> {
         let now = self.is_on(at);
@@ -263,7 +263,7 @@ mod tests {
     }
 
     #[test]
-    fn a_schedule_says_when_the_block_is_on() {
+    fn a_schedule_says_when_the_session_is_on() {
         let schedule = office_hours();
         assert!(schedule.is_on(at(0, 8, 0)));
         assert!(schedule.is_on(at(4, 16, 59)));
@@ -355,7 +355,7 @@ mod tests {
         assert!(schedule.clone().normalized().is_err());
         schedule.days[1] = vec![Span(0, DAY + 1)];
         assert!(schedule.normalized().is_err());
-        // A schedule with no time in it is never active, which is not a block.
+        // A schedule with no time in it is never active, which is not a session.
         assert!(Week::default().normalized().is_err());
     }
 

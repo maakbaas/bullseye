@@ -1,5 +1,5 @@
 // Every text the window shows, in one place, so the copy can be fine-tuned without touching the
-// page. `index.html` loads this file and looks texts up by their path (`t("blocks.title")`).
+// page. `index.html` loads this file and looks texts up by their path (`t("sessions.title")`).
 //
 // - `{name}`, `{times}`, … are filled in by the page. Keep each placeholder a text uses (you may
 //   move it); the comment above a group says what they stand for when it is not obvious.
@@ -20,8 +20,8 @@ window.STRINGS = {
   nav: {
     // What a screen reader calls the tabs.
     label: "Pages",
-    blocks: "Blocks",
-    lists: "Block lists",
+    sessions: "Sessions",
+    targets: "Targets",
     conditions: "Conditions",
     settings: "Settings",
   },
@@ -40,7 +40,7 @@ window.STRINGS = {
     options: "Options",
     locked: "Locked",
     name: "Name",
-    // A block list or condition that a block names but that no longer exists.
+    // A target or condition that a session names but that no longer exists.
     gone: "(deleted)",
     // A name inside a sentence; {name}.
     quoted: "“{name}”",
@@ -49,53 +49,53 @@ window.STRINGS = {
     // Before the last of a list: a, b and c.
     and: " and ",
     serviceDown: "Bullseye service not responding",
-    // A block list's or condition's tile while a locked block uses it.
-    inUse: "Used by a locked block",
-    // {names}: the blocks that use it, as links; {n} how many.
-    usedBy: { one: "Used by block {names}", other: "Used by blocks {names}" },
+    // A target's or condition's tile while a locked session uses it.
+    inUse: "Used by a locked session",
+    // {names}: the sessions that use it, as links; {n} how many.
+    usedBy: { one: "Used by session {names}", other: "Used by sessions {names}" },
     // While a weekly schedule's description is being asked of the backend.
     weeklyStandIn: "a weekly schedule",
   },
 
-  blocks: {
-    title: "Blocks",
-    noun: "block",
-    description: "Block lists under a condition and a lock. Blocks start and run independently",
+  sessions: {
+    title: "Sessions",
+    noun: "session",
+    description: "Targets under a condition and a lock. Sessions start and run independently",
     // A new one is named by the first free number.
-    autoName: "Block {n}",
-    newLabel: "New block",
-    editTitle: "Edit block",
-    emptyTitle: "No blocks yet",
-    emptyText: "Make a block list first, then a block that uses it",
-    editorDescription: "Enforces its block lists while its condition is active. The lock is set on the tile",
+    autoName: "Session {n}",
+    newLabel: "New session",
+    editTitle: "Edit session",
+    emptyTitle: "No sessions yet",
+    emptyText: "Make a target first, then a session that uses it",
+    editorDescription: "Enforces its targets while its condition is active. The lock is set on the tile",
     held: "Locked, so only its name and a stricter allowance can change until it can be stopped",
 
     // The editor.
     namePlaceholder: "e.g. Work hours",
-    nameMissing: "Name the block",
+    nameMissing: "Name the session",
     whatTitle: "What",
-    whatText: "Block lists to enforce, each with its own enforcers and allowed sites",
-    listsLegend: "Block lists",
-    noLists: "A block needs at least one block list",
-    // Under the block lists and the condition in the block editor: made there, added to this block.
-    newList: "New block list",
+    whatText: "Targets to enforce, each with its own enforcers and allowed sites",
+    targetsLegend: "Targets",
+    noTargets: "A session needs at least one target",
+    // Under the targets and the condition in the session editor: made there, added to this session.
+    newTarget: "New target",
     newCondition: "New condition",
-    editList: "Edit",
+    editTarget: "Edit",
     editCondition: "Edit condition",
     whenTitle: "When",
-    whenText: "A block enforces nothing while its condition is inactive",
+    whenText: "A session enforces nothing while its condition is inactive",
     conditionLabel: "Condition",
-    conditionHelper: "When the block is active once started",
+    conditionHelper: "When the session is active once started",
     always: "Always",
-    // The allowance section of the block editor (its fields: `allowance` below).
+    // The allowance section of the session editor (its fields: `allowance` below).
     allowanceTitle: "Allowance",
-    allowanceText: "What lets this block go quiet for a while: a time budget or a Pomodoro cycle",
+    allowanceText: "What lets this session go quiet for a while: a time budget or a Pomodoro cycle",
 
-    // A block's tile. A weekly schedule is named, never written out (its times are on the
+    // A session's tile. A weekly schedule is named, never written out (its times are on the
     // Conditions page, and only there); {drive}: a flash drive's name, quoted; {name}: the
     // condition's name; {left} and {change}: times in words.
     tile: {
-      noLists: "No block lists",
+      noTargets: "No targets",
       active: "Active by schedule",
       activeCombined: "Active by combination",
       activeWebhook: "Active by a webhook",
@@ -114,7 +114,7 @@ window.STRINGS = {
       lockedFor: "Locked for the next {left}",
       notLocked: "No active lock",
       noAllowance: "No allowance",
-      // A running block's condition line: its state now and why ({change}: when that changes, if known).
+      // A running session's condition line: its state now and why ({change}: when that changes, if known).
       // A schedule is "during" / "outside", a drive or a combination with one is "since …" (it is plugged
       // in or out by hand, so it has no time).
       activeDuring: "Active during {name}",
@@ -126,7 +126,7 @@ window.STRINGS = {
       activeSinceTrue: "Active since {name} is true",
       inactiveSinceFalse: "Inactive since {name} is false",
       conditionGone: "a condition",
-      // A running block's allowance line (not running, the backend's short label: "Allowed 30 minutes a
+      // A running session's allowance line (not running, the backend's short label: "Allowed 30 minutes a
       // day"). A Pomodoro: {change}: the time until it turns.
       allowanceOpenFor: "Allowed for the next {change}",
       allowanceBlockedFor: "Allowed again in {change}",
@@ -142,7 +142,7 @@ window.STRINGS = {
       allowanceItem: "{item} {left} left",
       allowanceItemUsedUp: "{item} used up",
     },
-    // The tag on a block's tile.
+    // The tag on a session's tile.
     state: {
       notRunning: "Not running",
       running: "Running",
@@ -156,26 +156,26 @@ window.STRINGS = {
     // Once the wait is over there is nothing left to keep: it locks again.
     relock: "Lock again",
     lockLabel: "Lock",
-    // In a block's ⋮ menu: its lock's settings.
+    // In a session's ⋮ menu: its lock's settings.
     lockSettings: "Lock settings",
     // The dialog with a lock's settings. {method}: the lock's name below (locks.*.label).
     lockHeading: "{method} lock for {name}",
     lockFailed: "Could not set the lock of {name}",
     startFailed: "Could not start {name}",
     stopFailed: "Could not stop {name}",
-    // Stopping a block locked with a password.
+    // Stopping a session locked with a password.
     stopHeading: "Stop {name}?",
-    stopBody: "Enter the password to stop this block",
+    stopBody: "Enter the password to stop this session",
     stopPassword: "Password",
-    // Stopping a block locked with a text: the text is shown above the input.
+    // Stopping a session locked with a text: the text is shown above the input.
     stopTextBody: "Type the text above exactly. Pasting is blocked",
     stopTextLabel: "Type the text here",
     stopTextDiffers: "Text does not match yet",
     stopPasswordMissing: "Enter the password",
   },
 
-  // The lock methods, as chosen on a block's tile. `describe` is the tile's line for a block that
-  // is not running; `confirm*` is the question before starting a locked block. A confirmAction is
+  // The lock methods, as chosen on a session's tile. `describe` is the tile's line for a session that
+  // is not running; `confirm*` is the question before starting a locked session. A confirmAction is
   // the modal's button: keep it to a few words without placeholders, as Carbon's modal buttons
   // have one fixed height and a long label runs out of them.
   locks: {
@@ -225,7 +225,7 @@ window.STRINGS = {
       noneBody: "A condition lock needs a condition. Make one now and use it for this lock?",
       noneAction: "New condition",
       // {name}: the condition, a link. Worded like the condition's line on a tile ("Active during …"),
-      // "Locks" for a block that is not running and "Locked" for one that is, locking now or not.
+      // "Locks" for a session that is not running and "Locked" for one that is, locking now or not.
       describe: "Locks during {name}",
       describeDrive: "Locks while {name} is unplugged",
       describeCombined: "Locks while {name} is true",
@@ -238,7 +238,7 @@ window.STRINGS = {
       unlockedDrive: "Unlocked since {name} is plugged in",
       lockedTrue: "Locked since {name} is true",
       unlockedFalse: "Unlocked since {name} is false",
-      // The condition has been deleted from a running block.
+      // The condition has been deleted from a running session.
       goneName: "a condition",
       describeGone: "Condition deleted",
       confirmHeading: "Start {name} locked during {condition}?",
@@ -261,7 +261,7 @@ window.STRINGS = {
       label: "Custom text",
       field: "Text to type",
       placeholder: "e.g. I will not scroll tonight",
-      helper: "Stopping needs this text typed exactly, no pasting. Anyone who sees the block sees the text",
+      helper: "Stopping needs this text typed exactly, no pasting. Anyone who sees the session sees the text",
       missing: "Enter the text",
       describe: "Locks until its text is typed",
       confirmHeading: "Start {name} locked by a custom text?",
@@ -272,7 +272,7 @@ window.STRINGS = {
       label: "Password",
       field: "Password",
       helper: "Best set by someone else. Only a hash is kept",
-      // When the block already has a password lock: the old password is never shown.
+      // When the session already has a password lock: the old password is never shown.
       helperSet: "Password set. Enter a new one to replace it",
       repeat: "Repeat password",
       missing: "Enter a password",
@@ -284,27 +284,27 @@ window.STRINGS = {
     },
   },
 
-  lists: {
-    title: "Block lists",
-    noun: "block list",
-    description: "What to block: sites, programs and apps. Several blocks can share a list",
-    autoName: "Block list {n}",
-    newLabel: "New block list",
-    editTitle: "Edit block list",
-    emptyTitle: "No block lists yet",
+  targets: {
+    title: "Targets",
+    noun: "target",
+    description: "What to block: sites, programs and apps. Several sessions can share a target",
+    autoName: "Target {n}",
+    newLabel: "New target",
+    editTitle: "Edit target",
+    emptyTitle: "No targets yet",
     emptyText: "Add sites, programs or apps to close, and how to close them",
-    editorDescription: "Running blocks follow changes made here; a locked one only accepts stricter ones",
-    // {names}: the locked blocks that use it, quoted.
+    editorDescription: "Running sessions follow changes made here; a locked one only accepts stricter ones",
+    // {names}: the locked sessions that use it, quoted.
     limited: "{names} uses it and is locked. You can add blocked entries, remove always allowed ones and turn enforcers on, nothing else. It cannot be deleted",
     namePlaceholder: "e.g. Social media",
-    nameMissing: "Name the block list",
+    nameMissing: "Name the target",
     nothing: "Nothing to block",
-    notUsed: "Not used by a block",
+    notUsed: "Not used by a session",
     // Above an editor section's checkboxes: with lists, and without.
     howLegend: "How",
     enforcersLegend: "Enforcers",
 
-    // The lists of a block list. `count` is the tile's line.
+    // The lists of a target. `count` is the tile's line.
     filters: {
       label: "Sites to block",
       placeholder: "youtube.com",
@@ -386,14 +386,14 @@ window.STRINGS = {
   conditions: {
     title: "Conditions",
     noun: "condition",
-    description: "When a block is active: a schedule, an unplugged drive or a combination",
+    description: "When a session is active: a schedule, an unplugged drive or a combination",
     autoName: "Condition {n}",
     newLabel: "New condition",
     editTitle: "Edit condition",
     emptyTitle: "No conditions yet",
-    emptyText: "Blocks without a condition are always active. Add one such as work hours",
-    editorDescription: "Running blocks follow changes made here; a locked one only accepts stricter ones",
-    // {names}: the locked blocks that use it, quoted.
+    emptyText: "Sessions without a condition are always active. Add one such as work hours",
+    editorDescription: "Running sessions follow changes made here; a locked one only accepts stricter ones",
+    // {names}: the locked sessions that use it, quoted.
     held: "{names} uses it and is locked. A drive cannot change. It cannot be deleted",
     limited: "{names} uses it and is locked. A schedule can only gain times, a drive cannot change and a combination can only get more active. It cannot be deleted",
     namePlaceholder: "e.g. Work hours",
@@ -465,9 +465,9 @@ window.STRINGS = {
     // {times}: the schedule in words; {drive}: the drive's name, quoted.
     active: "Active {times}",
     activeDrive: "Active while {drive} is unplugged",
-    notUsed: "Not used by a block",
+    notUsed: "Not used by a session",
     // Above the week grid.
-    nothingMarked: "Mark when blocks are active",
+    nothingMarked: "Mark when sessions are active",
     // The heading of a weekly schedule's grid; its line is `gridHelp`.
     weekTitle: "Week",
     gridHelp: "Drag over the week to mark active times, start on a marked time to clear it",
@@ -479,7 +479,7 @@ window.STRINGS = {
       title: "Drive",
       text: "The drive that is the key: the condition is active while it is unplugged",
       field: "Flash drive",
-      helper: "Active while unplugged. Plugging it in switches blocks off and opens its lock. Drives without a serial number are not listed",
+      helper: "Active while unplugged. Plugging it in switches sessions off and opens its lock. Drives without a serial number are not listed",
       choose: "Choose a flash drive",
       scanning: "Looking for drives",
       none: "No flash drive found. Plug it in and scan again",
@@ -490,10 +490,10 @@ window.STRINGS = {
     },
   },
 
-  // A block's allowance, set in the block editor.
+  // A session's allowance, set in the session editor.
   allowance: {
     typeLabel: "Type",
-    typeHelper: "As long as the block runs. A running block takes changes at once; a locked one only stricter ones",
+    typeHelper: "As long as the session runs. A running session takes changes at once; a locked one only stricter ones",
     type: {
       none: "None",
       budget: "Time budget",
@@ -505,12 +505,12 @@ window.STRINGS = {
       allowedPlaceholder: "e.g. 30m",
       allowedHelper: "e.g. 30m, 2h 30m. Counts while a blocked page is shown in a tab, a blocked window or app is open, or a blocked program runs",
       scopeLabel: "Applies to",
-      scopeHelper: "Each item is a site, program, app or window title on the block list, with its own time",
-      total: "The whole block",
+      scopeHelper: "Each item is a site, program, app or window title on the target, with its own time",
+      total: "The whole session",
       each: "Each item",
       resetLabel: "Time is given back",
       resetHelper: "What was used becomes available again",
-      never: "Never while the block runs",
+      never: "Never while the session runs",
       every: "Every so long",
       condition: "Each time the condition turns on",
       // Given back every so long.
@@ -519,7 +519,7 @@ window.STRINGS = {
       everyHelper: "e.g. 1d, 12h, 90m",
       anchorLabel: "Counted from",
       anchorHelper: "On the clock, every 1d comes at midnight and every 1h on the hour. It has to fit a day evenly",
-      start: "The start of the block",
+      start: "The start of the session",
       clock: "The clock, from midnight",
     },
     // A Pomodoro cycle: blocked first, then everything is allowed, over and over.
@@ -528,23 +528,23 @@ window.STRINGS = {
       blockedPlaceholder: "e.g. 50m",
       allowedLabel: "Allowed for",
       allowedPlaceholder: "e.g. 10m",
-      helper: "e.g. 30m, 2h 30m. Everything the block closes is allowed during this time",
+      helper: "e.g. 30m, 2h 30m. Everything the session closes is allowed during this time",
       anchorLabel: "Cycles count from",
       anchorHelper: "On the clock, a cycle of an hour starts at every full hour. It has to fit a day evenly",
-      start: "The start of the block",
+      start: "The start of the session",
       clock: "The clock, from midnight",
     },
     // Under the fields: the terms in words, from the backend.
     describing: "Checking",
   },
 
-  // Deleting a block, block list or condition. {noun}: the kind's noun above.
+  // Deleting a session, target or condition. {noun}: the kind's noun above.
   delete: {
     heading: "Delete {name}?",
     body: "Deletes the {noun} for good",
-    // What it does to the blocks that use a block list or condition; {names}: those blocks, quoted.
-    deletesToo: "Also deleted, no other block list: {names}",
-    keepsOthers: "Keeps its other block lists: {names}",
+    // What it does to the sessions that use a target or condition; {names}: those sessions, quoted.
+    deletesToo: "Also deleted, no other target: {names}",
+    keepsOthers: "Keeps its other targets: {names}",
     becomesAlways: "Always active from now: {names}",
     losesLock: "No lock from now: {names}",
     shrinksCombination: "Continues without it: {names}",
@@ -563,9 +563,9 @@ window.STRINGS = {
     title: "Settings",
     description: "Unlocking, the unlock delay, and moving everything to another computer",
     unlockTitle: "Unlock",
-    unlockText: "Ends every running block, locked ones too. Blocks, block lists and conditions stay. The only way to end a locked block early. Request it, wait for the countdown, then unlock. Keep locked cancels it and keeps everything locked; once it is ready the button reads Lock again",
+    unlockText: "Ends every running session, locked ones too. Sessions, targets and conditions stay. The only way to end a locked session early. Request it, wait for the countdown, then unlock. Keep locked cancels it and keeps everything locked; once it is ready the button reads Lock again",
     // No delay set: the state of a clean install.
-    unlockFree: "Ends every running block, locked ones too. Blocks, block lists and conditions stay. Free right now: set an unlock delay below for a countdown",
+    unlockFree: "Ends every running session, locked ones too. Sessions, targets and conditions stay. Free right now: set an unlock delay below for a countdown",
     // {delay}: how long it takes; {left}: the time left, in words.
     unlockAsk: "Unlocking takes {delay}. Request it to start the countdown",
     unlockWait: "Unlock ready in {left}. Keep locked to cancel it",
@@ -590,7 +590,7 @@ window.STRINGS = {
       answerText: "Unlock with text",
       answerPassword: "Unlock with password",
       answerHeading: "Unlock?",
-      answerBody: "Enter the password to end every running block now",
+      answerBody: "Enter the password to end every running session now",
       answerTextBody: "Type the text above exactly. Pasting is blocked",
     },
     unlock: "Unlock",
@@ -598,12 +598,12 @@ window.STRINGS = {
     abort: "Keep locked",
     relock: "Lock again",
     aborted: "Everything stays locked",
-    confirmHeading: "End every running block?",
-    confirmBody: "Locked blocks end too. Blocks, block lists and conditions stay",
+    confirmHeading: "End every running session?",
+    confirmBody: "Locked sessions end too. Sessions, targets and conditions stay",
     failed: "Not unlocked",
-    unlocked: "Unlocked, every block ended",
+    unlocked: "Unlocked, every session ended",
     delayTitle: "Unlock delay",
-    delayText: "Time between requesting and unlocking, up to 24 hours. A longer delay can always be set. A shorter one needs unlocking to be ready, or no locked block",
+    delayText: "Time between requesting and unlocking, up to 24 hours. A longer delay can always be set. A shorter one needs unlocking to be ready, or no locked session",
     delayLabel: "Delay (up to 24 hours)",
     delayPlaceholder: "e.g. 2h 30m or 0",
     setDelay: "Set delay",
@@ -613,34 +613,34 @@ window.STRINGS = {
     delayFree: "Unlocking is free",
     delayFailed: "Delay not changed",
     transferTitle: "Move to another computer",
-    transferText: "Export saves all block lists, conditions and blocks to a file. Import replaces all of them with the file's contents. Password locks go with their hash, so keep the file private",
+    transferText: "Export saves all targets, conditions and sessions to a file. Import replaces all of them with the file's contents. Password locks go with their hash, so keep the file private",
     export: "Export",
     import: "Import",
     // {file}: the file's name.
     exported: "Exported to {file}",
     exportFailed: "Not exported",
     importHeading: "Replace everything with this file?",
-    // {lists}, {conditions}, {blocks}: the counts below, as in the file.
-    importBody: "{lists}, {conditions} and {blocks} replace your current ones. This cannot be undone",
-    importLists: { one: "{n} block list", other: "{n} block lists" },
+    // {targets}, {conditions}, {sessions}: the counts below, as in the file.
+    importBody: "{targets}, {conditions} and {sessions} replace your current ones. This cannot be undone",
+    importTargets: { one: "{n} target", other: "{n} targets" },
     importConditions: { one: "{n} condition", other: "{n} conditions" },
-    importBlocks: { one: "{n} block", other: "{n} blocks" },
-    // {names}: the blocks, quoted; {n}: how many.
+    importSessions: { one: "{n} session", other: "{n} sessions" },
+    // {names}: the sessions, quoted; {n}: how many.
     importUnlocked: {
       one: "{names} has a password lock without its hash in the file and imports without a lock",
       other: "{names} have password locks without their hash in the file and import without a lock",
     },
     // Store apps in the file that are not installed on this PC, which are left out: a Store app is one
     // exact package, and this PC may have the app as another one, or not at all. {apps}: each as
-    // importAppIn, {app} its name and {list} its block list, quoted.
+    // importAppIn, {app} its name and {target} its target, quoted.
     importAppsLeftOut: {
       one: "Left out, not installed on this PC: {apps}",
       other: "Left out, not installed on this PC: {apps}",
     },
-    importAppIn: "{app} in {list}",
+    importAppIn: "{app} in {target}",
     importAppsUnknown: "Could not tell which Store apps are installed here, so all are kept",
-    // Said too when a block runs without being locked: it ends.
-    importStops: "Running blocks without a lock are stopped",
+    // Said too when a session runs without being locked: it ends.
+    importStops: "Running sessions without a lock are stopped",
     importAction: "Import",
     imported: "Imported",
     importFailed: "Not imported",

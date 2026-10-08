@@ -1,11 +1,11 @@
-// The three kinds the user makes, each with a page of tiles and an editor: blocks, block lists and
-// conditions. Pages, tiles and the editor are the same code for all, by this table. (A block's
-// allowance and lock are set on the block itself.)
+// The three kinds the user makes, each with a page of tiles and an editor: sessions, targets and
+// conditions. Pages, tiles and the editor are the same code for all, by this table. (A session's
+// allowance and lock are set on the session itself.)
 
 import { invoke, lockedUsersOf, names, newId, overview, runningOf, t } from "./core.js";
-import { LISTS, SECTIONS, blockForm, conditionForm, listForm } from "./forms.js";
+import { LISTS, SECTIONS, sessionForm, conditionForm, targetForm } from "./forms.js";
 
-// The first free automatic name of a kind: "Block 1", "Block 2", … (`<kind>.autoName`), ignoring case.
+// The first free automatic name of a kind: "Session 1", "Session 2", … (`<kind>.autoName`), ignoring case.
 function freeName(kind, items) {
   const taken = new Set(items.map((item) => item.name.trim().toLowerCase()));
   for (let n = 1; ; n++) {
@@ -28,50 +28,50 @@ const kindTexts = (kind) => ({
 });
 
 const KINDS = {
-  blocks: {
+  sessions: {
     path: "#/",
     editPath: "#/edit/",
     newPath: "#/new",
-    ...kindTexts("blocks"),
-    items: () => overview.blocks,
-    create: () => ({ id: newId(), name: freeName("blocks", overview.blocks), lists: [], condition: null, allowance: null, lock: { method: "none" } }),
-    save: (block) => invoke("save_block", { block }),
-    remove: (id) => invoke("delete_block", { id }),
-    duplicate: (id, copyId) => invoke("duplicate", { kind: "block", id, newId: copyId }),
+    ...kindTexts("sessions"),
+    items: () => overview.sessions,
+    create: () => ({ id: newId(), name: freeName("sessions", overview.sessions), targets: [], condition: null, allowance: null, lock: { method: "none" } }),
+    save: (session) => invoke("save_session", { session }),
+    remove: (id) => invoke("delete_session", { id }),
+    duplicate: (id, copyId) => invoke("duplicate", { kind: "session", id, newId: copyId }),
     // Why it cannot be changed now, or null.
-    // A running block can be changed, its lock aside, unless it is locked; it cannot be deleted.
-    held: (block) => (runningOf(block.id) && runningOf(block.id).locked ? t("blocks.held") : null),
+    // A running session can be changed, its lock aside, unless it is locked; it cannot be deleted.
+    held: (session) => (runningOf(session.id) && runningOf(session.id).locked ? t("sessions.held") : null),
     limited: () => null,
-    // Whether something locked stands in the way of deleting it (a running block that is not locked
+    // Whether something locked stands in the way of deleting it (a running session that is not locked
     // ends with it).
-    inUse: (block) => !!(runningOf(block.id) && runningOf(block.id).locked),
-    form: () => blockForm(),
+    inUse: (session) => !!(runningOf(session.id) && runningOf(session.id).locked),
+    form: () => sessionForm(),
   },
-  lists: {
-    path: "#/lists",
-    editPath: "#/lists/edit/",
-    newPath: "#/lists/new",
-    ...kindTexts("lists"),
-    items: () => overview.lists,
+  targets: {
+    path: "#/targets",
+    editPath: "#/targets/edit/",
+    newPath: "#/targets/new",
+    ...kindTexts("targets"),
+    items: () => overview.targets,
     create: () => ({
       id: newId(),
-      name: freeName("lists", overview.lists),
+      name: freeName("targets", overview.targets),
       ...Object.fromEntries(Object.keys(LISTS).map((key) => [key, []])),
       // Every checkbox ticked; a choice (windows by title) at its first option, closing.
       enforcers: Object.fromEntries(SECTIONS.flatMap((s) => s.enforcers.map((e) => [e.key, !s.choice]))),
     }),
-    save: (list) => invoke("save_list", { list }),
-    remove: (id) => invoke("delete_list", { id }),
-    duplicate: (id, copyId) => invoke("duplicate", { kind: "list", id, newId: copyId }),
-    // What a locked block uses can only get stricter (the service holds to it); what a block uses
+    save: (list) => invoke("save_target", { target: list }),
+    remove: (id) => invoke("delete_target", { id }),
+    duplicate: (id, copyId) => invoke("duplicate", { kind: "target", id, newId: copyId }),
+    // What a locked session uses can only get stricter (the service holds to it); what a session uses
     // that is running but not locked can be changed or deleted, and follows.
     held: () => null,
     limited: (list) => {
       const holders = lockedUsersOf(list.id);
-      return holders.length ? t("lists.limited", { names: names(holders) }) : null;
+      return holders.length ? t("targets.limited", { names: names(holders) }) : null;
     },
     inUse: (list) => lockedUsersOf(list.id).length > 0,
-    form: () => listForm(),
+    form: () => targetForm(),
   },
   conditions: {
     path: "#/conditions",
@@ -83,7 +83,7 @@ const KINDS = {
     save: (condition) => invoke("save_condition", { condition }),
     remove: (id) => invoke("delete_condition", { id }),
     duplicate: (id, copyId) => invoke("duplicate", { kind: "condition", id, newId: copyId }),
-    // A flash drive can only stay the same drive, so while a locked block uses it there is nothing to change.
+    // A flash drive can only stay the same drive, so while a locked session uses it there is nothing to change.
     held: (condition) => {
       if (condition.type !== "flash_drive" && condition.type !== "webhook") return null;
       const holders = lockedUsersOf(condition.id);

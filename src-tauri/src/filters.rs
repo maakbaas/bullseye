@@ -1,5 +1,5 @@
 //! A list of sites: one address per line, `*` as wildcard. Used twice: for the sites to block, and
-//! for the sites that are always allowed, which win over the block list (`block::Active::blocks_site`).
+//! for the sites that are always allowed, which win over the target (`session::Active::blocks_site`).
 //!
 //! - Only web pages count. The browser's own pages (`chrome://settings`, `edge://newtab`,
 //!   `about:blank`), extensions and local files are never matched, so even a lone `*`, which
@@ -17,7 +17,7 @@
 use regex::RegexSet;
 
 pub struct FilterList {
-    /// The normalized entries, kept so a block can be written to disk and resumed (`state.rs`).
+    /// The normalized entries, kept so a session can be written to disk and resumed (`state.rs`).
     entries: Vec<String>,
     matchers: RegexSet,
 }
@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn an_exception_for_a_subdomain_is_one_entry_in_the_list_of_allowed_sites() {
-        // `block::Enforced::blocks_site`: allowed wins, and a domain there covers its subdomains too.
+        // `session::Enforced::blocks_site`: allowed wins, and a domain there covers its subdomains too.
         let blocked = FilterList::parse(&["tweakers.net"]).unwrap();
         let allowed = FilterList::parse(&["gathering.tweakers.net"]).unwrap();
         let go = |url: &str| blocked.is_blocked(url) && !allowed.is_blocked(url);
@@ -254,7 +254,7 @@ mod tests {
         assert!(FilterList::parse(&["", "  "]).unwrap().is_empty());
     }
 
-    /// The entries are written down and parsed again on the next run (`block.rs`), so writing
+    /// The entries are written down and parsed again on the next run (`session.rs`), so writing
     /// them down must not change what they block.
     #[test]
     fn entries_survive_being_written_down_and_read_again() {

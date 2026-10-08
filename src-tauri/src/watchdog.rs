@@ -2,8 +2,8 @@
 //!
 //! The service (`service.rs`) runs as SYSTEM in session 0, which has no desktop, so it cannot
 //! close browser tabs itself. The app does that, in the logged-on user's session, and the service
-//! keeps it there: it starts the app at every logon and, while a block runs, starts it again
-//! within about a second of it ending. With no block the app is left alone, so quitting it with
+//! keeps it there: it starts the app at every logon and, while a session runs, starts it again
+//! within about a second of it ending. With no session the app is left alone, so quitting it with
 //! the unlock password sticks.
 //!
 //! **Which process is "the app" is the service's decision, not a matter of its name.** The service
@@ -46,7 +46,7 @@ use windows_sys::Win32::System::Threading::{
     PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, STARTUPINFOW,
 };
 
-use crate::block::Blocklist;
+use crate::session::Sessions;
 use crate::state;
 use crate::sync::{spawn_critical, LockExt};
 
@@ -54,7 +54,7 @@ use crate::sync::{spawn_critical, LockExt};
 /// cannot turn into a process being started over and over.
 const MAX_BACKOFF: u32 = 10;
 
-/// An app that has asked for its policy before must ask again within this time, while a block
+/// An app that has asked for its policy before must ask again within this time, while a session
 /// runs, or it is ended and started again.
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -65,8 +65,8 @@ const STARTUP_GRACE: Duration = Duration::from_secs(20);
 /// not the app having stalled.
 const RESUME_GAP: Duration = Duration::from_secs(3);
 
-/// Set at logon (and when the service starts): the app is wanted even without a block.
-/// Cleared once an app is there: without a block, one that has ended is not started again.
+/// Set at logon (and when the service starts): the app is wanted even without a session.
+/// Cleared once an app is there: without a session, one that has ended is not started again.
 pub static LAUNCH_APP: AtomicBool = AtomicBool::new(true);
 
 /// Whether this process is the service, which only decides where `note` writes.
@@ -165,10 +165,10 @@ impl AppSlot {
         }
     }
 
-    /// Looks after the app once a second: forgets one that has ended and, while a block runs, ends
+    /// Looks after the app once a second: forgets one that has ended and, while a session runs, ends
     /// one that has stopped asking. `resumed` is set when the machine seems to have slept, which
     /// is no fault of the app's. Returns whether there is no app now.
-    pub fn supervise(&self, block_active: bool, resumed: bool) -> bool {
+    pub fn supervise(&self, session_active: bool, resumed: bool) -> bool {
         let mut current = self.current.locked();
         if let Some(app) = current.as_mut() {
             let now = Instant::now();
@@ -178,7 +178,7 @@ impl AppSlot {
             } else if resumed {
                 app.since = now;
                 app.heard = app.heard.map(|_| now);
-            } else if block_active && is_stale(app.since, app.heard, now) {
+            } else if session_active && is_stale(app.since, app.heard, now) {
                 note("service", "the app stopped asking for its policy; ending it");
                 app.process.terminate();
                 *current = None;
@@ -247,7 +247,7 @@ fn session_of(pid: u32) -> u32 {
 }
 
 /// The service's half: starts the app when it is wanted and not there, and looks after it.
-pub fn spawn_supervisor(blocklist: Blocklist, slot: Arc<AppSlot>) {
+pub fn spawn_supervisor(sessions: Sessions, slot: Arc<AppSlot>) {
     spawn_critical("supervisor", move || {
         // How many starts in a row have not led to a running app, which slows the starting down.
         let mut missed = 0u32;
@@ -259,9 +259,9 @@ pub fn spawn_supervisor(blocklist: Blocklist, slot: Arc<AppSlot>) {
             let resumed = last_round.elapsed() >= RESUME_GAP;
             last_round = Instant::now();
 
-            let block_active = blocklist.is_running();
-            let no_app = slot.supervise(block_active, resumed);
-            if !block_active && !LAUNCH_APP.load(Ordering::SeqCst) {
+            let session_active = sessions.is_running();
+            let no_app = slot.supervise(session_active, resumed);
+            if !session_active && !LAUNCH_APP.load(Ordering::SeqCst) {
                 missed = 0;
                 continue;
             }
@@ -371,7 +371,7 @@ fn exe() -> Option<PathBuf> {
     std::env::current_exe().ok()
 }
 
-/// Writes a line to a log file as well as to stderr: `service.log` next to the saved block for
+/// Writes a line to a log file as well as to stderr: `service.log` next to the saved session for
 /// the service, `app.log` in `%LOCALAPPDATA%\bullseye` for the app.
 ///
 /// Neither runs with a window, so stderr goes nowhere in a release build; the file is how the
@@ -558,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn an_app_that_stops_asking_is_ended_but_not_by_a_sleep_or_without_a_block() {
+    fn an_app_that_stops_asking_is_ended_but_not_by_a_sleep_or_without_a_session() {
         let now = Instant::now();
         let ago = |seconds| now - Duration::from_secs(seconds);
         let quiet = |slot: &AppSlot, child: &Child| {
@@ -567,7 +567,7 @@ mod tests {
         let (mut stale, mut slept, mut idle) = (sleeper(), sleeper(), sleeper());
         let slot = AppSlot::new(true);
 
-        // Quiet for 30 seconds while a block runs: ended, and the slot is empty for a new one.
+        // Quiet for 30 seconds while a session runs: ended, and the slot is empty for a new one.
         quiet(&slot, &stale);
         let held = Process::open(stale.id()).unwrap();
         assert!(slot.supervise(true, false));
@@ -579,7 +579,7 @@ mod tests {
         assert!(!Process::open(slept.id()).unwrap().exited());
         assert!(!slot.supervise(true, false), "the grace after a sleep should still be running");
 
-        // And with no block there is nothing to enforce, so nothing to end it for.
+        // And with no session there is nothing to enforce, so nothing to end it for.
         quiet(&slot, &idle);
         assert!(!slot.supervise(false, false));
         assert!(!Process::open(idle.id()).unwrap().exited());

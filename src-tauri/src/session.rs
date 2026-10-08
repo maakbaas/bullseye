@@ -1,16 +1,16 @@
-//! The running blocks: for each, its block lists (each with its own enforcers), its condition
+//! The running sessions: for each, its targets (each with its own enforcers), its condition
 //! if it has one, and its lock (`lock.rs`): when a duration or until lock ends, the lock condition,
-//! the start of Windows a restart lock waits out, a password's hash. Each block is started from a
+//! the start of Windows a restart lock waits out, a password's hash. Each session is started from a
 //! definition (`definitions.rs`) and runs on its own: several can run at once, and what is enforced
-//! is all of them together. A block with a duration or until lock cannot be stopped early and stops
+//! is all of them together. A session with a duration or until lock cannot be stopped early and stops
 //! by itself once its time is up; one locked until Windows restarts ends with the restart. Outside
-//! its condition a block keeps running, and stays locked, but enforces nothing.
+//! its condition a session keeps running, and stays locked, but enforces nothing.
 //!
-//! The running blocks are also kept on disk (`state.rs`), so ending the app, or restarting
+//! The running sessions are also kept on disk (`state.rs`), so ending the app, or restarting
 //! Windows, does not end them: the next run picks them up again while their time is not up.
 //!
 //! Time is internet time (`clock.rs`), not the Windows clock, so setting that clock forward
-//! does not end a timed block early.
+//! does not end a timed session early.
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
@@ -29,7 +29,7 @@ use crate::state::{self, Enforcers, Store, Uses};
 use crate::sync::LockExt;
 use crate::unlock;
 
-/// How often running timed blocks write down the time they have reached (`Saved::seen`).
+/// How often running timed sessions write down the time they have reached (`Saved::seen`).
 const CHECKPOINT: Duration = Duration::from_secs(60);
 
 /// The longest time that one report of use is counted for, whatever the time since the last look:
@@ -38,13 +38,13 @@ const MAX_GAP: Duration = Duration::from_secs(5);
 
 /// Shared between the request handling and the ticker thread.
 #[derive(Clone)]
-pub struct Blocklist {
+pub struct Sessions {
     inner: Arc<Mutex<Inner>>,
-    /// Where the blocks are kept between runs; `None` disables surviving a restart.
+    /// Where the sessions are kept between runs; `None` disables surviving a restart.
     store: Option<Arc<Store>>,
     /// The app's internet clock; tests have their own.
     clock: &'static Clock,
-    /// The time zone a new block's schedule is read in; `None` is Windows' own (`localtime.rs`).
+    /// The time zone a new session's schedule is read in; `None` is Windows' own (`localtime.rs`).
     /// Tests use a fixed one.
     zone: Option<Zone>,
     /// This start of Windows, for locks until it restarts; `None` is Windows' own (`boot.rs`).
@@ -53,8 +53,8 @@ pub struct Blocklist {
 }
 
 struct Inner {
-    blocks: Vec<Block>,
-    /// When the blocks were last written to disk.
+    sessions: Vec<Session>,
+    /// When the sessions were last written to disk.
     saved_at: Instant,
     /// When the app last asked what to enforce: the time since is what a report of use counts for.
     polled: Instant,
@@ -62,24 +62,24 @@ struct Inner {
 
 impl Default for Inner {
     fn default() -> Inner {
-        Inner { blocks: Vec::new(), saved_at: Instant::now(), polled: Instant::now() }
+        Inner { sessions: Vec::new(), saved_at: Instant::now(), polled: Instant::now() }
     }
 }
 
 /// Something an allowance lets through for now, which the app is to watch rather than close: when
-/// it is in use, that is counted against `key` of the block (`allowance.rs`). Its lists include
-/// the always-allowed sites and titles of its block list, which are not in use as they are not
+/// it is in use, that is counted against `key` of the session (`allowance.rs`). Its lists include
+/// the always-allowed sites and titles of its target, which are not in use as they are not
 /// blocked.
 #[derive(Clone)]
 pub struct Free {
-    /// The running block, by its definition's id.
-    pub block: String,
+    /// The running session, by its definition's id.
+    pub session: String,
     /// What it is counted against: `allowance::TOTAL` or an item's key (`allowance::item_keys`).
     pub key: String,
     pub lists: Arc<Lists>,
 }
 
-/// What one running block enforces.
+/// What one running session enforces.
 #[derive(Clone)]
 pub struct Enforced {
     pub lists: Arc<Lists>,
@@ -93,23 +93,23 @@ impl Enforced {
         Enforced { lists, enforcers, free: Vec::new() }
     }
 
-    /// Whether a page is to be closed: on the block list, and not on the list of allowed sites.
-    /// Allowed wins, whatever the block list says, so `*` on the block list with `google.com`
-    /// allowed blocks every site but that one. Each block's allowed sites are exceptions to its
-    /// own block list only.
+    /// Whether a page is to be closed: on the target, and not on the list of allowed sites.
+    /// Allowed wins, whatever the target says, so `*` on the target with `google.com`
+    /// allowed blocks every site but that one. Each session's allowed sites are exceptions to its
+    /// own target only.
     pub fn blocks_site(&self, url: &str) -> bool {
         self.lists.sites.is_blocked(url) && !self.lists.allowed.is_blocked(url)
     }
 }
 
-/// What the app has seen in use that an allowance counts (`Free`), as (block, key), until it is
+/// What the app has seen in use that an allowance counts (`Free`), as (session, key), until it is
 /// reported to the service (`client::Remote::active`). Shared by every copy of the same `Active`.
 #[derive(Clone, Default)]
 pub struct Usage(Arc<Mutex<BTreeSet<(String, String)>>>);
 
 impl Usage {
-    fn note(&self, block: &str, key: &str) {
-        self.0.locked().insert((block.to_string(), key.to_string()));
+    fn note(&self, session: &str, key: &str) {
+        self.0.locked().insert((session.to_string(), key.to_string()));
     }
 
     /// What was seen since the last time, which is then forgotten.
@@ -132,36 +132,36 @@ pub enum TitleAction {
     Minimize,
 }
 
-/// What is to be enforced right now: every running block's part, each with its own enforcers.
+/// What is to be enforced right now: every running session's part, each with its own enforcers.
 #[derive(Clone)]
 pub struct Active {
-    pub blocks: Vec<Enforced>,
+    pub sessions: Vec<Enforced>,
     /// What an allowance's items were seen in use (written by the `blocks_*` questions below).
     pub used: Usage,
 }
 
 impl Active {
-    /// What the closing asks of every page, program and window: whether any block closes it
+    /// What the closing asks of every page, program and window: whether any session closes it
     /// (`closes`, among those that are `on`: have the enforcer for it). If none does, what an
     /// allowance lets through and that matches (`in_use`) is noted as in use, to be counted.
     fn judge(&self, on: impl Fn(&Enforced) -> bool, closes: impl Fn(&Enforced) -> bool, in_use: impl Fn(&Lists) -> bool) -> bool {
-        if self.blocks.iter().any(|b| on(b) && closes(b)) {
+        if self.sessions.iter().any(|b| on(b) && closes(b)) {
             return true;
         }
-        for block in self.blocks.iter().filter(|b| on(b)) {
-            for free in block.free.iter().filter(|f| in_use(&f.lists)) {
-                self.used.note(&free.block, &free.key);
+        for session in self.sessions.iter().filter(|b| on(b)) {
+            for free in session.free.iter().filter(|f| in_use(&f.lists)) {
+                self.used.note(&free.session, &free.key);
             }
         }
         false
     }
 
-    /// Whether a page is on a block list and not allowed (`Enforced::blocks_site`), for the free items.
+    /// Whether a page is on a target and not allowed (`Enforced::blocks_site`), for the free items.
     fn site_in_use(lists: &Lists, url: &str) -> bool {
         lists.sites.is_blocked(url) && !lists.allowed.is_blocked(url)
     }
 
-    /// Whether a page shown in a browser is to be closed by any block that closes such pages:
+    /// Whether a page shown in a browser is to be closed by any session that closes such pages:
     /// `split_view` for a window showing two pages, otherwise an ordinary tab.
     pub fn blocks_page(&self, url: &str, split_view: bool) -> bool {
         self.judge(
@@ -172,12 +172,12 @@ impl Active {
     }
 
     /// Whether a page shown in an app window (a Chromium window with no tabs) is to be closed, with
-    /// the window, by any block that closes those.
+    /// the window, by any session that closes those.
     pub fn blocks_app_window(&self, url: &str) -> bool {
         self.judge(|b| b.enforcers.chromium_app_windows, |b| b.blocks_site(url), |lists| Active::site_in_use(lists, url))
     }
 
-    /// Whether a page open in a Firefox tab is to be closed, by any block that closes those:
+    /// Whether a page open in a Firefox tab is to be closed, by any session that closes those:
     /// `split_view` for a page in either half of a split view, otherwise an ordinary tab.
     pub fn blocks_firefox_page(&self, url: &str, split_view: bool) -> bool {
         self.judge(
@@ -187,22 +187,22 @@ impl Active {
         )
     }
 
-    /// Whether any block has sites to look for, so the browsers are worth looking at: to close, or
+    /// Whether any session has sites to look for, so the browsers are worth looking at: to close, or
     /// to see in use for an allowance.
     pub fn watches_sites(&self) -> bool {
-        self.blocks
+        self.sessions
             .iter()
             .any(|b| b.enforcers.uses(Uses::Sites) && (!b.lists.sites.is_empty() || b.free.iter().any(|f| !f.lists.sites.is_empty())))
     }
 
-    /// Whether any block closes programs and has some to close (or to see in use).
+    /// Whether any session closes programs and has some to close (or to see in use).
     pub fn closes_programs(&self) -> bool {
-        self.blocks.iter().any(|b| {
+        self.sessions.iter().any(|b| {
             b.enforcers.uses(Uses::Programs) && (!b.lists.programs.is_empty() || b.free.iter().any(|f| !f.lists.programs.is_empty()))
         })
     }
 
-    /// Whether a program (by file name) is closed by any block that closes programs.
+    /// Whether a program (by file name) is closed by any session that closes programs.
     pub fn blocks_program(&self, file_name: &str) -> bool {
         self.judge(
             |b| b.enforcers.uses(Uses::Programs),
@@ -211,14 +211,14 @@ impl Active {
         )
     }
 
-    /// Whether any block closes Store apps and has some to close (or to see in use).
+    /// Whether any session closes Store apps and has some to close (or to see in use).
     pub fn closes_store_apps(&self) -> bool {
-        self.blocks.iter().any(|b| {
+        self.sessions.iter().any(|b| {
             b.enforcers.uses(Uses::StoreApps) && (!b.lists.store_apps.is_empty() || b.free.iter().any(|f| !f.lists.store_apps.is_empty()))
         })
     }
 
-    /// Whether a Store app (by package family name) is closed by any block that closes them. Never
+    /// Whether a Store app (by package family name) is closed by any session that closes them. Never
     /// one that is part of Windows (`store_apps::is_protected`), whatever the lists say.
     pub fn blocks_store_app(&self, family: &str) -> bool {
         !crate::store_apps::is_protected(family)
@@ -229,50 +229,50 @@ impl Active {
             )
     }
 
-    /// Whether any block closes or minimizes windows by their title and has some titles (or to see
+    /// Whether any session closes or minimizes windows by their title and has some titles (or to see
     /// in use).
     pub fn watches_titles(&self) -> bool {
-        self.blocks
+        self.sessions
             .iter()
             .any(|b| b.enforcers.uses(Uses::Titles) && (!b.lists.titles.is_empty() || b.free.iter().any(|f| !f.lists.titles.is_empty())))
     }
 
-    /// Whether any block minimizes windows by their title, so any window coming up is worth a look
+    /// Whether any session minimizes windows by their title, so any window coming up is worth a look
     /// at once (`wake::watch_every_window`).
     pub fn minimizes_windows(&self) -> bool {
-        self.blocks.iter().any(|b| b.enforcers.window_titles_minimize && !b.lists.titles.is_empty())
+        self.sessions.iter().any(|b| b.enforcers.window_titles_minimize && !b.lists.titles.is_empty())
     }
 
     /// What is done with a window of this title (`minimized`: whether it is down already), by the
-    /// window titles of each block list less its always-allowed ones (`Lists::blocks_title`): closed
-    /// when any block that closes windows by title has it, the stricter, else minimized when one
+    /// window titles of each target less its always-allowed ones (`Lists::blocks_title`): closed
+    /// when any session that closes windows by title has it, the stricter, else minimized when one
     /// that minimizes them has it and it is up. If neither, what an allowance lets through and
-    /// that matches is noted as in use: an open window for a block that closes, a window that is
+    /// that matches is noted as in use: an open window for a session that closes, a window that is
     /// up for one that minimizes (a window down is not in use).
     pub fn title_action(&self, title: &str, minimized: bool) -> Option<TitleAction> {
         let closes = |b: &&Enforced| !b.enforcers.window_titles_minimize;
         let minimizes = |b: &&Enforced| b.enforcers.window_titles_minimize && !minimized;
-        if self.blocks.iter().filter(closes).any(|b| b.lists.blocks_title(title)) {
+        if self.sessions.iter().filter(closes).any(|b| b.lists.blocks_title(title)) {
             return Some(TitleAction::Close);
         }
-        if self.blocks.iter().filter(minimizes).any(|b| b.lists.blocks_title(title)) {
+        if self.sessions.iter().filter(minimizes).any(|b| b.lists.blocks_title(title)) {
             return Some(TitleAction::Minimize);
         }
-        for block in self.blocks.iter().filter(|b| closes(b) || minimizes(b)) {
-            for free in block.free.iter().filter(|f| f.lists.blocks_title(title)) {
-                self.used.note(&free.block, &free.key);
+        for session in self.sessions.iter().filter(|b| closes(b) || minimizes(b)) {
+            for free in session.free.iter().filter(|f| f.lists.blocks_title(title)) {
+                self.used.note(&free.session, &free.key);
             }
         }
         None
     }
 
-    /// Whether any block closes Obsidian when it shows web pages.
+    /// Whether any session closes Obsidian when it shows web pages.
     pub fn closes_obsidian(&self) -> bool {
-        self.blocks.iter().any(|b| b.enforcers.obsidian_web_viewer)
+        self.sessions.iter().any(|b| b.enforcers.obsidian_web_viewer)
     }
 }
 
-/// One block list of a block, as it is started: its name, its lists and its enforcers.
+/// One target of a session, as it is started: its name, its lists and its enforcers.
 pub struct Part {
     pub name: String,
     pub lists: Lists,
@@ -286,13 +286,13 @@ impl Part {
     }
 }
 
-/// How a block is to be locked when it starts: its definition's lock (`lock::Lock`) with what it
+/// How a session is to be locked when it starts: its definition's lock (`lock::Lock`) with what it
 /// refers to looked up (a lock condition's rule, a password's hash).
 pub enum StartLock {
     None,
     /// For this long from now.
     For(Duration),
-    /// Until this local date and time, read in the block's time zone.
+    /// Until this local date and time, read in the session's time zone.
     Until(DateTime),
     /// While this condition is active (`condition.rs`).
     Condition(Rule),
@@ -305,18 +305,18 @@ pub enum StartLock {
     Password(String),
 }
 
-/// How a running block is locked, as it runs and as it is saved (`state::Saved::lock`). A
+/// How a running session is locked, as it runs and as it is saved (`state::Saved::lock`). A
 /// duration or until lock is the moment it ends by then.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "method", rename_all = "snake_case")]
 pub enum RunLock {
     None,
-    /// Cannot be stopped, and ends at `at` (milliseconds since the Unix epoch, internet time), the block
+    /// Cannot be stopped, and ends at `at` (milliseconds since the Unix epoch, internet time), the session
     /// with it.
     Ends {
         at: u64,
     },
-    /// Cannot be stopped while `condition` is active (a schedule is read in the block's time zone).
+    /// Cannot be stopped while `condition` is active (a schedule is read in the session's time zone).
     Condition {
         condition: Rule,
     },
@@ -346,7 +346,7 @@ pub enum RunLock {
 /// (`allowance::item_keys`).
 const ITEMS: [(&str, &str); 4] = [("site", "filters"), ("program", "programs"), ("app", "store_apps"), ("title", "titles")];
 
-/// A part of a running block: its block list's name and what it enforces.
+/// A part of a running session: its target's name and what it enforces.
 struct RunPart {
     name: String,
     enforced: Enforced,
@@ -380,7 +380,7 @@ impl RunPart {
     }
 
     /// Its lists without the items `free`, as long as it is the same ones (parsed once). If they cannot
-    /// be read, all of them: the block errs on the side of blocking.
+    /// be read, all of them: the session errs on the side of blocking.
     fn remainder(&mut self, free: &[String]) -> Arc<Lists> {
         if free.is_empty() {
             return self.enforced.lists.clone();
@@ -402,23 +402,23 @@ impl RunPart {
     }
 }
 
-struct Block {
+struct Session {
     /// The definition it was started from.
     id: String,
     name: String,
-    /// One per block list, each by its own enforcers and allowed sites.
+    /// One per target, each by its own enforcers and allowed sites.
     parts: Vec<RunPart>,
     lock: RunLock,
-    /// When the block is active; `None` is always.
+    /// When the session is active; `None` is always.
     condition: Option<Rule>,
-    /// The time zone a schedule is read in: Windows' when the block started, kept until it ends,
+    /// The time zone a schedule is read in: Windows' when the session started, kept until it ends,
     /// so changing the time zone does not move the schedule.
     zone: Zone,
     /// What lets it go quiet for a while, and what of that is used (`allowance.rs`).
     allowance: Option<Run>,
 }
 
-impl Block {
+impl Session {
     /// Gives an allowance what is due with the time: a budget's reset.
     fn advance(&mut self, now: SystemTime) {
         let active = self.in_condition(now);
@@ -436,7 +436,7 @@ impl Block {
     /// cycle allows everything; with a budget, what has time left is not enforced but watched
     /// (`Free`), so its use can be counted. Obsidian's enforcer has no list to watch, so it stays.
     fn enforced(&mut self, now: SystemTime) -> Vec<Enforced> {
-        let Block { id, zone, allowance, parts, .. } = self;
+        let Session { id, zone, allowance, parts, .. } = self;
         let Some(run) = allowance.as_ref() else { return parts.iter().map(|p| p.enforced.clone()).collect() };
         match run.scope() {
             None if run.everything_allowed(zone, now) => Vec::new(),
@@ -447,7 +447,7 @@ impl Block {
                 .map(|p| Enforced {
                     lists: p.exceptions.clone(),
                     enforcers: p.enforced.enforcers,
-                    free: vec![Free { block: id.clone(), key: TOTAL.to_string(), lists: p.enforced.lists.clone() }],
+                    free: vec![Free { session: id.clone(), key: TOTAL.to_string(), lists: p.enforced.lists.clone() }],
                 })
                 .collect(),
             Some(Scope::Each) => parts
@@ -456,7 +456,7 @@ impl Block {
                     let free: Vec<String> = p.items.iter().filter(|(key, _)| run.is_free(key)).map(|(key, _)| key.clone()).collect();
                     let lists = p.remainder(&free);
                     let watched = p.items.iter().filter(|(key, _)| free.contains(key)).map(|(key, lists)| Free {
-                        block: id.clone(),
+                        session: id.clone(),
                         key: key.clone(),
                         lists: lists.clone(),
                     });
@@ -466,7 +466,7 @@ impl Block {
         }
     }
 
-    /// Whether `key` is something this block's allowance counts: the block as a whole, or one of its items.
+    /// Whether `key` is something this session's allowance counts: the session as a whole, or one of its items.
     fn counts(&self, key: &str) -> bool {
         match self.allowance.as_ref().and_then(Run::scope) {
             Some(Scope::Total) => key == TOTAL,
@@ -475,18 +475,18 @@ impl Block {
         }
     }
 
-    /// Whether its condition has the block active at `now`. If it cannot be known (the local time,
-    /// the connected drives), it is: a block errs on the side of blocking.
+    /// Whether its condition has the session active at `now`. If it cannot be known (the local time,
+    /// the connected drives), it is: a session errs on the side of blocking.
     fn in_condition(&self, now: SystemTime) -> bool {
         self.condition.as_ref().is_none_or(|rule| rule.active(&self.zone, now))
     }
 
-    /// Seconds until the condition turns the block on or off, if it has a time for that.
+    /// Seconds until the condition turns the session on or off, if it has a time for that.
     fn condition_change(&self, now: SystemTime) -> Option<u64> {
         self.condition.as_ref()?.next_change(&self.zone, now)
     }
 
-    /// When a duration or until lock ends, and the block with it.
+    /// When a duration or until lock ends, and the session with it.
     fn ends(&self) -> Option<SystemTime> {
         match self.lock {
             RunLock::Ends { at } => Some(state::from_unix(at)),
@@ -574,22 +574,22 @@ impl Block {
     }
 }
 
-/// One block list of a running block, as the UI shows it.
+/// One target of a running session, as the UI shows it.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
-pub struct RunningList {
+pub struct RunningTarget {
     pub name: String,
     #[serde(flatten)]
     pub entries: Entries,
     pub enforcers: Enforcers,
 }
 
-/// One running block, as the UI shows it.
+/// One running session, as the UI shows it.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Running {
     pub id: String,
     pub name: String,
-    /// What it blocks and how, as it was started, so the UI can show what a running block does.
-    pub lists: Vec<RunningList>,
+    /// What it blocks and how, as it was started, so the UI can show what a running session does.
+    pub targets: Vec<RunningTarget>,
     /// Seconds left of a duration or until lock; `None`: no such lock.
     pub remaining: Option<u64>,
     /// Locked while this condition is active (`Lock::Condition`).
@@ -635,16 +635,16 @@ pub struct Status {
     pub clock_synced: bool,
 }
 
-impl Blocklist {
-    /// The service's block list, over the real store in its data folder.
-    pub fn new() -> Blocklist {
-        Blocklist { inner: Arc::default(), store: state::store().map(Arc::new), clock: clock::global(), zone: None, boot: None }
+impl Sessions {
+    /// The service's target, over the real store in its data folder.
+    pub fn new() -> Sessions {
+        Sessions { inner: Arc::default(), store: state::store().map(Arc::new), clock: clock::global(), zone: None, boot: None }
     }
 
-    /// A block list over a store of its own and a clock of its own, for other modules' tests.
+    /// A target over a store of its own and a clock of its own, for other modules' tests.
     #[cfg(test)]
-    pub fn with_store(store: Store) -> Blocklist {
-        Blocklist {
+    pub fn with_store(store: Store) -> Sessions {
+        Sessions {
             inner: Arc::default(),
             store: Some(Arc::new(store)),
             clock: Box::leak(Box::default()),
@@ -653,10 +653,10 @@ impl Blocklist {
         }
     }
 
-    /// Starts a block from the definition `id`, unless that one is running: checked here rather
-    /// than only in the UI, so a locked block cannot be swapped for a shorter or unlocked one.
+    /// Starts a session from the definition `id`, unless that one is running: checked here rather
+    /// than only in the UI, so a locked session cannot be swapped for a shorter or unlocked one.
     /// `condition` says when it is active (`None`: always), `lock` how it is locked (`lock.rs`).
-    /// Other blocks are not affected.
+    /// Other sessions are not affected.
     #[cfg(test)]
     pub fn start(&self, id: &str, name: &str, parts: Vec<Part>, condition: Option<Rule>, lock: StartLock) -> Result<(), String> {
         self.start_with(id, name, parts, condition, None, lock)
@@ -674,8 +674,8 @@ impl Blocklist {
     ) -> Result<(), String> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
-        if inner.blocks.iter().any(|b| b.id == id) {
-            return Err("This block is already running".into());
+        if inner.sessions.iter().any(|b| b.id == id) {
+            return Err("This session is already running".into());
         }
         let zone = self.zone.clone().unwrap_or_else(Zone::current);
         let now = self.clock.now();
@@ -700,31 +700,31 @@ impl Blocklist {
         };
         let parts = parts.into_iter().map(|p| RunPart::new(p.name, p.lists, p.enforcers)).collect();
         let allowance = allowance.map(|terms| Run::new(terms, now));
-        let new = Block { id: id.to_string(), name: name.to_string(), parts, lock, condition, zone, allowance };
-        // Written before the block goes live, so a block cannot be missed after a restart. A
-        // block that cannot be written would not survive the service ending, so it does not start.
-        let mut all: Vec<&Block> = inner.blocks.iter().collect();
+        let new = Session { id: id.to_string(), name: name.to_string(), parts, lock, condition, zone, allowance };
+        // Written before the session goes live, so a session cannot be missed after a restart. A
+        // session that cannot be written would not survive the service ending, so it does not start.
+        let mut all: Vec<&Session> = inner.sessions.iter().collect();
         all.push(&new);
-        self.save(&all).map_err(|e| format!("Cannot save the block, so it would not survive a restart: {e}"))?;
-        inner.blocks.push(new);
+        self.save(&all).map_err(|e| format!("Cannot save the session, so it would not survive a restart: {e}"))?;
+        inner.sessions.push(new);
         inner.saved_at = Instant::now();
         Ok(())
     }
 
-    /// Stops the block `id` unless it is locked right now. `answered`: the right password of its
+    /// Stops the session `id` unless it is locked right now. `answered`: the right password of its
     /// password lock, or the right text of its text lock, was given (`password_matches`,
     /// `text_matches`), which is what lets those stop.
     pub fn stop(&self, id: &str, answered: bool) -> Result<(), String> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
-        let Some(at) = inner.blocks.iter().position(|b| b.id == id) else {
-            return Err("This block is not running".into());
+        let Some(at) = inner.sessions.iter().position(|b| b.id == id) else {
+            return Err("This session is not running".into());
         };
-        let block = &inner.blocks[at];
-        let password_locked = block.password_hash().is_some();
-        let text_locked = block.lock_text().is_some();
+        let session = &inner.sessions[at];
+        let password_locked = session.password_hash().is_some();
+        let text_locked = session.lock_text().is_some();
         if !(answered && (password_locked || text_locked)) {
-            if let Some(why) = block.locked(self.clock.now()) {
+            if let Some(why) = session.locked(self.clock.now()) {
                 let how = if password_locked {
                     "; give its password to stop it"
                 } else if text_locked {
@@ -735,22 +735,22 @@ impl Blocklist {
                 return Err(format!("{why}{how}"));
             }
         }
-        inner.blocks.remove(at);
+        inner.sessions.remove(at);
         self.save_all(&mut inner);
         Ok(())
     }
 
-    /// Starts the wait of a block locked with a delay; asking again keeps the wait that runs.
+    /// Starts the wait of a session locked with a delay; asking again keeps the wait that runs.
     pub fn ask_to_stop(&self, id: &str) -> Result<(), String> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
         let now = state::to_unix(self.clock.now()).ok_or("Cannot tell the time")?;
-        let block = inner.blocks.iter_mut().find(|b| b.id == id).ok_or("This block is not running")?;
-        match &mut block.lock {
+        let session = inner.sessions.iter_mut().find(|b| b.id == id).ok_or("This session is not running")?;
+        match &mut session.lock {
             RunLock::Delay { asked, .. } => {
                 asked.get_or_insert(now);
             }
-            _ => return Err("This block is not locked with a delay".into()),
+            _ => return Err("This session is not locked with a delay".into()),
         }
         self.save_all(&mut inner);
         Ok(())
@@ -760,40 +760,40 @@ impl Blocklist {
     pub fn abort_stop(&self, id: &str) -> Result<(), String> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
-        let block = inner.blocks.iter_mut().find(|b| b.id == id).ok_or("This block is not running")?;
-        match &mut block.lock {
+        let session = inner.sessions.iter_mut().find(|b| b.id == id).ok_or("This session is not running")?;
+        match &mut session.lock {
             RunLock::Delay { asked, .. } => *asked = None,
-            _ => return Err("This block is not locked with a delay".into()),
+            _ => return Err("This session is not locked with a delay".into()),
         }
         self.save_all(&mut inner);
         Ok(())
     }
 
-    /// Picks up the blocks left behind by an earlier run, so restarting Windows does not end them.
-    /// A block whose time is up while the service was not running is not resumed.
+    /// Picks up the sessions left behind by an earlier run, so restarting Windows does not end them.
+    /// A session whose time is up while the service was not running is not resumed.
     pub fn restore(&self) {
         let Some(store) = &self.store else { return };
         let saved = store.load();
-        let mut blocks = Vec::new();
+        let mut sessions = Vec::new();
         for saved in &saved {
-            // Until internet time is in, the clock carries on from where the blocks last were,
+            // Until internet time is in, the clock carries on from where the sessions last were,
             // rather than from a Windows clock that may have been set forward meanwhile.
             if let Some(seen) = saved.seen {
                 self.clock.at_least(state::from_unix(seen));
             }
         }
         for saved in saved {
-            // A block list we cannot read is dropped rather than resumed as something unknown.
+            // A target we cannot read is dropped rather than resumed as something unknown.
             let parts: Result<Vec<RunPart>, String> =
                 saved.parts.into_iter().map(|p| Ok(RunPart::new(p.name, Lists::parse(&p.entries)?, p.enforcers))).collect();
             let condition = saved.condition.clone().map(Rule::checked).transpose();
             let (Ok(parts), Ok(condition)) = (parts, condition) else {
-                eprintln!("block: dropping an unreadable saved block");
+                eprintln!("session: dropping an unreadable saved session");
                 continue;
             };
             let ended = match &saved.lock {
                 RunLock::Ends { at } => self.clock.now() >= state::from_unix(*at),
-                // Locked until Windows restarts, and it has: the block ended with it. If this
+                // Locked until Windows restarts, and it has: the session ended with it. If this
                 // start of Windows cannot be told, it errs on the side of blocking.
                 RunLock::UntilRestart { boot } => self.boot().is_some_and(|now| now != *boot),
                 _ => false,
@@ -801,7 +801,7 @@ impl Blocklist {
             if ended {
                 continue;
             }
-            blocks.push(Block {
+            sessions.push(Session {
                 id: saved.id,
                 name: saved.name,
                 parts,
@@ -812,27 +812,27 @@ impl Blocklist {
             });
         }
         let mut inner = self.inner.locked();
-        inner.blocks = blocks;
+        inner.sessions = sessions;
         // What was dropped is cleaned up, rather than being re-checked on every run.
         self.save_all(&mut inner);
     }
 
-    /// What is to be enforced right now: every block list of every running block that its condition
-    /// has active. Ends timed blocks whose time is up. `None` when nothing is to be enforced.
+    /// What is to be enforced right now: every target of every running session that its condition
+    /// has active. Ends timed sessions whose time is up. `None` when nothing is to be enforced.
     pub fn active(&self) -> Option<Active> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
         // Keeps the time on disk moving, for a restart while offline (`Saved::seen`), and what a
         // budget has used.
-        if inner.blocks.iter().any(|b| b.ends().is_some() || b.keeps_count()) && inner.saved_at.elapsed() >= CHECKPOINT {
+        if inner.sessions.iter().any(|b| b.ends().is_some() || b.keeps_count()) && inner.saved_at.elapsed() >= CHECKPOINT {
             self.save_all(&mut inner);
         }
         let now = self.clock.now();
-        for block in inner.blocks.iter_mut() {
-            block.advance(now);
+        for session in inner.sessions.iter_mut() {
+            session.advance(now);
         }
-        let blocks: Vec<Enforced> = inner.blocks.iter_mut().filter(|b| b.in_condition(now)).flat_map(|b| b.enforced(now)).collect();
-        (!blocks.is_empty()).then_some(Active { blocks, used: Usage::default() })
+        let sessions: Vec<Enforced> = inner.sessions.iter_mut().filter(|b| b.in_condition(now)).flat_map(|b| b.enforced(now)).collect();
+        (!sessions.is_empty()).then_some(Active { sessions, used: Usage::default() })
     }
 
     /// The app has been told what to enforce: what use it reports from now on counts from here
@@ -841,23 +841,23 @@ impl Blocklist {
         self.inner.locked().polled = Instant::now();
     }
 
-    /// Counts what the app has seen in use (block id and key, `Free`) against the allowances of the
-    /// blocks, for the time since the app last asked what to enforce (`MAX_GAP` at most). Only what
-    /// a block's allowance counts and its condition has active now; anything else is ignored.
+    /// Counts what the app has seen in use (session id and key, `Free`) against the allowances of the
+    /// sessions, for the time since the app last asked what to enforce (`MAX_GAP` at most). Only what
+    /// a session's allowance counts and its condition has active now; anything else is ignored.
     pub fn charge(&self, used: &[(String, String)]) {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
         let millis = u64::try_from(inner.polled.elapsed().min(MAX_GAP).as_millis()).unwrap_or(0);
         let now = self.clock.now();
-        for block in inner.blocks.iter_mut() {
-            block.advance(now);
-            let active = block.in_condition(now);
-            let keys: Vec<&String> = used.iter().filter(|(id, key)| *id == block.id && block.counts(key)).map(|(_, key)| key).collect();
+        for session in inner.sessions.iter_mut() {
+            session.advance(now);
+            let active = session.in_condition(now);
+            let keys: Vec<&String> = used.iter().filter(|(id, key)| *id == session.id && session.counts(key)).map(|(_, key)| key).collect();
             if !active || keys.is_empty() {
                 continue;
             }
             let keys: Vec<String> = keys.into_iter().cloned().collect();
-            if let Some(run) = &mut block.allowance {
+            if let Some(run) = &mut session.allowance {
                 for key in keys {
                     run.charge(&key, millis);
                 }
@@ -870,34 +870,34 @@ impl Blocklist {
         self.clock.now()
     }
 
-    /// Whether any block runs, also one that its condition has inactive right now: it is still
+    /// Whether any session runs, also one that its condition has inactive right now: it is still
     /// there and maybe locked, so the app is kept running and the exe is not replaced.
     pub fn is_running(&self) -> bool {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
-        !inner.blocks.is_empty()
+        !inner.sessions.is_empty()
     }
 
-    /// The ids of the running blocks.
+    /// The ids of the running sessions.
     pub fn running_ids(&self) -> Vec<String> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
-        inner.blocks.iter().map(|b| b.id.clone()).collect()
+        inner.sessions.iter().map(|b| b.id.clone()).collect()
     }
 
-    /// The ids of the running blocks that cannot be stopped right now (`Block::locked`): what a
-    /// block list or condition they use may only be made stricter by (`handler::edit_shared`).
+    /// The ids of the running sessions that cannot be stopped right now (`Session::locked`): what a
+    /// target or condition they use may only be made stricter by (`handler::edit_shared`).
     pub fn locked_ids(&self) -> Vec<String> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
         let now = self.clock.now();
-        inner.blocks.iter().filter(|b| b.locked(now).is_some()).map(|b| b.id.clone()).collect()
+        inner.sessions.iter().filter(|b| b.locked(now).is_some()).map(|b| b.id.clone()).collect()
     }
 
-    /// Gives the running block `id` its name, block lists and conditions as its definition has them
+    /// Gives the running session `id` its name, targets and conditions as its definition has them
     /// now, after it or one of them was changed: all of them, its lock condition's rule too. Its
     /// lock (but for a condition lock, which follows its condition), its time zone and what else it started with stay. Whether the change may be made is
-    /// the handler's to judge (`handler::edit_shared`, `edit_block`); nothing happens if the block
+    /// the handler's to judge (`handler::edit_shared`, `edit_session`); nothing happens if the session
     /// does not run.
     pub fn refresh(
         &self,
@@ -911,74 +911,74 @@ impl Blocklist {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
         let now = self.clock.now();
-        let Some(block) = inner.blocks.iter_mut().find(|b| b.id == id) else { return };
-        block.name = name.to_string();
-        block.parts = parts.into_iter().map(|p| RunPart::new(p.name, p.lists, p.enforcers)).collect();
-        block.condition = condition;
+        let Some(session) = inner.sessions.iter_mut().find(|b| b.id == id) else { return };
+        session.name = name.to_string();
+        session.parts = parts.into_iter().map(|p| RunPart::new(p.name, p.lists, p.enforcers)).collect();
+        session.condition = condition;
         // What is used of an allowance stays when it is changed; with another one added or taken
         // away it starts or ends.
-        block.allowance = match (allowance, block.allowance.take()) {
+        session.allowance = match (allowance, session.allowance.take()) {
             (Some(terms), Some(run)) => Some(run.retermed(terms)),
             (Some(terms), None) => Some(Run::new(terms, now)),
             (None, _) => None,
         };
         // A condition lock follows its condition: its rule, or no lock once the condition is deleted
         // (it was free, or the change would not have been made).
-        if matches!(block.lock, RunLock::Condition { .. }) {
-            block.lock = lock_rule.map_or(RunLock::None, |condition| RunLock::Condition { condition });
+        if matches!(session.lock, RunLock::Condition { .. }) {
+            session.lock = lock_rule.map_or(RunLock::None, |condition| RunLock::Condition { condition });
         }
         self.save_all(&mut inner);
     }
 
-    /// Whether `password` is the password of the running block `id`'s password lock.
-    /// Whether `text` is exactly the text of the running block `id`'s text lock (line breaks
+    /// Whether `password` is the password of the running session `id`'s password lock.
+    /// Whether `text` is exactly the text of the running session `id`'s text lock (line breaks
     /// whichever way they were typed).
     pub fn text_matches(&self, id: &str, text: &str) -> bool {
         let inner = self.inner.locked();
         let same = |a: &str, b: &str| a.replace("\r\n", "\n") == b.replace("\r\n", "\n");
-        inner.blocks.iter().find(|b| b.id == id).and_then(|b| b.lock_text()).is_some_and(|expected| same(expected, text))
+        inner.sessions.iter().find(|b| b.id == id).and_then(|b| b.lock_text()).is_some_and(|expected| same(expected, text))
     }
 
     pub fn password_matches(&self, id: &str, password: &str) -> bool {
         let inner = self.inner.locked();
-        let hash = inner.blocks.iter().find(|b| b.id == id).and_then(|b| b.password_hash().map(str::to_string));
+        let hash = inner.sessions.iter().find(|b| b.id == id).and_then(|b| b.password_hash().map(str::to_string));
         // The hash is computed without holding the lock: it takes a moment.
         drop(inner);
         hash.is_some_and(|hash| unlock::check_hash(password, &hash))
     }
 
-    /// Whether the block `id` runs.
+    /// Whether the session `id` runs.
     #[cfg(test)]
     pub fn runs(&self, id: &str) -> bool {
         self.running_ids().iter().any(|running| running == id)
     }
 
-    /// Why some running block cannot be stopped right now, if one cannot: then neither may the
+    /// Why some running session cannot be stopped right now, if one cannot: then neither may the
     /// service be uninstalled.
     pub fn locked(&self) -> Option<String> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
         let now = self.clock.now();
-        inner.blocks.iter().find_map(|b| b.locked(now))
+        inner.sessions.iter().find_map(|b| b.locked(now))
     }
 
     pub fn status(&self) -> Status {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
         let now = self.clock.now();
-        for block in inner.blocks.iter_mut() {
-            block.advance(now);
+        for session in inner.sessions.iter_mut() {
+            session.advance(now);
         }
         let running = inner
-            .blocks
+            .sessions
             .iter()
             .map(|b| Running {
                 id: b.id.clone(),
                 name: b.name.clone(),
-                lists: b
+                targets: b
                     .parts
                     .iter()
-                    .map(|p| RunningList { name: p.name.clone(), entries: p.enforced.lists.entries(), enforcers: p.enforced.enforcers })
+                    .map(|p| RunningTarget { name: p.name.clone(), entries: p.enforced.lists.entries(), enforcers: p.enforced.enforcers })
                     .collect(),
                 remaining: b.remaining(now),
                 lock_condition: b.lock_rule().cloned(),
@@ -1003,11 +1003,11 @@ impl Blocklist {
         Status { running, clock_synced: self.clock.synced() }
     }
 
-    /// Ends every block whatever its lock, and forgets them. Only for unlocking
-    /// (`handler::unlock`): everything else goes through `stop`, which keeps a locked block.
+    /// Ends every session whatever its lock, and forgets them. Only for unlocking
+    /// (`handler::unlock`): everything else goes through `stop`, which keeps a locked session.
     pub fn reset(&self) {
         let mut inner = self.inner.locked();
-        inner.blocks.clear();
+        inner.sessions.clear();
         self.save_all(&mut inner);
     }
 
@@ -1015,27 +1015,27 @@ impl Blocklist {
         self.boot.clone().or_else(crate::boot::id)
     }
 
-    /// Removes blocks whose duration or until lock is up; they end by themselves and leave nothing to resume.
+    /// Removes sessions whose duration or until lock is up; they end by themselves and leave nothing to resume.
     fn expire(&self, inner: &mut Inner) {
         let now = self.clock.now();
-        let before = inner.blocks.len();
-        inner.blocks.retain(|b| b.ends().is_none_or(|end| now < end));
-        if inner.blocks.len() != before {
+        let before = inner.sessions.len();
+        inner.sessions.retain(|b| b.ends().is_none_or(|end| now < end));
+        if inner.sessions.len() != before {
             self.save_all(inner);
         }
     }
 
     fn save_all(&self, inner: &mut Inner) {
         inner.saved_at = Instant::now();
-        if let Err(e) = self.save(&inner.blocks.iter().collect::<Vec<_>>()) {
-            eprintln!("block: {e}");
+        if let Err(e) = self.save(&inner.sessions.iter().collect::<Vec<_>>()) {
+            eprintln!("session: {e}");
         }
     }
 
-    fn save(&self, blocks: &[&Block]) -> Result<(), String> {
+    fn save(&self, sessions: &[&Session]) -> Result<(), String> {
         let Some(store) = &self.store else { return Ok(()) };
         let seen = state::to_unix(self.clock.now());
-        let saved: Vec<state::Saved> = blocks
+        let saved: Vec<state::Saved> = sessions
             .iter()
             .map(|b| state::Saved {
                 id: b.id.clone(),
@@ -1073,19 +1073,19 @@ mod tests {
         Week::parse(text).unwrap().map(|week| Rule::Schedule { week })
     }
 
-    /// A clock of its own per block list, so one test restoring a block does not move another's.
+    /// A clock of its own per target, so one test restoring a session does not move another's.
     fn test_clock() -> &'static Clock {
         Box::leak(Box::default())
     }
 
-    /// A block list over a store of its own, so the tests never touch the real one.
-    /// `wiped` starts from an empty store, for a test that starts a block of its own.
-    fn blocklist_of(name: &str, wiped: bool) -> Blocklist {
-        let dir = std::env::temp_dir().join(format!("block-{}-{name}", std::process::id()));
+    /// A target over a store of its own, so the tests never touch the real one.
+    /// `wiped` starts from an empty store, for a test that starts a session of its own.
+    fn sessions_of(name: &str, wiped: bool) -> Sessions {
+        let dir = std::env::temp_dir().join(format!("session-{}-{name}", std::process::id()));
         if wiped {
             let _ = std::fs::remove_dir_all(&dir);
         }
-        Blocklist {
+        Sessions {
             inner: Arc::default(),
             clock: test_clock(),
             zone: Some(Zone::fixed(0)),
@@ -1094,13 +1094,13 @@ mod tests {
         }
     }
 
-    fn blocklist(name: &str) -> Blocklist {
-        blocklist_of(name, true)
+    fn sessions(name: &str) -> Sessions {
+        sessions_of(name, true)
     }
 
     /// The same store, as a second run of the service would find it.
-    fn reopened(name: &str) -> Blocklist {
-        blocklist_of(name, false)
+    fn reopened(name: &str) -> Sessions {
+        sessions_of(name, false)
     }
 
     /// Only sites to block; the program list is empty.
@@ -1108,28 +1108,28 @@ mod tests {
         Lists { sites: FilterList::parse(entries).unwrap(), ..Lists::default() }
     }
 
-    fn start(list: &Blocklist, id: &str, lists: Lists, duration: Option<Duration>) -> Result<(), String> {
+    fn start(list: &Sessions, id: &str, lists: Lists, duration: Option<Duration>) -> Result<(), String> {
         list.start(
             id,
-            &format!("Block {id}"),
+            &format!("Session {id}"),
             vec![part(lists, Enforcers::default())],
             None,
             duration.map_or(StartLock::None, StartLock::For),
         )
     }
 
-    /// One block list of a block.
+    /// One target of a session.
     fn part(lists: Lists, enforcers: Enforcers) -> Part {
         Part { name: "List".into(), lists, enforcers }
     }
 
-    fn running(list: &Blocklist, id: &str) -> Running {
+    fn running(list: &Sessions, id: &str) -> Running {
         list.status().running.into_iter().find(|r| r.id == id).expect("not running")
     }
 
     #[test]
-    fn timed_block_cannot_stop_early_and_ends_by_itself() {
-        let list = blocklist("timed");
+    fn timed_session_cannot_stop_early_and_ends_by_itself() {
+        let list = sessions("timed");
         start(&list, "a", sites(&["a.com"]), Some(Duration::from_millis(50))).unwrap();
         assert!(list.stop("a", false).is_err());
         assert!(list.is_running());
@@ -1144,7 +1144,7 @@ mod tests {
 
     #[test]
     fn a_delay_lock_is_stopped_by_asking_and_waiting() {
-        let list = blocklist("delay");
+        let list = sessions("delay");
         let begin =
             || list.start("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, StartLock::Delay(Duration::from_secs(1)));
         begin().unwrap();
@@ -1172,32 +1172,32 @@ mod tests {
     }
 
     #[test]
-    fn a_running_block_cannot_be_started_again() {
-        let list = blocklist("replace");
+    fn a_running_session_cannot_be_started_again() {
+        let list = sessions("replace");
         start(&list, "a", sites(&["a.com"]), Some(Duration::from_secs(3600))).unwrap();
         // Not as a shorter one, nor as an untimed one that could then be stopped.
         assert!(start(&list, "a", sites(&["a.com"]), Some(Duration::from_secs(1))).is_err());
         assert!(start(&list, "a", sites(&["a.com"]), None).is_err());
         assert!(running(&list, "a").remaining.is_some_and(|left| left > 3500));
 
-        // An untimed block is stopped first, then it can start again, with new lists.
-        let untimed = blocklist("replace-untimed");
+        // An untimed session is stopped first, then it can start again, with new lists.
+        let untimed = sessions("replace-untimed");
         start(&untimed, "a", sites(&["a.com"]), None).unwrap();
         assert!(start(&untimed, "a", sites(&["b.com"]), None).is_err());
         untimed.stop("a", false).unwrap();
         start(&untimed, "a", sites(&["b.com"]), None).unwrap();
-        assert_eq!(running(&untimed, "a").lists[0].entries.filters, vec!["b.com"]);
+        assert_eq!(running(&untimed, "a").targets[0].entries.filters, vec!["b.com"]);
     }
 
     #[test]
-    fn blocks_run_side_by_side_and_end_on_their_own() {
-        let list = blocklist("several");
+    fn sessions_run_side_by_side_and_end_on_their_own() {
+        let list = sessions("several");
         start(&list, "timed", sites(&["a.com"]), Some(Duration::from_millis(50))).unwrap();
         start(&list, "untimed", sites(&["b.com"]), None).unwrap();
         let active = list.active().unwrap();
-        assert_eq!(active.blocks.len(), 2);
+        assert_eq!(active.sessions.len(), 2);
         assert!(active.blocks_page("https://a.com/", false) && active.blocks_page("https://b.com/", false));
-        assert!(list.locked().is_some_and(|why| why.contains("Block timed")));
+        assert!(list.locked().is_some_and(|why| why.contains("Session timed")));
 
         // The timed one ends by itself; the other goes on.
         std::thread::sleep(Duration::from_millis(60));
@@ -1212,8 +1212,8 @@ mod tests {
     }
 
     #[test]
-    fn each_block_goes_by_its_own_enforcers_and_allowed_sites() {
-        let list = blocklist("own-rules");
+    fn each_session_goes_by_its_own_enforcers_and_allowed_sites() {
+        let list = sessions("own-rules");
         let tabs_only = Enforcers {
             chromium_tabs: true,
             chromium_split_view: false,
@@ -1237,7 +1237,7 @@ mod tests {
         list.start("tabs", "Tabs", vec![part(everything_but_google, tabs_only)], None, StartLock::None).unwrap();
         list.start("split", "Split", vec![part(sites(&["google.com"]), split_only)], None, StartLock::None).unwrap();
         let active = list.active().unwrap();
-        // One block's allowed site is not an exception to another block's list.
+        // One session's allowed site is not an exception to another session's list.
         assert!(!active.blocks_page("https://google.com/", false));
         assert!(active.blocks_page("https://google.com/", true));
         assert!(active.blocks_page("https://youtube.com/", false));
@@ -1246,13 +1246,13 @@ mod tests {
     }
 
     #[test]
-    fn a_block_that_cannot_be_saved_does_not_start() {
+    fn a_session_that_cannot_be_saved_does_not_start() {
         // A store whose folder is a file, so the state file can never be written.
-        let dir = std::env::temp_dir().join(format!("block-{}-unsaved", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("session-{}-unsaved", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("not-a-folder"), "").unwrap();
-        let list = Blocklist {
+        let list = Sessions {
             inner: Arc::default(),
             clock: test_clock(),
             zone: Some(Zone::fixed(0)),
@@ -1264,11 +1264,11 @@ mod tests {
     }
 
     #[test]
-    fn blocks_outlive_the_service_that_started_them() {
-        let list = blocklist("resume");
+    fn sessions_outlive_the_service_that_started_them() {
+        let list = sessions("resume");
         start(&list, "a", sites(&["https://tweakers.net/", "b.com"]), Some(Duration::from_secs(3600))).unwrap();
         start(&list, "b", sites(&["c.com"]), None).unwrap();
-        assert_eq!(running(&list, "a").lists[0].entries.filters, vec!["tweakers.net", "b.com"]);
+        assert_eq!(running(&list, "a").targets[0].entries.filters, vec!["tweakers.net", "b.com"]);
 
         // A new run over the same store: both are still going, with their names.
         let resumed = reopened("resume");
@@ -1276,22 +1276,22 @@ mod tests {
         let active = resumed.active().unwrap();
         assert!(active.blocks_page("https://tweakers.net/nieuws", false) && active.blocks_page("https://c.com/", false));
         let a = running(&resumed, "a");
-        assert_eq!(a.name, "Block a");
+        assert_eq!(a.name, "Session a");
         assert!(a.remaining.is_some_and(|left| (3595..=3600).contains(&left)));
         assert!(resumed.stop("a", false).is_err());
         assert_eq!(running(&resumed, "b").remaining, None);
         assert!(resumed.stop("b", false).is_ok());
     }
 
-    /// A block that blocks `block` and always allows `allow`.
-    fn with_allowed(block: &[&str], allow: &[&str]) -> Active {
-        let list = Blocklist::with_store(Store::new(
+    /// A session that blocks `blocked` and always allows `allow`.
+    fn with_allowed(blocked: &[&str], allow: &[&str]) -> Active {
+        let list = Sessions::with_store(Store::new(
             std::env::temp_dir()
-                .join(format!("block-{}-allowed-{}", std::process::id(), block.join("_").len() + allow.len()))
+                .join(format!("session-{}-allowed-{}", std::process::id(), blocked.join("_").len() + allow.len()))
                 .join("state.json"),
         ));
-        let lists = Lists { sites: FilterList::parse(block).unwrap(), allowed: FilterList::parse(allow).unwrap(), ..Lists::default() };
-        // `Enforcers::default()` has an enforcer that needs no list, so an empty block list starts too.
+        let lists = Lists { sites: FilterList::parse(blocked).unwrap(), allowed: FilterList::parse(allow).unwrap(), ..Lists::default() };
+        // `Enforcers::default()` has an enforcer that needs no list, so an empty target starts too.
         start(&list, "a", lists, None).unwrap();
         list.active().unwrap()
     }
@@ -1301,7 +1301,7 @@ mod tests {
     }
 
     #[test]
-    fn allowed_sites_win_over_the_block_list() {
+    fn allowed_sites_win_over_the_sites_to_block() {
         // Everything is blocked, except what is allowed.
         let active = with_allowed(&["*"], &["google.com", "*.wikipedia.org"]);
         assert!(blocks_site(&active, "https://youtube.com/watch?v=1"));
@@ -1314,13 +1314,13 @@ mod tests {
         assert!(blocks_site(&active, "https://wikipedia.org/"));
         assert!(blocks_site(&active, "https://notgoogle.com/"));
 
-        // A specific block and an exception inside it: the exception wins.
+        // A blocked site and an exception inside it: the exception wins.
         let active = with_allowed(&["youtube.com"], &["youtube.com/watch*"]);
         assert!(blocks_site(&active, "https://youtube.com/"));
         assert!(blocks_site(&active, "https://youtube.com/shorts/abc"));
         assert!(!blocks_site(&active, "https://youtube.com/watch?v=1"));
 
-        // Allowed everything is allowed everything, whatever the block list says.
+        // Allowed everything is allowed everything, whatever the target says.
         let active = with_allowed(&["youtube.com", "*.tweakers.net"], &["*"]);
         assert!(!blocks_site(&active, "https://youtube.com/") && !blocks_site(&active, "https://a.tweakers.net/"));
     }
@@ -1343,41 +1343,41 @@ mod tests {
 
     #[test]
     fn the_allowed_sites_survive_a_restart() {
-        let list = blocklist("allowed-resume");
+        let list = sessions("allowed-resume");
         let lists = Lists {
             sites: FilterList::parse(&["*"]).unwrap(),
             allowed: FilterList::parse(&["Google.com", "*.wikipedia.org"]).unwrap(),
             ..Lists::default()
         };
         start(&list, "a", lists, Some(Duration::from_secs(3600))).unwrap();
-        assert_eq!(running(&list, "a").lists[0].entries.allowed, vec!["google.com", "*.wikipedia.org"]);
+        assert_eq!(running(&list, "a").targets[0].entries.allowed, vec!["google.com", "*.wikipedia.org"]);
 
         let resumed = reopened("allowed-resume");
         resumed.restore();
         let active = resumed.active().unwrap();
         assert!(blocks_site(&active, "https://youtube.com/") && !blocks_site(&active, "https://google.com/"));
-        assert_eq!(running(&resumed, "a").lists[0].entries.allowed, vec!["google.com", "*.wikipedia.org"]);
+        assert_eq!(running(&resumed, "a").targets[0].entries.allowed, vec!["google.com", "*.wikipedia.org"]);
     }
 
     #[test]
-    fn a_resumed_block_keeps_its_programs() {
-        let list = blocklist("programs");
+    fn a_resumed_session_keeps_its_programs() {
+        let list = sessions("programs");
         let lists = Lists { programs: ProgramList::parse(&["Steam*", "game"]).unwrap(), ..Lists::default() };
         start(&list, "a", lists, Some(Duration::from_secs(3600))).unwrap();
-        assert_eq!(running(&list, "a").lists[0].entries.programs, vec!["steam*.exe", "game.exe"]);
+        assert_eq!(running(&list, "a").targets[0].entries.programs, vec!["steam*.exe", "game.exe"]);
 
-        // A new run over the same store: the programs are still on the block.
+        // A new run over the same store: the programs are still on the session.
         let resumed = reopened("programs");
         resumed.restore();
         let active = resumed.active().unwrap();
         assert!(active.closes_programs());
         assert!(active.blocks_program("steamwebhelper.exe") && active.blocks_program("GAME.EXE"));
         assert!(!active.blocks_program("chrome.exe"));
-        assert_eq!(running(&resumed, "a").lists[0].entries.programs, vec!["steam*.exe", "game.exe"]);
+        assert_eq!(running(&resumed, "a").targets[0].entries.programs, vec!["steam*.exe", "game.exe"]);
     }
 
     #[test]
-    fn a_resumed_block_keeps_its_enforcers() {
+    fn a_resumed_session_keeps_its_enforcers() {
         let only_obsidian = Enforcers {
             chromium_tabs: false,
             chromium_split_view: false,
@@ -1387,12 +1387,12 @@ mod tests {
             firefox_split_view: false,
             window_titles_minimize: false,
         };
-        let list = blocklist("enforcers");
+        let list = sessions("enforcers");
         list.start("a", "A", vec![part(sites(&[]), only_obsidian)], None, StartLock::For(Duration::from_secs(3600))).unwrap();
         let resumed = reopened("enforcers");
         resumed.restore();
-        assert_eq!(resumed.active().map(|active| active.blocks[0].enforcers), Some(only_obsidian));
-        assert_eq!(running(&resumed, "a").lists[0].enforcers, only_obsidian);
+        assert_eq!(resumed.active().map(|active| active.sessions[0].enforcers), Some(only_obsidian));
+        assert_eq!(running(&resumed, "a").targets[0].enforcers, only_obsidian);
     }
 
     /// 2030-01-07 00:00:00 UTC, a Monday; the tests' time zone is UTC.
@@ -1404,8 +1404,8 @@ mod tests {
     }
 
     #[test]
-    fn outside_its_schedule_a_block_runs_and_stays_locked_but_enforces_nothing() {
-        let list = blocklist("schedule");
+    fn outside_its_schedule_a_session_runs_and_stays_locked_but_enforces_nothing() {
+        let list = sessions("schedule");
         // Monday 16:00, office hours until 17:00, locked for two hours: the user's own example.
         list.clock.at_least(monday(16 * 3600));
         let office = weekly("mon-fri 08:00-17:00");
@@ -1417,7 +1417,7 @@ mod tests {
             StartLock::For(Duration::from_secs(2 * 3600)),
         )
         .unwrap();
-        // An always-active block next to it, to show the other one going quiet on its own.
+        // An always-active session next to it, to show the other one going quiet on its own.
         start(&list, "b", sites(&["b.com"]), None).unwrap();
         assert!(list.active().unwrap().blocks_page("https://a.com/", false));
         let a = running(&list, "a");
@@ -1445,19 +1445,19 @@ mod tests {
         assert!(a.remaining.is_some_and(|left| (3590..=3610).contains(&left)));
         // Active again on Tuesday at 08:00.
         assert!(a.condition_change.is_some_and(|left| (15 * 3600 - 10..=15 * 3600).contains(&left)));
-        // With only it running, nothing is enforced, but a block still runs (the app is kept alive).
+        // With only it running, nothing is enforced, but a session still runs (the app is kept alive).
         list.stop("b", false).unwrap();
         assert!(list.active().is_none() && list.is_running());
 
         // Just after 18:00 (the lock started a moment after 16:00): the lock is over, and with it
-        // the block.
+        // the session.
         list.clock.at_least(monday(18 * 3600 + 30));
         assert!(!list.runs("a") && !list.is_running());
     }
 
     #[test]
     fn a_lock_schedule_locks_only_while_it_is_active() {
-        let list = blocklist("lock-schedule");
+        let list = sessions("lock-schedule");
         // Monday 16:00. Active all day, locked during office hours, until 17:00.
         list.clock.at_least(monday(16 * 3600));
         let office = weekly("mon-fri 08:00-17:00");
@@ -1489,7 +1489,7 @@ mod tests {
 
     #[test]
     fn a_password_lock_stops_only_with_its_password() {
-        let list = blocklist("password");
+        let list = sessions("password");
         let locks = StartLock::Password(unlock::new_hash("partner").unwrap());
         list.start("a", "Games", vec![part(sites(&["a.com"]), Enforcers::default())], None, locks).unwrap();
         let why = list.stop("a", false).unwrap_err();
@@ -1508,7 +1508,7 @@ mod tests {
 
     #[test]
     fn a_text_lock_stops_only_with_exactly_its_text() {
-        let list = blocklist("text");
+        let list = sessions("text");
         let locks = StartLock::Text("Write this\nout by hand".into());
         list.start("a", "Games", vec![part(sites(&["a.com"]), Enforcers::default())], None, locks).unwrap();
         let why = list.stop("a", false).unwrap_err();
@@ -1531,8 +1531,8 @@ mod tests {
     }
 
     #[test]
-    fn a_block_of_several_lists_enforces_each_by_its_own_rules() {
-        let list = blocklist("parts");
+    fn a_session_of_several_targets_enforces_each_by_its_own_rules() {
+        let list = sessions("parts");
         let tabs_only = Enforcers {
             chromium_tabs: true,
             chromium_split_view: false,
@@ -1562,19 +1562,19 @@ mod tests {
         )
         .unwrap();
         let active = list.active().unwrap();
-        assert_eq!(active.blocks.len(), 2);
+        assert_eq!(active.sessions.len(), 2);
         assert!(active.blocks_page("https://youtube.com/", false) && active.blocks_program("steam.exe"));
-        let lists = running(&list, "a").lists;
+        let lists = running(&list, "a").targets;
         assert_eq!(lists.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), vec!["Social", "Games"]);
         // And again after a restart.
         let resumed = reopened("parts");
         resumed.restore();
-        assert_eq!(running(&resumed, "a").lists, lists);
+        assert_eq!(running(&resumed, "a").targets, lists);
     }
 
     #[test]
     fn an_until_lock_ends_at_its_local_time() {
-        let list = blocklist("until");
+        let list = sessions("until");
         // Monday 16:00 UTC; the test zone is UTC, so 18:00 is two hours away.
         list.clock.at_least(monday(16 * 3600));
         let at = |text: &str| StartLock::Until(DateTime::parse(text).unwrap());
@@ -1589,7 +1589,7 @@ mod tests {
 
     #[test]
     fn a_lock_until_restart_holds_until_windows_restarts() {
-        let list = blocklist("until-restart");
+        let list = sessions("until-restart");
         list.start("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, StartLock::UntilRestart).unwrap();
         let why = list.stop("a", false).unwrap_err();
         assert!(why.contains("until Windows restarts"), "{why}");
@@ -1598,7 +1598,7 @@ mod tests {
         let resumed = reopened("until-restart");
         resumed.restore();
         assert!(resumed.stop("a", false).is_err());
-        // After a restart the block has ended.
+        // After a restart the session has ended.
         let mut restarted = reopened("until-restart");
         restarted.boot = Some("next boot".into());
         restarted.restore();
@@ -1606,8 +1606,8 @@ mod tests {
     }
 
     #[test]
-    fn a_resumed_block_keeps_its_schedule_and_time_zone() {
-        let list = blocklist("schedule-resume");
+    fn a_resumed_session_keeps_its_schedule_and_time_zone() {
+        let list = sessions("schedule-resume");
         list.clock.at_least(monday(12 * 3600));
         let weekend = weekly("weekends");
         list.start("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], weekend.clone(), StartLock::None).unwrap();
@@ -1623,8 +1623,8 @@ mod tests {
     }
 
     #[test]
-    fn a_block_whose_time_is_up_is_not_resumed() {
-        let list = blocklist("expired");
+    fn a_session_whose_time_is_up_is_not_resumed() {
+        let list = sessions("expired");
         start(&list, "a", sites(&["a.com"]), Some(Duration::from_secs(3600))).unwrap();
         // Rewritten as though it had been left behind by a run that ended an hour ago, next to one
         // that still runs.
@@ -1659,15 +1659,15 @@ mod tests {
     }
 
     #[test]
-    fn ending_the_blocks_clears_them() {
-        let list = blocklist("cleared");
+    fn ending_the_sessions_clears_them() {
+        let list = sessions("cleared");
         let store = list.store.clone().unwrap();
         start(&list, "a", sites(&["a.com"]), None).unwrap();
         assert_eq!(store.load().len(), 1);
         list.stop("a", false).unwrap();
         assert!(store.load().is_empty());
 
-        // A timed block that ends by itself is cleared too, so nothing is left to resume.
+        // A timed session that ends by itself is cleared too, so nothing is left to resume.
         start(&list, "a", sites(&["a.com"]), Some(Duration::from_millis(50))).unwrap();
         assert_eq!(store.load().len(), 1);
         std::thread::sleep(Duration::from_millis(60));
@@ -1692,8 +1692,8 @@ mod tests {
     }
 
     #[test]
-    fn a_budget_for_the_block_lets_it_through_until_it_is_used_up() {
-        let list = blocklist("budget-total");
+    fn a_budget_for_the_session_lets_it_through_until_it_is_used_up() {
+        let list = sessions("budget-total");
         list.start_with(
             "a",
             "A",
@@ -1708,7 +1708,7 @@ mod tests {
         assert!(!active.blocks_page("https://a.com/x", false));
         assert_eq!(active.used.take(), vec![("a".to_string(), TOTAL.to_string())]);
         assert!(running(&list, "a").allowance.is_some_and(|status| status.open && status.left.is_some_and(|left| left > 0)));
-        // What is reported counts from the last time the app asked; ignored: another block, another key.
+        // What is reported counts from the last time the app asked; ignored: another session, another key.
         list.polled();
         std::thread::sleep(Duration::from_millis(1100));
         list.charge(&[("other".to_string(), TOTAL.to_string()), ("a".to_string(), "site:a.com".to_string())]);
@@ -1722,7 +1722,7 @@ mod tests {
 
     #[test]
     fn a_budget_for_each_item_counts_each_on_its_own() {
-        let list = blocklist("budget-each");
+        let list = sessions("budget-each");
         list.start_with(
             "a",
             "A",
@@ -1748,13 +1748,13 @@ mod tests {
 
     #[test]
     fn a_cycle_that_is_blocking_enforces_and_what_is_used_survives_a_restart() {
-        let list = blocklist("cycle");
+        let list = sessions("cycle");
         let cycle = Terms::Pomodoro { blocked: "1h".into(), allowed: "10m".into(), anchor: allowance::Anchor::Start };
         list.start_with("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, Some(cycle), StartLock::None).unwrap();
         assert!(list.active().unwrap().blocks_page("https://a.com/", false), "blocked first");
         assert!(running(&list, "a").allowance.is_some_and(|status| !status.open && status.change.is_some()));
 
-        let list = blocklist("budget-kept");
+        let list = sessions("budget-kept");
         let each = budget("1m", Scope::Total);
         list.start_with("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, Some(each), StartLock::None).unwrap();
         list.polled();
@@ -1792,7 +1792,7 @@ mod tests {
 
     #[test]
     fn each_enforcer_answers_for_its_own_kind_of_window() {
-        let list = blocklist("kinds");
+        let list = sessions("kinds");
         let lists = lists_of(Entries {
             filters: strings(&["a.com"]),
             store_apps: strings(&["Microsoft.XboxApp_8wekyb3d8bbwe", "Microsoft.Windows.Photos_8wekyb3d8bbwe"]),
@@ -1823,14 +1823,14 @@ mod tests {
         assert!(active.used.take().is_empty());
 
         // A list is its own switch: empty, it does nothing, whatever the enforcers say.
-        let list = blocklist("kinds-off");
+        let list = sessions("kinds-off");
         list.start("a", "A", vec![part(lists_of(Entries::default()), Enforcers::default())], None, StartLock::None).unwrap();
         let active = list.active().unwrap();
         assert!(!active.closes_store_apps() && !active.blocks_store_app("Microsoft.XboxApp_8wekyb3d8bbwe"));
         assert!(!active.watches_titles() && active.title_action("Team chat", false).is_none());
         assert!(!active.closes_programs() && !active.blocks_program("chat.exe") && active.closes_obsidian());
         // With entries, it acts with no enforcer on at all.
-        let list = blocklist("kinds-on");
+        let list = sessions("kinds-on");
         let lists = lists_of(Entries {
             programs: strings(&["chat.exe"]),
             store_apps: strings(&["Microsoft.XboxApp_8wekyb3d8bbwe"]),
@@ -1849,8 +1849,8 @@ mod tests {
         let lists =
             || lists_of(Entries { titles: strings(&["*"]), allowed_titles: strings(&["*Visual Studio Code"]), ..Entries::default() });
         let code = "main.rs - bullseye - Visual Studio Code";
-        // Closing and minimizing alike, of its own block list only.
-        let list = blocklist("allowed-titles");
+        // Closing and minimizing alike, of its own target only.
+        let list = sessions("allowed-titles");
         list.start("close", "Close", vec![part(lists(), only(&[]))], None, StartLock::None).unwrap();
         let active = list.active().unwrap();
         assert_eq!(active.title_action("YouTube - Chrome", false), Some(TitleAction::Close));
@@ -1866,16 +1866,16 @@ mod tests {
         assert_eq!(
             list.active().unwrap().title_action(code, false),
             Some(TitleAction::Minimize),
-            "another block's exception is not this one's"
+            "another session's exception is not this one's"
         );
-        let list = blocklist("allowed-titles-down");
+        let list = sessions("allowed-titles-down");
         list.start("down", "Down", vec![part(lists(), only(&["window_titles_minimize"]))], None, StartLock::None).unwrap();
         let active = list.active().unwrap();
         assert_eq!(active.title_action("YouTube - Chrome", false), Some(TitleAction::Minimize));
         assert!(active.title_action(code, false).is_none());
         // With a budget, for each title and for the whole: what is always allowed is not in use.
         for (name, scope, key) in [("each", Scope::Each, "title:*"), ("total", Scope::Total, "")] {
-            let list = blocklist(&format!("allowed-titles-{name}"));
+            let list = sessions(&format!("allowed-titles-{name}"));
             list.start_with("a", "A", vec![part(lists(), only(&[]))], None, Some(budget("1h", scope)), StartLock::None).unwrap();
             let active = list.active().unwrap();
             assert!(active.title_action(code, false).is_none() && active.used.take().is_empty());
@@ -1886,7 +1886,7 @@ mod tests {
 
     #[test]
     fn a_budget_for_each_item_watches_store_apps_and_titles_too() {
-        let list = blocklist("budget-kinds");
+        let list = sessions("budget-kinds");
         let lists = lists_of(Entries {
             store_apps: strings(&["Microsoft.XboxApp_8wekyb3d8bbwe"]),
             titles: strings(&["*Chat*"]),
@@ -1922,7 +1922,7 @@ mod tests {
 
     #[test]
     fn windows_by_title_are_minimized_or_closed_and_closing_wins() {
-        let list = blocklist("minimize");
+        let list = sessions("minimize");
         let titles = |entries: &[&str]| lists_of(Entries { titles: strings(entries), ..Entries::default() });
         list.start("down", "Down", vec![part(titles(&["*"]), only(&["window_titles_minimize"]))], None, StartLock::None).unwrap();
         let active = list.active().unwrap();
@@ -1930,7 +1930,7 @@ mod tests {
         assert_eq!(active.title_action("Report.docx - Word", false), Some(TitleAction::Minimize));
         // A window that is down already is left as it is.
         assert_eq!(active.title_action("Report.docx - Word", true), None);
-        // Another block that closes some of them: those are closed, also when they are down.
+        // Another session that closes some of them: those are closed, also when they are down.
         list.start("chat", "Chat", vec![part(titles(&["*Chat*"]), only(&[]))], None, StartLock::None).unwrap();
         let active = list.active().unwrap();
         assert_eq!(active.title_action("Team Chat", false), Some(TitleAction::Close));
@@ -1944,7 +1944,7 @@ mod tests {
 
     #[test]
     fn a_budget_counts_a_minimized_title_only_while_its_window_is_up() {
-        let list = blocklist("minimize-budget");
+        let list = sessions("minimize-budget");
         let titles = || lists_of(Entries { titles: strings(&["*Chat*"]), ..Entries::default() });
         list.start_with(
             "a",
@@ -1961,8 +1961,8 @@ mod tests {
         assert_eq!(active.used.take(), vec![("a".to_string(), TOTAL.to_string())]);
         assert_eq!(active.title_action("Team Chat", true), None);
         assert!(active.used.take().is_empty());
-        // A block that closes counts an open window, up or down.
-        let list = blocklist("close-budget");
+        // A session that closes counts an open window, up or down.
+        let list = sessions("close-budget");
         list.start_with("a", "A", vec![part(titles(), only(&[]))], None, Some(budget("1h", Scope::Total)), StartLock::None).unwrap();
         let active = list.active().unwrap();
         assert_eq!(active.title_action("Team Chat", true), None);
@@ -1973,7 +1973,7 @@ mod tests {
     fn a_budget_never_lets_obsidian_through_and_an_allowed_cycle_does() {
         // Obsidian's enforcer has no list, so no item: a budget, total or for each item, leaves it on.
         for scope in [Scope::Total, Scope::Each] {
-            let list = blocklist(&format!("obsidian-{scope:?}"));
+            let list = sessions(&format!("obsidian-{scope:?}"));
             list.start_with(
                 "a",
                 "A",
@@ -1988,8 +1988,8 @@ mod tests {
             assert!(active.closes_obsidian(), "{scope:?}: Obsidian is not");
             assert!(active.used.take().iter().all(|(_, key)| key.starts_with("site:") || key == TOTAL));
         }
-        // While a cycle allows, the block enforces nothing at all, Obsidian included.
-        let list = blocklist("obsidian-cycle");
+        // While a cycle allows, the session enforces nothing at all, Obsidian included.
+        let list = sessions("obsidian-cycle");
         let cycle = Terms::Pomodoro { blocked: "1s".into(), allowed: "1h".into(), anchor: allowance::Anchor::Start };
         list.start_with("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, Some(cycle), StartLock::None).unwrap();
         assert!(list.active().unwrap().closes_obsidian(), "blocked first");
@@ -1999,7 +1999,7 @@ mod tests {
 
     #[test]
     fn a_budget_item_is_an_entry_as_typed_wildcards_and_all() {
-        let list = blocklist("wildcards");
+        let list = sessions("wildcards");
         list.start_with(
             "a",
             "A",
@@ -2038,7 +2038,7 @@ mod tests {
 
     #[test]
     fn a_condition_lock_says_what_it_waits_for() {
-        let list = blocklist("lock-words");
+        let list = sessions("lock-words");
         list.clock.at_least(monday(16 * 3600));
         let start = |id: &str, rule: Rule| {
             list.start(id, id, vec![part(sites(&["a.com"]), Enforcers::default())], None, StartLock::Condition(rule))
@@ -2070,9 +2070,9 @@ mod tests {
 
     #[test]
     fn a_report_counts_only_against_a_budget_and_only_while_active() {
-        let list = blocklist("report-ignored");
+        let list = sessions("report-ignored");
         start(&list, "plain", sites(&["a.com"]), None).unwrap();
-        // 1970-01-05 was a Monday; the block's condition is office hours, so 20:00 is outside it.
+        // 1970-01-05 was a Monday; the session's condition is office hours, so 20:00 is outside it.
         list.clock.at_least(monday(20 * 3600));
         list.start_with(
             "quiet",
@@ -2092,7 +2092,7 @@ mod tests {
 
     #[test]
     fn a_budget_for_each_item_works_out_what_is_left_once_for_each_set_of_items() {
-        let list = blocklist("remainder");
+        let list = sessions("remainder");
         list.start_with(
             "a",
             "A",
@@ -2105,22 +2105,22 @@ mod tests {
         // The same items free twice: the same lists, worked out once.
         let first = list.active().unwrap();
         let again = list.active().unwrap();
-        assert!(Arc::ptr_eq(&first.blocks[0].lists, &again.blocks[0].lists));
+        assert!(Arc::ptr_eq(&first.sessions[0].lists, &again.sessions[0].lists));
         // Every item used up: all of it enforced, as started.
         list.polled();
         std::thread::sleep(Duration::from_millis(1100));
         list.charge(&[("a".to_string(), "site:a.com".to_string()), ("a".to_string(), "site:b.com".to_string())]);
         let active = list.active().unwrap();
         assert!(active.blocks_page("https://a.com/", false) && active.blocks_page("https://b.com/", false));
-        assert!(active.blocks[0].free.is_empty());
+        assert!(active.sessions[0].free.is_empty());
     }
 
     #[test]
-    fn a_saved_block_that_cannot_be_read_any_more_is_dropped() {
-        let list = blocklist("unreadable");
+    fn a_saved_session_that_cannot_be_read_any_more_is_dropped() {
+        let list = sessions("unreadable");
         start(&list, "a", sites(&["a.com"]), None).unwrap();
         start(&list, "b", sites(&["b.com"]), None).unwrap();
-        // Block "a" now names a program that is never closed, which its list cannot be read with.
+        // Session "a" now names a program that is never closed, which its list cannot be read with.
         let path = list.store.as_ref().unwrap().path().to_path_buf();
         let mut saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         fn spoil(value: &mut serde_json::Value) {
@@ -2141,18 +2141,18 @@ mod tests {
     }
 
     #[test]
-    fn without_a_store_a_block_still_works_for_this_run() {
-        let dir = std::env::temp_dir().join(format!("block-nostore-{}", std::process::id()));
+    fn without_a_store_a_session_still_works_for_this_run() {
+        let dir = std::env::temp_dir().join(format!("session-nostore-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("state.json");
 
         let list =
-            Blocklist { inner: Arc::default(), clock: test_clock(), zone: Some(Zone::fixed(0)), store: None, boot: Some("boot".into()) };
+            Sessions { inner: Arc::default(), clock: test_clock(), zone: Some(Zone::fixed(0)), store: None, boot: Some("boot".into()) };
         start(&list, "a", sites(&["a.com"]), Some(Duration::from_secs(60))).unwrap();
         assert!(list.is_running());
         list.restore();
         assert!(list.is_running(), "restoring from no store keeps what runs");
-        assert!(!path.exists(), "a blocklist with no store must not write anything");
-        assert!(!dir.exists(), "a blocklist with no store must not create a folder");
+        assert!(!path.exists(), "a sessions with no store must not write anything");
+        assert!(!dir.exists(), "a sessions with no store must not create a folder");
     }
 }

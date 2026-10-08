@@ -6,7 +6,7 @@
 //! headers or tokens: a single URL, which can carry GET parameters. Timeout, redirects (followed, at
 //! most five) and TLS (certificates are checked) have fixed, sensible values.
 //!
-//! `Rule::active` is asked every second by running blocks, so it only reads what the poller thread
+//! `Rule::active` is asked every second by running sessions, so it only reads what the poller thread
 //! last found out (`answer`); nothing there waits for the network. The poller starts with the first
 //! question and stops asking about a webhook nobody asks about any more (`IDLE`).
 

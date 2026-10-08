@@ -1,9 +1,9 @@
-//! Lock methods: what keeps a running block from being stopped. A block is three layers: what it
+//! Lock methods: what keeps a running session from being stopped. A session is three layers: what it
 //! enforces (lists and enforcers, `lists::Lists`, `state::Enforcers`), when it is active (its
 //! condition, `condition.rs`), and how it is locked (this).
 //!
-//! **A new lock method goes here**, as a variant, together with what it means in `Blocklist`
-//! (`block.rs`), an entry in the UI's `LOCKS` table and an option in the CLI (`cli.rs`, `CLI.md`).
+//! **A new lock method goes here**, as a variant, together with what it means in `Sessions`
+//! (`session.rs`), an entry in the UI's `LOCKS` table and an option in the CLI (`cli.rs`, `CLI.md`).
 
 use std::time::Duration;
 
@@ -21,30 +21,30 @@ const MAX_DELAY: Duration = Duration::from_secs(24 * 3600);
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(tag = "method", rename_all = "snake_case")]
 pub enum Lock {
-    /// Not locked: the block can be stopped at any time.
+    /// Not locked: the session can be stopped at any time.
     #[default]
     None,
-    /// Locked for a while (`2h 30m`, `duration.rs`): the block cannot be stopped, and ends by
+    /// Locked for a while (`2h 30m`, `duration.rs`): the session cannot be stopped, and ends by
     /// itself when the time is up. Measured on internet time.
     Duration { duration: String },
     /// Locked until a local date and time (`2026-10-06 18:00`, `datetime.rs`): the same as a
-    /// duration lock that ends then. Read in Windows' time zone when the block starts, and then
+    /// duration lock that ends then. Read in Windows' time zone when the session starts, and then
     /// measured on internet time; a time that has passed by then does not start.
     Until { until: String },
-    /// Locked until Windows restarts (`boot.rs`): the block cannot be stopped before, and ends with
+    /// Locked until Windows restarts (`boot.rs`): the session cannot be stopped before, and ends with
     /// the restart. A shut down with Fast Startup is not a restart (Windows hibernates then).
     UntilRestart,
     /// Locked while a condition of its own choosing is active (`condition`, a condition's id,
     /// `condition.rs`): it cannot be stopped then, and can be otherwise; it runs until stopped. A
     /// weekly schedule locks it at those times; a flash drive locks it while the drive is not
-    /// connected, so the drive is the key. With the block's own condition, it is locked exactly
+    /// connected, so the drive is the key. With the session's own condition, it is locked exactly
     /// while it is active.
     Condition { condition: String },
     /// Locked behind a wait, like unlocking (`unlock.rs`): stopping is asked for, counts down `delay`
-    /// (`2h 30m`) on internet time, can be aborted, and once the wait is over the block can be
+    /// (`2h 30m`) on internet time, can be aborted, and once the wait is over the session can be
     /// stopped. Until then it cannot be, so it is locked for the delay at least.
     Delay { delay: String },
-    /// Locked until a text of the user's own choosing is typed in: the block can only be stopped
+    /// Locked until a text of the user's own choosing is typed in: the session can only be stopped
     /// by typing `text` exactly as it is shown (the window shows it above an input that cannot be
     /// pasted into, and the service compares the two). It is no secret, so it is kept as it is.
     Text { text: String },
@@ -98,11 +98,11 @@ impl Lock {
         }
     }
 
-    /// How long a duration lock locks the block for; `None` for the other methods.
+    /// How long a duration lock locks the session for; `None` for the other methods.
     pub fn duration(&self) -> Result<Option<Duration>, String> {
         match self {
             Lock::Duration { duration } => {
-                duration::parse(duration)?.map(Some).ok_or_else(|| "Enter how long to lock the block for, e.g. 2h 30m".into())
+                duration::parse(duration)?.map(Some).ok_or_else(|| "Enter how long to lock the session for, e.g. 2h 30m".into())
             }
             _ => Ok(None),
         }
@@ -112,7 +112,7 @@ impl Lock {
     pub fn delay(&self) -> Result<Option<Duration>, String> {
         match self {
             Lock::Delay { delay } => {
-                let wait = duration::parse(delay)?.ok_or("Enter how long stopping the block takes, e.g. 2h 30m")?;
+                let wait = duration::parse(delay)?.ok_or("Enter how long stopping the session takes, e.g. 2h 30m")?;
                 if wait > MAX_DELAY {
                     return Err("Stopping can take at most 24 hours".into());
                 }
@@ -138,7 +138,7 @@ impl Lock {
         self.until()?;
         if let Lock::Text { text } = self {
             if text.trim().is_empty() {
-                return Err("Give the text that has to be typed to stop the block".into());
+                return Err("Give the text that has to be typed to stop the session".into());
             }
             if text.chars().count() > MAX_TEXT {
                 return Err(format!("Keep the text under {MAX_TEXT} characters"));

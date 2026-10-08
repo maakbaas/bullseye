@@ -1,15 +1,15 @@
-//! Allowances: what lets a block go quiet for a while. A block has at most one, set on the block
+//! Allowances: what lets a session go quiet for a while. A session has at most one, set on the session
 //! itself like its lock (`definitions::Definition::allowance`), never a list of its own. Two kinds
 //! (`Terms`):
-//! - a **budget**: an allowed time of use, for the block as a whole or for each item of it (each
+//! - a **budget**: an allowed time of use, for the session as a whole or for each item of it (each
 //!   site, program, Store app or window title) on its own, that is used up while the item is in
-//!   use and given back by a reset (never, every hour / day / week, or each time the block's
+//!   use and given back by a reset (never, every hour / day / week, or each time the session's
 //!   condition becomes active);
 //! - a **Pomodoro**: a fixed cycle that blocks for a while and then allows everything for a while,
-//!   counted from the start of the block or from the clock (cycles from midnight, so a cycle that fits
+//!   counted from the start of the session or from the clock (cycles from midnight, so a cycle that fits
 //!   a day evenly starts at the same times every day).
 //!
-//! What is allowed is decided by the service (`block.rs`), never by the app: an item with budget left
+//! What is allowed is decided by the service (`session.rs`), never by the app: an item with budget left
 //! is taken out of what the app closes and handed to it as something to watch, and the app says what
 //! it sees in use (`proto::Used`), which the service counts. Use is whatever the app sees: a page
 //! shown in a tab, a window or app that is open, a program that runs. Time is internet time.
@@ -27,10 +27,10 @@ use crate::state;
 
 const DAY: u64 = 86_400;
 
-/// The key of a budget for the block as a whole.
+/// The key of a budget for the session as a whole.
 pub const TOTAL: &str = "";
 
-/// Whether a budget is for the block as a whole or for each of its items.
+/// Whether a budget is for the session as a whole or for each of its items.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
@@ -42,13 +42,13 @@ pub enum Scope {
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Reset {
-    /// Not while the block runs.
+    /// Not while the session runs.
     Never,
-    /// Every so long (the budget's `every`), counted from its `anchor`: the block's start, or local
+    /// Every so long (the budget's `every`), counted from its `anchor`: the session's start, or local
     /// midnight (then it fits a day evenly, so `1d` is at midnight and `1h` on the hour).
     Every,
-    /// Each time the block's condition turns it on (a time block in a schedule, a drive being
-    /// unplugged). Without a condition a block is on all the time, so this never resets.
+    /// Each time the session's condition turns it on (a time block in a schedule, a drive being
+    /// unplugged). Without a condition a session is on all the time, so this never resets.
     Condition,
 }
 
@@ -56,22 +56,22 @@ pub enum Reset {
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Anchor {
-    /// The block's start (a cycle is blocked first).
+    /// The session's start (a cycle is blocked first).
     #[default]
     Start,
     /// Local midnight, so a cycle or a reset of an hour comes at every xx:00.
     Clock,
 }
 
-/// What an allowance is, tagged by `type`: a block's `allowance` in the file.
+/// What an allowance is, tagged by `type`: a session's `allowance` in the file.
 ///
-/// **A new kind of allowance** is a variant here with what it means in `Run`, fields in the block
+/// **A new kind of allowance** is a variant here with what it means in `Run`, fields in the session
 /// editor's allowance section (`allowanceSection` in `src/js/forms.js`), and an option in the CLI's
 /// `new|edit --allowance`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Terms {
-    /// `allowed` (`30m`) of use, for the block or for each item of it, given back by `reset`: with
+    /// `allowed` (`30m`) of use, for the session or for each item of it, given back by `reset`: with
     /// `Reset::Every`, every `every` (`1d`) counted from `anchor` (empty and the default otherwise).
     Budget {
         allowed: String,
@@ -136,7 +136,7 @@ impl Terms {
         Ok(self)
     }
 
-    /// Whether `new` allows nothing this does not, which is all the allowance of a locked block may be
+    /// Whether `new` allows nothing this does not, which is all the allowance of a locked session may be
     /// changed by: a budget may get smaller or reset less often, never the other way, and its
     /// scope and a reset by condition stay; a cycle stays exactly as it is (any change moves where it is
     /// in its cycle). The error says what is wrong, for a person.
@@ -148,10 +148,10 @@ impl Terms {
                 Terms::Budget { allowed: new_allowed, scope: new_scope, reset: new_reset, every: new_every, anchor: new_anchor },
             ) => {
                 if old_scope != new_scope {
-                    return Err("The block is locked, so its allowance cannot change between a total and each item".into());
+                    return Err("The session is locked, so its allowance cannot change between a total and each item".into());
                 }
                 if secs(new_allowed) > secs(old_allowed) {
-                    return Err("The block is locked, so its allowed time can get shorter but not longer".into());
+                    return Err("The session is locked, so its allowed time can get shorter but not longer".into());
                 }
                 // Rarer: never; or every so long, longer, counted from the same point (another one
                 // would bring the next reset nearer); a reset by condition only stays as it is.
@@ -164,7 +164,7 @@ impl Terms {
                 if rarer {
                     Ok(())
                 } else {
-                    Err("The block is locked, so its allowance can be reset less often but not more often".into())
+                    Err("The session is locked, so its allowance can be reset less often but not more often".into())
                 }
             }
             (
@@ -174,14 +174,14 @@ impl Terms {
                 if secs(old_blocked) == secs(new_blocked) && secs(old_allowed) == secs(new_allowed) && old_anchor == new_anchor {
                     Ok(())
                 } else {
-                    Err("The block is locked, so its allowance's cycle cannot change".into())
+                    Err("The session is locked, so its allowance's cycle cannot change".into())
                 }
             }
-            _ => Err("The block is locked, so its allowance's type cannot change".into()),
+            _ => Err("The session is locked, so its allowance's type cannot change".into()),
         }
     }
 
-    /// Whether a budget is for the block or for each item; `None` for a cycle.
+    /// Whether a budget is for the session or for each item; `None` for a cycle.
     pub fn scope(&self) -> Option<Scope> {
         match self {
             Terms::Budget { scope, .. } => Some(*scope),
@@ -190,7 +190,7 @@ impl Terms {
     }
 
     /// In words, for the window and the CLI: `30 minutes in total, reset every 1 day, on the clock`,
-    /// `Blocked for 50 minutes, then allowed for 10 minutes, from the start of the block`.
+    /// `Blocked for 50 minutes, then allowed for 10 minutes, from the start of the session`.
     pub fn describe(&self) -> String {
         match self {
             Terms::Budget { allowed, scope, reset, every, anchor } => {
@@ -202,7 +202,7 @@ impl Terms {
                     (Reset::Never, _) => "never reset".to_string(),
                     (Reset::Condition, _) => "reset each time its condition turns on".to_string(),
                     (Reset::Every, Anchor::Start) => {
-                        format!("reset every {}, from the start of the block", duration::countdown(secs(every)))
+                        format!("reset every {}, from the start of the session", duration::countdown(secs(every)))
                     }
                     (Reset::Every, Anchor::Clock) => {
                         format!("reset every {}, on the clock, from midnight", duration::countdown(secs(every)))
@@ -212,7 +212,7 @@ impl Terms {
             }
             Terms::Pomodoro { blocked, allowed, anchor } => {
                 let from = match anchor {
-                    Anchor::Start => "from the start of the block",
+                    Anchor::Start => "from the start of the session",
                     Anchor::Clock => "on the clock, from midnight",
                 };
                 format!(
@@ -226,7 +226,7 @@ impl Terms {
 }
 
 /// An allowance in words both ways, for the window (`describe_allowance`): `words` in full, for the
-/// block editor and the CLI, and `label` short, for a line of the block's tile.
+/// session editor and the CLI, and `label` short, for a line of the session's tile.
 #[derive(Serialize, Debug, PartialEq)]
 pub struct Described {
     pub words: String,
@@ -234,7 +234,7 @@ pub struct Described {
 }
 
 impl Terms {
-    /// Short, as a line of a block's tile says it, like its other lines (`Always active`):
+    /// Short, as a line of a session's tile says it, like its other lines (`Always active`):
     /// `Allowed 30 minutes every 1 day`, `Allowed 10 minutes every 2 hours per item`, `Allowed 10
     /// minutes after every 50 minutes`.
     pub fn label(&self) -> String {
@@ -261,17 +261,17 @@ impl Terms {
     }
 }
 
-/// Whether a locked block's allowance may go from `old` to `new`: taking it away is stricter, giving
+/// Whether a locked session's allowance may go from `old` to `new`: taking it away is stricter, giving
 /// one is not, and terms may only get stricter (`Terms::tightened_by`).
 pub fn tightened(old: Option<&Terms>, new: Option<&Terms>) -> Result<(), String> {
     match (old, new) {
         (_, None) => Ok(()),
-        (None, Some(_)) => Err("The block is locked, so it cannot be given an allowance".into()),
+        (None, Some(_)) => Err("The session is locked, so it cannot be given an allowance".into()),
         (Some(old), Some(new)) => old.tightened_by(new),
     }
 }
 
-/// The keys of the items of a block list's lists, which is what a budget for each item counts by:
+/// The keys of the items of a target's lists, which is what a budget for each item counts by:
 /// `site:youtube.com`, `program:steam.exe`, `app:Microsoft.Xbox_x`, `title:*Chat*`. Read from
 /// `Lists::entries`, so the same entry always has the same key.
 #[cfg(test)]
@@ -289,7 +289,7 @@ pub fn key_text(key: &str) -> &str {
     key.split_once(':').map_or(key, |(_, text)| text)
 }
 
-/// Seconds into the period of a budget's reset every so long, and how long it is: from the block's
+/// Seconds into the period of a budget's reset every so long, and how long it is: from the session's
 /// start (`started`, milliseconds since the Unix epoch) or from local midnight. `None` for the other
 /// resets, or if the time cannot be told.
 fn into_period(terms: &Terms, started: u64, zone: &Zone, now: SystemTime) -> Option<(u64, u64)> {
@@ -317,8 +317,8 @@ pub struct Phase {
     pub change: u64,
 }
 
-/// An allowance as a running block holds it, and as it is kept on disk (`state::Saved`): its terms
-/// as they were at the start (or as the block was last given them, `Blocklist::refresh`) and what is
+/// An allowance as a running session holds it, and as it is kept on disk (`state::Saved`): its terms
+/// as they were at the start (or as the session was last given them, `Sessions::refresh`) and what is
 /// used up.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Run {
@@ -330,10 +330,10 @@ pub struct Run {
     /// Unix epoch); `None` until it is known (a new run, or new terms: `retermed`).
     #[serde(default)]
     pub period: Option<u64>,
-    /// For a reset by condition: whether the block's condition had it on when last looked at.
+    /// For a reset by condition: whether the session's condition had it on when last looked at.
     #[serde(default)]
     pub was_active: bool,
-    /// When the block started, milliseconds since the Unix epoch: what a cycle from the start counts from.
+    /// When the session started, milliseconds since the Unix epoch: what a cycle from the start counts from.
     pub started: u64,
 }
 
@@ -368,8 +368,8 @@ impl Run {
         }
     }
 
-    /// Gives back what is used when its reset has come. `active`: whether the block's condition has
-    /// it on now. To be called whenever time has passed, at least about once a second while the block runs.
+    /// Gives back what is used when its reset has come. `active`: whether the session's condition has
+    /// it on now. To be called whenever time has passed, at least about once a second while the session runs.
     pub fn advance(&mut self, zone: &Zone, now: SystemTime, active: bool) {
         let Terms::Budget { reset, .. } = &self.terms else { return };
         match reset {
@@ -414,7 +414,7 @@ impl Run {
         }
     }
 
-    /// Whether the item (or the block, with `TOTAL`) of a budget still has time to use.
+    /// Whether the item (or the session, with `TOTAL`) of a budget still has time to use.
     pub fn is_free(&self, key: &str) -> bool {
         self.used.get(key).copied().unwrap_or(0) < self.allowed_ms()
     }
@@ -490,7 +490,7 @@ pub struct ItemLeft {
     pub left_words: String,
 }
 
-/// What a running block's allowance is doing, in numbers and in words (`duration::countdown`).
+/// What a running session's allowance is doing, in numbers and in words (`duration::countdown`).
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Status {
     pub terms: Terms,
@@ -500,7 +500,7 @@ pub struct Status {
     /// A cycle: seconds until it turns from blocked to allowed or the other way.
     pub change: Option<u64>,
     pub change_words: Option<String>,
-    /// A budget for the whole block: seconds left.
+    /// A budget for the whole session: seconds left.
     pub left: Option<u64>,
     pub left_words: Option<String>,
     /// Seconds until a reset by the clock.
@@ -536,8 +536,8 @@ mod tests {
         assert!(every("30m", Scope::Total, "1d", Anchor::Clock).checked().is_ok());
         assert!(every("", Scope::Total, "1d", Anchor::Clock).checked().is_err());
         assert!(every("soon", Scope::Total, "1d", Anchor::Clock).checked().is_err());
-        // 50 minutes does not fit a day evenly; from the block's start it does not need to.
-        // 45 minutes does not fit a day evenly; from the block's start it does not need to.
+        // 50 minutes does not fit a day evenly; from the session's start it does not need to.
+        // 45 minutes does not fit a day evenly; from the session's start it does not need to.
         assert!(pomodoro("30m", "20m", Anchor::Clock).checked().is_err());
         assert!(pomodoro("30m", "15m", Anchor::Start).checked().is_ok());
         assert!(pomodoro("23h", "2h", Anchor::Start).checked().is_err());
@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn a_locked_block_only_gets_a_stricter_allowance() {
+    fn a_locked_session_only_gets_a_stricter_allowance() {
         let old = every("30m", Scope::Total, "1d", Anchor::Clock);
         assert!(old.tightened_by(&every("20m", Scope::Total, "1d", Anchor::Clock)).is_ok());
         assert!(old.tightened_by(&budget("30m", Scope::Total, Reset::Never)).is_ok(), "never is rarest");
@@ -612,12 +612,12 @@ mod tests {
     #[test]
     fn a_cycle_blocks_then_allows() {
         let zone = Zone::fixed(0);
-        // From the start of the block, which was at 1000 seconds.
+        // From the start of the session, which was at 1000 seconds.
         let run = Run::new(pomodoro("50m", "10m", Anchor::Start), at(1000));
         assert_eq!(run.phase(&zone, at(1000)), Some(Phase { allowed: false, change: 3000 }));
         assert_eq!(run.phase(&zone, at(1000 + 3000)), Some(Phase { allowed: true, change: 600 }));
         assert_eq!(run.phase(&zone, at(1000 + 3600)), Some(Phase { allowed: false, change: 3000 }));
-        // On the clock, an hour cycle is allowed from xx:50 to xx:00, whenever the block started.
+        // On the clock, an hour cycle is allowed from xx:50 to xx:00, whenever the session started.
         let clock = Run::new(pomodoro("50m", "10m", Anchor::Clock), at(1000));
         assert!(!clock.everything_allowed(&zone, at(3 * 3600 + 49 * 60)));
         assert!(clock.everything_allowed(&zone, at(3 * 3600 + 50 * 60)));
@@ -641,7 +641,7 @@ mod tests {
             ),
             (
                 every("2h", Scope::Each, "36h", Anchor::Start),
-                "2 hours for each item, reset every 1 day and 12 hours, from the start of the block",
+                "2 hours for each item, reset every 1 day and 12 hours, from the start of the session",
                 "Allowed 2 hours every 1 day and 12 hours per item",
             ),
             (
@@ -651,7 +651,7 @@ mod tests {
             ),
             (
                 pomodoro("50m", "10m", Anchor::Start),
-                "Blocked for 50 minutes, then allowed for 10 minutes, from the start of the block",
+                "Blocked for 50 minutes, then allowed for 10 minutes, from the start of the session",
                 "Allowed 10 minutes after every 50 minutes",
             ),
             (
@@ -670,7 +670,7 @@ mod tests {
     }
 
     #[test]
-    fn a_locked_block_can_lose_its_allowance_but_not_be_given_one() {
+    fn a_locked_session_can_lose_its_allowance_but_not_be_given_one() {
         let old = every("30m", Scope::Total, "1d", Anchor::Clock);
         assert_eq!(tightened(None, None), Ok(()));
         assert_eq!(tightened(Some(&old), None), Ok(()));
@@ -708,7 +708,7 @@ mod tests {
     #[test]
     fn a_budget_on_the_clock_is_given_back_at_the_times_that_fit_the_day() {
         let zone = Zone::fixed(0);
-        // Every 12 hours on the clock: at 00:00 and 12:00, whenever the block started (09:00).
+        // Every 12 hours on the clock: at 00:00 and 12:00, whenever the session started (09:00).
         let mut run = Run::new(every("1m", Scope::Total, "12h", Anchor::Clock), at(9 * 3600));
         run.advance(&zone, at(9 * 3600), true);
         run.charge(TOTAL, 60_000);

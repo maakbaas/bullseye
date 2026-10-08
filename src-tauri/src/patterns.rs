@@ -11,7 +11,7 @@
 use regex::RegexSet;
 
 pub struct Patterns {
-    /// The entries as typed (trimmed), kept so a block can be written to disk and resumed.
+    /// The entries as typed (trimmed), kept so a session can be written to disk and resumed.
     entries: Vec<String>,
     matchers: RegexSet,
 }
