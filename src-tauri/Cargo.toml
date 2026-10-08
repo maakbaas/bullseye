@@ -1,9 +1,9 @@
 [package]
-name = "bullseye"
+name = "bullseye-app"
 version = "0.1.0"
 edition = "2021"
 # `tauri dev` runs the tray app, not the CLI.
-default-run = "bullseye"
+default-run = "bullseye-app"
 
 # The app, the service and the CLI share one library. Not called `bullseye`: a library and a binary
 # of the same name collide on Windows (rust-lang/cargo#8519).
@@ -11,15 +11,18 @@ default-run = "bullseye"
 name = "bullseye_core"
 path = "src/lib.rs"
 
-# The tray app, which is also the service and the installer's helper.
+# The tray app, which is also the service and the installer's helper. Named like the package:
+# Tauri takes a binary of the package's name (or `default-run`) for the main one, so the package
+# is not called `bullseye`, which is the CLI's name.
 [[bin]]
-name = "bullseye"
+name = "bullseye-app"
 path = "src/main.rs"
 
-# The command line (`CLI.md`). Tauri's installer puts every binary of the package next to the app.
+# The command line (`CLI.md`), `bullseye` on PATH. Tauri's installer puts every binary of the
+# package next to the app, and `--install` puts that folder on PATH (`system_path.rs`).
 [[bin]]
-name = "bullseye-cli"
-path = "src/bin/bullseye-cli.rs"
+name = "bullseye"
+path = "src/bin/bullseye.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

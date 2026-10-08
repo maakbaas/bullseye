@@ -1,14 +1,14 @@
 # Bullseye command line
 
-`bullseye-cli.exe` does everything the window does, from a terminal or a script: make, change and delete block lists, conditions and blocks (with their allowances), start and stop blocks, and and end them all by unlocking (a countdown you set, none to begin with). The installer puts it next to the app, in `C:\Program Files\Bullseye\`. To call it by name from anywhere, add that folder to your `PATH` (Settings > System > About > Advanced system settings > Environment Variables), or call it by its full path:
+`bullseye.exe` does everything the window does, from a terminal or a script: make, change and delete block lists, conditions and blocks (with their allowances), start and stop blocks, and end them all by unlocking (a countdown you set, none to begin with). The installer puts it next to the app (`bullseye-app.exe`), in `C:\Program Files\Bullseye\`, and puts that folder on the system `PATH` (uninstalling takes it off again), so any terminal opened after installing calls it by name:
 
 ```powershell
-& "C:\Program Files\Bullseye\bullseye-cli.exe" status
+bullseye status
 ```
 
 It talks to the Bullseye service exactly as the window does (the same requests, through the same code), so the service checks everything done here as it checks the window, and what you do here shows up in the window within a second (and the other way round). If the service is installed but not running, the CLI starts it first, as the app would. It needs no administrator rights.
 
-A `<block>`, `<list>` or `<condition>` is its name (any case) or its id; `bullseye-cli status` lists the names, and `show` gives the id. When two have the same name, use the id.
+A `<block>`, `<list>` or `<condition>` is its name (any case) or its id; `bullseye status` lists the names, and `show` gives the id. When two have the same name, use the id.
 
 ## Three kinds of things
 
@@ -34,35 +34,35 @@ A running block keeps what it was started with: while it runs, it cannot be chan
 
 | Command | Does what the window does with |
 |---|---|
-| `bullseye-cli status [--json]` | the three pages: every block (running or not, active or not, locked or not), every block list, every condition |
-| `bullseye-cli show <block> [--json]` | a block's tile and its editor |
-| `bullseye-cli new <name> [options]` | **New block**, then **Save** |
-| `bullseye-cli edit <block> [options]` | **Edit**, then **Save** |
-| `bullseye-cli delete <block> [--yes]` | **Delete** (asks first, unless `--yes`) |
-| `bullseye-cli duplicate <block>` | **Duplicate** |
-| `bullseye-cli start <block> [lock option] [--yes]` | the lock on the block's tile, then **Start** (a locked block asks first, unless `--yes`) |
-| `bullseye-cli stop <block> [--password <pw>] [--abort]` | **Stop** (a block locked with a password asks for it, as the window does; one locked with a delay is asked to stop first, `--abort` ends the wait) |
-| `bullseye-cli list show <list> [--json]` | a block list's tile and its editor |
-| `bullseye-cli list apps [--json]` | the installed Store apps the editor offers to tick, by name and package family name |
-| `bullseye-cli list new <name> [options]` | **New block list**, then **Save** |
-| `bullseye-cli list edit <list> [options]` | **Edit** a block list, then **Save** |
-| `bullseye-cli list delete <list> [--yes]` | **Delete** a block list |
-| `bullseye-cli list duplicate <list>` | **Duplicate** a block list |
-| `bullseye-cli condition show <condition>` | a condition's tile and its editor |
-| `bullseye-cli condition new <name> (--times <times> \| --drive <drive> \| --webhook <url> [webhook options] \| --any <condition>... \| --all <condition>...)` | **New condition**, of the type Weekly schedule, Flash drive or Combination, then **Save** |
-| `bullseye-cli condition edit <condition> [--name <name>] [--times <times> \| --drive <drive> \| --webhook <url> [webhook options] \| --any <condition>... \| --all <condition>...]` | **Edit** a condition, then **Save** |
-| `bullseye-cli condition delete <condition> [--yes]` | **Delete** a condition |
-| `bullseye-cli condition duplicate <condition>` | **Duplicate** a condition |
-| `bullseye-cli condition test <condition>` | **Test** in a webhook condition's editor: asks it once and shows the status, the start of the body and what the matchers make of it |
-| `bullseye-cli condition check <times>` | the schedule written out under the week grid in the condition editor |
-| `bullseye-cli export <file>` | **Export** in Settings |
-| `bullseye-cli import <file> [--yes]` | **Import** in Settings |
-| `bullseye-cli drives [--json]` | the flash drives the **Flash drive** type of a condition offers, by name and serial number |
-| `bullseye-cli unlock [--abort] [--password <pw>]` | **Request unlock**, **Unlock** and **Keep locked** / **Lock again** in Settings; `--password` unlocks at once with the password of the other way to unlock |
-| `bullseye-cli unlock-way [--condition <condition> \| --password <pw> \| --text <text> \| --none]` | **Another way to unlock** in Settings: show it, set it or remove it |
-| `bullseye-cli unlock-delay [<time>]` | **Unlock delay** in Settings: show it, or set it |
-| `bullseye-cli help` | |
-| `bullseye-cli version` | |
+| `bullseye status [--json]` | the three pages: every block (running or not, active or not, locked or not), every block list, every condition |
+| `bullseye show <block> [--json]` | a block's tile and its editor |
+| `bullseye new <name> [options]` | **New block**, then **Save** |
+| `bullseye edit <block> [options]` | **Edit**, then **Save** |
+| `bullseye delete <block> [--yes]` | **Delete** (asks first, unless `--yes`) |
+| `bullseye duplicate <block>` | **Duplicate** |
+| `bullseye start <block> [lock option] [--yes]` | the lock on the block's tile, then **Start** (a locked block asks first, unless `--yes`) |
+| `bullseye stop <block> [--password <pw>] [--abort]` | **Stop** (a block locked with a password asks for it, as the window does; one locked with a delay is asked to stop first, `--abort` ends the wait) |
+| `bullseye list show <list> [--json]` | a block list's tile and its editor |
+| `bullseye list apps [--json]` | the installed Store apps the editor offers to tick, by name and package family name |
+| `bullseye list new <name> [options]` | **New block list**, then **Save** |
+| `bullseye list edit <list> [options]` | **Edit** a block list, then **Save** |
+| `bullseye list delete <list> [--yes]` | **Delete** a block list |
+| `bullseye list duplicate <list>` | **Duplicate** a block list |
+| `bullseye condition show <condition>` | a condition's tile and its editor |
+| `bullseye condition new <name> (--times <times> \| --drive <drive> \| --webhook <url> [webhook options] \| --any <condition>... \| --all <condition>...)` | **New condition**, of the type Weekly schedule, Flash drive or Combination, then **Save** |
+| `bullseye condition edit <condition> [--name <name>] [--times <times> \| --drive <drive> \| --webhook <url> [webhook options] \| --any <condition>... \| --all <condition>...]` | **Edit** a condition, then **Save** |
+| `bullseye condition delete <condition> [--yes]` | **Delete** a condition |
+| `bullseye condition duplicate <condition>` | **Duplicate** a condition |
+| `bullseye condition test <condition>` | **Test** in a webhook condition's editor: asks it once and shows the status, the start of the body and what the matchers make of it |
+| `bullseye condition check <times>` | the schedule written out under the week grid in the condition editor |
+| `bullseye export <file>` | **Export** in Settings |
+| `bullseye import <file> [--yes]` | **Import** in Settings |
+| `bullseye drives [--json]` | the flash drives the **Flash drive** type of a condition offers, by name and serial number |
+| `bullseye unlock [--abort] [--password <pw>]` | **Request unlock**, **Unlock** and **Keep locked** / **Lock again** in Settings; `--password` unlocks at once with the password of the other way to unlock |
+| `bullseye unlock-way [--condition <condition> \| --password <pw> \| --text <text> \| --none]` | **Another way to unlock** in Settings: show it, set it or remove it |
+| `bullseye unlock-delay [<time>]` | **Unlock delay** in Settings: show it, or set it |
+| `bullseye help` | |
+| `bullseye version` | |
 
 Exit codes: `0` done, `1` failed, refused or cancelled (the reason is printed), `2` not understood. Every option can also be written as `--option=value`. The name or id comes right after the command.
 
@@ -97,7 +97,7 @@ With `edit`, an option replaces only what it names: `--list` replaces all its bl
 | `--title <title>` | A window to close, by its title (repeatable), the whole title with `*` as a wildcard and letter case ignored: `*YouTube*`. The whole window closes, or is minimized (`--enforcers`), a browser's with all its tabs. A lone `*` matches every window but Bullseye's own and Windows' shell. | none |
 | `--allow-title <title>` | A window title that is always left alone, also when this list's titles match it (repeatable), written as `--title`: `*Visual Studio Code`. | none |
 | `--sites-file <file>`, `--allowed-file <file>`, `--programs-file <file>`, `--store-apps-file <file>`, `--titles-file <file>`, `--allowed-titles-file <file>` | The same, one entry per line, from a text file. Can be combined with the options above. | |
-| `--enforcers <list>` | Which enforcers act on this list, comma-separated: `chromium_tabs` (close blocked tabs in Chrome, Edge, Brave), `chromium_split_view` (close blocked pages in split view), `chromium_app_windows` (close app windows of blocked pages, e.g. `chrome --app=<url>`), `firefox_tabs` (close blocked tabs in Firefox), `firefox_split_view` (close blocked pages in Firefox split view), `window_titles_minimize` (minimize the windows by title instead of closing them: nothing is lost, and a window that cannot be minimized is left alone), `obsidian_web_viewer` (close Obsidian when its web viewer is active), or `all` (every enforcer but minimizing windows, which goes instead of closing them). Programs, Store apps and windows by title need no enforcer: a list with entries acts, an empty one does nothing. `bullseye-cli help` lists the current names. A locked block's list may go from minimizing to closing windows, not back. | `all` |
+| `--enforcers <list>` | Which enforcers act on this list, comma-separated: `chromium_tabs` (close blocked tabs in Chrome, Edge, Brave), `chromium_split_view` (close blocked pages in split view), `chromium_app_windows` (close app windows of blocked pages, e.g. `chrome --app=<url>`), `firefox_tabs` (close blocked tabs in Firefox), `firefox_split_view` (close blocked pages in Firefox split view), `window_titles_minimize` (minimize the windows by title instead of closing them: nothing is lost, and a window that cannot be minimized is left alone), `obsidian_web_viewer` (close Obsidian when its web viewer is active), or `all` (every enforcer but minimizing windows, which goes instead of closing them). Programs, Store apps and windows by title need no enforcer: a list with entries acts, an empty one does nothing. `bullseye help` lists the current names. A locked block's list may go from minimizing to closing windows, not back. | `all` |
 | `--name <name>` | (`list edit` only) A new name. | |
 | `--clear <list>` | (`list edit` only) Empty a list: `sites`, `allowed`, `programs`, `store-apps`, `titles` or `allowed-titles` (repeatable). | |
 
@@ -124,51 +124,51 @@ With `edit`, an option replaces only what it names. While the block is locked, i
 Obsidian's web viewer enforcer has no items to count, so a budget (total or for each item) never lets it through: Obsidian is closed on web content all the time. Only a Pomodoro's allowed time lets it be.
 
 ```powershell
-bullseye-cli new "Social time" --list "Social media" --allowance budget --allowed 30m --scope total --reset 1d --anchor clock
-bullseye-cli edit "Social time" --allowed 10m --scope each --reset 2h
-bullseye-cli new "Focus" --list "Social media" --allowance pomodoro --blocked 50m --allowed 10m --anchor clock
-bullseye-cli edit "Focus" --allowance none
+bullseye new "Social time" --list "Social media" --allowance budget --allowed 30m --scope total --reset 1d --anchor clock
+bullseye edit "Social time" --allowed 10m --scope each --reset 2h
+bullseye new "Focus" --list "Social media" --allowance pomodoro --blocked 50m --allowed 10m --anchor clock
+bullseye edit "Focus" --allowance none
 ```
 
 ### Examples
 
 ```powershell
 # What to block.
-bullseye-cli list new "Social media" --site youtube.com --site reddit.com
-bullseye-cli list new "Games" --programs-file games.txt
+bullseye list new "Social media" --site youtube.com --site reddit.com
+bullseye list new "Games" --programs-file games.txt
 
 # When.
-bullseye-cli condition new "Work hours" --times "Mon-Fri 08:00-17:00"
+bullseye condition new "Work hours" --times "Mon-Fri 08:00-17:00"
 
 # A flash drive as the key: active (and, as a lock, locked) while it is not connected.
-bullseye-cli drives
-bullseye-cli condition new "Key" --drive "Kingston DataTraveler 3.0"
+bullseye drives
+bullseye condition new "Key" --drive "Kingston DataTraveler 3.0"
 
 # A combination of two or more conditions (not of other combinations): active when any of them
 # is (--any), or when all of them are (--all). Give the option once for each condition.
-bullseye-cli condition new "Room" --webhook "https://example.com/state?room=1" --true-body on --false-body off --every 5m
-bullseye-cli condition new "Door" --webhook https://example.com/door --method post --true-status 200 --false-status 423 --fallback inactive
-bullseye-cli condition test "Room"
-bullseye-cli condition new "Work or weekend" --any "Work hours" --any "Weekend"
-bullseye-cli condition new "Work hours with the key out" --all "Work hours" --all "Key"
+bullseye condition new "Room" --webhook "https://example.com/state?room=1" --true-body on --false-body off --every 5m
+bullseye condition new "Door" --webhook https://example.com/door --method post --true-status 200 --false-status 423 --fallback inactive
+bullseye condition test "Room"
+bullseye condition new "Work or weekend" --any "Work hours" --any "Weekend"
+bullseye condition new "Work hours with the key out" --all "Work hours" --all "Key"
 
 # Blocks: work hours that cannot be stopped during work hours, and an evening one for 2 hours.
-bullseye-cli new "Work" --list "Social media" --list Games --condition "Work hours" --lock-condition "Work hours"
-bullseye-cli new "Evening" --list Games
-bullseye-cli start Work --yes
-bullseye-cli start Evening --lock-duration 2h
-bullseye-cli start Evening --lock-until "2026-10-06 18:00"
-bullseye-cli start Evening --lock-until-restart
+bullseye new "Work" --list "Social media" --list Games --condition "Work hours" --lock-condition "Work hours"
+bullseye new "Evening" --list Games
+bullseye start Work --yes
+bullseye start Evening --lock-duration 2h
+bullseye start Evening --lock-until "2026-10-06 18:00"
+bullseye start Evening --lock-until-restart
 
 # Later: Saturdays too (once Work is stopped, outside work hours).
-bullseye-cli stop Work
-bullseye-cli condition edit "Work hours" --times "Mon-Fri 08:00-17:00; Sat 10:00-14:00"
+bullseye stop Work
+bullseye condition edit "Work hours" --times "Mon-Fri 08:00-17:00; Sat 10:00-14:00"
 ```
 
 ### `status` and `show`
 
 ```
-> bullseye-cli status
+> bullseye status
 Blocks:
   Work     Running · inactive for the next 15 hours · unlocked for the next 15 hours
   Evening  Running · active · locked for the next 1 hour and 2 minutes
@@ -196,19 +196,19 @@ Make a copy, as **Duplicate** in a tile's menu does: named after the original wi
 To move to another computer: `export <file>` writes every block list, condition and block to a settings file (JSON), the same file the window's **Export** saves. `import <file>` replaces all of them with what is in such a file, after asking (or with `--yes`); it is refused while any block runs. A password lock is in the file with its hash (never the password), so keep the file private; a block whose file has no hash comes without a lock, and the question names them. A Store app in the file that is not installed on this PC (by its exact package family name: the same app can be another package on another PC) is left out, and the question and the output say which. The unlock delay is a setting of Bullseye itself, not of the file.
 
 ```powershell
-bullseye-cli export D:\bullseye.json
-bullseye-cli import D:\bullseye.json
+bullseye export D:\bullseye.json
+bullseye import D:\bullseye.json
 ```
 
 ### `unlock`
 
-Ends every running block, locked or not, exactly as the window's Unlock does: the block lists, conditions and blocks stay, and so does the app, with nothing to enforce. **Unlocking is free until you set an unlock delay** (see `unlock-delay` below), so on a clean install `bullseye-cli unlock` ends everything at once. With a delay it is a countdown, in steps you run again:
+Ends every running block, locked or not, exactly as the window's Unlock does: the block lists, conditions and blocks stay, and so does the app, with nothing to enforce. **Unlocking is free until you set an unlock delay** (see `unlock-delay` below), so on a clean install `bullseye unlock` ends everything at once. With a delay it is a countdown, in steps you run again:
 
 ```powershell
-bullseye-cli unlock           # starts the countdown: "ready in 1 hour"
-bullseye-cli unlock           # while it counts down: says how long is left
-bullseye-cli unlock           # once it is over: ends every block
-bullseye-cli unlock --abort   # at any time: stop the countdown, everything stays locked
+bullseye unlock           # starts the countdown: "ready in 1 hour"
+bullseye unlock           # while it counts down: says how long is left
+bullseye unlock           # once it is over: ends every block
+bullseye unlock --abort   # at any time: stop the countdown, everything stays locked
 ```
 
 Ready, you can still `--abort` instead. Unlocking uses the request up: the next time starts again.
@@ -218,9 +218,9 @@ Ready, you can still `--abort` instead. Unlocking uses the request up: the next 
 Shows how long unlocking takes, or sets it: `0` (none, the default) to `24h`, typed like a duration (`30m`, `2h 30m`). A longer delay can be set at any time; a shorter one only once unlocking is ready or while no block is locked, because setting it low would be a way around the wait. At most 24 hours is enough to sleep on it and to abort with a fresh mind.
 
 ```powershell
-bullseye-cli unlock-delay
-bullseye-cli unlock-delay 2h
-bullseye-cli unlock-delay 0
+bullseye unlock-delay
+bullseye unlock-delay 2h
+bullseye unlock-delay 0
 ```
 
 ### The other way to unlock
@@ -228,10 +228,10 @@ bullseye-cli unlock-delay 0
 Besides the delay, which is always there, one other way to unlock can be set (`unlock-way`), chosen like a block's lock but only a condition, a custom text or a password: unlocking is ready when the delay is over **or** this way lets go, one is enough. `--condition <condition>` is locked while the condition is active (as a block's lock) and open when it is not, `--text <text>` opens when the text is typed in (in the window: a terminal cannot refuse a paste) and `--password <pw>` with the password (`unlock --password`, asked for when not given; only a salted hash is kept). `--none` removes it. Setting one makes unlocking easier, so it needs unlocking to be ready, or no block to be locked; removing it is always free.
 
 ```
-bullseye-cli unlock-way
-bullseye-cli unlock-way --password secret
-bullseye-cli unlock-way --condition "Work hours"
-bullseye-cli unlock-way --none
+bullseye unlock-way
+bullseye unlock-way --password secret
+bullseye unlock-way --condition "Work hours"
+bullseye unlock-way --none
 ```
 
 ### Webhook conditions
@@ -243,9 +243,9 @@ bullseye-cli unlock-way --none
 Checks times written as text and shows them per day, the way a schedule reads them, and as the window writes them out:
 
 ```
-> bullseye-cli condition check "weekdays 8-12, 13-17; sat 10am-noon"
+> bullseye condition check "weekdays 8-12, 13-17; sat 10am-noon"
 In "sat 10am-noon": "noon" is not a time such as 08:00, 17:30 or 5pm
-> bullseye-cli condition check "weekdays 8-12, 13-17; sat 10am-12pm"
+> bullseye condition check "weekdays 8-12, 13-17; sat 10am-12pm"
 Mon-Fri 08:00-12:00, 13:00-17:00; Sat 10:00-12:00
   Mon  08:00-12:00, 13:00-17:00
   ...
@@ -271,6 +271,6 @@ A running block reads its schedule in the time zone Windows had when the block s
 ## For developers
 
 - The CLI shares everything with the window but its presentation: it sends the same `proto::Request`s through the same `client::Remote` (`Remote::for_cli`), so the service decides and checks everything for both, and texts such as schedules and durations come from the same Rust functions (`schedule.rs`, `duration.rs`).
-- The CLI is `src-tauri/src/cli.rs`, a console exe (`src-tauri/src/bin/bullseye-cli.rs`) on the same library as the app (`src-tauri/src/lib.rs`). Tauri's installer bundles every binary of the package, so it ships next to `bullseye.exe`.
+- The CLI is `src-tauri/src/cli.rs`, a console exe (`src-tauri/src/bin/bullseye.rs`) on the same library as the app (`src-tauri/src/lib.rs`). Tauri's installer bundles every binary of the package, so it ships next to `bullseye-app.exe`.
 - **Keep it level with the window.** Every command the window can invoke (the `generate_handler!` list in `lib.rs`) must be in `cli::GUI_COMMANDS` with the CLI commands that do the same; `cargo test` fails otherwise, and also when such a command is missing from the help text or from this file. Enforcer names come from `state::Enforcers` itself, so a new enforcer needs no CLI change. A new list or lock method needs an option in `cli.rs` (`parse_lock` for a lock), the help and this file.
 - `npm run dev` keeps the service inside the app, where the CLI cannot reach it; use an installed service (in a VM) to try the CLI.

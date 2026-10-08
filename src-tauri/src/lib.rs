@@ -1,5 +1,5 @@
 //! The app, the service and the CLI share this library. `main.rs` is the tray app's exe (which also
-//! runs as the service and for the installer), `bin/bullseye-cli.rs` the console exe of the CLI
+//! runs as the service and for the installer), `bin/bullseye.rs` the console exe of the CLI
 //! (`cli.rs`, `CLI.md`).
 
 mod allowance;
@@ -29,6 +29,7 @@ mod setup;
 mod state;
 mod store_apps;
 mod sync;
+mod system_path;
 mod tab_closer;
 mod ui;
 mod unlock;

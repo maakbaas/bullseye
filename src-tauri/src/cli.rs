@@ -1,5 +1,5 @@
 //! The command line: everything the window can do, from a terminal or a script
-//! (`bullseye-cli.exe`, explained in `CLI.md`). It talks to the service through the same
+//! (`bullseye.exe`, explained in `CLI.md`). It talks to the service through the same
 //! `client::Remote` as the window, so the service checks everything done here exactly as it checks
 //! the window, and texts such as schedules and durations come from the same Rust functions.
 //!
@@ -74,7 +74,7 @@ pub const GUI_COMMANDS: [(&str, &[&str]); 30] = [
 const HELP: &str = "\
 Bullseye command line: everything the window can do.
 
-Usage: bullseye-cli <command> [options]
+Usage: bullseye <command> [options]
 A <block>, <list> or <condition> is its name (any case) or its id.
 
 A block is what you start: one or more block lists (what to block), a condition (when it is
@@ -444,7 +444,7 @@ pub fn main() -> i32 {
     match parse(&args).map_err(Failure::Usage).and_then(execute) {
         Ok(()) => 0,
         Err(Failure::Usage(why)) => {
-            eprintln!("{why}\n\nRun `bullseye-cli help` for the commands.");
+            eprintln!("{why}\n\nRun `bullseye help` for the commands.");
             2
         }
         Err(Failure::Failed(why)) => {
@@ -866,7 +866,7 @@ impl Options {
 fn execute(command: Command) -> Result<(), Failure> {
     match command {
         Command::Help => say!("{}", HELP.replace("{enforcers}", &enforcer_names().join(", "))),
-        Command::Version => say!("bullseye-cli {}", env!("CARGO_PKG_VERSION")),
+        Command::Version => say!("bullseye {}", env!("CARGO_PKG_VERSION")),
         Command::Status { json } => {
             let overview = overview()?;
             if json {
@@ -900,7 +900,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             apply_block_changes(&overview, &mut block, changes)?;
             let (id, name) = (block.id.clone(), block.name.clone());
             send(Request::SaveBlock { block })?;
-            say!("Made the block \"{name}\" (id {id}). Start it with: bullseye-cli start \"{name}\"");
+            say!("Made the block \"{name}\" (id {id}). Start it with: bullseye start \"{name}\"");
         }
         Command::Edit { block, changes } => {
             let overview = overview()?;
@@ -952,7 +952,7 @@ fn execute(command: Command) -> Result<(), Failure> {
                     (Some(0), _) => {}
                     (Some(_), Some(left)) => {
                         say!(
-                            "\"{}\" can be stopped in {left}. Run `bullseye-cli stop` again then, or `stop --abort` to end the wait.",
+                            "\"{}\" can be stopped in {left}. Run `bullseye stop` again then, or `stop --abort` to end the wait.",
                             block.name
                         );
                         return Ok(());
@@ -960,7 +960,7 @@ fn execute(command: Command) -> Result<(), Failure> {
                     _ => {
                         send(Request::AskToStop { id: block.id.clone() })?;
                         say!(
-                            "Stopping \"{}\" was asked for: ready in {}. Run `bullseye-cli stop` again then, or `stop --abort` to end the wait.",
+                            "Stopping \"{}\" was asked for: ready in {}. Run `bullseye stop` again then, or `stop --abort` to end the wait.",
                             block.name,
                             run.stop_delay_words.clone().unwrap_or_default()
                         );
@@ -1018,7 +1018,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             changes.apply(&mut list);
             let name = list.name.clone();
             send(Request::SaveList { list })?;
-            say!("Made the block list \"{name}\". Use it with: bullseye-cli new <block> --list \"{name}\"");
+            say!("Made the block list \"{name}\". Use it with: bullseye new <block> --list \"{name}\"");
         }
         Command::ListEdit { list, changes } => {
             let overview = overview()?;
@@ -1058,7 +1058,7 @@ fn execute(command: Command) -> Result<(), Failure> {
         Command::ConditionNew { name, rule } => {
             let rule = resolve_rule(&overview()?, rule)?;
             send(Request::SaveCondition { condition: Condition { id: new_id(), name: name.clone(), rule } })?;
-            say!("Made the condition \"{name}\". Use it with: bullseye-cli new <block> --condition \"{name}\"");
+            say!("Made the condition \"{name}\". Use it with: bullseye new <block> --condition \"{name}\"");
         }
         Command::ConditionEdit { condition, name, rule } => {
             let overview = overview()?;
@@ -1164,11 +1164,11 @@ fn execute(command: Command) -> Result<(), Failure> {
                 // The service tells the app to quit at its next policy request, within a second.
                 say!("Unlocked: every block has ended.");
             } else if let Some(left) = status.remaining_words {
-                say!("Unlocking is not ready yet: {left} to go. Run `bullseye-cli unlock` again then, or `bullseye-cli unlock --abort` to stop.");
+                say!("Unlocking is not ready yet: {left} to go. Run `bullseye unlock` again then, or `bullseye unlock --abort` to stop.");
             } else {
                 send(Request::AskForUnlock)?;
                 say!(
-                    "Unlocking was asked for: ready in {}. Run `bullseye-cli unlock` again then, or `bullseye-cli unlock --abort` to stop.",
+                    "Unlocking was asked for: ready in {}. Run `bullseye unlock` again then, or `bullseye unlock --abort` to stop.",
                     status.delay_words
                 );
             }
@@ -1266,7 +1266,7 @@ fn resolve_rule(overview: &Overview, choice: RuleChoice) -> Result<Rule, Failure
                 drives.iter().filter(|d| d.serial.to_lowercase() == wanted || d.name.to_lowercase() == wanted).collect();
             match found[..] {
                 [drive] => Ok(Rule::FlashDrive { serial: drive.serial.clone(), drive: drive.name.clone() }),
-                [] => Err(failed(format!("No flash drive \"{given}\" is connected; `bullseye-cli drives` lists the ones that are"))),
+                [] => Err(failed(format!("No flash drive \"{given}\" is connected; `bullseye drives` lists the ones that are"))),
                 _ => Err(failed(format!("More than one flash drive is called \"{given}\"; give its serial number instead"))),
             }
         }
@@ -1439,7 +1439,7 @@ fn find<'a, T>(items: &'a [T], wanted: &str, kind: &str, key: impl Fn(&T) -> (&S
     let named: Vec<&T> = items.iter().filter(|i| key(i).1.trim().eq_ignore_ascii_case(wanted.trim())).collect();
     match named.as_slice() {
         [item] => Ok(item),
-        [] => Err(failed(format!("No {kind} called \"{wanted}\"; `bullseye-cli status` lists them"))),
+        [] => Err(failed(format!("No {kind} called \"{wanted}\"; `bullseye status` lists them"))),
         _ => Err(failed(format!(
             "Several of the {kind}s are called \"{wanted}\"; use the id instead: {}",
             named.iter().map(|i| key(i).0.as_str()).collect::<Vec<_>>().join(", ")
@@ -1471,7 +1471,7 @@ fn confirm(question: &str, yes: bool) -> Result<bool, Failure> {
 }
 
 /// A password, typed after `prompt` without showing it; from standard input as it is when that is
-/// not a terminal (`echo pw | bullseye-cli unlock`).
+/// not a terminal (`echo pw | bullseye unlock`).
 fn read_password(prompt: &str) -> Result<String, String> {
     use windows_sys::Win32::System::Console::{GetConsoleMode, GetStdHandle, SetConsoleMode, ENABLE_ECHO_INPUT, STD_INPUT_HANDLE};
 
@@ -1610,8 +1610,8 @@ fn describe_overview(overview: &Overview) -> String {
         overview.conditions.iter().map(|c| (c.name.clone(), describe_rule(overview, &c.rule))).collect();
     let mut text = String::new();
     for (title, rows, empty) in [
-        ("Blocks", blocks, "  None yet. Make one with: bullseye-cli new <name> --list <block list>\n"),
-        ("Block lists", lists, "  None yet. Make one with: bullseye-cli list new <name> --site <site>\n"),
+        ("Blocks", blocks, "  None yet. Make one with: bullseye new <name> --list <block list>\n"),
+        ("Block lists", lists, "  None yet. Make one with: bullseye list new <name> --site <site>\n"),
         ("Conditions", conditions, "  None (blocks without one are always active).\n"),
     ] {
         text.push_str(&format!("{title}:\n"));
@@ -1745,7 +1745,7 @@ mod tests {
         dir
     }
 
-    /// A command line run as `bullseye-cli` runs it: what it says, or why it did not work.
+    /// A command line run as `bullseye` runs it: what it says, or why it did not work.
     fn cli(line: &[&str]) -> Result<String, String> {
         SAID.with(|said| *said.borrow_mut() = Some(String::new()));
         let result = parse(&args(line)).map_err(Failure::Usage).and_then(execute);
@@ -1772,12 +1772,12 @@ mod tests {
         assert!(ok(&["status"]).contains("Blocks:\n  None yet"));
         assert_eq!(
             ok(&["list", "new", "Social", "--site", "youtube.com", "--allow", "music.youtube.com"]),
-            "Made the block list \"Social\". Use it with: bullseye-cli new <block> --list \"Social\"\n"
+            "Made the block list \"Social\". Use it with: bullseye new <block> --list \"Social\"\n"
         );
         assert!(ok(&["condition", "new", "Work", "--times", "Mon-Fri 08:00-17:00"]).starts_with("Made the condition \"Work\"."));
         let made = ok(&["new", "Evening", "--list", "Social", "--condition", "Work", "--allowance", "budget", "--allowed", "30m"]);
         assert!(
-            made.starts_with("Made the block \"Evening\" (id cli-") && made.ends_with("Start it with: bullseye-cli start \"Evening\"\n"),
+            made.starts_with("Made the block \"Evening\" (id cli-") && made.ends_with("Start it with: bullseye start \"Evening\"\n"),
             "{made}"
         );
 
@@ -2182,7 +2182,7 @@ mod tests {
     fn help_and_version_need_no_service() {
         let help = cli(&["help"]).unwrap();
         assert!(help.starts_with("Bullseye command line") && help.contains("chromium_tabs") && !help.contains("{enforcers}"));
-        assert_eq!(cli(&["version"]).unwrap(), format!("bullseye-cli {}\n", env!("CARGO_PKG_VERSION")));
+        assert_eq!(cli(&["version"]).unwrap(), format!("bullseye {}\n", env!("CARGO_PKG_VERSION")));
     }
 
     fn library() -> Overview {
@@ -2220,7 +2220,7 @@ mod tests {
             };
             for cli in cli.iter() {
                 assert!(HELP.contains(&format!("\n  {cli} ")), "the help does not list `{cli}`");
-                assert!(doc.contains(&format!("bullseye-cli {cli}")), "CLI.md does not explain `{cli}`");
+                assert!(doc.contains(&format!("bullseye {cli}")), "CLI.md does not explain `{cli}`");
             }
         }
     }

@@ -475,7 +475,7 @@ mod tests {
 
     #[test]
     fn file_names_match_regardless_of_path_and_case() {
-        assert_eq!(file_name(std::path::Path::new(r"C:\a\B\bullseye.EXE")), "bullseye.exe");
+        assert_eq!(file_name(std::path::Path::new(r"C:\a\B\bullseye-app.EXE")), "bullseye-app.exe");
     }
 
     #[test]

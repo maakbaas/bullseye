@@ -1,4 +1,4 @@
-//! Unlocking: ending every running block at once, as the Settings page and `bullseye-cli unlock`
+//! Unlocking: ending every running block at once, as the Settings page and `bullseye unlock`
 //! do, and the passwords of password locks (`new_hash`).
 //!
 //! **This is the escape hatch, so it must never be unusable.** Unlocking takes a *countdown*: the

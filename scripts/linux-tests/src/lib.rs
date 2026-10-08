@@ -42,6 +42,8 @@ pub mod state;
 pub mod store_apps;
 #[path = "../../../src-tauri/src/sync.rs"]
 pub mod sync;
+#[path = "../../../src-tauri/src/system_path.rs"]
+pub mod system_path;
 #[path = "../../../src-tauri/src/unlock.rs"]
 pub mod unlock;
 #[path = "../../../src-tauri/src/webhook.rs"]
