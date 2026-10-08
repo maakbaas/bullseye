@@ -231,7 +231,7 @@ function makeTile(kind, id) {
   const top = el("div", { class: "top" }, el("div", { class: "heading" }, title, tag), menu, lock);
   // A session's lines are its rows (`fields.js`), between its head and Start / Stop.
   // A session's status line (`statusParts`), beside Start / Stop.
-  const status = el("p", { class: "status cds--type-helper-text-01" });
+  const status = el("p", { class: "status cds--type-body-compact-01" });
   const body = el("div", { class: "body" }, el("div", { class: "info" }, kind === "sessions" ? status : summary), actions);
   const tile = el("cds-tile", { class: columns }, top, body);
   // Below its button, or above it where there is no room.
