@@ -1,16 +1,16 @@
-// A session is set up on its own tile, never in an editor page: its fields, Block (its targets),
-// When (its condition), Unless (its allowance) and Lock, below the fold of the tile (shown when
-// it is expanded). Each choice is saved as it is made, as the lock always was; the targets when
-// their menu closes, so ticking several is one change to a running session. An allowance's
-// settings, a new session and a new name are asked in the modal. New target and New condition
-// (the + beside their fields) go to that kind's editor and come back with it chosen (`detour`).
+// A session is set up on its own tile, never in an editor page: a row each for Block (its
+// targets), When (its condition), Unless (its allowance) and Lock, each opening a menu. Each
+// choice is saved as it is made. An allowance's settings, a new session and a new name are asked
+// in the modal. New target and New condition (in their menus) go to that kind's editor and come
+// back with it chosen (`detour`).
 
-import { allowanceLabel, ask, el, invalid, invoke, newId, notify, overview, quoted, refresh, runningOf, t } from "./core.js";
+import { ask, el, invalid, invoke, newId, notify, overview, quoted, refresh, runningOf, t } from "./core.js";
+import { LOCKS } from "./locks.js";
 import { allowanceSection } from "./forms.js";
 import { KINDS, freeName } from "./kinds.js";
 import { detour } from "./detour.js";
 
-// The condition dropdown's choice for no condition (an empty value reads as nothing chosen).
+// The condition menu's choice for no condition.
 const ALWAYS = "always";
 
 // Saves a session with `change` applied; a refusal (a locked session, no target) is shown on the page.
@@ -24,117 +24,143 @@ async function save(session, change) {
   await refresh();
 }
 
-// A + icon button beside a field, named by its tooltip: making a new item to choose. Carbon's
-// menus hold only choices, so the action is a button of its own.
-function plus(label) {
-  const button = el("cds-icon-button", { kind: "tertiary", size: "md", align: "top-end" }, carbonIcon("add", "icon"), el("span", { slot: "tooltip-content" }, label));
-  button.setAttribute("aria-label", label);
-  return button;
+// ---- A session's rows: Block, When, Unless and Lock, a `cds-contained-list` on its tile. A row
+// that can be changed opens Carbon's menu of what it can be: the targets to tick, one condition,
+// allowance or lock method to choose, and making a new target or condition, or the settings of
+// the allowance or lock it has. A locked session's targets, condition and lock stay as they are
+// (no menu); its allowance may still get stricter, which is for the service to judge.
+
+const ROWS = [
+  { key: "block", icon: "list-checked-16" },
+  { key: "when", icon: "rule-16" },
+  { key: "unless", icon: "pause-16" },
+  { key: "lock", icon: "locked" },
+];
+
+// The one menu, opened at the row it is for (as Carbon's menu button opens its menu).
+const menu = el("cds-menu", { size: "md" });
+document.body.append(menu);
+
+// The rows of the session `id`, added to its tile's parts (`tiles.js`).
+function addRows(parts, id) {
+  const list = el("cds-contained-list", { class: "session-rows" });
+  parts.rows = {};
+  for (const { key, icon } of ROWS) {
+    const label = el("span", { class: "row-label" }, t(`sessions.fields.${key}`));
+    const value = el("span", { class: "row-value" });
+    const now = el("span", { class: "row-now" });
+    const chevron = el("span", { class: "row-open" }, carbonIcon("chevron-down"));
+    const row = el("cds-contained-list-item", {}, carbonIcon(icon, "icon"), el("span", { class: "row" }, label, el("span", { class: "row-text" }, value, now), chevron));
+    row.addEventListener("cds-contained-list-item-click", () => openMenu(parts, id, key, row));
+    list.append(row);
+    parts.rows[key] = { row, value, now, chevron };
+  }
+  parts.top.after(list);
 }
 
-// The fields of the session `id`, added to its tile's parts (`tiles.js`); the lock's dropdown,
-// made with Start (`addSessionControls`), is the fourth.
-function addFields(parts, id) {
-  const session = () => overview.sessions.find((s) => s.id === id);
-  // Kept in the order of the Targets page, ticked or not (Carbon's default moves ticked ones up).
-  const targets = el("cds-multi-select", { "title-text": t("sessions.fields.block"), size: "md", autoalign: true, label: "", "selection-feedback": "fixed" });
-  const newTarget = plus(t("sessions.fields.newTarget"));
-  const condition = el("cds-dropdown", { "title-text": t("sessions.fields.when"), size: "md", autoalign: true });
-  const newCondition = plus(t("sessions.fields.newCondition"));
-  const allowance = el("cds-dropdown", { "title-text": t("sessions.fields.unless"), size: "md", autoalign: true });
-  const fields = el(
-    "div",
-    { class: "session-fields" },
-    el("div", { class: "with-action" }, targets, newTarget),
-    el("div", { class: "with-action" }, condition, newCondition),
-    allowance,
-    parts.controls,
-  );
-  parts.below.append(fields);
-  Object.assign(parts, { targets, newTarget, condition, newCondition, allowance });
-
-  // Made on the way: that kind's editor, then back here with it chosen.
-  const make = (kind, onSaved) => {
-    detour.current = {
-      back: KINDS.sessions.path,
-      crumbs: [{ label: KINDS.sessions.title, href: KINDS.sessions.path }, { label: session().name, href: KINDS.sessions.path }],
-      onSaved,
-    };
-    location.hash = `#/session/${encodeURIComponent(id)}/${kind}/new`;
-  };
-  newTarget.addEventListener("click", () => make("targets", (made) => save(session(), { targets: [...session().targets, made.id] })));
-  newCondition.addEventListener("click", () => make("conditions", (made) => save(session(), { condition: made.id })));
-
-  // Ticking and unticking are kept on the tile while the menu is open, and saved when it closes.
-  const chosen = () => (targets.value ? targets.value.split(",") : []);
-  targets.addEventListener("cds-multi-select-selected", () => {
-    parts.choosing = true;
-    invalid(targets, chosen().length ? null : t("sessions.noTargets"));
-  });
-  targets.addEventListener("cds-multi-select-toggled", () => {
-    if (targets.open || !parts.choosing) return;
-    parts.choosing = false;
-    const now = session();
-    const ticked = chosen();
-    invalid(targets, null);
-    if (ticked.length && ticked.join(",") !== now.targets.join(",")) save(now, { targets: ticked });
-    else refresh();
-  });
-  condition.addEventListener("cds-dropdown-selected", (event) => {
-    const value = event.detail.item.value;
-    save(session(), { condition: value === ALWAYS ? null : value });
-  });
-  allowance.addEventListener("cds-dropdown-selected", (event) => setAllowance(parts, id, event.detail.item.value));
-  // The one it has already, chosen again (the dropdown says nothing then): its settings.
-  allowance.addEventListener("click", (event) => {
-    const item = event.target.closest && event.target.closest("cds-dropdown-item");
-    const now = session() && session().allowance;
-    if (item && now && item.value === now.type) setAllowance(parts, id, item.value);
-  });
-}
-
-// What the fields show of `session`; nothing changes under a choice being made.
-function renderFields(parts, session) {
-  if (parts.choosing) return;
+// What the rows say: `lines` per row, its value and what is happening now (`tiles.js`), and which
+// can be changed.
+function renderRows(parts, session, lines) {
   const running = runningOf(session.id);
-  // Locked: its targets and condition stay as they are; its allowance may still get stricter,
-  // which is for the service to judge (`allowance::tightened`).
   const locked = !!(running && running.locked);
-  // The items are made again only when what there is to choose changes.
-  const targetIds = overview.targets.map((target) => `${target.id}:${target.name}`).join("|");
-  if (parts.targets.dataset.ids !== targetIds) {
-    parts.targets.dataset.ids = targetIds;
-    parts.targets.replaceChildren(...overview.targets.map((target) => el("cds-multi-select-item", { value: target.id }, target.name)));
+  for (const { key } of ROWS) {
+    const { row, value, now, chevron } = parts.rows[key];
+    const [text, current] = lines[key];
+    if (value.textContent !== text) value.textContent = text;
+    if (now.textContent !== (current || "")) now.textContent = current || "";
+    now.hidden = !current;
+    // Fixed while locked; the allowance only stricter.
+    const open = !(locked && key !== "unless");
+    row.clickable = open;
+    chevron.hidden = !open;
   }
-  const names = session.targets.map((id) => (overview.targets.find((target) => target.id === id) || { name: t("common.gone") }).name);
-  parts.targets.label = names.length ? names.join(t("common.separator")) : t("sessions.fields.chooseTargets");
-  parts.targets.value = session.targets.join(",");
-  const conditionIds = overview.conditions.map((c) => `${c.id}:${c.name}`).join("|");
-  if (parts.condition.dataset.ids !== conditionIds) {
-    parts.condition.dataset.ids = conditionIds;
-    parts.condition.replaceChildren(
-      el("cds-dropdown-item", { value: ALWAYS }, t("sessions.fields.always")),
-      ...overview.conditions.map((c) => el("cds-dropdown-item", { value: c.id }, c.name)),
+}
+
+// The menu of a row, at the row.
+function openMenu(parts, id, key, row) {
+  const session = overview.sessions.find((s) => s.id === id);
+  // A choice closes the menu first: what it does may open the modal or another page.
+  const item = (label, action, icon) => {
+    const node = el("cds-menu-item", { label }, icon ? carbonIcon(icon, "render-icon") : null);
+    node.addEventListener("click", () => {
+      menu.open = false;
+      action();
+    });
+    return node;
+  };
+  const choices = (label, options, chosen, choose) =>
+    el(
+      "cds-menu-item-radio-group",
+      { label },
+      ...options.map(([value, text]) => {
+        const node = item(text, () => value !== chosen && choose(value));
+        node.setAttribute("aria-checked", String(value === chosen));
+        return node;
+      }),
     );
+  const divider = () => el("cds-menu-item-divider");
+  let items;
+  if (key === "block") {
+    // Each tick is saved; the session is never left without a target (the service refuses it too).
+    items = [
+      ...overview.targets.map((target) => {
+        const node = el("cds-menu-item-selectable", { label: target.name, selected: session.targets.includes(target.id) });
+        node.addEventListener("click", () => {
+          const now = overview.sessions.find((s) => s.id === id);
+          const ticked = now.targets.includes(target.id) ? now.targets.filter((t) => t !== target.id) : [...now.targets, target.id];
+          // The last one stays ticked (the item has unticked itself already).
+          if (!ticked.length) {
+            node.selected = true;
+            return notify("list-notices", "error", t("sessions.fields.saveFailed", { name: quoted(now.name) }), t("sessions.noTargets"));
+          }
+          save(now, { targets: overview.targets.map((t) => t.id).filter((t) => ticked.includes(t)) });
+        });
+        return node;
+      }),
+      divider(),
+      item(t("sessions.fields.newTarget"), () => make(id, "targets", (made) => save(current(id), { targets: [...current(id).targets, made.id] })), "add"),
+    ];
+  } else if (key === "when") {
+    items = [
+      choices(t("sessions.fields.when"), [[ALWAYS, t("sessions.fields.always")], ...overview.conditions.map((c) => [c.id, c.name])], session.condition || ALWAYS, (value) =>
+        save(session, { condition: value === ALWAYS ? null : value }),
+      ),
+      divider(),
+      item(t("sessions.fields.newCondition"), () => make(id, "conditions", (made) => save(current(id), { condition: made.id })), "add"),
+    ];
+  } else if (key === "unless") {
+    const kind = session.allowance ? session.allowance.type : "none";
+    items = [
+      choices(t("sessions.fields.unless"), [["none", t("sessions.fields.noAllowance")], ["budget", t("sessions.fields.budget")], ["pomodoro", t("sessions.fields.pomodoro")]], kind, (value) =>
+        setAllowance(parts, id, value),
+      ),
+      ...(kind !== "none" ? [divider(), item(t("sessions.fields.allowanceSettings"), () => setAllowance(parts, id, kind))] : []),
+    ];
+  } else {
+    const method = session.lock.method;
+    items = [
+      choices(t("sessions.lockLabel"), Object.entries(LOCKS).map(([value, lock]) => [value, lock.label]), method, (value) => parts.setLock(value)),
+      ...(LOCKS[method] && LOCKS[method].form ? [divider(), item(t("sessions.lockSettings"), () => parts.setLock(method))] : []),
+    ];
   }
-  parts.condition.value = session.condition || ALWAYS;
-  // The allowance it has, in words, in place of the kind's own item.
-  const kind = session.allowance && session.allowance.type;
-  const words = session.allowance ? allowanceLabel(session.allowance) : "";
-  const key = `${JSON.stringify(session.allowance)}|${words}`;
-  if (parts.allowance.dataset.key !== key) {
-    parts.allowance.dataset.key = key;
-    parts.allowance.replaceChildren(
-      el("cds-dropdown-item", { value: "none" }, t("sessions.fields.noAllowance")),
-      el("cds-dropdown-item", { value: "budget" }, kind === "budget" ? words : t("sessions.fields.budget")),
-      el("cds-dropdown-item", { value: "pomodoro" }, kind === "pomodoro" ? words : t("sessions.fields.pomodoro")),
-    );
-    // Set anew, so the dropdown shows the new words of the item that was chosen already.
-    parts.allowance.value = "";
-  }
-  parts.allowance.value = kind || "none";
-  for (const control of [parts.targets, parts.condition]) control.readOnly = locked;
-  for (const control of [parts.newTarget, parts.newCondition]) control.disabled = locked;
+  menu.replaceChildren(...items);
+  menu.label = t(`sessions.fields.${key}`);
+  const r = row.getBoundingClientRect();
+  menu.x = [r.left, r.right];
+  menu.y = [r.top, r.bottom];
+  menu.open = true;
+}
+
+const current = (id) => overview.sessions.find((s) => s.id === id);
+
+// Made on the way: that kind's editor, then back here with it chosen.
+function make(id, kind, onSaved) {
+  detour.current = {
+    back: KINDS.sessions.path,
+    crumbs: [{ label: KINDS.sessions.title, href: KINDS.sessions.path }, { label: current(id).name, href: KINDS.sessions.path }],
+    onSaved,
+  };
+  location.hash = `#/session/${encodeURIComponent(id)}/${kind}/new`;
 }
 
 // Sets a session's allowance: none at once, a budget or a cycle by its settings in the modal.
@@ -206,4 +232,4 @@ async function renameSession(id) {
   if (given) await save(session, { name: given });
 }
 
-export { addFields, renderFields, newSession, renameSession };
+export { addRows, renderRows, newSession, renameSession };

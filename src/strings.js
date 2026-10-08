@@ -69,8 +69,8 @@ window.STRINGS = {
     nameMissing: "Name the session",
     noTargets: "A session needs at least one target",
 
-    // A session is set up on its tile: its fields, shown when the tile is expanded, and the modal
-    // of a new session. {name}: the session's name, quoted.
+    // A session is set up on its tile: a row each for its targets, condition, allowance and lock,
+    // each opening a menu, and the modal of a new session. {name}: the session's name, quoted.
     fields: {
       block: "Block",
       targets: "Targets",
@@ -80,6 +80,13 @@ window.STRINGS = {
       always: "Always",
       newCondition: "New condition",
       unless: "Unless",
+      lock: "Lock",
+      allowanceSettings: "Allowance settings",
+      // Under a running session's condition. {change}: how long, in words.
+      active: "Active now",
+      activeFor: "Active for the next {change}",
+      inactive: "Inactive now",
+      inactiveFor: "Inactive for the next {change}",
       noAllowance: "No allowance",
       budget: "Time budget…",
       pomodoro: "Pomodoro cycle…",

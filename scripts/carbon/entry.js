@@ -21,8 +21,6 @@ import '@carbon/web-components/es/components/icon-button/icon-button.js';
 import '@carbon/web-components/es/components/accordion/accordion.js';
 import '@carbon/web-components/es/components/accordion/accordion-item.js';
 import '@carbon/web-components/es/components/tile/tile.js';
-// PROTOTYPE: a session's tile, collapsed to its summary or expanded to its fields.
-import '@carbon/web-components/es/components/tile/expandable-tile.js';
 import '@carbon/web-components/es/components/tag/tag.js';
 import '@carbon/web-components/es/components/overflow-menu/overflow-menu.js';
 import '@carbon/web-components/es/components/overflow-menu/overflow-menu-body.js';
@@ -55,6 +53,14 @@ import '@carbon/web-components/es/components/modal/modal-body-content.js';
 import '@carbon/web-components/es/components/modal/modal-footer.js';
 import '@carbon/web-components/es/components/modal/modal-footer-button.js';
 import '@carbon/web-components/es/components/inline-loading/inline-loading.js';
+// A session's settings on its tile: one row each, which opens a menu of what it can be.
+import '@carbon/web-components/es/components/contained-list/contained-list.js';
+import '@carbon/web-components/es/components/contained-list/contained-list-item.js';
+import '@carbon/web-components/es/components/menu/menu.js';
+import '@carbon/web-components/es/components/menu/menu-item.js';
+import '@carbon/web-components/es/components/menu/menu-item-divider.js';
+import '@carbon/web-components/es/components/menu/menu-item-radio-group.js';
+import '@carbon/web-components/es/components/menu/menu-item-selectable.js';
 
 // Carbon icons, as `carbonIcon(name)`: an <svg> element, 16 px unless another size is given.
 import { getAttributes, toSVG } from '@carbon/icon-helpers';
@@ -78,6 +84,7 @@ import time16 from '@carbon/icons/es/time/16.js';
 import pause16 from '@carbon/icons/es/pause/16.js';
 import trashCan16 from '@carbon/icons/es/trash-can/16.js';
 import unlocked16 from '@carbon/icons/es/unlocked/16.js';
+import chevronDown16 from '@carbon/icons/es/chevron--down/16.js';
 
 const icons = {
   add: add16,
@@ -106,6 +113,8 @@ const icons = {
   'pause-16': pause16,
   'trash-can': trashCan16,
   unlocked: unlocked16,
+  // At the end of a session's row that can be changed: it opens a menu.
+  'chevron-down': chevronDown16,
 };
 
 window.carbonIcon = (name, slot) => {
