@@ -78,7 +78,7 @@ function described(command, args, standIn) {
   return texts.get(key);
 }
 const weekText = (days) => described("describe_schedule", { week: { days } }, t("common.weeklyStandIn"));
-// A session's allowance (its terms) as a tile's line says it, short (`Allowed 30 minutes a day`).
+// A duration as typed (`2h 30m`) written out, as the service writes it.
 const durationText = (text) => described("describe_duration", { text: text || "" }, text || "");
 // An until lock's end written out (`Tuesday 6 October 2026, 18:00`); as typed until then, or
 // once it has passed.

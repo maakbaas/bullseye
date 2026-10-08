@@ -193,8 +193,8 @@ window.STRINGS = {
       helper: "Counted from the start of the session",
     },
   },
-  // The lock methods, as chosen on a session's tile. `describe` is the tile's line for a session that
-  // is not running; `confirm*` is the question before starting a locked session. A confirmAction is
+  // The lock methods, as chosen on a session's tile. `describe` is what the lock is, in the question
+  // when a locked session's lock is made stricter; `confirm*` is the question before starting a locked session. A confirmAction is
   // the modal's button: keep it to a few words without placeholders, as Carbon's modal buttons
   // have one fixed height and a long label runs out of them.
   locks: {
@@ -297,7 +297,7 @@ window.STRINGS = {
     howLegend: "How",
     actionsLegend: "Actions",
 
-    // The lists of a target. `count` is the tile's line.
+    // The lists of a target. `count` is what a target tile's row says of it.
     filters: {
       label: "Sites to block",
       placeholder: "youtube.com",
@@ -340,7 +340,7 @@ window.STRINGS = {
       count: { one: "{n} title always allowed", other: "{n} titles always allowed" },
     },
 
-    // The editor's sections, with the actions in each. `short` is the tile's line for an
+    // The editor's sections, with the actions in each. `short` is the target tile's row for an
     // action that needs no list.
     sections: {
       websites: {

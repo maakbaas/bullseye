@@ -116,7 +116,6 @@ function addRows(parts, id) {
         lock: () => button("settings", t("sessions.lockSettings"), () => parts.setLock(chosenOf("lock", current(id)))),
       }[key]();
     }
-    // What the choices mean and what is happening now is the tile's status line, under the rows (`tiles.js`).
     const buttons = el("span", { slot: "action", class: "row-actions" }, edit);
     const box = el("span", { class: "row" }, label, el("span", { class: "row-text" }, select, value));
     const row = el("cds-contained-list-item", {}, carbonIcon(icon, "icon"), box, buttons);

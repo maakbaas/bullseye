@@ -1,5 +1,6 @@
-// The lock methods (`lock::Lock`), by `method`: their form in the dialog, the tile's line for a
-// session that is not running, and what starting a session with one asks first.
+// The lock methods (`lock::Lock`), by `method`: their form in the dialog, what the lock is in words
+// (for the question when a locked session's lock is made stricter), and what starting a session with
+// one asks first.
 
 import { durationText, el, invalid, invoke, overview, quoted, editHref, ref, t, tn, untilText, wordingOf } from "./core.js";
 import { timingFields } from "./timing.js";
