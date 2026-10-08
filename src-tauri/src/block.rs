@@ -2053,8 +2053,7 @@ mod tests {
             method: crate::webhook::Method::Get,
             interval: 60,
             fallback: true,
-            when_true: crate::webhook::Matcher { on: crate::webhook::Match::Status, status: Some(200), body: None },
-            when_false: crate::webhook::Matcher { on: crate::webhook::Match::Status, status: Some(204), body: None },
+            matcher: crate::webhook::Matcher { on: crate::webhook::Match::Status, status: Some(204), body: None },
         };
         start("Hook", Rule::Webhook(hook)).unwrap();
         assert!(why("Hook").starts_with("“Hook” is locked by its webhook condition,"), "{}", why("Hook"));

@@ -340,8 +340,7 @@ mod tests {
             method: webhook::Method::Get,
             interval: 60,
             fallback: false,
-            when_true: webhook::Matcher { on: webhook::Match::Status, status: Some(200), body: None },
-            when_false: webhook::Matcher { on: webhook::Match::Status, status: Some(404), body: None },
+            matcher: webhook::Matcher { on: webhook::Match::Status, status: Some(200), body: None },
         }
     }
 

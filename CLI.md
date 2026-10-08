@@ -59,7 +59,7 @@ A running block keeps what it was started with: while it runs, it cannot be chan
 | `bullseye condition remove <condition> --conditions <conditions>` | unticking conditions in a combination's editor, then **Save** |
 | `bullseye condition delete <condition> [--force]` | **Delete** a condition |
 | `bullseye condition duplicate <condition>` | **Duplicate** a condition |
-| `bullseye condition test <condition>` | **Test** in a webhook condition's editor: asks it once and shows the status, the start of the body and what the matchers make of it |
+| `bullseye condition test <condition>` | **Test** in a webhook condition's editor: asks it once and shows the status, the start of the body and what the match makes of it |
 | `bullseye condition check <times>` | the schedule written out under the week grid in the condition editor |
 | `bullseye export <file>` | **Export** in Settings |
 | `bullseye import <file> [--force]` | **Import** in Settings |
@@ -154,8 +154,8 @@ bullseye condition new "Key" --drive "Kingston DataTraveler 3.0"
 
 # A combination of two or more conditions (not of other combinations): active when any of them
 # is (--any), or when all of them are (--all). Give the conditions separated by spaces.
-bullseye condition new "Room" --webhook "https://example.com/state?room=1" --true-body on --false-body off --every 5m
-bullseye condition new "Door" --webhook https://example.com/door --method post --true-status 200 --false-status 423 --fallback inactive
+bullseye condition new "Room" --webhook "https://example.com/state?room=1" --match-body off --every 5m
+bullseye condition new "Door" --webhook https://example.com/door --method post --fallback inactive --match-status 200
 bullseye condition test "Room"
 bullseye condition new "Work or weekend" --any "Work hours" Weekend
 bullseye condition new "Work hours with the key out" --all "Work hours" Key
@@ -254,7 +254,7 @@ bullseye unlock-way --none
 
 ### Webhook conditions
 
-`--webhook <url>` makes a condition that asks one web address (it can hold GET parameters; no tokens or headers) every `--every <time>` (at least `1m`, default `5m`) with `--method get` or `post` (default get), and is active or not by the answer. The **true** matcher is `--true-status <code>` and/or `--true-body <text>` (both given: both must match; a body must equal the text, white space around it aside), the **false** matcher `--false-status` and/or `--false-body`. If the true matcher matches the condition is active; if not, and the false one matches, it is not active; if neither does, or no answer came, or the last one is older than three times the interval, `--fallback active|inactive` says (default active). Both matchers are needed. Requests time out after 10 seconds, redirects are followed and certificates are checked. A locked block that uses a webhook condition cannot have it changed. `condition test` asks it once, as the editor's **Test** button does.
+`--webhook <url>` makes a condition that asks one web address (it can hold GET parameters; no tokens or headers) every `--every <time>` (at least `1m`, the default) with `--method get` or `post` (default get), and is active or not by the answer. `--fallback active|inactive` (default active) is what the condition is by default, also when no answer comes or the last one is older than three intervals; one match turns it into the other: `--match-status <code>` (the HTTP status code) or `--match-body <text>` (the whole body, white space around it aside). So with the default fallback, `--match-body off` makes it not active while the address answers `off`, and active otherwise. `condition test <condition>` asks it once and says what came back and what the match makes of it. A locked block's webhook condition cannot change.
 
 ### `condition check`
 

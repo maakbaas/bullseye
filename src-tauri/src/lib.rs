@@ -124,7 +124,7 @@ fn abort_stop(id: String, remote: State<Remote>) -> Result<(), String> {
 }
 
 /// Asks a webhook condition once, as the editor Test button does: what the web address answered and what
-/// the matchers make of it. The request is made off the main thread.
+/// the match makes of it. The request is made off the main thread.
 #[tauri::command]
 async fn test_webhook(hook: webhook::Hook) -> Result<webhook::Probe, String> {
     tauri::async_runtime::spawn_blocking(move || webhook::probe(&hook)).await.map_err(|e| e.to_string())?

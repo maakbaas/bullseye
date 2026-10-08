@@ -395,16 +395,16 @@ function drivePicker() {
   };
 }
 
-// One of a webhook's two matchers: what the answer must be, by a dropdown (HTTP code only, body only or
-// both) and the fields it needs.
+// A webhook's match: what turns the condition from its fallback to the other state, by a dropdown
+// (the HTTP code or the body) and its field. `title` names the state it gives ("Not active when").
 function matcherFields() {
   const mode = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.webhook.matchOn") });
-  for (const key of ["status", "body", "both"]) mode.append(el("cds-dropdown-item", { value: key }, t(`conditions.webhook.on.${key}`)));
+  for (const key of ["status", "body"]) mode.append(el("cds-dropdown-item", { value: key }, t(`conditions.webhook.on.${key}`)));
   const status = el("cds-text-input", { label: t("conditions.webhook.status"), placeholder: "200", "max-count": "3" });
-  const body = el("cds-text-input", { label: t("conditions.webhook.body"), placeholder: t("conditions.webhook.bodyPlaceholder"), "helper-text": t("conditions.webhook.bodyHelper") });
+  const body = el("cds-textarea", { label: t("conditions.webhook.body"), placeholder: t("conditions.webhook.bodyPlaceholder"), "helper-text": t("conditions.webhook.bodyHelper"), rows: 3 });
   const show = () => {
-    status.hidden = mode.value === "body";
-    body.hidden = mode.value === "status";
+    status.hidden = mode.value !== "status";
+    body.hidden = mode.value !== "body";
   };
   mode.addEventListener("cds-dropdown-selected", show);
   return {
@@ -417,17 +417,17 @@ function matcherFields() {
     },
     read: () => ({
       on: mode.value,
-      status: mode.value !== "body" && status.value.trim() ? Number(status.value.trim()) : null,
-      body: mode.value !== "status" ? body.value : null,
+      status: mode.value === "status" && status.value.trim() ? Number(status.value.trim()) : null,
+      body: mode.value === "body" ? body.value : null,
     }),
     error() {
       invalid(status, null);
       invalid(body, null);
-      if (mode.value !== "body" && !/^[1-5]\d\d$/.test(status.value.trim())) {
+      if (mode.value === "status" && !/^[1-5]\d\d$/.test(status.value.trim())) {
         invalid(status, t("conditions.webhook.statusWrong"));
         return t("conditions.webhook.statusWrong");
       }
-      if (mode.value !== "status" && !body.value.trim()) {
+      if (mode.value === "body" && !body.value.trim()) {
         invalid(body, t("conditions.webhook.bodyMissing"));
         return t("conditions.webhook.bodyMissing");
       }
@@ -439,29 +439,33 @@ function matcherFields() {
   };
 }
 
-// A webhook: one web address asked every so often (`webhook.rs`), GET or POST, and what its answer means: the
-// true matcher first, then the false one, else the fallback. A Test button asks it once (`test_webhook`).
+// A webhook: one web address asked every so often (`webhook.rs`), GET or POST, and what its answer means:
+// first what the condition is by default (also with no answer), then the one match that makes it the
+// other. A Test button asks it once (`test_webhook`).
 function webhookPicker() {
   const url = el("cds-text-input", { label: t("conditions.webhook.url"), placeholder: "https://example.com/state?room=1", "helper-text": t("conditions.webhook.urlHelper") });
   const method = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.webhook.method") });
   for (const key of ["get", "post"]) method.append(el("cds-dropdown-item", { value: key }, key.toUpperCase()));
-  const every = el("cds-text-input", { label: t("conditions.webhook.every"), placeholder: "5", "helper-text": t("conditions.webhook.everyHelper") });
+  const every = el("cds-text-input", { label: t("conditions.webhook.every"), placeholder: "1", "helper-text": t("conditions.webhook.everyHelper") });
   const fallback = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.webhook.fallback"), "helper-text": t("conditions.webhook.fallbackHelper") });
   for (const key of ["active", "inactive"]) fallback.append(el("cds-dropdown-item", { value: key }, t(`conditions.webhook.fallback_${key}`)));
-  const whenTrue = matcherFields();
-  const whenFalse = matcherFields();
+  const matcher = matcherFields();
+  // The match's section is named after the state it gives: the other one than the fallback.
+  const matchPart = section("", t("conditions.webhook.matchText"), ...matcher.nodes);
+  const nameMatch = () => {
+    matchPart.firstChild.textContent = t(fallback.value === "inactive" ? "conditions.webhook.matchActive" : "conditions.webhook.matchInactive");
+  };
+  fallback.addEventListener("cds-dropdown-selected", nameMatch);
   // What a test found, as a Carbon notification: how the condition comes out, and what was answered.
   const result = el("div", { class: "webhook-result" });
   const show = (kind, title, subtitle = "") => result.replaceChildren(el("cds-inline-notification", { kind, title, subtitle, "low-contrast": true, "hide-close-button": true }));
-  // Headings as in a block's editor: what is asked, when it is active, when not, and otherwise.
   const test = el("cds-button", { kind: "tertiary", size: "md" }, t("conditions.webhook.test"), carbonIcon("play", "icon"));
   const read = () => ({
     url: url.value.trim(),
     method: method.value || "get",
     interval: Math.round(Number(every.value.trim()) * 60),
     fallback: fallback.value !== "inactive",
-    when_true: whenTrue.read(),
-    when_false: whenFalse.read(),
+    matcher: matcher.read(),
   });
   const error = () => {
     invalid(url, null);
@@ -475,7 +479,7 @@ function webhookPicker() {
       invalid(every, t("conditions.webhook.everyWrong"));
       return t("conditions.webhook.everyWrong");
     }
-    return whenTrue.error() || whenFalse.error();
+    return matcher.error();
   };
   test.addEventListener("click", async () => {
     const wrong = error();
@@ -485,9 +489,9 @@ function webhookPicker() {
     try {
       const found = await invoke("test_webhook", { hook: read() });
       const answer = t("conditions.webhook.answer", { status: found.status, body: found.body });
-      // Green: active. Yellow: not active. Red: neither matched, so the fallback decides.
-      if (found.outcome === "neither") show("error", t(found.active ? "conditions.webhook.fellActive" : "conditions.webhook.fellInactive"), answer);
-      else show(found.active ? "success" : "warning", t(found.active ? "conditions.webhook.isActive" : "conditions.webhook.isInactive"), answer);
+      // Green: active. Yellow: not active. The title says whether the answer matched.
+      const key = `${found.outcome === "matches" ? "matched" : "unmatched"}${found.active ? "Active" : "Inactive"}`;
+      show(found.active ? "success" : "warning", t(`conditions.webhook.${key}`), answer);
     } catch (e) {
       show("error", t("conditions.webhook.testFailed"), String(e));
     }
@@ -496,27 +500,25 @@ function webhookPicker() {
   return {
     nodes: [
       section(t("conditions.webhook.requestTitle"), t("conditions.webhook.requestText"), url, method, every),
-      section(t("conditions.webhook.activeTitle"), t("conditions.webhook.activeText"), ...whenTrue.nodes),
-      section(t("conditions.webhook.inactiveTitle"), t("conditions.webhook.inactiveText"), ...whenFalse.nodes),
-      section(t("conditions.webhook.otherwiseTitle"), t("conditions.webhook.otherwiseText"), fallback),
+      section(t("conditions.webhook.defaultTitle"), t("conditions.webhook.defaultText"), fallback),
+      matchPart,
       section(t("conditions.webhook.testTitle"), t("conditions.webhook.testText"), el("div", { class: "inline-action" }, test), result),
     ],
     fill(condition) {
       const hook = condition.type === "webhook" ? condition : {};
       url.value = hook.url || "";
       method.value = hook.method || "get";
-      every.value = hook.interval ? String(Math.round(hook.interval / 60)) : "5";
+      every.value = hook.interval ? String(Math.round(hook.interval / 60)) : "1";
       fallback.value = hook.fallback === false ? "inactive" : "active";
-      whenTrue.fill(hook.when_true);
-      whenFalse.fill(hook.when_false);
+      matcher.fill(hook.matcher);
+      nameMatch();
       result.replaceChildren();
     },
     read,
     error,
     disable(off) {
       for (const control of [url, method, every, fallback, test]) control.disabled = off;
-      whenTrue.disable(off);
-      whenFalse.disable(off);
+      matcher.disable(off);
     },
   };
 }

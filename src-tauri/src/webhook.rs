@@ -1,8 +1,8 @@
 //! A webhook condition (`condition::Rule::Webhook`): active or not by what a URL answers. The
-//! service asks it every `interval` (at least a minute) with GET or POST, and the answer is judged
-//! by two matchers: if the "true" matcher matches, the condition is active; if not, the "false"
-//! matcher is looked at, and if it matches the condition is not active; if neither does (or no
-//! answer came, or the last one is too old: three intervals) the `fallback` says. There are no
+//! service asks it every `interval` (at least a minute) with GET or POST. The condition is what its
+//! `fallback` says (active or not), unless the answer matches its one `matcher` (an HTTP status
+//! code, or a body text): then it is the other. No answer, or one older than three intervals, is
+//! the fallback too. There are no
 //! headers or tokens: a single URL, which can carry GET parameters. Timeout, redirects (followed, at
 //! most five) and TLS (certificates are checked) have fixed, sensible values.
 //!
@@ -37,20 +37,18 @@ pub enum Method {
     Post,
 }
 
-/// What a matcher looks at.
+/// What the matcher looks at.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Match {
-    /// The HTTP status code only.
+    /// The HTTP status code.
     #[default]
     Status,
-    /// The body only, which has to equal the text (surrounding white space aside).
+    /// The body, which has to equal the text (surrounding white space aside).
     Body,
-    /// Both.
-    Both,
 }
 
-/// One of the two matchers.
+/// What turns the condition from its fallback to the other state.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
 pub struct Matcher {
     pub on: Match,
@@ -61,28 +59,21 @@ pub struct Matcher {
 }
 
 impl Matcher {
-    fn needs_status(&self) -> bool {
-        matches!(self.on, Match::Status | Match::Both)
-    }
-
-    fn needs_body(&self) -> bool {
-        matches!(self.on, Match::Body | Match::Both)
-    }
-
-    fn check(&self, what: &str) -> Result<(), String> {
-        if self.needs_status() && !self.status.is_some_and(|code| (100..=599).contains(&code)) {
-            return Err(format!("Give the HTTP status code (100 to 599) of the {what} matcher"));
+    fn check(&self) -> Result<(), String> {
+        match self.on {
+            Match::Status if !self.status.is_some_and(|code| (100..=599).contains(&code)) => {
+                Err("Give the HTTP status code to match (100 to 599)".into())
+            }
+            Match::Body if self.body.as_deref().is_none_or(|body| body.trim().is_empty()) => Err("Give the body text to match".into()),
+            _ => Ok(()),
         }
-        if self.needs_body() && self.body.as_deref().is_none_or(|body| body.trim().is_empty()) {
-            return Err(format!("Give the body text of the {what} matcher"));
-        }
-        Ok(())
     }
 
     fn matches(&self, status: u16, body: &str) -> bool {
-        let status_fits = !self.needs_status() || self.status == Some(status);
-        let body_fits = !self.needs_body() || self.body.as_deref().is_some_and(|expected| expected.trim() == body.trim());
-        status_fits && body_fits
+        match self.on {
+            Match::Status => self.status == Some(status),
+            Match::Body => self.body.as_deref().is_some_and(|expected| expected.trim() == body.trim()),
+        }
     }
 }
 
@@ -94,24 +85,24 @@ pub struct Hook {
     pub method: Method,
     /// Seconds between requests, at least `MIN_INTERVAL`.
     pub interval: u64,
-    /// Whether the condition is active when the answer cannot be told.
+    /// Whether the condition is active unless the answer matches (also with no answer).
     pub fallback: bool,
-    pub when_true: Matcher,
-    pub when_false: Matcher,
+    /// What makes it the other.
+    pub matcher: Matcher,
 }
 
 /// What an answer makes of the condition.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
-    True,
-    False,
-    /// Neither matcher matched: the fallback.
-    Neither,
+    /// The matcher matches: the other state than the fallback.
+    Matches,
+    /// It does not: the fallback.
+    Otherwise,
 }
 
 impl Hook {
-    /// Checked when it is saved: a web address, the interval at least a minute, what each matcher needs.
+    /// Checked when it is saved: a web address, the interval at least a minute, what the matcher needs.
     pub fn check(&self) -> Result<(), String> {
         let url = self.url.trim();
         if !(url.starts_with("http://") || url.starts_with("https://")) || url.len() < 9 || url.contains(char::is_whitespace) {
@@ -120,25 +111,22 @@ impl Hook {
         if self.interval < MIN_INTERVAL {
             return Err("Ask at most once a minute: the interval is at least 1m".into());
         }
-        self.when_true.check("true")?;
-        self.when_false.check("false")
+        self.matcher.check()
     }
 
-    /// What an answer with this status and body means: the "true" matcher first, then the "false" one.
+    /// What an answer with this status and body means.
     pub fn judge(&self, status: u16, body: &str) -> Outcome {
-        if self.when_true.matches(status, body) {
-            Outcome::True
-        } else if self.when_false.matches(status, body) {
-            Outcome::False
+        if self.matcher.matches(status, body) {
+            Outcome::Matches
         } else {
-            Outcome::Neither
+            Outcome::Otherwise
         }
     }
 
+    /// Active or not by an answer's outcome; the fallback without one.
     fn active_by(&self, outcome: Option<Outcome>) -> bool {
         match outcome {
-            Some(Outcome::True) => true,
-            Some(Outcome::False) => false,
+            Some(Outcome::Matches) => !self.fallback,
             _ => self.fallback,
         }
     }
@@ -164,7 +152,7 @@ pub fn fetch(hook: &Hook) -> Result<(u16, String), String> {
     Ok((status, body))
 }
 
-/// What one test request found: what came back (the body cut short) and what the matchers make of it.
+/// What one test request found: what came back (the body cut short) and what the matcher makes of it.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Probe {
     pub status: u16,
@@ -185,12 +173,10 @@ pub fn probe(hook: &Hook) -> Result<Probe, String> {
 /// What a test request found, in words (`condition test`).
 pub fn test(hook: &Hook) -> Result<String, String> {
     let found = probe(hook)?;
+    let state = if found.active { "active" } else { "not active" };
     let verdict = match found.outcome {
-        Outcome::True => "the condition is active (the true matcher matches)".to_string(),
-        Outcome::False => "the condition is not active (the false matcher matches)".to_string(),
-        Outcome::Neither => {
-            format!("neither matcher matches, so the fallback applies: {}", if found.active { "active" } else { "not active" })
-        }
+        Outcome::Matches => format!("it matches, so the condition is {state}"),
+        Outcome::Otherwise => format!("it does not match, so the condition is {state}, as it is by default"),
     };
     Ok(format!("HTTP {}, body \"{}\": {verdict}", found.status, found.body))
 }
@@ -264,9 +250,12 @@ mod tests {
             method: Method::Get,
             interval: 60,
             fallback: true,
-            when_true: Matcher { on: Match::Status, status: Some(200), body: None },
-            when_false: Matcher { on: Match::Both, status: Some(200), body: Some("off".into()) },
+            matcher: Matcher { on: Match::Body, status: None, body: Some("off".into()) },
         }
+    }
+
+    fn status(code: Option<u16>) -> Matcher {
+        Matcher { on: Match::Status, status: code, body: None }
     }
 
     #[test]
@@ -275,34 +264,28 @@ mod tests {
         assert!(Hook { url: "ftp://x".into(), ..hook() }.check().is_err());
         assert!(Hook { url: "https://a b".into(), ..hook() }.check().is_err());
         assert!(Hook { interval: 59, ..hook() }.check().is_err());
-        assert!(Hook { when_true: Matcher { on: Match::Status, status: None, body: None }, ..hook() }.check().is_err());
-        assert!(Hook { when_true: Matcher { on: Match::Body, status: None, body: Some(" ".into()) }, ..hook() }.check().is_err());
-        assert!(Hook { when_false: Matcher { on: Match::Status, status: Some(99), body: None }, ..hook() }.check().is_err());
+        assert!(Hook { matcher: status(Some(200)), ..hook() }.check().is_ok());
+        assert_eq!(Hook { matcher: status(None), ..hook() }.check(), Err("Give the HTTP status code to match (100 to 599)".into()));
+        assert_eq!(Hook { matcher: status(Some(99)), ..hook() }.check(), Err("Give the HTTP status code to match (100 to 599)".into()));
+        let blank = Matcher { on: Match::Body, status: Some(200), body: Some(" ".into()) };
+        assert_eq!(Hook { matcher: blank, ..hook() }.check(), Err("Give the body text to match".into()));
     }
 
     #[test]
-    fn the_true_matcher_goes_first_then_the_false_one_then_the_fallback() {
-        let both = Hook {
-            when_true: Matcher { on: Match::Both, status: Some(200), body: Some("on".into()) },
-            when_false: Matcher { on: Match::Body, status: None, body: Some("off".into()) },
-            ..hook()
-        };
-        assert_eq!(both.judge(200, "on\n"), Outcome::True);
-        assert_eq!(both.judge(500, "off"), Outcome::False);
-        assert_eq!(both.judge(200, "off"), Outcome::False);
-        assert_eq!(both.judge(200, "maybe"), Outcome::Neither);
-        assert_eq!(both.judge(404, "on"), Outcome::Neither);
-        // Both match: the true one wins.
-        assert_eq!(hook().judge(200, "off"), Outcome::True);
-    }
-
-    #[test]
-    fn what_cannot_be_told_is_the_fallback() {
-        let mut quiet = hook();
-        assert!(quiet.active_by(None) && quiet.active_by(Some(Outcome::Neither)));
-        quiet.fallback = false;
-        assert!(!quiet.active_by(None) && !quiet.active_by(Some(Outcome::Neither)));
-        assert!(quiet.active_by(Some(Outcome::True)) && !hook().active_by(Some(Outcome::False)));
+    fn a_match_turns_the_fallback_around() {
+        // By the body, white space around it aside, and nothing else of the answer.
+        assert_eq!(hook().judge(500, " off\n"), Outcome::Matches);
+        assert_eq!(hook().judge(200, "on"), Outcome::Otherwise);
+        // By the status code alone.
+        let coded = Hook { matcher: status(Some(204)), ..hook() };
+        assert_eq!(coded.judge(204, "anything"), Outcome::Matches);
+        assert_eq!(coded.judge(200, ""), Outcome::Otherwise);
+        // Active by default: a match makes it not active; and the other way round.
+        let quiet = Hook { fallback: false, ..hook() };
+        assert!(!hook().active_by(Some(Outcome::Matches)) && hook().active_by(Some(Outcome::Otherwise)));
+        assert!(quiet.active_by(Some(Outcome::Matches)) && !quiet.active_by(Some(Outcome::Otherwise)));
+        // No answer is the fallback.
+        assert!(hook().active_by(None) && !quiet.active_by(None));
     }
 
     /// A web server on 127.0.0.1 that answers every request with `status` and `body`, and says
@@ -355,29 +338,22 @@ mod tests {
     }
 
     #[test]
-    fn a_test_says_what_the_matchers_make_of_the_answer() {
-        let on = |status: u16, body: &str| {
+    fn a_test_says_what_the_matcher_makes_of_the_answer() {
+        let asked = |status: u16, body: &str, fallback: bool| {
             let (url, _) = serve(status, body.into());
-            let hook = Hook {
-                url,
-                when_true: Matcher { on: Match::Body, status: None, body: Some("on".into()) },
-                when_false: Matcher { on: Match::Body, status: None, body: Some("off".into()) },
-                ..hook()
-            };
+            let hook = Hook { url, fallback, ..hook() };
             (probe(&hook), test(&hook))
         };
-        let (found, words) = on(200, " on ");
-        assert_eq!(found, Ok(Probe { status: 200, body: "on".into(), outcome: Outcome::True, active: true }));
-        assert_eq!(words.unwrap(), "HTTP 200, body \"on\": the condition is active (the true matcher matches)");
-        let (found, words) = on(200, "off");
-        assert!(found.is_ok_and(|p| p.outcome == Outcome::False && !p.active));
-        assert!(words.unwrap().ends_with("the condition is not active (the false matcher matches)"));
-        let (found, words) = on(500, "maybe");
-        assert!(found.is_ok_and(|p| p.outcome == Outcome::Neither && p.active));
-        assert_eq!(words.unwrap(), "HTTP 500, body \"maybe\": neither matcher matches, so the fallback applies: active");
-        let (url, _) = serve(500, "maybe".into());
-        let quiet = Hook { url, fallback: false, ..hook() };
-        assert!(test(&quiet).unwrap().ends_with("the fallback applies: not active"));
+        let (found, words) = asked(200, " off ", true);
+        assert_eq!(found, Ok(Probe { status: 200, body: "off".into(), outcome: Outcome::Matches, active: false }));
+        assert_eq!(words.unwrap(), "HTTP 200, body \"off\": it matches, so the condition is not active");
+        let (found, words) = asked(200, "on", true);
+        assert!(found.is_ok_and(|p| p.outcome == Outcome::Otherwise && p.active));
+        assert_eq!(words.unwrap(), "HTTP 200, body \"on\": it does not match, so the condition is active, as it is by default");
+        let (_, words) = asked(200, "off", false);
+        assert!(words.unwrap().ends_with("it matches, so the condition is active"));
+        let (_, words) = asked(500, "maybe", false);
+        assert!(words.unwrap().ends_with("it does not match, so the condition is not active, as it is by default"));
         // The body shown is cut to 200 characters.
         let (url, _) = serve(200, "y".repeat(300));
         assert_eq!(probe(&Hook { url, ..hook() }).map(|p| p.body.len()), Ok(200));
@@ -389,8 +365,8 @@ mod tests {
     #[test]
     fn the_condition_goes_by_the_last_answer_and_else_its_fallback() {
         let (url, _) = serve(204, String::new());
-        // The false matcher matches a 204; until the poller has asked, the fallback (active) holds.
-        let asked = Hook { url, when_false: Matcher { on: Match::Status, status: Some(204), body: None }, ..hook() };
+        // A 204 matches, which makes it not active; until the poller has asked, the fallback (active) holds.
+        let asked = Hook { url, matcher: status(Some(204)), ..hook() };
         assert!(answer(&asked));
         let waited = Instant::now();
         while answer(&asked) && waited.elapsed() < Duration::from_secs(10) {
@@ -400,7 +376,7 @@ mod tests {
         // An answer older than three intervals is as good as none.
         let key = serde_json::to_string(&asked).unwrap();
         if let Some(old) = Instant::now().checked_sub(Duration::from_secs(asked.interval * 3 + 1)) {
-            registry().locked().get_mut(&key).unwrap().last = Some((old, Outcome::False));
+            registry().locked().get_mut(&key).unwrap().last = Some((old, Outcome::Matches));
             assert!(answer(&asked), "too old: the fallback");
         }
         // A webhook nobody asks about any more is dropped at the next round.

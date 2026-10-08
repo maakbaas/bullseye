@@ -199,13 +199,12 @@ Conditions:
                                     conditions (--any or --all, separated by spaces): active when any
                                     of them is, or when all are. Not of other combinations. A
                                     webhook asks one web address (it can hold GET parameters) every
-                                    --every <time> (at least 1m, default 5m), with --method get|post
-                                    (default get). It is active when the answer matches the true
-                                    matcher --true-status <code> and/or --true-body <text>; if not,
-                                    not active when it matches the false matcher --false-status
-                                    and/or --false-body (a body must equal the text); if neither
-                                    does, or no answer comes, --fallback active|inactive (default
-                                    active) says. Both matchers are needed.
+                                    --every <time> (at least 1m, the default), with --method
+                                    get|post (default get). It is what --fallback active|inactive
+                                    says (default active; also when no answer comes), unless the
+                                    answer matches --match-status <code> or --match-body <text>
+                                    (the whole body, white space around it aside): then it is the
+                                    other.
   condition edit <condition> [--name <name>] [--times <times> | --drive <drive> | --webhook <url> [webhook options] | --any <conditions> | --all <conditions>]
                                     Change a condition. While a locked block uses it, a schedule
                                     can only get more times, a drive cannot change, and a
@@ -222,7 +221,7 @@ Conditions:
                                     condition is deleted too.
   condition duplicate <condition>   Make a copy of a condition, named after it with a number.
   condition test <condition>        Ask a webhook condition once: the status, the start of the
-                                    body, and what the matchers make of it.
+                                    body, and what the match makes of it.
   condition check <times>           Check times and show them per day, as a schedule takes them.
 
 Moving to another computer:
@@ -754,9 +753,9 @@ fn parse_rule(options: &mut Options) -> Result<Option<RuleChoice>, String> {
     }
 }
 
-/// `--webhook <url>` with `--method get|post`, `--every <time>` (at least 1m, default 5m), `--fallback
-/// active|inactive` (default active), and what each answer means: `--true-status` / `--true-body` and
-/// `--false-status` / `--false-body`, each matcher by what is given of it (status, body or both).
+/// `--webhook <url>` with `--method get|post`, `--every <time>` (at least 1m, default 1m), `--fallback
+/// active|inactive` (default active: what the condition is unless the answer matches) and the one
+/// match that makes it the other: `--match-status <code>` or `--match-body <text>`.
 fn parse_webhook(options: &mut Options) -> Result<Option<Hook>, String> {
     let Some(url) = options.value("--webhook")? else { return Ok(None) };
     let method = match options.value("--method")?.map(|m| m.to_lowercase()).as_deref() {
@@ -766,30 +765,30 @@ fn parse_webhook(options: &mut Options) -> Result<Option<Hook>, String> {
     };
     let interval = match options.value("--every")? {
         Some(text) => duration::parse(&text)?.ok_or("Give the time between requests, e.g. 5m")?.as_secs(),
-        None => 300,
+        None => 60,
     };
     let fallback = match options.value("--fallback")?.map(|f| f.to_lowercase()).as_deref() {
         None | Some("active") => true,
         Some("inactive") => false,
         Some(other) => return Err(format!("--fallback is active or inactive, not \"{other}\"")),
     };
-    let mut matcher = |what: &str| -> Result<Matcher, String> {
-        let status = options.value(&format!("--{what}-status"))?;
-        let body = options.value(&format!("--{what}-body"))?;
-        let status = status.map(|s| s.trim().parse::<u16>().map_err(|_| format!("--{what}-status is a number, e.g. 200"))).transpose()?;
-        let on = match (status.is_some(), body.is_some()) {
-            (true, true) => Match::Both,
-            (true, false) => Match::Status,
-            (false, true) => Match::Body,
-            (false, false) => {
-                return Err(format!("Give --{what}-status and/or --{what}-body: what an answer must be for the condition to be {what}"))
-            }
-        };
-        Ok(Matcher { on, status, body })
+    let status = options.value("--match-status")?;
+    let body = options.value("--match-body")?;
+    let matcher = match (status, body) {
+        (Some(status), None) => Matcher {
+            on: Match::Status,
+            status: Some(status.trim().parse::<u16>().map_err(|_| "--match-status is a number, e.g. 200")?),
+            body: None,
+        },
+        (None, Some(body)) => Matcher { on: Match::Body, status: None, body: Some(body) },
+        _ => {
+            return Err(format!(
+                "Give one of --match-status and --match-body: the answer that makes the condition {}",
+                if fallback { "not active" } else { "active" }
+            ))
+        }
     };
-    let when_true = matcher("true")?;
-    let when_false = matcher("false")?;
-    let hook = Hook { url, method, interval, fallback, when_true, when_false };
+    let hook = Hook { url, method, interval, fallback, matcher };
     hook.check()?;
     Ok(Some(hook))
 }
@@ -1438,20 +1437,17 @@ fn drive_detail(rule: &Rule) -> String {
 
 /// A webhook condition as words.
 fn describe_webhook(hook: &Hook) -> String {
-    let matcher = |m: &Matcher| match (m.on, m.status, &m.body) {
+    let matched = match (hook.matcher.on, hook.matcher.status, &hook.matcher.body) {
         (Match::Status, Some(status), _) => format!("HTTP {status}"),
         (Match::Body, _, Some(body)) => format!("body \"{body}\""),
-        (_, Some(status), Some(body)) => format!("HTTP {status} and body \"{body}\""),
         _ => "(not set)".into(),
     };
+    let (usually, other) = if hook.fallback { ("active", "not active") } else { ("not active", "active") };
     format!(
-        "{} {} every {}: active on {}, not active on {}, otherwise {}",
+        "{} {} every {}: {usually}, {other} on {matched}",
         if hook.method == Method::Post { "POST" } else { "GET" },
         hook.url,
-        duration::countdown(hook.interval),
-        matcher(&hook.when_true),
-        matcher(&hook.when_false),
-        if hook.fallback { "active" } else { "not active" }
+        duration::countdown(hook.interval)
     )
 }
 
@@ -2103,14 +2099,12 @@ mod tests {
     fn a_webhook_condition_is_shown_and_tested() {
         serve("webhook");
         let url = "http://127.0.0.1:9/state";
-        ok(&["condition", "new", "Home", "--webhook", url, "--true-status", "200", "--false-body", "away", "--fallback", "inactive"]);
+        ok(&["condition", "new", "Home", "--webhook", url, "--match-body", "home", "--fallback", "inactive"]);
         let shown = ok(&["condition", "show", "Home"]);
-        assert!(
-            shown.contains(
-                "GET http://127.0.0.1:9/state every 5 minutes: active on HTTP 200, not active on body \"away\", otherwise not active"
-            ),
-            "{shown}"
-        );
+        assert!(shown.contains("GET http://127.0.0.1:9/state every 1 minute: not active, active on body \"home\""), "{shown}");
+        ok(&["condition", "new", "Door", "--webhook", url, "--match-status", "423", "--every", "5m"]);
+        let shown = ok(&["condition", "show", "Door"]);
+        assert!(shown.contains("GET http://127.0.0.1:9/state every 5 minutes: active, not active on HTTP 423"), "{shown}");
         // Nothing answers there.
         assert!(cli(&["condition", "test", "Home"]).is_err());
     }
@@ -2229,20 +2223,19 @@ mod tests {
             "POST",
             "--every",
             "10m",
-            "--true-status",
-            "200",
-            "--true-body",
-            "on",
-            "--false-status",
+            "--match-status",
             "503",
             "--fallback",
             "active",
         ];
         let Ok(Command::ConditionNew { rule: RuleChoice::Webhook(hook), .. }) = parse(&args(&line)) else { panic!("not a webhook") };
         assert_eq!((hook.method, hook.interval, hook.fallback), (Method::Post, 600, true));
-        assert_eq!(hook.when_true, Matcher { on: Match::Both, status: Some(200), body: Some("on".into()) });
-        assert_eq!(hook.when_false, Matcher { on: Match::Status, status: Some(503), body: None });
-        let base = ["condition", "new", "H", "--webhook", "https://x.io/a", "--true-status", "200", "--false-status", "404"];
+        assert_eq!(hook.matcher, Matcher { on: Match::Status, status: Some(503), body: None });
+        let line = ["condition", "new", "H", "--webhook", "https://x.io/a", "--match-body", "on", "--fallback", "inactive"];
+        let Ok(Command::ConditionNew { rule: RuleChoice::Webhook(hook), .. }) = parse(&args(&line)) else { panic!("not a webhook") };
+        assert_eq!((hook.method, hook.interval, hook.fallback), (Method::Get, 60, false));
+        assert_eq!(hook.matcher, Matcher { on: Match::Body, status: None, body: Some("on".into()) });
+        let base = ["condition", "new", "H", "--webhook", "https://x.io/a", "--match-status", "404"];
         for (extra, why) in [
             (&["--method", "put"][..], "--method is get or post"),
             (&["--fallback", "maybe"], "--fallback is active or inactive"),
@@ -2252,10 +2245,16 @@ mod tests {
             let error = parse(&args(&[&base[..], extra].concat())).err().unwrap_or_else(|| panic!("{extra:?} worked"));
             assert!(error.contains(why), "{extra:?}: {error}");
         }
-        assert!(parse(&args(&base[..base.len() - 2])).unwrap_err().starts_with("Give --false-status and/or --false-body"));
-        assert!(parse(&args(&["condition", "new", "H", "--webhook", "https://x.io/a", "--true-status", "OK"]))
+        // One match: neither, or both, is refused, saying what the match is for.
+        let hook = ["condition", "new", "H", "--webhook", "https://x.io/a"];
+        assert_eq!(
+            parse(&args(&hook)).unwrap_err(),
+            "Give one of --match-status and --match-body: the answer that makes the condition not active"
+        );
+        assert!(parse(&args(&[&hook[..], &["--fallback", "inactive", "--match-status", "200", "--match-body", "on"]].concat()))
             .unwrap_err()
-            .contains("is a number"));
+            .ends_with("the answer that makes the condition active"));
+        assert!(parse(&args(&[&hook[..], &["--match-status", "OK"]].concat())).unwrap_err().contains("is a number"));
         // An option given twice is a mistake, not a choice.
         assert!(parse(&args(&["new", "X", "--condition", "A", "--condition", "B"])).unwrap_err().contains("more than once"));
     }
@@ -2417,13 +2416,9 @@ mod tests {
             method: Method::Get,
             interval: 60,
             fallback: true,
-            when_true: Matcher { on: Match::Both, status: Some(200), body: Some("on".into()) },
-            when_false: Matcher { on: Match::Status, status: None, body: None },
+            matcher: Matcher { on: Match::Status, status: None, body: None },
         };
-        assert_eq!(
-            describe_webhook(&hook),
-            "GET https://x.io every 1 minute: active on HTTP 200 and body \"on\", not active on (not set), otherwise active"
-        );
+        assert_eq!(describe_webhook(&hook), "GET https://x.io every 1 minute: active, not active on (not set)");
     }
 
     #[test]
