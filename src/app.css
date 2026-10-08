@@ -36,6 +36,11 @@ main { padding-block: var(--cds-spacing-06); }
 /* Under the title row, the button's too, across the whole width, with room above it. */
 .heading .tagline { margin-block-start: var(--cds-spacing-05); color: var(--cds-text-secondary); }
 .trail { display: block; margin-bottom: var(--cds-spacing-03); }
+/* Below md Carbon makes the breadcrumb's list inline and leaves its items block-level flex boxes,
+   so each item goes on a line of its own. Inline items (each host's own display, nothing inside
+   it) flow on one line as they do from md up, where the list is a flex row and they are flex
+   items anyway; only a trail too long for the window goes on to the next line. */
+.trail cds-breadcrumb-item { display: inline-flex; }
 .notices:empty { display: none; }
 .notices { margin-bottom: var(--cds-spacing-05); }
 .notices cds-inline-notification, .webhook-result cds-inline-notification { max-width: none; }
