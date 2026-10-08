@@ -75,7 +75,7 @@ impl Lists {
             sites: FilterList::parse(&entries.filters).map_err(|_| "invalid block list syntax")?,
             allowed: FilterList::parse(&entries.allowed).map_err(|_| "invalid syntax in the list of allowed sites")?,
             programs: ProgramList::parse(&entries.programs)?,
-            store_apps: Patterns::parse(&entries.store_apps).map_err(|why| format!("Store apps: {why}"))?,
+            store_apps: store_apps(&entries.store_apps)?,
             titles: Patterns::parse(&entries.titles).map_err(|why| format!("Window titles: {why}"))?,
         })
     }
@@ -103,6 +103,17 @@ impl Lists {
     }
 }
 
+/// The Store apps, by their exact package family names, letter case aside: the window ticks them from
+/// the installed ones (`store_apps::installed`), and the CLI takes them as `list apps` shows them.
+/// A `*` is refused, so what a block closes is always an app someone chose.
+fn store_apps(entries: &[String]) -> Result<Patterns, String> {
+    let wild: Vec<&str> = entries.iter().map(|e| e.trim()).filter(|e| e.contains('*')).collect();
+    if !wild.is_empty() {
+        return Err(format!("Store apps: give each by its exact package family name, without *: {}", wild.join(", ")));
+    }
+    Patterns::parse(entries).map_err(|why| format!("Store apps: {why}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,15 +136,33 @@ mod tests {
         let full = Lists::parse(&Entries {
             filters: vec!["a.com".into()],
             programs: vec!["game.exe".into()],
-            store_apps: vec!["Microsoft.Xbox*".into()],
+            store_apps: vec!["Microsoft.XboxApp_8wekyb3d8bbwe".into()],
             titles: vec!["*Chat*".into()],
             ..Entries::default()
         })
         .unwrap();
         assert!([Uses::Sites, Uses::Programs, Uses::StoreApps, Uses::Titles].into_iter().all(|uses| full.has(uses)));
-        // What a list cannot read says which list.
+        // A lone * is a title list of its own; what a list cannot read says which list.
+        assert!(Lists::parse(&Entries { titles: vec!["*".into()], ..Entries::default() }).is_ok());
         let why = |entries: Entries| Lists::parse(&entries).err().unwrap_or_default();
-        assert!(why(Entries { titles: vec!["*".into()], ..Entries::default() }).starts_with("Window titles:"));
-        assert!(why(Entries { store_apps: vec!["*".into()], ..Entries::default() }).starts_with("Store apps:"));
+        assert!(
+            why(Entries { programs: vec!["*".into()], ..Entries::default() }).starts_with("Would close programs Windows or this app needs")
+        );
+    }
+
+    #[test]
+    fn a_store_app_is_named_exactly() {
+        let lists = Lists::parse(&Entries { store_apps: vec!["Microsoft.XboxApp_8wekyb3d8bbwe".into()], ..Entries::default() }).unwrap();
+        assert!(lists.store_apps.is_match("microsoft.xboxapp_8wekyb3d8bbwe"), "letter case aside");
+        assert!(!lists.store_apps.is_match("Microsoft.XboxApp_8wekyb3d8bbwe2"));
+        for wild in ["*", "Microsoft.Xbox*", "*Xbox*"] {
+            let why = Lists::parse(&Entries {
+                store_apps: vec!["Microsoft.WindowsCalculator_8wekyb3d8bbwe".into(), wild.into()],
+                ..Entries::default()
+            })
+            .err()
+            .unwrap_or_default();
+            assert_eq!(why, format!("Store apps: give each by its exact package family name, without *: {wild}"));
+        }
     }
 }

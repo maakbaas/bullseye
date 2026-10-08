@@ -233,7 +233,7 @@ mod tests {
         let mut list = block_list("l", &["tweakers.net"]);
         list.entries.allowed = vec!["gathering.tweakers.net".into()];
         list.entries.programs = vec!["steam*".into()];
-        list.entries.store_apps = vec!["Microsoft.Xbox*".into()];
+        list.entries.store_apps = vec!["Microsoft.XboxApp_8wekyb3d8bbwe".into()];
         list.entries.titles = vec!["*YouTube*".into()];
         let requests = [
             Request::SaveList { list },

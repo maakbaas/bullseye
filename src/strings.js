@@ -333,7 +333,7 @@ window.STRINGS = {
     titles: {
       label: "Window titles to close",
       placeholder: "*YouTube*",
-      helper: "One per line, the whole title. * matches any part, case is ignored. Closes the whole window with all its tabs",
+      helper: "One per line, the whole title. * matches any part, case is ignored, a lone * closes every window but Bullseye. Closes the whole window with all its tabs",
       count: { one: "{n} window title closed", other: "{n} window titles closed" },
     },
 

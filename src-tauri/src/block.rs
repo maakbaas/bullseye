@@ -1764,7 +1764,7 @@ mod tests {
         let list = blocklist("kinds");
         let lists = lists_of(Entries {
             filters: strings(&["a.com"]),
-            store_apps: strings(&["Microsoft.Xbox*", "Microsoft.Windows.*"]),
+            store_apps: strings(&["Microsoft.XboxApp_8wekyb3d8bbwe", "Microsoft.Windows.Photos_8wekyb3d8bbwe"]),
             titles: strings(&["*Chat*"]),
             ..Entries::default()
         });
@@ -1780,7 +1780,7 @@ mod tests {
         assert!(active.closes_store_apps());
         assert!(active.blocks_store_app("Microsoft.XboxApp_8wekyb3d8bbwe"));
         assert!(!active.blocks_store_app("Microsoft.Windows.Photos_8wekyb3d8bbwe"));
-        assert!(!active.blocks_store_app("Microsoft.WindowsCalculator_8wekyb3d8bbwe"));
+        assert!(!active.blocks_store_app("Microsoft.XboxGameOverlay_8wekyb3d8bbwe"), "only the app named");
         // Windows by their title.
         assert!(active.closes_titles() && active.blocks_title("Team chat - Browser") && !active.blocks_title("Notes"));
         // Nothing else.
@@ -1789,7 +1789,11 @@ mod tests {
 
         // Without those enforcers, nothing of it is closed.
         let list = blocklist("kinds-off");
-        let lists = lists_of(Entries { store_apps: strings(&["Microsoft.Xbox*"]), titles: strings(&["*Chat*"]), ..Entries::default() });
+        let lists = lists_of(Entries {
+            store_apps: strings(&["Microsoft.XboxApp_8wekyb3d8bbwe"]),
+            titles: strings(&["*Chat*"]),
+            ..Entries::default()
+        });
         list.start("a", "A", vec![part(lists, only(&["exe_names", "obsidian_web_viewer"]))], None, StartLock::None).unwrap();
         let active = list.active().unwrap();
         assert!(!active.closes_store_apps() && !active.blocks_store_app("Microsoft.XboxApp_8wekyb3d8bbwe"));
@@ -1801,7 +1805,7 @@ mod tests {
     fn a_budget_for_each_item_watches_store_apps_and_titles_too() {
         let list = blocklist("budget-kinds");
         let lists = lists_of(Entries {
-            store_apps: strings(&["Microsoft.Xbox*"]),
+            store_apps: strings(&["Microsoft.XboxApp_8wekyb3d8bbwe"]),
             titles: strings(&["*Chat*"]),
             programs: strings(&["game.exe"]),
             ..Entries::default()
@@ -1817,14 +1821,14 @@ mod tests {
         let mut seen = active.used.take();
         seen.sort();
         let key = |k: &str| ("a".to_string(), k.to_string());
-        assert_eq!(seen, vec![key("app:Microsoft.Xbox*"), key("program:game.exe"), key("title:*Chat*")]);
+        assert_eq!(seen, vec![key("app:Microsoft.XboxApp_8wekyb3d8bbwe"), key("program:game.exe"), key("title:*Chat*")]);
         // What could not be reported is taken back, to go with the next report.
         active.used.put_back(seen.clone());
         assert_eq!(active.used.take(), seen);
         // Used up: closed again.
         list.polled();
         std::thread::sleep(Duration::from_millis(1100));
-        list.charge(&[key("app:Microsoft.Xbox*"), key("title:*Chat*")]);
+        list.charge(&[key("app:Microsoft.XboxApp_8wekyb3d8bbwe"), key("title:*Chat*")]);
         let active = list.active().unwrap();
         assert!(active.blocks_store_app("Microsoft.XboxApp_8wekyb3d8bbwe") && active.blocks_title("Team chat"));
         assert!(!active.blocks_program("game.exe"), "the program has its own time");

@@ -1,9 +1,12 @@
 //! A list of text patterns with `*` as wildcard, matched against a whole text and ignoring letter
-//! case. Used for window titles (`*YouTube*`) and for the names of Store apps
-//! (`Microsoft.Xbox*`).
+//! case. Used for window titles (`*YouTube*`), and for the names of Store apps, which are given
+//! exactly, without `*` (`lists::store_apps`).
 //!
 //! The whole text has to match, so `YouTube` is a window with exactly that title and `*YouTube*`
-//! one with it anywhere in it. An entry of nothing but `*` is refused: it would match everything.
+//! one with it anywhere in it, and a lone `*` every one (the user chose to allow it: refusing it let
+//! `*e*` through all the same). What must never be closed is spared where the closing is done:
+//! Bullseye's own windows and Windows' shell (`tab_closer.rs`), Windows' own Store apps
+//! (`store_apps::is_protected`).
 
 use regex::RegexSet;
 
@@ -23,10 +26,6 @@ impl Patterns {
     /// Parses one entry per line, ignoring empty lines. The error says in words what is wrong.
     pub fn parse<S: AsRef<str>>(lines: &[S]) -> Result<Patterns, String> {
         let entries: Vec<String> = lines.iter().map(|l| l.as_ref().trim().to_string()).filter(|l| !l.is_empty()).collect();
-        let everything: Vec<&str> = entries.iter().filter(|e| e.chars().all(|c| c == '*')).map(String::as_str).collect();
-        if !everything.is_empty() {
-            return Err(format!("Would match everything, give some text besides the *: {}", everything.join(", ")));
-        }
         let matchers = RegexSet::new(entries.iter().map(|e| to_regex(e))).map_err(|e| e.to_string())?;
         Ok(Patterns { entries, matchers })
     }
@@ -83,11 +82,11 @@ mod tests {
     }
 
     #[test]
-    fn empty_lines_are_ignored_and_a_lone_wildcard_is_refused() {
+    fn empty_lines_are_ignored_and_a_lone_wildcard_matches_everything() {
         assert!(list(&["", "  "]).is_empty());
         assert!(!list(&["x"]).is_empty());
-        assert!(Patterns::parse(&["*"]).is_err());
-        assert!(Patterns::parse(&["a", "**"]).is_err());
+        assert!(list(&["*"]).is_match("Any window at all") && list(&["*"]).is_match(""));
+        assert!(list(&["a", "**"]).is_match("Notes"));
         assert!(!Patterns::default().is_match("anything"));
     }
 }

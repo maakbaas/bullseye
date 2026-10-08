@@ -1,6 +1,6 @@
 //! Apps installed from the Microsoft Store (packaged apps), blocked by their **package family
-//! name**: `Microsoft.WindowsCalculator_8wekyb3d8bbwe`. `*` works in the entries (`Microsoft.Xbox*`),
-//! as in `patterns.rs`.
+//! name**: `Microsoft.WindowsCalculator_8wekyb3d8bbwe`, exactly, letter case aside: the window ticks
+//! them from the installed ones, and a `*` is refused (`lists::store_apps`).
 //!
 //! A packaged app runs from its own folder under `WindowsApps`, named
 //! `<name>_<version>_<architecture>__<publisher id>`, and the family name is the name and the

@@ -152,9 +152,9 @@ Block lists:
                                everything under it, e.g. youtube.com. * as a wildcard.
       --allow <entry>          A site that is always allowed, also when blocked (repeatable).
       --program <name>         A program to close, by exe name (repeatable), e.g. steam.exe.
-      --store-app <family>     A Store app to close, by package family name (repeatable), e.g.
-                               Microsoft.WindowsCalculator_8wekyb3d8bbwe; * as a wildcard.
-                               'list apps' shows them.
+      --store-app <family>     A Store app to close, by its exact package family name
+                               (repeatable), e.g. Microsoft.WindowsCalculator_8wekyb3d8bbwe, as
+                               'list apps' shows them; no *.
       --title <title>          A window to close, by its title (repeatable), * as a wildcard,
                                e.g. \"*YouTube*\". The whole window closes, tabs and all.
       --sites-file <file>      Sites to block, one per line. Likewise --allowed-file,
@@ -1790,6 +1790,7 @@ mod tests {
         // What is not there, or not of the kind.
         assert!(refused(&["show", "Nope"]).starts_with("No block called \"Nope\""));
         assert!(refused(&["new", "X", "--list", "Nope"]).starts_with("No block list called \"Nope\""));
+        assert!(refused(&["list", "new", "Games", "--store-app", "Microsoft.Xbox*"]).contains("exact package family name"));
         assert!(refused(&["new", "X", "--condition", "Nope"]).starts_with("No condition called \"Nope\""));
         assert_eq!(refused(&["condition", "test", "Work"]), "\"Work\" is not a webhook condition");
     }
@@ -2188,7 +2189,7 @@ mod tests {
             "--program",
             "steam",
             "--store-app",
-            "Microsoft.Xbox*",
+            "Microsoft.XboxApp_8wekyb3d8bbwe",
             "--title",
             "*YouTube*",
             "--enforcers",
@@ -2201,7 +2202,7 @@ mod tests {
         assert_eq!(list.entries.filters, vec!["youtube.com", "reddit.com"]);
         assert_eq!(list.entries.allowed, vec!["youtube.com/watch*"]);
         assert_eq!(list.entries.programs, vec!["steam"]);
-        assert_eq!(list.entries.store_apps, vec!["Microsoft.Xbox*"]);
+        assert_eq!(list.entries.store_apps, vec!["Microsoft.XboxApp_8wekyb3d8bbwe"]);
         assert_eq!(list.entries.titles, vec!["*YouTube*"]);
         assert_eq!(
             list.enforcers,
