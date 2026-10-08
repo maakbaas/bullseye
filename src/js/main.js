@@ -327,6 +327,8 @@ function route() {
     // Always just "New", with the page's own name for screen readers.
     $("new-item").replaceChildren(t("common.new"), carbonIcon("add", "icon"));
     $("new-item").setAttribute("aria-label", kindOf.newLabel);
+    // Not on a session shown on its own.
+    $("new-item").hidden = !!single;
     $("empty-title").textContent = kindOf.empty[0];
     $("empty-text").textContent = kindOf.empty[1];
     notify("list-notices");
@@ -362,12 +364,7 @@ function showSingle() {
 $("show-all-button").replaceChildren(t("sessions.showAll"), carbonIcon("list", "icon"));
 window.addEventListener("hashchange", route);
 // A new session is asked in the modal (its name and targets), and its tile opens for the rest.
-// (From a session shown on its own, back to all of them first.)
-$("new-item").addEventListener("click", () => {
-  if (page !== "sessions") return (location.hash = KINDS[page].newPath);
-  if (single) location.hash = KINDS.sessions.path;
-  newSession(showSession);
-});
+$("new-item").addEventListener("click", () => (page === "sessions" ? newSession(showSession) : (location.hash = KINDS[page].newPath)));
 const PAGES = { sessions: "#/", targets: "#/targets", conditions: "#/conditions", settings: "#/settings" };
 // Below Carbon's md breakpoint (672 px) the tabs are icons only, each with its label as tooltip.
 const narrow = matchMedia("(max-width: 41.99rem)");
