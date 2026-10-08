@@ -170,10 +170,7 @@ cds-link[inline] { display: inline-flex; }
 .session-rows .row-text { display: flex; flex-direction: column; gap: var(--cds-spacing-01); overflow-wrap: anywhere; }
 .session-rows .row-now { color: var(--cds-text-secondary); }
 .session-rows .row-now[hidden] { display: none; }
-/* Carbon puts a row's action at the item's top, room for a 3rem button; the edit button is 2rem, so
-   it is moved down to the middle of the first line of text. */
-.session-rows .row-action { display: block; margin-block-start: var(--cds-spacing-03); }
-/* A row's panel (a tab-tip popover): its controls and button spaced as a form's, with room around. */
+/* A row's panel (a popover below its edit button): its controls and button spaced as a form's, with room around. */
 .row-panel { display: flex; flex-direction: column; align-items: flex-start; gap: var(--cds-spacing-05); padding: var(--cds-spacing-05); }
 /* A plain list of choices fills its panel edge to edge, as Carbon's lists in a popover do. */
 .row-panel:has(> cds-contained-list) { padding: 0; }

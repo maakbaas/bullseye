@@ -56,7 +56,7 @@ import '@carbon/web-components/es/components/inline-loading/inline-loading.js';
 // A session's settings on its tile: one row each.
 import '@carbon/web-components/es/components/contained-list/contained-list.js';
 import '@carbon/web-components/es/components/contained-list/contained-list-item.js';
-// A row's edit button: a tab-tip popover, the button and the open panel one shape.
+// A row's panel: Carbon's popover, below the row's edit button.
 import '@carbon/web-components/es/components/popover/popover.js';
 import '@carbon/web-components/es/components/popover/popover-content.js';
 
@@ -75,14 +75,13 @@ import play16 from '@carbon/icons/es/play/16.js';
 import plug16 from '@carbon/icons/es/plug/16.js';
 import renew16 from '@carbon/icons/es/renew/16.js';
 import rule16 from '@carbon/icons/es/rule/16.js';
-import listChecked16 from '@carbon/icons/es/list--checked/16.js';
+import target16 from '@carbon/icons/es/target/16.js';
 import settings16 from '@carbon/icons/es/settings/16.js';
 import stop16 from '@carbon/icons/es/stop/16.js';
 import time16 from '@carbon/icons/es/time/16.js';
 import pause16 from '@carbon/icons/es/pause/16.js';
 import trashCan16 from '@carbon/icons/es/trash-can/16.js';
 import unlocked16 from '@carbon/icons/es/unlocked/16.js';
-import chevronDown16 from '@carbon/icons/es/chevron--down/16.js';
 
 const icons = {
   add: add16,
@@ -97,7 +96,8 @@ const icons = {
   renew: renew16,
   'document-export': documentExport16,
   'document-import': documentImport16,
-  'list-checked-16': listChecked16,
+  // The Targets tab, and a session's Targets row.
+  'target-16': target16,
   locked: locked16,
   'overflow-menu-vertical': overflowMenuVertical16,
   play: play16,
@@ -111,8 +111,6 @@ const icons = {
   'pause-16': pause16,
   'trash-can': trashCan16,
   unlocked: unlocked16,
-  // At the end of a session's row that can be changed: it opens a menu.
-  'chevron-down': chevronDown16,
 };
 
 window.carbonIcon = (name, slot) => {

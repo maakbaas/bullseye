@@ -31,7 +31,7 @@ async function save(session, change) {
 // (no menu); its allowance may still get stricter, which is for the service to judge.
 
 const ROWS = [
-  { key: "block", icon: "list-checked-16" },
+  { key: "block", icon: "target-16" },
   { key: "when", icon: "rule-16" },
   { key: "unless", icon: "pause-16" },
   { key: "lock", icon: "locked" },
@@ -46,21 +46,28 @@ function addRows(parts, id) {
     const label = el("span", { class: "row-label" }, t(`sessions.fields.${key}`));
     const value = el("span", { class: "row-value" });
     const now = el("span", { class: "row-now" });
-    // The row's inline action: Carbon's tab-tip popover as Carbon has it, its edit button and the
-    // open panel one shape, opening downwards; the panel is filled each time it opens (`fillPanel`).
-    // Carbon's popover closes itself on Escape and on a click elsewhere.
+    // The row's inline action: a ghost icon button, as Carbon's contained lists have them, opening
+    // Carbon's popover below it, or above it where it fits there and not below (`align`; below, the
+    // page scrolls to it); the panel is filled each time it opens (`fillPanel`). Carbon's popover
+    // closes itself on Escape and on a click elsewhere.
     const what = t("sessions.fields.change", { what: t(`sessions.fields.${key}`).toLowerCase() });
-    const button = el("button", { type: "button", "aria-label": what, title: what }, carbonIcon("edit"));
+    const button = el("cds-icon-button", { kind: "ghost", size: "lg", align: "left" }, carbonIcon("edit", "icon"), el("span", { slot: "tooltip-content" }, what));
     const panel = el("cds-popover-content", {});
-    const edit = el("cds-popover", { slot: "action", tabtip: true, align: "bottom-end", class: "row-action" }, button, panel);
+    const edit = el("cds-popover", { slot: "action", align: "bottom-end", class: "row-action" }, button, panel);
     const close = () => (edit.open = false);
     button.addEventListener("click", async () => {
       if (!edit.open) fillPanel(parts, id, key, panel, close);
+      edit.align = "bottom-end";
       edit.open = !edit.open;
       if (!edit.open) return;
+      await edit.updateComplete;
+      // Opened below: above instead if it runs out of view there and the room above the row holds it.
+      const shown = panel.firstElementChild.getBoundingClientRect();
+      const top = row.getBoundingClientRect().top;
+      const view = document.getElementById("scroller").getBoundingClientRect();
+      if (shown.bottom > view.bottom && top - view.top >= shown.bottom - top) edit.align = "top-end";
       // The focus to its first control, as a popover's content should have it (and Escape closes it
       // from there).
-      await edit.updateComplete;
       const first = panel.querySelector("cds-checkbox, cds-contained-list-item[clickable]");
       const inner = first && first.shadowRoot && first.shadowRoot.querySelector("button");
       (inner || first)?.focus();
