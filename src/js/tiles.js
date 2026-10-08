@@ -15,10 +15,11 @@ function ruleName(rule) {
   return t(rule.type === "combined" ? "sessions.tile.activeCombined" : rule.type === "webhook" ? "sessions.tile.activeWebhook" : "sessions.tile.active");
 }
 
-// The sessions that use an item, as links; or a word that none does.
+// The sessions that use an item, by name (plain: a session has no page of its own to go to); or a
+// word that none does.
 const usersText = (item) => {
   const users = usersOf(item.id);
-  return users.length ? joined(users.map((b) => ref(b.name, editHref("sessions", b.id)))) : t("tiles.none");
+  return users.length ? joined(users.map((b) => b.name)).join("") : t("tiles.none");
 };
 
 // A target or condition tile's rows, as a session's are (`fields.js`) but only to read: [icon, label,
