@@ -45,13 +45,41 @@ const SCRIPT: &str = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; \
     ForEach-Object { [pscustomobject]@{ name = $_.Name; family = ($_.AppID -split '!')[0] } } | \
     ConvertTo-Json -Compress";
 
-/// An installed app that can be blocked, for the window to offer.
+/// An app that can be blocked, for the window to offer: an installed one, or one a block list has
+/// that is not installed here (it came from another computer, by Import).
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct StoreApp {
-    /// What the Start menu calls it.
+    /// What the Start menu calls it; for one not installed, what its family name says (`readable`).
     pub name: String,
     /// What the list holds.
     pub family: String,
+    /// Whether it is installed here.
+    #[serde(default)]
+    pub installed: bool,
+}
+
+/// An app's name as its family name says it, for one that is not installed here, where the Start
+/// menu cannot be asked: the part after the publisher's prefix and before the publisher id
+/// (`AnthropicPBC.Claude_fnn82j28hfe8t` is "Claude"), else the family name itself.
+pub fn readable(family: &str) -> String {
+    let name = family.split('_').next().unwrap_or_default();
+    let last = name.rsplit('.').next().unwrap_or_default().trim();
+    if last.is_empty() {
+        family.to_string()
+    } else {
+        last.to_string()
+    }
+}
+
+/// What the window offers: the installed apps, and after them the `chosen` ones (a block list's
+/// entries) that are not installed here, named by `readable`.
+pub fn offered(mut apps: Vec<StoreApp>, chosen: &[String]) -> Vec<StoreApp> {
+    for family in chosen.iter().map(|f| f.trim()).filter(|f| !f.is_empty()) {
+        if !apps.iter().any(|app| app.family.eq_ignore_ascii_case(family)) {
+            apps.push(StoreApp { name: readable(family), family: family.to_string(), installed: false });
+        }
+    }
+    apps
 }
 
 /// Whether the app is part of Windows, which is never closed.
@@ -100,7 +128,7 @@ fn parse(output: &str) -> Result<Vec<StoreApp>, String> {
     for app in found {
         // One entry per app, though a package can have several in the Start menu.
         if !app.name.trim().is_empty() && !is_protected(&app.family) && !apps.iter().any(|a| a.family.eq_ignore_ascii_case(&app.family)) {
-            apps.push(app);
+            apps.push(StoreApp { installed: true, ..app });
         }
     }
     apps.sort_by_key(|app| app.name.to_lowercase());
@@ -141,5 +169,23 @@ mod tests {
         assert_eq!(parse(r#"{"name":"Spotify","family":"SpotifyAB.SpotifyMusic_zpdnekdrzrea0"}"#).unwrap().len(), 1);
         assert!(parse("").unwrap().is_empty());
         assert!(parse("not json").is_err());
+    }
+
+    #[test]
+    fn an_app_that_is_not_installed_here_is_offered_by_the_name_in_its_family() {
+        assert_eq!(readable("AnthropicPBC.Claude_fnn82j28hfe8t"), "Claude");
+        assert_eq!(readable("Microsoft.WindowsCalculator_8wekyb3d8bbwe"), "WindowsCalculator");
+        assert_eq!(readable("SpotifyMusic_zpdnekdrzrea0"), "SpotifyMusic");
+        assert_eq!(readable("odd."), "odd.");
+        let installed = parse(r#"{"name":"Spotify","family":"SpotifyAB.SpotifyMusic_zpdnekdrzrea0"}"#).unwrap();
+        assert!(installed[0].installed);
+        let chosen = ["spotifyab.spotifymusic_zpdnekdrzrea0".to_string(), "AnthropicPBC.Claude_fnn82j28hfe8t".to_string(), " ".to_string()];
+        let apps = offered(installed, &chosen);
+        assert_eq!(
+            apps.iter().map(|a| (a.name.as_str(), a.installed)).collect::<Vec<_>>(),
+            vec![("Spotify", true), ("Claude", false)],
+            "an installed one is not offered twice, whatever its letter case"
+        );
+        assert_eq!(apps[1].family, "AnthropicPBC.Claude_fnn82j28hfe8t");
     }
 }

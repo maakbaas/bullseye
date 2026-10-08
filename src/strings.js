@@ -328,6 +328,9 @@ window.STRINGS = {
       helper: "Tick the apps to close. Windows apps are not listed",
       loading: "Loading installed apps",
       failed: "Could not list installed apps",
+      // An app on the list that this PC has no app of that family name for (it came with an import); {name}:
+      // the name in its family name.
+      notInstalled: "{name} (not found on this PC)",
       count: { one: "{n} Microsoft Store app closed", other: "{n} Microsoft Store apps closed" },
     },
     titles: {

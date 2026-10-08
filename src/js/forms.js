@@ -163,9 +163,10 @@ function sameHeight(areas) {
 }
 
 // The Store apps of a block list: the installed ones (`installed_apps`, which takes a second or
-// two) to tick, with the ones on the list that are not among them (not installed any more, or a
-// pattern typed in the CLI) so saving keeps them. It stands in for a text area: `value` is the
-// ticked family names, one per line, and `disabled` is settable.
+// two) to tick, with the ones on the list that are not installed here (not any more, or imported
+// from another computer), named by the backend from their family name, so saving keeps them. It
+// stands in for a text area: `value` is the ticked family names, one per line, and `disabled` is
+// settable. The apps are asked for once the list's own are known (its first `value`).
 function appPicker(list) {
   // The label is above the box, which has a background of its own; the group is named for readers.
   const group = el("cds-checkbox-group", { "aria-label": list.label });
@@ -179,7 +180,8 @@ function appPicker(list) {
   const same = (a, b) => a.toLowerCase() === b.toLowerCase();
   function draw() {
     const known = new Set(installed.map((app) => app.family.toLowerCase()));
-    const rows = [...installed.map((app) => [app.family, app.name]), ...[...chosen].filter((family) => !known.has(family.toLowerCase())).map((family) => [family, family])];
+    const name = (app) => (app.installed ? app.name : t("lists.store_apps.notInstalled", { name: app.name }));
+    const rows = [...installed.map((app) => [app.family, name(app)]), ...[...chosen].filter((family) => !known.has(family.toLowerCase())).map((family) => [family, family])];
     group.replaceChildren(
       ...rows.map(([family, label]) => {
         const box = el("cds-checkbox", { "label-text": label });
@@ -200,6 +202,7 @@ function appPicker(list) {
       set: (text) => {
         chosen = new Set(lines(text));
         draw();
+        load();
       },
     },
     disabled: {
@@ -210,17 +213,22 @@ function appPicker(list) {
       },
     },
   });
-  invoke("installed_apps").then(
-    (apps) => {
-      installed = apps;
-      status.textContent = list.helper;
-      draw();
-    },
-    (e) => {
-      status.textContent = `${t("lists.store_apps.failed")}: ${e}`;
-      draw();
-    },
-  );
+  let asked = false;
+  function load() {
+    if (asked) return;
+    asked = true;
+    invoke("installed_apps", { chosen: [...chosen] }).then(
+      (apps) => {
+        installed = apps;
+        status.textContent = list.helper;
+        draw();
+      },
+      (e) => {
+        status.textContent = `${t("lists.store_apps.failed")}: ${e}`;
+        draw();
+      },
+    );
+  }
   return picker;
 }
 

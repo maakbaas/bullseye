@@ -159,11 +159,13 @@ fn describe_until(text: String) -> Result<localtime::Until, String> {
     localtime::until(&text)
 }
 
-/// The Store apps installed, for the block list editor to offer to tick (`store_apps.rs`).
+/// The Store apps installed, for the block list editor to offer to tick (`store_apps.rs`), and the
+/// ones it has (`chosen`) that are not installed here, by the name in their family name.
 /// PowerShell takes a second or two to list them, so not on the thread that draws the window.
 #[tauri::command]
-async fn installed_apps() -> Result<Vec<store_apps::StoreApp>, String> {
-    tauri::async_runtime::spawn_blocking(store_apps::installed).await.map_err(|e| e.to_string())?
+async fn installed_apps(chosen: Vec<String>) -> Result<Vec<store_apps::StoreApp>, String> {
+    let installed = tauri::async_runtime::spawn_blocking(store_apps::installed).await.map_err(|e| e.to_string())??;
+    Ok(store_apps::offered(installed, &chosen))
 }
 
 /// The flash drives connected now, for the Flash drive lock's settings to offer (`drives.rs`).
