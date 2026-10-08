@@ -40,6 +40,8 @@ const ROWS = [
 // The one menu, opened at the row it is for (as Carbon's menu button opens its menu).
 const menu = el("cds-menu", { size: "md" });
 document.body.append(menu);
+// Escape, a click elsewhere or a choice: Carbon's menu asks to be closed, and its owner closes it.
+menu.addEventListener("cds-menu-closed", () => (menu.open = false));
 
 // The rows of the session `id`, added to its tile's parts (`tiles.js`).
 function addRows(parts, id) {
@@ -49,11 +51,18 @@ function addRows(parts, id) {
     const label = el("span", { class: "row-label" }, t(`sessions.fields.${key}`));
     const value = el("span", { class: "row-value" });
     const now = el("span", { class: "row-now" });
-    const chevron = el("span", { class: "row-open" }, carbonIcon("chevron-down"));
-    const row = el("cds-contained-list-item", {}, carbonIcon(icon, "icon"), el("span", { class: "row" }, label, el("span", { class: "row-text" }, value, now), chevron));
-    row.addEventListener("cds-contained-list-item-click", () => openMenu(parts, id, key, row));
+    // The row's inline action: an edit icon (ghost, as on the target and condition tiles) that
+    // opens the row's menu, hanging from it as a menu button's does.
+    const edit = el(
+      "cds-icon-button",
+      { slot: "action", kind: "ghost", size: "md", align: "left", "aria-label": t("sessions.fields.change", { what: t(`sessions.fields.${key}`).toLowerCase() }) },
+      carbonIcon("edit", "icon"),
+      el("span", { slot: "tooltip-content" }, t("sessions.fields.change", { what: t(`sessions.fields.${key}`).toLowerCase() })),
+    );
+    const row = el("cds-contained-list-item", {}, carbonIcon(icon, "icon"), el("span", { class: "row" }, label, el("span", { class: "row-text" }, value, now)), edit);
+    edit.addEventListener("click", () => openMenu(parts, id, key, edit));
     list.append(row);
-    parts.rows[key] = { row, value, now, chevron };
+    parts.rows[key] = { row, value, now, edit };
   }
   parts.top.after(list);
 }
@@ -64,20 +73,19 @@ function renderRows(parts, session, lines) {
   const running = runningOf(session.id);
   const locked = !!(running && running.locked);
   for (const { key } of ROWS) {
-    const { row, value, now, chevron } = parts.rows[key];
+    const { value, now, edit } = parts.rows[key];
     const [text, current] = lines[key];
     if (value.textContent !== text) value.textContent = text;
     if (now.textContent !== (current || "")) now.textContent = current || "";
     now.hidden = !current;
     // Fixed while locked; the allowance only stricter.
     const open = !(locked && key !== "unless");
-    row.clickable = open;
-    chevron.hidden = !open;
+    edit.hidden = !open;
   }
 }
 
-// The menu of a row, at the row.
-function openMenu(parts, id, key, row) {
+// The menu of a row, from its edit button.
+async function openMenu(parts, id, key, button) {
   const session = overview.sessions.find((s) => s.id === id);
   // A choice closes the menu first: what it does may open the modal or another page.
   const item = (label, action, icon) => {
@@ -145,21 +153,24 @@ function openMenu(parts, id, key, row) {
   }
   menu.replaceChildren(...items);
   menu.label = t(`sessions.fields.${key}`);
-  // Under the row's value, where the choice shows, as a dropdown's list is under its field: it
-  // starts at the value, or ends at the row's end where there is no room; below the row, or above
-  // it where there is none.
-  // Room for it below the row first, scrolling the page as far as it goes (Carbon's menu flips
-  // above the row otherwise, where it reads as the row above's): its items and dividers are
-  // Carbon's md sizes, 2.5rem and 1px plus a little room.
-  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
-  const height = menu.querySelectorAll("cds-menu-item, cds-menu-item-selectable").length * 2.5 * rem + rem;
-  const below = innerHeight - row.getBoundingClientRect().bottom;
-  if (below < height) $("scroller").scrollBy(0, height - below);
-  const r = row.getBoundingClientRect();
-  const v = parts.rows[key].value.getBoundingClientRect();
-  menu.x = [v.left, r.right];
-  menu.y = [r.top, r.bottom];
+  // Below the button, its end at the button's end (as Carbon's menu button with bottom-end
+  // alignment). Its size is known once it is open, so it is opened where Carbon puts it, measured
+  // (Carbon's own measure: the element its shadow root draws) and moved there before it is drawn,
+  // setting the same inline position Carbon sets. Room is made below the button first, scrolling
+  // the page as far as it goes; where there still is none it goes above the button.
+  let b = button.getBoundingClientRect();
+  menu.x = [b.left, b.right];
+  menu.y = [b.top, b.bottom];
   menu.open = true;
+  await menu.updateComplete;
+  const { width, height } = menu.shadowRoot.querySelector(".cds--menu").getBoundingClientRect();
+  const edge = 8; // Carbon's menu keeps this far from the window's edge
+  const below = innerHeight - b.bottom - edge;
+  if (below < height) $("scroller").scrollBy(0, height - below);
+  b = button.getBoundingClientRect();
+  const fits = innerHeight - b.bottom - edge >= height;
+  menu.style.insetInlineStart = `${Math.max(edge, b.right - width)}px`;
+  menu.style.insetBlockStart = `${fits ? b.bottom : Math.max(edge, b.top - height)}px`;
 }
 
 const current = (id) => overview.sessions.find((s) => s.id === id);

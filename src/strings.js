@@ -72,16 +72,18 @@ window.STRINGS = {
     // A session is set up on its tile: a row each for its targets, condition, allowance and lock,
     // each opening a menu, and the modal of a new session. {name}: the session's name, quoted.
     fields: {
-      block: "Block",
+      block: "Targets",
       targets: "Targets",
       chooseTargets: "Choose targets",
       newTarget: "New target",
-      when: "When",
+      when: "Condition",
       always: "Always",
       newCondition: "New condition",
-      unless: "Unless",
+      unless: "Allowance",
       lock: "Lock",
       allowanceSettings: "Allowance settings",
+      // A row's edit button, its tooltip and name. {what}: the row's label.
+      change: "Change {what}",
       // Under a running session's condition. {change}: how long, in words.
       active: "Active now",
       activeFor: "Active for the next {change}",
