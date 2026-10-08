@@ -6,7 +6,7 @@ import { LOCKS, conditionLockText } from "./locks.js";
 import { ACTIONS, LISTS, SECTIONS } from "./forms.js";
 import { KINDS } from "./kinds.js";
 import { detour } from "./detour.js";
-import { addRows, renderRows, renameSession, openTowardsRoom } from "./fields.js";
+import { addRows, renderRows, renameSession } from "./fields.js";
 
 // A condition's line on a session's tile, with its name when the session's definition still has it.
 // "Active during <name>", for a drive "Active while <name> is unplugged", for a combination with a
@@ -175,6 +175,17 @@ function showSession(id) {
   if (parts) parts.tile.scrollIntoView({ block: "start" });
 }
 
+// A tile's ⋮ opens below its button, or above it where there is no room below: Carbon's overflow
+// menu does not flip by itself, so its direction (its own property) is set before it opens. Its
+// items are Carbon's md size, 2.5rem.
+function openTowardsRoom(trigger, body) {
+  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
+  const height = body.querySelectorAll("cds-overflow-menu-item:not([hidden])").length * 2.5 * rem;
+  const box = trigger.getBoundingClientRect();
+  const up = innerHeight - box.bottom < height && box.top > innerHeight - box.bottom;
+  body.setAttribute("direction", up ? "top" : "bottom");
+}
+
 function makeTile(kind, id) {
   // The class is how Carbon colours an overflow menu's icon (without it: white on a white tile).
   const menuIcon = carbonIcon("overflow-menu-vertical", "icon");
@@ -214,7 +225,7 @@ function makeTile(kind, id) {
   // A session's lines are its rows (`fields.js`), between its head and Start / Stop.
   const body = el("div", { class: "body" }, el("div", { class: "info" }, kind === "sessions" ? null : summary), actions);
   const tile = el("cds-tile", { class: columns }, top, body);
-  // Below its button, or above it where there is no room (as a row's menu, `fields.js`).
+  // Below its button, or above it where there is no room.
   const menuBody = menu.querySelector("cds-overflow-menu-body");
   menu.addEventListener("click", () => !menu.open && openTowardsRoom(menu, menuBody), true);
   // On the items themselves: Carbon moves the open menu out of the tile.

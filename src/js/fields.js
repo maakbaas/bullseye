@@ -37,16 +37,6 @@ const ROWS = [
   { key: "lock", icon: "locked" },
 ];
 
-// An overflow menu opens below its button, or above it where there is no room below (Carbon's
-// overflow menu does not flip by itself): its direction is set before it opens. Its items are
-// Carbon's md size, 2.5rem.
-function openTowardsRoom(trigger, body) {
-  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
-  const height = body.querySelectorAll("cds-overflow-menu-item").length * 2.5 * rem;
-  const box = trigger.getBoundingClientRect();
-  const up = innerHeight - box.bottom < height && box.top > innerHeight - box.bottom;
-  body.setAttribute("direction", up ? "top" : "bottom");
-}
 
 // The rows of the session `id`, added to its tile's parts (`tiles.js`).
 function addRows(parts, id) {
@@ -56,23 +46,24 @@ function addRows(parts, id) {
     const label = el("span", { class: "row-label" }, t(`sessions.fields.${key}`));
     const value = el("span", { class: "row-value" });
     const now = el("span", { class: "row-now" });
-    // The row's inline action: Carbon's overflow menu with an edit icon (ghost, as on the target
-    // and condition tiles), as the tile's ⋮ is; its items are made each time it opens (`fillMenu`).
+    // The row's inline action: Carbon's tab-tip popover, its edit button and the open panel one
+    // shape; the panel is filled each time it opens (`fillPanel`). Carbon's popover closes itself on
+    // Escape and on a click elsewhere, and flips above its button where there is no room below.
     const what = t("sessions.fields.change", { what: t(`sessions.fields.${key}`).toLowerCase() });
-    const icon2 = carbonIcon("edit", "icon");
-    icon2.classList.add("cds--overflow-menu__icon");
-    const body = el("cds-overflow-menu-body", { flipped: true, class: "row-menu" });
-    const edit = el("cds-overflow-menu", { slot: "action", "aria-label": what, "menu-alignment": "bottom-end", class: "row-action" }, icon2, el("span", { slot: "tooltip-content" }, what), body);
-    // Filled before it opens: the click reaches the host before its own button inside it.
-    edit.addEventListener(
-      "click",
-      () => {
-        if (edit.open) return;
-        fillMenu(parts, id, key, body);
-        openTowardsRoom(edit, body);
-      },
-      true,
-    );
+    const button = el("button", { type: "button", class: "cds--popover--tab-tip__button", "aria-label": what, title: what }, carbonIcon("edit"));
+    const panel = el("cds-popover-content", {});
+    const edit = el("cds-popover", { slot: "action", tabtip: true, autoalign: true, align: "bottom-end", class: "row-action" }, button, panel);
+    const close = () => (edit.open = false);
+    button.addEventListener("click", async () => {
+      if (!edit.open) fillPanel(parts, id, key, panel, close);
+      edit.open = !edit.open;
+      if (!edit.open) return;
+      // The focus to its first control, as a popover's content should have it (and Escape closes it
+      // from there).
+      await edit.updateComplete;
+      const first = panel.querySelector("cds-checkbox, cds-radio-button[checked], cds-radio-button");
+      if (first) first.focus();
+    });
     const row = el("cds-contained-list-item", {}, carbonIcon(icon, "icon"), el("span", { class: "row" }, label, el("span", { class: "row-text" }, value, now)), edit);
     list.append(row);
     parts.rows[key] = { row, label, value, now, edit };
@@ -102,78 +93,78 @@ function renderRows(parts, session, lines) {
   }
 }
 
-// What a row's menu holds: the targets, each ticked or not (a choice ticks or unticks it, saved at
-// once, the menu staying open for the next); or one condition, allowance or lock method to choose, the one it has ticked; and at the
-// end, making a new target or condition, or the settings of the allowance or lock it has. Carbon's
-// overflow menu items are actions, so the tick is a checkmark in front of the name; the others keep
-// its room, so the names line up.
-function fillMenu(parts, id, key, body) {
+// What a row's panel holds, Carbon's own controls under the row's name: the targets as checkboxes,
+// each tick saved at once and the panel staying open for the next; or one condition, allowance or
+// lock method as radio buttons, a choice closing the panel. Under them, making a new target or
+// condition, or the settings of the allowance or lock it has.
+function fillPanel(parts, id, key, panel, close) {
   const session = current(id);
-  const item = (text, act, mark = false, icon = null) => {
-    const node = el(
-      "cds-overflow-menu-item",
-      { title: text },
-      el("span", { class: "menu-choice" }, mark ? carbonIcon("checkmark") : icon ? carbonIcon(icon) : el("span", { class: "no-mark" }), el("span", {}, text)),
+  const button = (text, icon, act) => {
+    const node = el("cds-button", { kind: "tertiary", size: "md" }, text, carbonIcon(icon, "icon"));
+    node.addEventListener("click", () => {
+      close();
+      act();
+    });
+    return node;
+  };
+  const choices = (options, chosen, choose) => {
+    const group = el(
+      "cds-radio-button-group",
+      { "legend-text": t(`sessions.fields.${key}`), name: `${key}-${id}`, orientation: "vertical" },
+      ...options.map(([value, text]) => el("cds-radio-button", { "label-text": text, value })),
     );
-    node.addEventListener("click", (event) => act(event, node));
-    return node;
+    group.value = chosen;
+    group.addEventListener("cds-radio-button-group-changed", () => {
+      if (group.value === chosen) return;
+      close();
+      choose(group.value);
+    });
+    return group;
   };
-  // A target's checkmark, or the room for one, as its item is open.
-  const mark = (node, on) => node.querySelector(".menu-choice").firstChild.replaceWith(on ? carbonIcon("checkmark") : el("span", { class: "no-mark" }));
-  const choices = (options, chosen, choose) => options.map(([value, text]) => item(text, () => value !== chosen && choose(value), value === chosen));
-  const end = (text, icon, act) => {
-    const node = item(text, act, false, icon);
-    node.divider = true;
-    return node;
-  };
-  let items;
+  let nodes;
   if (key === "block") {
     // What is ticked while it is open: each tick builds on the last, also before the last one's
     // save has come back.
     const chosen = new Set(session.targets);
-    items = [
-      ...overview.targets.map((target) => {
-        return item(
-          target.name,
-          (event, node) => {
-            // The menu stays open to tick another: the click goes no further than its item (the
-            // overflow menu closes on any click that reaches its list).
-            event.stopPropagation();
-            const now = current(id);
-            const on = chosen.has(target.id);
-            // A session needs a target (the service refuses it too).
-            if (on && chosen.size === 1) return notify("list-notices", "error", t("sessions.fields.saveFailed", { name: quoted(now.name) }), t("sessions.noTargets"));
-            if (on) chosen.delete(target.id);
-            else chosen.add(target.id);
-            mark(node, !on);
-            save(now, { targets: overview.targets.map((t) => t.id).filter((t) => chosen.has(t)) });
-          },
-          session.targets.includes(target.id),
-        );
-      }),
-      end(t("sessions.fields.newTarget"), "add", () => make(id, "targets", (made) => save(current(id), { targets: [...current(id).targets, made.id] }))),
-    ];
+    const group = el("cds-checkbox-group", { "legend-text": t("sessions.fields.block") });
+    for (const target of overview.targets) {
+      const box = el("cds-checkbox", { "label-text": target.name });
+      box.checked = chosen.has(target.id);
+      box.addEventListener("cds-checkbox-changed", () => {
+        const now = current(id);
+        // A session needs a target (the service refuses it too).
+        if (!box.checked && chosen.size === 1) {
+          box.checked = true;
+          return notify("list-notices", "error", t("sessions.fields.saveFailed", { name: quoted(now.name) }), t("sessions.noTargets"));
+        }
+        if (box.checked) chosen.add(target.id);
+        else chosen.delete(target.id);
+        save(now, { targets: overview.targets.map((t) => t.id).filter((t) => chosen.has(t)) });
+      });
+      group.append(box);
+    }
+    nodes = [group, button(t("sessions.fields.newTarget"), "add", () => make(id, "targets", (made) => save(current(id), { targets: [...current(id).targets, made.id] })))];
   } else if (key === "when") {
-    items = [
-      ...choices([[ALWAYS, t("sessions.fields.always")], ...overview.conditions.map((c) => [c.id, c.name])], session.condition || ALWAYS, (value) =>
-        save(session, { condition: value === ALWAYS ? null : value }),
+    nodes = [
+      choices([[ALWAYS, t("sessions.fields.always")], ...overview.conditions.map((c) => [c.id, c.name])], session.condition || ALWAYS, (value) =>
+        save(current(id), { condition: value === ALWAYS ? null : value }),
       ),
-      end(t("sessions.fields.newCondition"), "add", () => make(id, "conditions", (made) => save(current(id), { condition: made.id }))),
+      button(t("sessions.fields.newCondition"), "add", () => make(id, "conditions", (made) => save(current(id), { condition: made.id }))),
     ];
   } else if (key === "unless") {
     const kind = session.allowance ? session.allowance.type : "none";
-    items = [
-      ...choices([["none", t("sessions.fields.noAllowance")], ["budget", t("sessions.fields.budget")], ["pomodoro", t("sessions.fields.pomodoro")]], kind, (value) => setAllowance(parts, id, value)),
-      ...(kind !== "none" ? [end(t("sessions.fields.allowanceSettings"), "settings", () => setAllowance(parts, id, kind))] : []),
+    nodes = [
+      choices([["none", t("sessions.fields.noAllowance")], ["budget", t("sessions.fields.budget")], ["pomodoro", t("sessions.fields.pomodoro")]], kind, (value) => setAllowance(parts, id, value)),
+      ...(kind !== "none" ? [button(t("sessions.fields.allowanceSettings"), "settings", () => setAllowance(parts, id, kind))] : []),
     ];
   } else {
     const method = session.lock.method;
-    items = [
-      ...choices(Object.entries(LOCKS).map(([value, lock]) => [value, lock.label]), method, (value) => parts.setLock(value)),
-      ...(LOCKS[method] && LOCKS[method].form ? [end(t("sessions.lockSettings"), "settings", () => parts.setLock(method))] : []),
+    nodes = [
+      choices(Object.entries(LOCKS).map(([value, lock]) => [value, lock.label]), method, (value) => parts.setLock(value)),
+      ...(LOCKS[method] && LOCKS[method].form ? [button(t("sessions.lockSettings"), "settings", () => parts.setLock(method))] : []),
     ];
   }
-  body.replaceChildren(...items);
+  panel.replaceChildren(el("div", { class: "row-panel" }, ...nodes));
 }
 
 const current = (id) => overview.sessions.find((s) => s.id === id);
@@ -257,4 +248,4 @@ async function renameSession(id) {
   if (given) await save(session, { name: given });
 }
 
-export { addRows, renderRows, newSession, renameSession, openTowardsRoom };
+export { addRows, renderRows, newSession, renameSession };
