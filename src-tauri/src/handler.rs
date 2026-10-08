@@ -630,9 +630,17 @@ mod tests {
 
     #[test]
     fn an_allowance_is_set_on_the_block_and_only_gets_stricter_while_it_is_locked() {
-        use crate::allowance::{Reset, Scope, Terms};
+        use crate::allowance::{Anchor, Reset, Scope, Terms};
         let context = context("allowance");
-        let budget = |allowed: &str| Some(Terms::Budget { allowed: allowed.into(), scope: Scope::Total, reset: Reset::Day });
+        let budget = |allowed: &str| {
+            Some(Terms::Budget {
+                allowed: allowed.into(),
+                scope: Scope::Total,
+                reset: Reset::Every,
+                every: "1d".into(),
+                anchor: Anchor::Clock,
+            })
+        };
         let with = |id: &str, allowance: Option<Terms>| {
             let mut one = definition(id, &["a.com"]).lock(Lock::Duration { duration: "1h".into() });
             one.block.allowance = allowance;
@@ -1149,11 +1157,17 @@ mod tests {
 
     #[test]
     fn what_the_app_reports_is_counted_against_the_block() {
-        use crate::allowance::{Reset, Scope, Terms};
+        use crate::allowance::{Anchor, Reset, Scope, Terms};
         use crate::proto::Used;
         let context = context("report");
         let mut one = definition("a", &["a.com"]);
-        one.block.allowance = Some(Terms::Budget { allowed: "1s".into(), scope: Scope::Total, reset: Reset::Never });
+        one.block.allowance = Some(Terms::Budget {
+            allowed: "1s".into(),
+            scope: Scope::Total,
+            reset: Reset::Never,
+            every: String::new(),
+            anchor: Anchor::Start,
+        });
         assert_eq!(run(&context, one), Response::Done);
         assert_eq!(policies(&context)[0].free.len(), 1, "let through while there is time");
         std::thread::sleep(Duration::from_millis(1100));

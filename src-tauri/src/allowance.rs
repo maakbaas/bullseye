@@ -44,46 +44,22 @@ pub enum Scope {
 pub enum Reset {
     /// Not while the block runs.
     Never,
-    /// At the start of every hour, day (midnight) or week (Monday), in the block's time zone.
-    Hour,
-    Day,
-    Week,
+    /// Every so long (the budget's `every`), counted from its `anchor`: the block's start, or local
+    /// midnight (then it fits a day evenly, so `1d` is at midnight and `1h` on the hour).
+    Every,
     /// Each time the block's condition turns it on (a time block in a schedule, a drive being
     /// unplugged). Without a condition a block is on all the time, so this never resets.
     Condition,
 }
 
-impl Reset {
-    /// How rare it is, for telling a stricter reset from a looser one: `None` for the one that
-    /// cannot be compared with the others.
-    fn rank(self) -> Option<u8> {
-        match self {
-            Reset::Hour => Some(1),
-            Reset::Day => Some(2),
-            Reset::Week => Some(3),
-            Reset::Never => Some(4),
-            Reset::Condition => None,
-        }
-    }
-
-    /// Seconds in the period of a clock reset.
-    fn length(self) -> Option<u64> {
-        match self {
-            Reset::Hour => Some(3600),
-            Reset::Day => Some(DAY),
-            Reset::Week => Some(7 * DAY),
-            Reset::Never | Reset::Condition => None,
-        }
-    }
-}
-
-/// What a Pomodoro cycle is counted from.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+/// What a Pomodoro cycle, or a budget's reset every so long, is counted from.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Anchor {
-    /// The block's start: it is blocked first.
+    /// The block's start (a cycle is blocked first).
+    #[default]
     Start,
-    /// Local midnight, so a cycle of an hour starts at every xx:00.
+    /// Local midnight, so a cycle or a reset of an hour comes at every xx:00.
     Clock,
 }
 
@@ -95,8 +71,17 @@ pub enum Anchor {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Terms {
-    /// `allowed` (`30m`) of use, for the block or for each item of it, given back by `reset`.
-    Budget { allowed: String, scope: Scope, reset: Reset },
+    /// `allowed` (`30m`) of use, for the block or for each item of it, given back by `reset`: with
+    /// `Reset::Every`, every `every` (`1d`) counted from `anchor` (empty and the default otherwise).
+    Budget {
+        allowed: String,
+        scope: Scope,
+        reset: Reset,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        every: String,
+        #[serde(default)]
+        anchor: Anchor,
+    },
     /// Blocked for `blocked`, then everything allowed for `allowed`, over and over.
     Pomodoro { blocked: String, allowed: String, anchor: Anchor },
 }
@@ -112,12 +97,28 @@ fn secs(text: &str) -> u64 {
 }
 
 impl Terms {
-    /// The terms, checked: durations that can be read and are not zero, and a cycle on the clock that
-    /// fits a day evenly.
+    /// The terms, checked: durations that can be read and are not zero, and a cycle or a reset on the
+    /// clock that fits a day evenly. A budget that does not reset every so long has no `every`.
     pub fn checked(self) -> Result<Terms, String> {
         match &self {
-            Terms::Budget { allowed, .. } => {
+            Terms::Budget { allowed, scope, reset, every, anchor } => {
                 seconds(allowed, "how long is allowed")?;
+                if *reset != Reset::Every {
+                    return Ok(Terms::Budget {
+                        allowed: allowed.clone(),
+                        scope: *scope,
+                        reset: *reset,
+                        every: String::new(),
+                        anchor: Anchor::Start,
+                    });
+                }
+                let period = seconds(every, "how often the time is given back")?;
+                if *anchor == Anchor::Clock && !DAY.is_multiple_of(period) {
+                    return Err(format!(
+                        "On the clock the time has to be given back in a way that fits a day evenly, such as every hour or every day; every {} does not",
+                        duration::countdown(period)
+                    ));
+                }
             }
             Terms::Pomodoro { blocked, allowed, anchor } => {
                 let cycle = seconds(blocked, "how long to block for")?.saturating_add(seconds(allowed, "how long to allow for")?);
@@ -143,8 +144,8 @@ impl Terms {
         let new = new.clone().checked()?;
         match (self, &new) {
             (
-                Terms::Budget { allowed: old_allowed, scope: old_scope, reset: old_reset },
-                Terms::Budget { allowed: new_allowed, scope: new_scope, reset: new_reset },
+                Terms::Budget { allowed: old_allowed, scope: old_scope, reset: old_reset, every: old_every, anchor: old_anchor },
+                Terms::Budget { allowed: new_allowed, scope: new_scope, reset: new_reset, every: new_every, anchor: new_anchor },
             ) => {
                 if old_scope != new_scope {
                     return Err("The block is locked, so its allowance cannot change between a total and each item".into());
@@ -152,9 +153,13 @@ impl Terms {
                 if secs(new_allowed) > secs(old_allowed) {
                     return Err("The block is locked, so its allowed time can get shorter but not longer".into());
                 }
-                let rarer = match (old_reset.rank(), new_reset.rank()) {
-                    (Some(old), Some(new)) => new >= old,
-                    _ => old_reset == new_reset,
+                // Rarer: never; or every so long, longer, counted from the same point (another one
+                // would bring the next reset nearer); a reset by condition only stays as it is.
+                let rarer = match (old_reset, new_reset) {
+                    (Reset::Condition, _) | (_, Reset::Condition) => old_reset == new_reset,
+                    (_, Reset::Never) => true,
+                    (Reset::Never, Reset::Every) => false,
+                    (Reset::Every, Reset::Every) => old_anchor == new_anchor && secs(new_every) >= secs(old_every),
                 };
                 if rarer {
                     Ok(())
@@ -184,21 +189,24 @@ impl Terms {
         }
     }
 
-    /// In words, for the window and the CLI: `30 minutes in total, reset every day`,
+    /// In words, for the window and the CLI: `30 minutes in total, reset every 1 day, on the clock`,
     /// `Blocked for 50 minutes, then allowed for 10 minutes, from the start of the block`.
     pub fn describe(&self) -> String {
         match self {
-            Terms::Budget { allowed, scope, reset } => {
+            Terms::Budget { allowed, scope, reset, every, anchor } => {
                 let scope = match scope {
                     Scope::Total => "in total",
                     Scope::Each => "for each item",
                 };
-                let reset = match reset {
-                    Reset::Never => "never reset",
-                    Reset::Hour => "reset every hour",
-                    Reset::Day => "reset every day",
-                    Reset::Week => "reset every week",
-                    Reset::Condition => "reset each time its condition turns on",
+                let reset = match (reset, anchor) {
+                    (Reset::Never, _) => "never reset".to_string(),
+                    (Reset::Condition, _) => "reset each time its condition turns on".to_string(),
+                    (Reset::Every, Anchor::Start) => {
+                        format!("reset every {}, from the start of the block", duration::countdown(secs(every)))
+                    }
+                    (Reset::Every, Anchor::Clock) => {
+                        format!("reset every {}, on the clock, from midnight", duration::countdown(secs(every)))
+                    }
                 };
                 format!("{} {scope}, {reset}", duration::countdown(secs(allowed)))
             }
@@ -227,17 +235,15 @@ pub struct Described {
 
 impl Terms {
     /// Short, as a line of a block's tile says it, like its other lines (`Always active`):
-    /// `Allowed 30 minutes a day`, `Allowed 10 minutes a day per item`, `Allowed 10 minutes after
-    /// every 50 minutes`.
+    /// `Allowed 30 minutes every 1 day`, `Allowed 10 minutes every 2 hours per item`, `Allowed 10
+    /// minutes after every 50 minutes`.
     pub fn label(&self) -> String {
         match self {
-            Terms::Budget { allowed, scope, reset } => {
+            Terms::Budget { allowed, scope, reset, every, .. } => {
                 let every = match reset {
-                    Reset::Never => " in total",
-                    Reset::Hour => " an hour",
-                    Reset::Day => " a day",
-                    Reset::Week => " a week",
-                    Reset::Condition => " each time active",
+                    Reset::Never => " in total".to_string(),
+                    Reset::Every => format!(" every {}", duration::countdown(secs(every))),
+                    Reset::Condition => " each time active".to_string(),
                 };
                 let each = if *scope == Scope::Each { " per item" } else { "" };
                 format!("Allowed {}{every}{each}", duration::countdown(secs(allowed)))
@@ -283,16 +289,21 @@ pub fn key_text(key: &str) -> &str {
     key.split_once(':').map_or(key, |(_, text)| text)
 }
 
-/// Seconds into the period of a clock reset, and how long it is; `None` for the other resets or if
-/// the local time cannot be told.
-fn into_period(reset: Reset, zone: &Zone, now: SystemTime) -> Option<(u64, u64)> {
-    let length = reset.length()?;
-    let local = zone.local(now)?;
-    let into_day = u64::from(local.minute) * 60 + u64::from(local.second);
-    let into = match reset {
-        Reset::Hour => into_day % 3600,
-        Reset::Day => into_day,
-        _ => local.weekday as u64 * DAY + into_day,
+/// Seconds into the period of a budget's reset every so long, and how long it is: from the block's
+/// start (`started`, milliseconds since the Unix epoch) or from local midnight. `None` for the other
+/// resets, or if the time cannot be told.
+fn into_period(terms: &Terms, started: u64, zone: &Zone, now: SystemTime) -> Option<(u64, u64)> {
+    let Terms::Budget { reset: Reset::Every, every, anchor, .. } = terms else { return None };
+    let length = secs(every);
+    if length == 0 {
+        return None;
+    }
+    let into = match anchor {
+        Anchor::Start => state::to_unix(now)?.saturating_sub(started) / 1000 % length,
+        Anchor::Clock => {
+            let local = zone.local(now)?;
+            (u64::from(local.minute) * 60 + u64::from(local.second)) % length
+        }
     };
     Some((into, length))
 }
@@ -315,9 +326,10 @@ pub struct Run {
     /// Milliseconds used in the current period, by key (`TOTAL`, or an item's `item_keys`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub used: BTreeMap<String, u64>,
-    /// The start of the clock period `used` belongs to (seconds since the Unix epoch).
+    /// The start of the period of a reset every so long that `used` belongs to (seconds since the
+    /// Unix epoch); `None` until it is known (a new run, or new terms: `retermed`).
     #[serde(default)]
-    pub period: u64,
+    pub period: Option<u64>,
     /// For a reset by condition: whether the block's condition had it on when last looked at.
     #[serde(default)]
     pub was_active: bool,
@@ -327,14 +339,18 @@ pub struct Run {
 
 impl Run {
     pub fn new(terms: Terms, now: SystemTime) -> Run {
-        Run { terms, used: BTreeMap::new(), period: 0, was_active: false, started: state::to_unix(now).unwrap_or(0) }
+        Run { terms, used: BTreeMap::new(), period: None, was_active: false, started: state::to_unix(now).unwrap_or(0) }
     }
 
     /// Gives it other terms, as its allowance was edited: what is used stays, unless it was counted
-    /// another way (another scope).
+    /// another way (another scope). The period it is in is taken as it is (`advance`), so a reset
+    /// that now falls elsewhere does not give the time back early.
     pub fn retermed(mut self, terms: Terms) -> Run {
         if self.terms.scope() != terms.scope() {
             self.used.clear();
+        }
+        if self.terms != terms {
+            self.period = None;
         }
         self.terms = terms;
         self
@@ -356,7 +372,6 @@ impl Run {
     /// it on now. To be called whenever time has passed, at least about once a second while the block runs.
     pub fn advance(&mut self, zone: &Zone, now: SystemTime, active: bool) {
         let Terms::Budget { reset, .. } = &self.terms else { return };
-        let reset = *reset;
         match reset {
             Reset::Never => {}
             Reset::Condition => {
@@ -365,13 +380,36 @@ impl Run {
                 }
                 self.was_active = active;
             }
-            clock => {
-                let start = into_period(clock, zone, now)
-                    .and_then(|(into, _)| now.duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs().saturating_sub(into)));
-                if let Some(start) = start.filter(|&start| start != self.period) {
-                    self.used.clear();
-                    self.period = start;
+            Reset::Every => {
+                match self.period_start(zone, now) {
+                    // Not known yet (a new run, or new terms): this period is taken as it is.
+                    Some(start) if self.period.is_none() => self.period = Some(start),
+                    Some(start) if Some(start) != self.period => {
+                        self.used.clear();
+                        self.period = Some(start);
+                    }
+                    _ => {}
                 }
+            }
+        }
+    }
+
+    /// When the period of a reset every so long that `now` is in began, in seconds since the Unix
+    /// epoch: worked out from the period's number, so it is the same at every moment of it.
+    fn period_start(&self, zone: &Zone, now: SystemTime) -> Option<u64> {
+        let Terms::Budget { reset: Reset::Every, every, anchor, .. } = &self.terms else { return None };
+        let length = secs(every);
+        if length == 0 {
+            return None;
+        }
+        match anchor {
+            Anchor::Start => {
+                let since = state::to_unix(now)?.saturating_sub(self.started) / 1000;
+                Some(self.started / 1000 + since / length * length)
+            }
+            Anchor::Clock => {
+                let (into, _) = into_period(&self.terms, self.started, zone, now)?;
+                Some(now.duration_since(UNIX_EPOCH).ok()?.as_secs().saturating_sub(into))
             }
         }
     }
@@ -417,10 +455,7 @@ impl Run {
         let words = |seconds: u64| duration::countdown(seconds);
         let phase = self.phase(zone, now);
         let total = (self.scope() == Some(Scope::Total)).then(|| left(TOTAL));
-        let reset_in = match &self.terms {
-            Terms::Budget { reset, .. } => into_period(*reset, zone, now).map(|(into, length)| length - into),
-            Terms::Pomodoro { .. } => None,
-        };
+        let reset_in = into_period(&self.terms, self.started, zone, now).map(|(into, length)| length - into);
         let items = if self.scope() == Some(Scope::Each) {
             self.used
                 .keys()
@@ -480,7 +515,12 @@ mod tests {
     use super::*;
 
     fn budget(allowed: &str, scope: Scope, reset: Reset) -> Terms {
-        Terms::Budget { allowed: allowed.into(), scope, reset }
+        Terms::Budget { allowed: allowed.into(), scope, reset, every: String::new(), anchor: Anchor::Start }
+    }
+
+    /// A budget given back every `period`, counted from `anchor`.
+    fn every(allowed: &str, scope: Scope, period: &str, anchor: Anchor) -> Terms {
+        Terms::Budget { allowed: allowed.into(), scope, reset: Reset::Every, every: period.into(), anchor }
     }
 
     fn pomodoro(blocked: &str, allowed: &str, anchor: Anchor) -> Terms {
@@ -493,9 +533,9 @@ mod tests {
 
     #[test]
     fn terms_are_checked() {
-        assert!(budget("30m", Scope::Total, Reset::Day).checked().is_ok());
-        assert!(budget("", Scope::Total, Reset::Day).checked().is_err());
-        assert!(budget("soon", Scope::Total, Reset::Day).checked().is_err());
+        assert!(every("30m", Scope::Total, "1d", Anchor::Clock).checked().is_ok());
+        assert!(every("", Scope::Total, "1d", Anchor::Clock).checked().is_err());
+        assert!(every("soon", Scope::Total, "1d", Anchor::Clock).checked().is_err());
         // 50 minutes does not fit a day evenly; from the block's start it does not need to.
         // 45 minutes does not fit a day evenly; from the block's start it does not need to.
         assert!(pomodoro("30m", "20m", Anchor::Clock).checked().is_err());
@@ -506,12 +546,17 @@ mod tests {
 
     #[test]
     fn a_locked_block_only_gets_a_stricter_allowance() {
-        let old = budget("30m", Scope::Total, Reset::Day);
-        assert!(old.tightened_by(&budget("20m", Scope::Total, Reset::Day)).is_ok());
-        assert!(old.tightened_by(&budget("20m", Scope::Total, Reset::Week)).is_ok());
-        assert!(old.tightened_by(&budget("40m", Scope::Total, Reset::Day)).is_err());
-        assert!(old.tightened_by(&budget("30m", Scope::Total, Reset::Hour)).is_err());
-        assert!(old.tightened_by(&budget("30m", Scope::Each, Reset::Day)).is_err());
+        let old = every("30m", Scope::Total, "1d", Anchor::Clock);
+        assert!(old.tightened_by(&every("20m", Scope::Total, "1d", Anchor::Clock)).is_ok());
+        assert!(old.tightened_by(&budget("30m", Scope::Total, Reset::Never)).is_ok(), "never is rarest");
+        assert!(old.tightened_by(&every("20m", Scope::Total, "7d", Anchor::Start)).is_err(), "counted from elsewhere");
+        assert!(old.tightened_by(&every("40m", Scope::Total, "1d", Anchor::Clock)).is_err());
+        assert!(old.tightened_by(&every("30m", Scope::Total, "1h", Anchor::Clock)).is_err());
+        let from_start = every("30m", Scope::Total, "1d", Anchor::Start);
+        assert!(from_start.tightened_by(&every("30m", Scope::Total, "2d", Anchor::Start)).is_ok(), "less often");
+        assert!(from_start.tightened_by(&every("30m", Scope::Total, "12h", Anchor::Start)).is_err());
+        assert!(budget("30m", Scope::Total, Reset::Never).tightened_by(&from_start).is_err());
+        assert!(old.tightened_by(&every("30m", Scope::Each, "1d", Anchor::Clock)).is_err());
         assert!(old.tightened_by(&pomodoro("50m", "10m", Anchor::Start)).is_err());
         let by_condition = budget("30m", Scope::Total, Reset::Condition);
         assert!(by_condition.tightened_by(&budget("30m", Scope::Total, Reset::Condition)).is_ok());
@@ -525,7 +570,7 @@ mod tests {
     #[test]
     fn a_budget_is_used_up_and_given_back() {
         let zone = Zone::fixed(0);
-        let mut run = Run::new(budget("1m", Scope::Total, Reset::Hour), at(0));
+        let mut run = Run::new(every("1m", Scope::Total, "1h", Anchor::Clock), at(0));
         run.advance(&zone, at(10), true);
         assert!(run.is_free(TOTAL));
         run.charge(TOTAL, 59_000);
@@ -584,9 +629,21 @@ mod tests {
     fn terms_are_written_out_in_full_and_short() {
         let cases = [
             (budget("30m", Scope::Total, Reset::Never), "30 minutes in total, never reset", "Allowed 30 minutes in total"),
-            (budget("1h", Scope::Total, Reset::Hour), "1 hour in total, reset every hour", "Allowed 1 hour an hour"),
-            (budget("30m", Scope::Total, Reset::Day), "30 minutes in total, reset every day", "Allowed 30 minutes a day"),
-            (budget("2h", Scope::Each, Reset::Week), "2 hours for each item, reset every week", "Allowed 2 hours a week per item"),
+            (
+                every("1h", Scope::Total, "1h", Anchor::Clock),
+                "1 hour in total, reset every 1 hour, on the clock, from midnight",
+                "Allowed 1 hour every 1 hour",
+            ),
+            (
+                every("30m", Scope::Total, "1d", Anchor::Clock),
+                "30 minutes in total, reset every 1 day, on the clock, from midnight",
+                "Allowed 30 minutes every 1 day",
+            ),
+            (
+                every("2h", Scope::Each, "36h", Anchor::Start),
+                "2 hours for each item, reset every 1 day and 12 hours, from the start of the block",
+                "Allowed 2 hours every 1 day and 12 hours per item",
+            ),
             (
                 budget("10m", Scope::Each, Reset::Condition),
                 "10 minutes for each item, reset each time its condition turns on",
@@ -609,33 +666,37 @@ mod tests {
             assert_eq!(terms.described(), Ok(Described { words: words.into(), label: label.into() }));
         }
         // What cannot be saved is not written out either.
-        assert!(budget("soon", Scope::Total, Reset::Day).described().is_err());
+        assert!(every("soon", Scope::Total, "1d", Anchor::Clock).described().is_err());
     }
 
     #[test]
     fn a_locked_block_can_lose_its_allowance_but_not_be_given_one() {
-        let old = budget("30m", Scope::Total, Reset::Day);
+        let old = every("30m", Scope::Total, "1d", Anchor::Clock);
         assert_eq!(tightened(None, None), Ok(()));
         assert_eq!(tightened(Some(&old), None), Ok(()));
         assert!(tightened(None, Some(&old)).is_err());
-        assert_eq!(tightened(Some(&old), Some(&budget("10m", Scope::Total, Reset::Day))), Ok(()));
-        assert!(tightened(Some(&old), Some(&budget("1h", Scope::Total, Reset::Day))).is_err());
+        assert_eq!(tightened(Some(&old), Some(&every("10m", Scope::Total, "1d", Anchor::Clock))), Ok(()));
+        assert!(tightened(Some(&old), Some(&every("1h", Scope::Total, "1d", Anchor::Clock))).is_err());
         // New terms that cannot be read are no stricter.
-        assert!(tightened(Some(&old), Some(&budget("", Scope::Total, Reset::Day))).is_err());
+        assert!(tightened(Some(&old), Some(&every("", Scope::Total, "1d", Anchor::Clock))).is_err());
     }
 
     #[test]
-    fn a_weekly_budget_is_given_back_on_monday() {
+    fn a_budget_from_the_start_is_given_back_every_so_long_after_it() {
         let zone = Zone::fixed(0);
-        // 1970-01-01 was a Thursday; the Monday after is day 4.
-        let monday = 4 * DAY;
-        let mut run = Run::new(budget("1m", Scope::Total, Reset::Week), at(0));
-        run.advance(&zone, at(DAY), true);
+        // Started at 10:00:00.5, given back every 7 days from then.
+        let start = state::from_unix(10 * 3600 * 1000 + 500);
+        let later = |seconds: u64| start + std::time::Duration::from_secs(seconds);
+        let mut run = Run::new(every("1m", Scope::Total, "7d", Anchor::Start), start);
+        run.advance(&zone, later(DAY), true);
         run.charge(TOTAL, 60_000);
-        run.advance(&zone, at(monday - 1), true);
-        assert!(!run.is_free(TOTAL), "still the same week on Sunday night");
-        assert_eq!(run.status(&zone, at(monday - 1)).reset_in, Some(1));
-        run.advance(&zone, at(monday), true);
+        // Every moment of the period is the same period, whatever its milliseconds.
+        for moment in [later(DAY) + std::time::Duration::from_millis(600), later(3 * DAY), later(7 * DAY - 1)] {
+            run.advance(&zone, moment, true);
+            assert!(!run.is_free(TOTAL), "still the first week at {moment:?}");
+        }
+        assert_eq!(run.status(&zone, later(7 * DAY - 1)).reset_in, Some(1));
+        run.advance(&zone, later(7 * DAY), true);
         assert!(run.is_free(TOTAL));
         // Without a reset, what is used stays.
         let mut never = Run::new(budget("1m", Scope::Total, Reset::Never), at(0));
@@ -645,10 +706,54 @@ mod tests {
     }
 
     #[test]
+    fn a_budget_on_the_clock_is_given_back_at_the_times_that_fit_the_day() {
+        let zone = Zone::fixed(0);
+        // Every 12 hours on the clock: at 00:00 and 12:00, whenever the block started (09:00).
+        let mut run = Run::new(every("1m", Scope::Total, "12h", Anchor::Clock), at(9 * 3600));
+        run.advance(&zone, at(9 * 3600), true);
+        run.charge(TOTAL, 60_000);
+        run.advance(&zone, at(12 * 3600 - 1), true);
+        assert!(!run.is_free(TOTAL));
+        assert_eq!(run.status(&zone, at(12 * 3600 - 1)).reset_in, Some(1));
+        run.advance(&zone, at(12 * 3600), true);
+        assert!(run.is_free(TOTAL));
+        // On the clock it has to fit a day; from the start any duration will do.
+        assert!(every("1m", Scope::Total, "7h", Anchor::Clock).checked().unwrap_err().contains("fits a day evenly"));
+        assert!(every("1m", Scope::Total, "7d", Anchor::Clock).checked().is_err());
+        assert!(every("1m", Scope::Total, "7h", Anchor::Start).checked().is_ok());
+        assert!(every("1m", Scope::Total, "", Anchor::Start).checked().is_err());
+        assert!(every("1m", Scope::Total, "0m", Anchor::Start).checked().is_err());
+        // Another reset keeps no period of its own: checked, it is stored without one.
+        let mut stray = budget("1m", Scope::Total, Reset::Never);
+        if let Terms::Budget { every, anchor, .. } = &mut stray {
+            *every = "1d".into();
+            *anchor = Anchor::Clock;
+        }
+        assert_eq!(stray.checked(), Ok(budget("1m", Scope::Total, Reset::Never)));
+    }
+
+    #[test]
+    fn new_terms_do_not_give_the_time_back_early() {
+        let zone = Zone::fixed(0);
+        let mut run = Run::new(every("10m", Scope::Total, "1h", Anchor::Clock), at(0));
+        run.advance(&zone, at(1800), true);
+        run.charge(TOTAL, 600_000);
+        // Edited to every 2 hours from the start, at 00:30: its periods now fall elsewhere, but what
+        // is used is kept until the next reset.
+        let mut run = run.retermed(every("10m", Scope::Total, "2h", Anchor::Start));
+        run.advance(&zone, at(1801), true);
+        assert!(!run.is_free(TOTAL), "kept");
+        run.advance(&zone, at(2 * 3600 - 1), true);
+        assert!(!run.is_free(TOTAL));
+        run.advance(&zone, at(2 * 3600), true);
+        assert!(run.is_free(TOTAL), "given back at the next reset of the new terms");
+    }
+
+    #[test]
     fn new_terms_keep_what_is_used_unless_it_is_counted_another_way() {
         let mut run = Run::new(budget("10m", Scope::Total, Reset::Never), at(0));
         run.charge(TOTAL, 60_000);
-        let shorter = run.clone().retermed(budget("5m", Scope::Total, Reset::Day));
+        let shorter = run.clone().retermed(every("5m", Scope::Total, "1d", Anchor::Clock));
         assert_eq!(shorter.used.get(TOTAL), Some(&60_000));
         assert_eq!(shorter.scope(), Some(Scope::Total));
         let each = run.retermed(budget("5m", Scope::Each, Reset::Never));

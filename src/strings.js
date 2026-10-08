@@ -497,10 +497,16 @@ window.STRINGS = {
       resetLabel: "Time is given back",
       resetHelper: "What was used becomes available again",
       never: "Never while the block runs",
-      hour: "Every hour",
-      day: "Every day",
-      week: "Every week",
+      every: "Every so long",
       condition: "Each time the condition turns on",
+      // Given back every so long.
+      everyLabel: "Every",
+      everyPlaceholder: "e.g. 1d",
+      everyHelper: "e.g. 1d, 12h, 90m",
+      anchorLabel: "Counted from",
+      anchorHelper: "On the clock, every 1d comes at midnight and every 1h on the hour. It has to fit a day evenly",
+      start: "The start of the block",
+      clock: "The clock, from midnight",
     },
     // A Pomodoro cycle: blocked first, then everything is allowed, over and over.
     cycle: {

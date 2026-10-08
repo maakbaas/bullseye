@@ -602,11 +602,15 @@ function allowanceSection() {
   const text = (label, placeholder, helper) => el("cds-text-input", { label, placeholder, "helper-text": helper });
   const allowed = text(t("allowance.budget.allowedLabel"), t("allowance.budget.allowedPlaceholder"), t("allowance.budget.allowedHelper"));
   const scope = dropdown(t("allowance.budget.scopeLabel"), t("allowance.budget.scopeHelper"), ["total", "each"], "allowance.budget");
-  const reset = dropdown(t("allowance.budget.resetLabel"), t("allowance.budget.resetHelper"), ["never", "hour", "day", "week", "condition"], "allowance.budget");
+  const reset = dropdown(t("allowance.budget.resetLabel"), t("allowance.budget.resetHelper"), ["never", "every", "condition"], "allowance.budget");
+  // Given back every so long: how long, and counted from the block's start or the clock.
+  const every = text(t("allowance.budget.everyLabel"), t("allowance.budget.everyPlaceholder"), t("allowance.budget.everyHelper"));
+  const resetAnchor = dropdown(t("allowance.budget.anchorLabel"), t("allowance.budget.anchorHelper"), ["start", "clock"], "allowance.budget");
+  const everyPart = el("div", { class: "fields" }, every, resetAnchor);
   const blocked = text(t("allowance.cycle.blockedLabel"), t("allowance.cycle.blockedPlaceholder"), t("allowance.cycle.helper"));
   const cycleAllowed = text(t("allowance.cycle.allowedLabel"), t("allowance.cycle.allowedPlaceholder"), t("allowance.cycle.helper"));
   const anchor = dropdown(t("allowance.cycle.anchorLabel"), t("allowance.cycle.anchorHelper"), ["start", "clock"], "allowance.cycle");
-  const budgetPart = el("div", { class: "fields" }, allowed, scope, reset);
+  const budgetPart = el("div", { class: "fields" }, allowed, scope, reset, everyPart);
   const cyclePart = el("div", { class: "fields" }, blocked, cycleAllowed, anchor);
   const summary = el("p", { class: "cds--type-body-01 week-summary" });
   let problem = null;
@@ -615,7 +619,10 @@ function allowanceSection() {
 
   const terms = () => {
     if (type.value === "pomodoro") return { type: "pomodoro", blocked: blocked.value.trim(), allowed: cycleAllowed.value.trim(), anchor: anchor.value };
-    if (type.value === "budget") return { type: "budget", allowed: allowed.value.trim(), scope: scope.value, reset: reset.value };
+    if (type.value === "budget") {
+      const often = reset.value === "every" ? { every: every.value.trim(), anchor: resetAnchor.value } : {};
+      return { type: "budget", allowed: allowed.value.trim(), scope: scope.value, reset: reset.value, ...often };
+    }
     return null;
   };
   // The terms in words; or why they cannot be saved. Only the latest answer counts.
@@ -643,10 +650,15 @@ function allowanceSection() {
   const show = () => {
     budgetPart.hidden = type.value !== "budget";
     cyclePart.hidden = type.value !== "pomodoro";
+    everyPart.hidden = reset.value !== "every";
     summary.hidden = !terms();
   };
-  for (const field of [allowed, blocked, cycleAllowed]) field.addEventListener("input", soon);
-  for (const field of [scope, reset, anchor]) field.addEventListener("cds-dropdown-selected", describe);
+  for (const field of [allowed, blocked, cycleAllowed, every]) field.addEventListener("input", soon);
+  for (const field of [scope, anchor, resetAnchor]) field.addEventListener("cds-dropdown-selected", describe);
+  reset.addEventListener("cds-dropdown-selected", () => {
+    show();
+    describe();
+  });
   type.addEventListener("cds-dropdown-selected", () => {
     show();
     describe();
@@ -660,7 +672,9 @@ function allowanceSection() {
       const cycle = allowance && allowance.type === "pomodoro" ? allowance : {};
       allowed.value = budget.allowed || "30m";
       scope.value = budget.scope || "total";
-      reset.value = budget.reset || "day";
+      reset.value = budget.reset || "every";
+      every.value = budget.every || "1d";
+      resetAnchor.value = budget.reset === "every" ? budget.anchor : "clock";
       blocked.value = cycle.blocked || "50m";
       cycleAllowed.value = cycle.allowed || "10m";
       anchor.value = cycle.anchor || "start";

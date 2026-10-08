@@ -98,14 +98,14 @@ Blocks:
                                everything is allowed for each cycle.
       --scope <total|each>     Budget: for the whole block (the default) or for each site,
                                program, Store app and window title on its own.
-      --reset <never|hour|day|week|condition>
+      --reset <never|condition|duration>
                                Budget: when what was used is given back: never while the
-                               block runs (the default), every hour, day (midnight) or week
-                               (Monday), or each time the block's condition turns on.
+                               block runs (the default), each time the block's condition turns
+                               on, or every so long, e.g. 1d or 12h, counted by --anchor.
       --blocked <duration>     Pomodoro: how long it is blocked for before it allows.
-      --anchor <start|clock>   Pomodoro: counted from the block's start (the default), or from
-                               midnight on the clock, so a cycle of an hour starts at xx:00
-                               (the cycle must fit a day evenly).
+      --anchor <start|clock>   What a Pomodoro, or a budget's reset every so long, is counted
+                               from: the block's start (the default), or midnight on the clock,
+                               so an hour starts at xx:00 (it must then fit a day evenly).
       --lock-duration <duration>
                                Locked for this long once started, e.g. 2h 30m: it cannot be
                                stopped and ends by itself.
@@ -373,6 +373,8 @@ struct AllowanceChanges {
     allowed: Option<String>,
     scope: Option<Scope>,
     reset: Option<Reset>,
+    /// With `Reset::Every`: how often, as typed (`1d`).
+    every: Option<String>,
     blocked: Option<String>,
     anchor: Option<Anchor>,
 }
@@ -596,17 +598,18 @@ fn parse_allowance_changes(options: &mut Options) -> Result<Option<AllowanceChan
             other => Err(format!("--scope takes total or each, not \"{other}\"")),
         })
         .transpose()?;
-    let reset = options
-        .value("--reset")?
-        .map(|reset| match reset.to_lowercase().as_str() {
-            "never" => Ok(Reset::Never),
-            "hour" => Ok(Reset::Hour),
-            "day" => Ok(Reset::Day),
-            "week" => Ok(Reset::Week),
-            "condition" => Ok(Reset::Condition),
-            other => Err(format!("--reset takes never, hour, day, week or condition, not \"{other}\"")),
-        })
-        .transpose()?;
+    // Never, each time the condition turns on, or every so long (a duration).
+    let (reset, every) = match options.value("--reset")? {
+        None => (None, None),
+        Some(reset) => match reset.trim().to_lowercase().as_str() {
+            "never" => (Some(Reset::Never), None),
+            "condition" => (Some(Reset::Condition), None),
+            _ => match duration::parse(&reset) {
+                Ok(Some(_)) => (Some(Reset::Every), Some(reset.trim().to_string())),
+                _ => return Err(format!("--reset takes never, condition or a duration such as 1d, not \"{reset}\"")),
+            },
+        },
+    };
     let blocked = options.value("--blocked")?;
     let anchor = options
         .value("--anchor")?
@@ -616,7 +619,7 @@ fn parse_allowance_changes(options: &mut Options) -> Result<Option<AllowanceChan
             other => Err(format!("--anchor takes start or clock, not \"{other}\"")),
         })
         .transpose()?;
-    let changes = AllowanceChanges { kind, allowed, scope, reset, blocked, anchor };
+    let changes = AllowanceChanges { kind, allowed, scope, reset, every, blocked, anchor };
     if changes == AllowanceChanges::default() {
         return Ok(None);
     }
@@ -633,11 +636,12 @@ fn parse_allowance_changes(options: &mut Options) -> Result<Option<AllowanceChan
 
 /// An allowance's terms from what was given, over the ones it has (`old`, when editing): what is not
 /// named stays, and a new one has defaults (the whole block, never reset, counted from the start).
-/// Checked, so a mistake is told before anything is sent.
+/// `--blocked` makes a Pomodoro, `--scope` or `--reset` a budget, and `--allowed` or `--anchor` alone
+/// keep the kind there is. Checked, so a mistake is told before anything is sent.
 fn build_terms(changes: AllowanceChanges, old: Option<&Terms>) -> Result<Terms, String> {
     let pomodoro = match changes.kind.as_deref() {
         Some(kind) => kind == "pomodoro",
-        None if changes.blocked.is_some() || changes.anchor.is_some() => true,
+        None if changes.blocked.is_some() => true,
         None if changes.scope.is_some() || changes.reset.is_some() => false,
         None => matches!(old, Some(Terms::Pomodoro { .. })),
     };
@@ -652,14 +656,18 @@ fn build_terms(changes: AllowanceChanges, old: Option<&Terms>) -> Result<Terms, 
             anchor: changes.anchor.or(old_anchor).unwrap_or(Anchor::Start),
         }
     } else {
-        let (old_allowed, old_scope, old_reset) = match old {
-            Some(Terms::Budget { allowed, scope, reset }) => (Some(allowed.clone()), Some(*scope), Some(*reset)),
-            _ => (None, None, None),
+        let (old_allowed, old_scope, old_reset, old_every, old_anchor) = match old {
+            Some(Terms::Budget { allowed, scope, reset, every, anchor }) => {
+                (Some(allowed.clone()), Some(*scope), Some(*reset), Some(every.clone()), Some(*anchor))
+            }
+            _ => (None, None, None, None, None),
         };
         Terms::Budget {
             allowed: changes.allowed.or(old_allowed).ok_or("Give --allowed, the time that is allowed, e.g. 30m")?,
             scope: changes.scope.or(old_scope).unwrap_or(Scope::Total),
             reset: changes.reset.or(old_reset).unwrap_or(Reset::Never),
+            every: changes.every.or(old_every).unwrap_or_default(),
+            anchor: changes.anchor.or(old_anchor).unwrap_or(Anchor::Start),
         }
     };
     terms.checked()
@@ -2083,7 +2091,13 @@ mod tests {
         assert_eq!(allowance_words(&cycle), "allowed");
         assert_eq!(allowance_words(&AllowanceStatus { open: false, ..cycle.clone() }), "blocked");
         let each = AllowanceStatus {
-            terms: Terms::Budget { allowed: "10m".into(), scope: Scope::Each, reset: Reset::Hour },
+            terms: Terms::Budget {
+                allowed: "10m".into(),
+                scope: Scope::Each,
+                reset: Reset::Every,
+                every: "1h".into(),
+                anchor: Anchor::Clock,
+            },
             reset_words: Some("40 minutes".into()),
             items: vec![crate::allowance::ItemLeft { item: "youtube.com".into(), left: 240, left_words: "4 minutes".into() }],
             ..cycle.clone()
@@ -2526,13 +2540,40 @@ mod tests {
 
     #[test]
     fn a_block_has_its_allowance_set_by_its_options() {
-        let budget = |allowed: &str, scope, reset| Some(Terms::Budget { allowed: allowed.into(), scope, reset });
+        let budget = |allowed: &str, scope, reset| {
+            Some(Terms::Budget { allowed: allowed.into(), scope, reset, every: String::new(), anchor: Anchor::Start })
+        };
+        let every = |allowed: &str, scope, period: &str, anchor| {
+            Some(Terms::Budget { allowed: allowed.into(), scope, reset: Reset::Every, every: period.into(), anchor })
+        };
         let cycle =
             |blocked: &str, allowed: &str, anchor| Some(Terms::Pomodoro { blocked: blocked.into(), allowed: allowed.into(), anchor });
         assert_eq!(
-            allowance_of(&["new", "Social", "--allowance", "budget", "--allowed", "30m", "--scope", "each", "--reset=day"], None),
-            Ok(budget("30m", Scope::Each, Reset::Day))
+            allowance_of(
+                &["new", "Social", "--allowance", "budget", "--allowed", "30m", "--scope", "each", "--reset=1d", "--anchor", "clock"],
+                None
+            ),
+            Ok(every("30m", Scope::Each, "1d", Anchor::Clock))
         );
+        // Every so long, from the start by default; never and by condition.
+        assert_eq!(
+            allowance_of(&["new", "A", "--allowed", "1h", "--reset", "36h"], None),
+            Ok(every("1h", Scope::Total, "36h", Anchor::Start))
+        );
+        assert_eq!(
+            allowance_of(&["new", "A", "--allowed", "1h", "--reset", "Condition"], None),
+            Ok(budget("1h", Scope::Total, Reset::Condition))
+        );
+        // --anchor alone keeps a budget a budget, and a reset every so long keeps its period.
+        let daily = every("30m", Scope::Total, "1d", Anchor::Start);
+        assert_eq!(
+            allowance_of(&["edit", "Work", "--anchor", "clock"], daily.clone()),
+            Ok(every("30m", Scope::Total, "1d", Anchor::Clock))
+        );
+        assert_eq!(allowance_of(&["edit", "Work", "--reset", "never"], daily), Ok(budget("30m", Scope::Total, Reset::Never)));
+        assert!(allowance_of(&["new", "A", "--allowed", "1h", "--reset", "7h", "--anchor", "clock"], None)
+            .unwrap_err()
+            .contains("fits a day evenly"));
         // The defaults: the whole block, never reset; the kind can be left out.
         assert_eq!(allowance_of(&["new", "A", "--allowed", "1h"], None), Ok(budget("1h", Scope::Total, Reset::Never)));
         // A cycle is told by its own options.
@@ -2584,7 +2625,13 @@ mod tests {
         assert_eq!(allowance_words(&status), "allowed for the next 4 minutes");
         assert_eq!(allowance_words(&AllowanceStatus { open: false, ..status }), "blocked for the next 4 minutes");
         let used = AllowanceStatus {
-            terms: Terms::Budget { allowed: "30m".into(), scope: Scope::Total, reset: Reset::Day },
+            terms: Terms::Budget {
+                allowed: "30m".into(),
+                scope: Scope::Total,
+                reset: Reset::Every,
+                every: "1d".into(),
+                anchor: Anchor::Clock,
+            },
             open: true,
             change: None,
             change_words: None,

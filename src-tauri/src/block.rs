@@ -1658,7 +1658,13 @@ mod tests {
     }
 
     fn budget(allowed: &str, scope: Scope) -> Terms {
-        Terms::Budget { allowed: allowed.into(), scope, reset: allowance::Reset::Never }
+        Terms::Budget {
+            allowed: allowed.into(),
+            scope,
+            reset: allowance::Reset::Never,
+            every: String::new(),
+            anchor: allowance::Anchor::Start,
+        }
     }
 
     #[test]

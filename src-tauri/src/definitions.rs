@@ -1077,8 +1077,13 @@ pub mod tests {
         assert_eq!(imported.kept_locks, vec![Lock::Duration { duration: "1h".into() }]);
         // An allowance comes with its block, checked.
         let mut budget = block("a", &["l"]);
-        budget.allowance =
-            Some(Terms::Budget { allowed: "soon".into(), scope: crate::allowance::Scope::Total, reset: crate::allowance::Reset::Day });
+        budget.allowance = Some(Terms::Budget {
+            allowed: "soon".into(),
+            scope: crate::allowance::Scope::Total,
+            reset: crate::allowance::Reset::Never,
+            every: String::new(),
+            anchor: crate::allowance::Anchor::Start,
+        });
         let bad = Library { lists: vec![block_list("l", &[])], blocks: vec![budget], ..Library::default() };
         assert!(definitions.replace(bad).is_err());
     }
