@@ -217,6 +217,44 @@ impl Terms {
     }
 }
 
+/// An allowance in words both ways, for the window (`describe_allowance`): `words` in full, for the
+/// block editor and the CLI, and `label` short, for a line of the block's tile.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct Described {
+    pub words: String,
+    pub label: String,
+}
+
+impl Terms {
+    /// Short, as a line of a block's tile says it, like its other lines (`Always active`):
+    /// `Allowed 30 minutes a day`, `Allowed 10 minutes a day per item`, `Allowed 10 minutes after
+    /// every 50 minutes`.
+    pub fn label(&self) -> String {
+        match self {
+            Terms::Budget { allowed, scope, reset } => {
+                let every = match reset {
+                    Reset::Never => " in total",
+                    Reset::Hour => " an hour",
+                    Reset::Day => " a day",
+                    Reset::Week => " a week",
+                    Reset::Condition => " each time active",
+                };
+                let each = if *scope == Scope::Each { " per item" } else { "" };
+                format!("Allowed {}{every}{each}", duration::countdown(secs(allowed)))
+            }
+            Terms::Pomodoro { blocked, allowed, .. } => {
+                format!("Allowed {} after every {}", duration::countdown(secs(allowed)), duration::countdown(secs(blocked)))
+            }
+        }
+    }
+
+    /// Checked, in words both ways.
+    pub fn described(self) -> Result<Described, String> {
+        let terms = self.checked()?;
+        Ok(Described { words: terms.describe(), label: terms.label() })
+    }
+}
+
 /// Whether a locked block's allowance may go from `old` to `new`: taking it away is stricter, giving
 /// one is not, and terms may only get stricter (`Terms::tightened_by`).
 pub fn tightened(old: Option<&Terms>, new: Option<&Terms>) -> Result<(), String> {
@@ -540,6 +578,85 @@ mod tests {
         assert!(clock.everything_allowed(&zone, at(3 * 3600 + 50 * 60)));
         assert!(clock.everything_allowed(&zone, at(3 * 3600 + 59 * 60 + 59)));
         assert!(!clock.everything_allowed(&zone, at(4 * 3600)));
+    }
+
+    #[test]
+    fn terms_are_written_out_in_full_and_short() {
+        let cases = [
+            (budget("30m", Scope::Total, Reset::Never), "30 minutes in total, never reset", "Allowed 30 minutes in total"),
+            (budget("1h", Scope::Total, Reset::Hour), "1 hour in total, reset every hour", "Allowed 1 hour an hour"),
+            (budget("30m", Scope::Total, Reset::Day), "30 minutes in total, reset every day", "Allowed 30 minutes a day"),
+            (budget("2h", Scope::Each, Reset::Week), "2 hours for each item, reset every week", "Allowed 2 hours a week per item"),
+            (
+                budget("10m", Scope::Each, Reset::Condition),
+                "10 minutes for each item, reset each time its condition turns on",
+                "Allowed 10 minutes each time active per item",
+            ),
+            (
+                pomodoro("50m", "10m", Anchor::Start),
+                "Blocked for 50 minutes, then allowed for 10 minutes, from the start of the block",
+                "Allowed 10 minutes after every 50 minutes",
+            ),
+            (
+                pomodoro("1h", "30m", Anchor::Clock),
+                "Blocked for 1 hour, then allowed for 30 minutes, on the clock, from midnight",
+                "Allowed 30 minutes after every 1 hour",
+            ),
+        ];
+        for (terms, words, label) in cases {
+            assert_eq!(terms.describe(), words);
+            assert_eq!(terms.label(), label);
+            assert_eq!(terms.described(), Ok(Described { words: words.into(), label: label.into() }));
+        }
+        // What cannot be saved is not written out either.
+        assert!(budget("soon", Scope::Total, Reset::Day).described().is_err());
+    }
+
+    #[test]
+    fn a_locked_block_can_lose_its_allowance_but_not_be_given_one() {
+        let old = budget("30m", Scope::Total, Reset::Day);
+        assert_eq!(tightened(None, None), Ok(()));
+        assert_eq!(tightened(Some(&old), None), Ok(()));
+        assert!(tightened(None, Some(&old)).is_err());
+        assert_eq!(tightened(Some(&old), Some(&budget("10m", Scope::Total, Reset::Day))), Ok(()));
+        assert!(tightened(Some(&old), Some(&budget("1h", Scope::Total, Reset::Day))).is_err());
+        // New terms that cannot be read are no stricter.
+        assert!(tightened(Some(&old), Some(&budget("", Scope::Total, Reset::Day))).is_err());
+    }
+
+    #[test]
+    fn a_weekly_budget_is_given_back_on_monday() {
+        let zone = Zone::fixed(0);
+        // 1970-01-01 was a Thursday; the Monday after is day 4.
+        let monday = 4 * DAY;
+        let mut run = Run::new(budget("1m", Scope::Total, Reset::Week), at(0));
+        run.advance(&zone, at(DAY), true);
+        run.charge(TOTAL, 60_000);
+        run.advance(&zone, at(monday - 1), true);
+        assert!(!run.is_free(TOTAL), "still the same week on Sunday night");
+        assert_eq!(run.status(&zone, at(monday - 1)).reset_in, Some(1));
+        run.advance(&zone, at(monday), true);
+        assert!(run.is_free(TOTAL));
+        // Without a reset, what is used stays.
+        let mut never = Run::new(budget("1m", Scope::Total, Reset::Never), at(0));
+        never.charge(TOTAL, 60_000);
+        never.advance(&zone, at(30 * DAY), true);
+        assert!(!never.is_free(TOTAL) && never.status(&zone, at(30 * DAY)).reset_in.is_none());
+    }
+
+    #[test]
+    fn new_terms_keep_what_is_used_unless_it_is_counted_another_way() {
+        let mut run = Run::new(budget("10m", Scope::Total, Reset::Never), at(0));
+        run.charge(TOTAL, 60_000);
+        let shorter = run.clone().retermed(budget("5m", Scope::Total, Reset::Day));
+        assert_eq!(shorter.used.get(TOTAL), Some(&60_000));
+        assert_eq!(shorter.scope(), Some(Scope::Total));
+        let each = run.retermed(budget("5m", Scope::Each, Reset::Never));
+        assert!(each.used.is_empty());
+        // A cycle has no scope and no time to use up.
+        let cycle = Run::new(pomodoro("50m", "10m", Anchor::Start), at(0));
+        assert_eq!(cycle.scope(), None);
+        assert!(!cycle.is_free(TOTAL));
     }
 
     #[test]

@@ -618,7 +618,7 @@ function allowanceSection() {
     let wrong = null;
     if (wanted) {
       try {
-        words = await invoke("describe_allowance", { terms: wanted });
+        words = (await invoke("describe_allowance", { terms: wanted })).words;
       } catch (e) {
         wrong = String(e);
       }

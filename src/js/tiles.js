@@ -1,7 +1,7 @@
 // A page of tiles, one per block, block list or condition: kept and updated in place, so an open menu
 // survives a refresh. A block's tile also has its lock and Start / Stop. Deleting is asked here.
 
-import { $, allowanceText, ask, el, invalid, invoke, joined, listName, newId, editHref, nodesOf, notify, overview, quoted, reachable, ref, refresh, runningOf, conditionOf, t, tn, usersOf, weekText, wordingOf } from "./core.js";
+import { $, allowanceLabel, ask, el, invalid, invoke, joined, listName, newId, editHref, nodesOf, notify, overview, quoted, reachable, ref, refresh, runningOf, conditionOf, t, tn, usersOf, weekText, wordingOf } from "./core.js";
 import { LOCKS, conditionLockText } from "./locks.js";
 import { ENFORCERS, LISTS, SECTIONS } from "./forms.js";
 import { KINDS } from "./kinds.js";
@@ -42,30 +42,25 @@ const runningRuleLine = (running, rule, condition) => {
   return ["rule-16", tn(`blocks.tile.${on ? "activeDuring" : "inactiveOutside"}${change ? "For" : ""}`, { name, change })];
 };
 
-// A block's allowance line, named by its type. Not running: the terms in words. Running: where it
-// stands now, from the backend's words (`Running::allowance`): a cycle is allowed or blocked for the
-// next so long, a budget has so much left (and when it is given back), a budget for each item says
-// what the items that have been used have left.
+// A block's allowance line, short like its other lines. Not running: the terms (`Allowed 30 minutes a
+// day`, from the backend). Running: where it stands now, from the backend's words (`Running::allowance`):
+// a cycle is allowed for the next so long or allowed again in so long, a budget has so much left (and
+// when it is given back), a budget for each item says what the items that have been used have left.
 const allowanceLine = (running, allowance) => {
   const icon = "timer-16";
   const state = running && running.allowance;
-  const terms = state ? state.terms : allowance;
-  if (!terms) return null;
-  const name = t(`allowance.type.${terms.type}`);
-  const words = allowanceText(terms);
-  if (!state) return [icon, tn("blocks.tile.allowance", { name, words })];
+  if (!state) return allowance ? [icon, allowanceLabel(allowance)] : null;
   if (state.terms.type === "pomodoro") {
-    const key = state.open ? "Open" : "Blocked";
-    return [icon, state.change_words ? tn(`blocks.tile.allowance${key}For`, { name, change: state.change_words }) : tn(`blocks.tile.allowance${key}`, { name })];
+    const key = state.open ? "allowanceOpen" : "allowanceBlocked";
+    return [icon, state.change_words ? t(`blocks.tile.${key}For`, { change: state.change_words }) : t(`blocks.tile.${key}`)];
   }
   if (state.left !== null) {
-    const used = state.left === 0;
-    const key = `${used ? "allowanceUsedUp" : "allowanceLeft"}${state.reset_words ? "Reset" : ""}`;
-    return [icon, tn(`blocks.tile.${key}`, { name, left: state.left_words, reset: state.reset_words })];
+    const key = `${state.left === 0 ? "allowanceUsedUp" : "allowanceLeft"}${state.reset_words ? "Reset" : ""}`;
+    return [icon, t(`blocks.tile.${key}`, { left: state.left_words, reset: state.reset_words })];
   }
   const items = state.items.map((item) => (item.left === 0 ? t("blocks.tile.allowanceItemUsedUp", { item: item.item }) : t("blocks.tile.allowanceItem", { item: item.item, left: item.left_words })));
-  if (!items.length) return [icon, tn("blocks.tile.allowance", { name, words })];
-  return [icon, tn("blocks.tile.allowanceItems", { name, words, items: items.join(t("common.separator")) })];
+  if (!items.length) return [icon, allowanceLabel(state.terms)];
+  return [icon, t("blocks.tile.allowanceItems", { items: items.join(t("common.separator")) })];
 };
 
 // The blocks that use an item, as links.

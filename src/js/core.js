@@ -78,8 +78,8 @@ function described(command, args, standIn) {
   return texts.get(key);
 }
 const weekText = (days) => described("describe_schedule", { week: { days } }, t("common.weeklyStandIn"));
-// A block's allowance (its terms) in words, as the CLI says them.
-const allowanceText = (terms) => described("describe_allowance", { terms }, "");
+// A block's allowance (its terms) as a tile's line says it, short (`Allowed 30 minutes a day`).
+const allowanceLabel = (terms) => (described("describe_allowance", { terms }, null) || { label: "" }).label;
 const durationText = (text) => described("describe_duration", { text: text || "" }, text || "");
 // An until lock's end written out (`Tuesday 6 October 2026, 18:00`); as typed until then, or
 // once it has passed.
@@ -203,4 +203,4 @@ $("confirm-action").addEventListener("click", async () => {
 });
 $("confirm").addEventListener("cds-modal-closed", () => answered(false));
 
-export { invoke, $, t, tn, ref, joined, nodesOf, editHref, quoted, names, applyStrings, el, described, weekText, allowanceText, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, listName, usersOf, wordingOf, holdersOf, lockedUsersOf, invalid, ask };
+export { invoke, $, t, tn, ref, joined, nodesOf, editHref, quoted, names, applyStrings, el, described, weekText, allowanceLabel, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, listName, usersOf, wordingOf, holdersOf, lockedUsersOf, invalid, ask };

@@ -125,21 +125,20 @@ window.STRINGS = {
       activeSinceTrue: "Active since {name} is true",
       inactiveSinceFalse: "Inactive since {name} is false",
       conditionGone: "a condition",
-      // A block's allowance line. {name}: its type (`allowance.type`); {words}: its terms in words.
-      allowance: "{name}: {words}",
-      // Running, a cycle: {change}: the time until it turns.
-      allowanceOpenFor: "{name}: allowed for the next {change}",
-      allowanceBlockedFor: "{name}: blocked for the next {change}",
-      allowanceOpen: "{name}: allowed",
-      allowanceBlocked: "{name}: blocked",
-      // Running, a budget: {left}: the time left; {reset}: the time until it is given back.
-      allowanceLeft: "{name}: {left} left",
-      allowanceLeftReset: "{name}: {left} left, reset in {reset}",
-      allowanceUsedUp: "{name}: used up",
-      allowanceUsedUpReset: "{name}: used up, reset in {reset}",
-      // A budget for each item: {items}: "youtube.com 12 minutes left, …"; {words}: the terms.
-      allowanceItems: "{name}: {words}. Left: {items}",
-      allowanceItem: "{item} {left}",
+      // A running block's allowance line (not running, the backend's short label: "Allowed 30 minutes a
+      // day"). A Pomodoro: {change}: the time until it turns.
+      allowanceOpenFor: "Allowed for the next {change}",
+      allowanceBlockedFor: "Allowed again in {change}",
+      allowanceOpen: "Allowed now",
+      allowanceBlocked: "Not allowed now",
+      // A budget: {left}: the time left; {reset}: the time until it is given back.
+      allowanceLeft: "{left} left to use",
+      allowanceLeftReset: "{left} left to use, reset in {reset}",
+      allowanceUsedUp: "Allowed time used up",
+      allowanceUsedUpReset: "Allowed time used up, reset in {reset}",
+      // A budget for each item: {items}: "youtube.com 12 minutes left, …".
+      allowanceItems: "Allowed per item: {items}",
+      allowanceItem: "{item} {left} left",
       allowanceItemUsedUp: "{item} used up",
     },
     // The tag on a block's tile.

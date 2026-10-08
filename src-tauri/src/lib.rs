@@ -135,11 +135,11 @@ fn describe_schedule(week: Week) -> Result<String, String> {
     week.normalized().map(|week| week.describe())
 }
 
-/// An allowance's terms in words (`30 minutes in total, reset every day`), after checking them, for the
-/// block editor's allowance section and the block's summary. Needs no service.
+/// A block's allowance in words, after checking them: in full (`30 minutes in total, reset every day`)
+/// for the block editor, and as the tile's short label (`Allowed 30 minutes a day`). Needs no service.
 #[tauri::command]
-fn describe_allowance(terms: allowance::Terms) -> Result<String, String> {
-    terms.checked().map(|terms| terms.describe())
+fn describe_allowance(terms: allowance::Terms) -> Result<allowance::Described, String> {
+    terms.described()
 }
 
 /// A typed duration (`2h 30m`) in words, for a duration lock's summary and its confirmation. Needs no
