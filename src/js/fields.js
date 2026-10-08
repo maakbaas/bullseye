@@ -4,7 +4,7 @@
 // in the modal. New target and New condition (in their menus) go to that kind's editor and come
 // back with it chosen (`detour`).
 
-import { ask, el, invalid, invoke, newId, notify, overview, quoted, refresh, runningOf, t } from "./core.js";
+import { $, ask, el, invalid, invoke, newId, notify, overview, quoted, refresh, runningOf, t } from "./core.js";
 import { LOCKS } from "./locks.js";
 import { allowanceSection } from "./forms.js";
 import { KINDS, freeName } from "./kinds.js";
@@ -145,8 +145,19 @@ function openMenu(parts, id, key, row) {
   }
   menu.replaceChildren(...items);
   menu.label = t(`sessions.fields.${key}`);
+  // Under the row's value, where the choice shows, as a dropdown's list is under its field: it
+  // starts at the value, or ends at the row's end where there is no room; below the row, or above
+  // it where there is none.
+  // Room for it below the row first, scrolling the page as far as it goes (Carbon's menu flips
+  // above the row otherwise, where it reads as the row above's): its items and dividers are
+  // Carbon's md sizes, 2.5rem and 1px plus a little room.
+  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
+  const height = menu.querySelectorAll("cds-menu-item, cds-menu-item-selectable").length * 2.5 * rem + rem;
+  const below = innerHeight - row.getBoundingClientRect().bottom;
+  if (below < height) $("scroller").scrollBy(0, height - below);
   const r = row.getBoundingClientRect();
-  menu.x = [r.left, r.right];
+  const v = parts.rows[key].value.getBoundingClientRect();
+  menu.x = [v.left, r.right];
   menu.y = [r.top, r.bottom];
   menu.open = true;
 }
