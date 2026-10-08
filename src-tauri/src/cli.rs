@@ -157,14 +157,18 @@ Block lists:
                                'list apps' shows them; no *.
       --title <title>          A window to close, by its title (repeatable), * as a wildcard,
                                e.g. \"*YouTube*\". The whole window closes, tabs and all.
+      --allow-title <title>    A window title that is always left alone, also when one of
+                               the titles matches it (repeatable).
       --sites-file <file>      Sites to block, one per line. Likewise --allowed-file,
-                               --programs-file, --store-apps-file and --titles-file.
+                               --programs-file, --store-apps-file, --titles-file and
+                               --allowed-titles-file.
       --enforcers <list>       Comma-separated, or 'all' (the default). Names:
                                {enforcers}
   list edit <list> [options]  Change a block list: the options of list new, which replace what
                               they name, --name <name> and --clear <sites|allowed|programs|
-                              store-apps|titles> (repeatable). While a locked block uses it,
-                              only stricter: more to block, fewer allowed, more enforcers.
+                              store-apps|titles|allowed-titles> (repeatable). While a locked
+                              block uses it, only stricter: more to block, fewer allowed, more
+                              enforcers.
   list delete <list> [--yes]  Delete a block list that no running block uses; it is taken out of
                               the blocks that use it (a block left without one is deleted).
   list duplicate <list>       Make a copy of a block list, named after it with a number.
@@ -390,12 +394,13 @@ struct ListChanges {
 
 /// The options that set a list, one per list: the option, the one that reads it from a file, its
 /// name in `--clear`, and its field of `Entries`. **A new list is a line here.**
-const LIST_OPTIONS: [(&str, &str, &str, &str); 5] = [
+const LIST_OPTIONS: [(&str, &str, &str, &str); 6] = [
     ("--site", "--sites-file", "sites", "filters"),
     ("--allow", "--allowed-file", "allowed", "allowed"),
     ("--program", "--programs-file", "programs", "programs"),
     ("--store-app", "--store-apps-file", "store-apps", "store_apps"),
     ("--title", "--titles-file", "titles", "titles"),
+    ("--allow-title", "--allowed-titles-file", "allowed-titles", "allowed_titles"),
 ];
 
 impl ListChanges {
@@ -1679,7 +1684,7 @@ fn describe_block(overview: &Overview, block: &Definition, running: Option<&Runn
 /// One block list, everything about it.
 fn describe_list(overview: &Overview, list: &BlockList) -> String {
     format!(
-        "Name:           {}\nId:             {}\nBlock list:     {}\nAlways allowed: {}\nPrograms:       {}\nStore apps:     {}\nWindow titles:  {}\nEnforcers:      {}\nUsed by:        {}\n",
+        "Name:           {}\nId:             {}\nBlock list:     {}\nAlways allowed: {}\nPrograms:       {}\nStore apps:     {}\nWindow titles:  {}\nAllowed titles: {}\nEnforcers:      {}\nUsed by:        {}\n",
         list.name,
         list.id,
         entries(&list.entries.filters),
@@ -1687,6 +1692,7 @@ fn describe_list(overview: &Overview, list: &BlockList) -> String {
         entries(&list.entries.programs),
         entries(&list.entries.store_apps),
         entries(&list.entries.titles),
+        entries(&list.entries.allowed_titles),
         entries(&enforcers_on(list.enforcers)),
         users(overview, &list.id),
     )
@@ -1790,6 +1796,7 @@ mod tests {
         let json: Value = serde_json::from_str(&ok(&["status", "--json"])).unwrap();
         assert_eq!(json["blocks"].as_array().map(Vec::len), Some(1));
         assert!(ok(&["list", "show", "Social"]).contains("Always allowed: music.youtube.com"));
+        assert!(ok(&["list", "show", "Social"]).contains("Allowed titles: (none)"));
         let json: Value = serde_json::from_str(&ok(&["list", "show", "Social", "--json"])).unwrap();
         assert_eq!(json["filters"][0], "youtube.com");
         let condition = ok(&["condition", "show", "Work"]);
@@ -2262,6 +2269,8 @@ mod tests {
             "Microsoft.XboxApp_8wekyb3d8bbwe",
             "--title",
             "*YouTube*",
+            "--allow-title",
+            "*Visual Studio Code",
             "--enforcers",
             "chromium_tabs, window_titles_minimize",
         ]);
@@ -2274,6 +2283,7 @@ mod tests {
         assert_eq!(list.entries.programs, vec!["steam"]);
         assert_eq!(list.entries.store_apps, vec!["Microsoft.XboxApp_8wekyb3d8bbwe"]);
         assert_eq!(list.entries.titles, vec!["*YouTube*"]);
+        assert_eq!(list.entries.allowed_titles, vec!["*Visual Studio Code"]);
         assert_eq!(
             list.enforcers,
             Enforcers {

@@ -265,6 +265,7 @@ mod tests {
                 programs: vec!["game.exe".into()],
                 store_apps: vec!["A.B_1".into()],
                 titles: vec!["*c*".into()],
+                allowed_titles: vec!["*cd*".into()],
             },
             enforcers: Enforcers::default(),
             free: vec![FreeEntries {

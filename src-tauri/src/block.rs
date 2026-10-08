@@ -68,7 +68,8 @@ impl Default for Inner {
 
 /// Something an allowance lets through for now, which the app is to watch rather than close: when
 /// it is in use, that is counted against `key` of the block (`allowance.rs`). Its lists include
-/// the always-allowed sites of its block list, which are not in use as they are not blocked.
+/// the always-allowed sites and titles of its block list, which are not in use as they are not
+/// blocked.
 #[derive(Clone)]
 pub struct Free {
     /// The running block, by its definition's id.
@@ -242,7 +243,8 @@ impl Active {
         self.blocks.iter().any(|b| b.enforcers.window_titles_minimize && !b.lists.titles.is_empty())
     }
 
-    /// What is done with a window of this title (`minimized`: whether it is down already): closed
+    /// What is done with a window of this title (`minimized`: whether it is down already), by the
+    /// window titles of each block list less its always-allowed ones (`Lists::blocks_title`): closed
     /// when any block that closes windows by title has it, the stricter, else minimized when one
     /// that minimizes them has it and it is up. If neither, what an allowance lets through and
     /// that matches is noted as in use: an open window for a block that closes, a window that is
@@ -250,14 +252,14 @@ impl Active {
     pub fn title_action(&self, title: &str, minimized: bool) -> Option<TitleAction> {
         let closes = |b: &&Enforced| !b.enforcers.window_titles_minimize;
         let minimizes = |b: &&Enforced| b.enforcers.window_titles_minimize && !minimized;
-        if self.blocks.iter().filter(closes).any(|b| b.lists.titles.is_match(title)) {
+        if self.blocks.iter().filter(closes).any(|b| b.lists.blocks_title(title)) {
             return Some(TitleAction::Close);
         }
-        if self.blocks.iter().filter(minimizes).any(|b| b.lists.titles.is_match(title)) {
+        if self.blocks.iter().filter(minimizes).any(|b| b.lists.blocks_title(title)) {
             return Some(TitleAction::Minimize);
         }
         for block in self.blocks.iter().filter(|b| closes(b) || minimizes(b)) {
-            for free in block.free.iter().filter(|f| f.lists.titles.is_match(title)) {
+            for free in block.free.iter().filter(|f| f.lists.blocks_title(title)) {
                 self.used.note(&free.block, &free.key);
             }
         }
@@ -348,10 +350,10 @@ const ITEMS: [(&str, &str); 4] = [("site", "filters"), ("program", "programs"), 
 struct RunPart {
     name: String,
     enforced: Enforced,
-    /// Each entry of its lists on its own, with the always-allowed sites, by its key: what a budget
-    /// for each item watches.
+    /// Each entry of its lists on its own, with the always-allowed sites and titles, by its key:
+    /// what a budget for each item watches.
     items: Vec<(String, Arc<Lists>)>,
-    /// Only its always-allowed sites: what is left to enforce when everything of it is let through.
+    /// Only its always-allowed sites and titles: what is left to enforce when everything of it is let through.
     exceptions: Arc<Lists>,
     /// Its lists without the items that are let through, for the ones that were (`remainder`).
     remaining: Option<(Vec<String>, Arc<Lists>)>,
@@ -364,7 +366,7 @@ impl RunPart {
         let mut items = Vec::new();
         for (prefix, field) in ITEMS {
             for entry in source.field(field).cloned().unwrap_or_default() {
-                let mut one = Entries { allowed: entries.allowed.clone(), ..Entries::default() };
+                let mut one = Lists::exceptions(&entries);
                 if let Some(list) = one.field(field) {
                     list.push(entry.clone());
                 }
@@ -373,8 +375,7 @@ impl RunPart {
                 }
             }
         }
-        let only_allowed = Entries { allowed: entries.allowed, ..Entries::default() };
-        let exceptions = Arc::new(Lists::parse(&only_allowed).unwrap_or_default());
+        let exceptions = Arc::new(Lists::parse(&Lists::exceptions(&entries)).unwrap_or_default());
         RunPart { name, enforced: Enforced::new(Arc::new(lists), enforcers), items, exceptions, remaining: None }
     }
 
@@ -1841,6 +1842,46 @@ mod tests {
         assert!(active.closes_store_apps() && active.blocks_store_app("Microsoft.XboxApp_8wekyb3d8bbwe"));
         assert!(active.watches_titles() && active.title_action("Team chat", false) == Some(TitleAction::Close));
         assert!(active.closes_programs() && active.blocks_program("chat.exe") && !active.closes_obsidian());
+    }
+
+    #[test]
+    fn an_always_allowed_title_is_left_alone_and_never_in_use() {
+        let lists =
+            || lists_of(Entries { titles: strings(&["*"]), allowed_titles: strings(&["*Visual Studio Code"]), ..Entries::default() });
+        let code = "main.rs - bullseye - Visual Studio Code";
+        // Closing and minimizing alike, of its own block list only.
+        let list = blocklist("allowed-titles");
+        list.start("close", "Close", vec![part(lists(), only(&[]))], None, StartLock::None).unwrap();
+        let active = list.active().unwrap();
+        assert_eq!(active.title_action("YouTube - Chrome", false), Some(TitleAction::Close));
+        assert!(active.title_action(code, false).is_none());
+        list.start(
+            "other",
+            "Other",
+            vec![part(lists_of(Entries { titles: strings(&["*Code"]), ..Entries::default() }), only(&["window_titles_minimize"]))],
+            None,
+            StartLock::None,
+        )
+        .unwrap();
+        assert_eq!(
+            list.active().unwrap().title_action(code, false),
+            Some(TitleAction::Minimize),
+            "another block's exception is not this one's"
+        );
+        let list = blocklist("allowed-titles-down");
+        list.start("down", "Down", vec![part(lists(), only(&["window_titles_minimize"]))], None, StartLock::None).unwrap();
+        let active = list.active().unwrap();
+        assert_eq!(active.title_action("YouTube - Chrome", false), Some(TitleAction::Minimize));
+        assert!(active.title_action(code, false).is_none());
+        // With a budget, for each title and for the whole: what is always allowed is not in use.
+        for (name, scope, key) in [("each", Scope::Each, "title:*"), ("total", Scope::Total, "")] {
+            let list = blocklist(&format!("allowed-titles-{name}"));
+            list.start_with("a", "A", vec![part(lists(), only(&[]))], None, Some(budget("1h", scope)), StartLock::None).unwrap();
+            let active = list.active().unwrap();
+            assert!(active.title_action(code, false).is_none() && active.used.take().is_empty());
+            assert!(active.title_action("YouTube - Chrome", false).is_none());
+            assert_eq!(active.used.take(), vec![("a".to_string(), key.to_string())]);
+        }
     }
 
     #[test]

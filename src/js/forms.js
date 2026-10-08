@@ -11,7 +11,7 @@ import { el, invalid, invoke, lines, overview, t } from "./core.js";
 
 // The lists a block list can have (`definitions::BlockList`), by field name.
 const LISTS = Object.fromEntries(
-  ["filters", "allowed", "programs", "store_apps", "titles"].map((key) => [
+  ["filters", "allowed", "programs", "store_apps", "titles", "allowed_titles"].map((key) => [
     key,
     {
       label: t(`lists.${key}.label`),
@@ -33,7 +33,7 @@ const SECTIONS = [
   { key: "programs", lists: ["programs"], enforcers: [] },
   { key: "store", lists: ["store_apps"], enforcers: [] },
   // Closing (`choice`, the default: off) or minimizing: radio buttons, not a checkbox.
-  { key: "titles", lists: ["titles"], choice: "close", enforcers: [enforcer("window_titles_minimize")] },
+  { key: "titles", lists: ["titles", "allowed_titles"], choice: "close", enforcers: [enforcer("window_titles_minimize")] },
   { key: "other", lists: [], enforcers: [enforcer("obsidian_web_viewer")] },
 ].map((section) => ({ ...section, title: t(`lists.sections.${section.key}.title`), description: window.STRINGS.lists.sections[section.key].description && t(`lists.sections.${section.key}.description`) }));
 

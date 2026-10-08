@@ -32,9 +32,9 @@
     <!-- The fixed section, always in sight: the page's heading (its breadcrumb, title and description,
          one per view: `showView`) and the pages as contained tabs with an
          icon before the label (`markPage`, `PAGES`; an editor belongs to its kind's tab). What
-         scrolls is the content below them. -->
+         scrolls is the content below them, in #scroller. -->
     <div class="pinned">
-      <div class="cds--css-grid">
+      <div class="lane"><div class="cds--css-grid">
         <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
           <!-- Filled by `openEditor`: the page, then a block being made, then what is made for it. Other
                pages have just themselves in it (`showView`). -->
@@ -59,10 +59,10 @@
             <p class="cds--type-body-01 tagline" data-t="settings.description"></p>
           </div>
         </div>
-      </div>
+      </div></div>
       <!-- Full width, with a subtle line above and below (`.tabbar`). -->
       <div class="tabbar">
-        <div class="cds--css-grid">
+        <div class="lane"><div class="cds--css-grid">
           <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
               <cds-tabs id="pages" data-t-aria-label="nav.label">
                 <cds-tab value="blocks" data-icon="locked"><span class="label" data-t="nav.blocks"></span></cds-tab>
@@ -71,10 +71,11 @@
                 <cds-tab value="settings" data-icon="settings"><span class="label" data-t="nav.settings"></span></cds-tab>
               </cds-tabs>
           </div>
-        </div>
+        </div></div>
       </div>
     </div>
 
+    <div id="scroller">
     <main>
       <!-- One page per kind (blocks, block lists, conditions): a tile each. Built from KINDS. -->
       <div id="view-list" class="cds--css-grid" hidden>
@@ -150,6 +151,7 @@
         </div>
       </div>
     </main>
+    </div>
 
     <!-- Asks before anything that cannot be taken back (`ask` in the script). -->
     <cds-modal id="confirm" size="xs" prevent-close-on-click-outside>

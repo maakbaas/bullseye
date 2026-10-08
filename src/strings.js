@@ -294,7 +294,7 @@ window.STRINGS = {
     emptyText: "Add sites, programs or apps to close, and how to close them",
     editorDescription: "Running blocks follow changes made here; a locked one only accepts stricter ones",
     // {names}: the locked blocks that use it, quoted.
-    limited: "{names} uses it and is locked. You can add blocked entries, remove allowed sites and turn enforcers on, nothing else. It cannot be deleted",
+    limited: "{names} uses it and is locked. You can add blocked entries, remove always allowed ones and turn enforcers on, nothing else. It cannot be deleted",
     namePlaceholder: "e.g. Social media",
     nameMissing: "Name the block list",
     nothing: "Nothing to block",
@@ -314,7 +314,7 @@ window.STRINGS = {
       label: "Always allowed",
       placeholder: "google.com",
       helper: "Exceptions to the blocked sites. They always win",
-      count: { one: "{n} always allowed", other: "{n} always allowed" },
+      count: { one: "{n} site always allowed", other: "{n} sites always allowed" },
     },
     programs: {
       label: "Programs to close",
@@ -338,6 +338,12 @@ window.STRINGS = {
       placeholder: "*YouTube*",
       helper: "One per line, the whole title. * matches any part, case is ignored, a lone * matches every window but Bullseye. The whole window goes, with all its tabs",
       count: { one: "{n} window title", other: "{n} window titles" },
+    },
+    allowed_titles: {
+      label: "Always allowed",
+      placeholder: "*Visual Studio Code",
+      helper: "Exceptions to the window titles. They always win",
+      count: { one: "{n} title always allowed", other: "{n} titles always allowed" },
     },
 
     // The editor's sections, with the enforcers in each. `short` is the tile's line for an

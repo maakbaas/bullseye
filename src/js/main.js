@@ -296,7 +296,7 @@ function route() {
     // Still within the block it is made for.
     markPage("blocks");
     openEditor(nested[2], nested[3] ? decodeURIComponent(nested[3]) : null, { via: detour.current });
-    window.scrollTo(0, 0);
+    $("scroller").scrollTo(0, 0);
     return;
   }
   // Back from a detour: the block as it was being edited, with what was made on it.
@@ -337,7 +337,7 @@ function route() {
     renderSettings();
     notify("settings-notices");
   }
-  window.scrollTo(0, 0);
+  $("scroller").scrollTo(0, 0);
 }
 window.addEventListener("hashchange", route);
 $("new-item").addEventListener("click", () => (location.hash = KINDS[page].newPath));
@@ -357,6 +357,14 @@ const iconsOnly = () => {
 };
 iconsOnly();
 narrow.addEventListener("change", iconsOnly);
+// The scrollbar's room beside the content (kept whether or not it is shown), which the fixed
+// section keeps too, so both line up (`.lane`); measured again when zooming changes it.
+const gutter = () => {
+  const scroller = $("scroller");
+  document.documentElement.style.setProperty("--gutter", `${scroller.offsetWidth - scroller.clientWidth}px`);
+};
+gutter();
+window.addEventListener("resize", gutter);
 const openPage = (page) => {
   if (location.hash !== PAGES[page]) location.hash = PAGES[page];
 };

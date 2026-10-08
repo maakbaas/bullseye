@@ -200,12 +200,14 @@ impl Remote {
 }
 
 fn parse(policy: &Policy) -> Option<Enforced> {
-    // What an allowance lets through is matched with the block list's always-allowed sites as exceptions.
+    // What an allowance lets through is matched with the block list's always-allowed sites and titles as exceptions.
     let free = policy
         .free
         .iter()
         .map(|free| {
-            let entries = crate::lists::Entries { allowed: policy.entries.allowed.clone(), ..free.entries.clone() };
+            let exceptions = Lists::exceptions(&policy.entries);
+            let entries =
+                crate::lists::Entries { allowed: exceptions.allowed, allowed_titles: exceptions.allowed_titles, ..free.entries.clone() };
             Some(Free { block: free.block.clone(), key: free.key.clone(), lists: Arc::new(Lists::parse(&entries).ok()?) })
         })
         .collect::<Option<Vec<Free>>>()?;

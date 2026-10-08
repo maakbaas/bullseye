@@ -86,14 +86,14 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
                 .map(|block| Policy {
                     entries: block.lists.entries(),
                     enforcers: block.enforcers,
-                    // What an allowance lets through: the always-allowed sites are the policy's own.
+                    // What an allowance lets through: the always-allowed sites and titles are the policy's own.
                     free: block
                         .free
                         .iter()
                         .map(|free| FreeEntries {
                             block: free.block.clone(),
                             key: free.key.clone(),
-                            entries: Entries { allowed: Vec::new(), ..free.lists.entries() },
+                            entries: Entries { allowed: Vec::new(), allowed_titles: Vec::new(), ..free.lists.entries() },
                         })
                         .collect(),
                 })
@@ -695,6 +695,14 @@ mod tests {
         let mut allow = block_list("social", &["youtube.com"]);
         allow.entries.allowed = vec!["google.com".into()];
         assert!(failed(handle(&context, 0, Request::SaveList { list: allow }).0));
+        let mut allow_title = block_list("social", &["youtube.com"]);
+        allow_title.entries.allowed_titles = vec!["Notes".into()];
+        assert_eq!(
+            handle(&context, 0, Request::SaveList { list: allow_title }).0,
+            Response::Failed(
+                "A locked block uses this block list, so always-allowed window titles can be taken out but not added: Notes".into()
+            )
+        );
         // Fewer times, a schedule made something else: refused.
         assert!(failed(handle(&context, 0, Request::SaveCondition { condition: weekly("office", "mon-fri 9-17") }).0));
 

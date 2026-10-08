@@ -31,12 +31,17 @@ pub struct Entries {
     pub store_apps: Vec<String>,
     /// The titles of windows to close (`patterns.rs`).
     pub titles: Vec<String>,
+    /// The titles of windows that are always left alone, which win over `titles` (of this list
+    /// only), as the always-allowed sites do over the sites.
+    pub allowed_titles: Vec<String>,
 }
 
 impl Entries {
     /// Every list in order, a to z regardless of case, as saving a block list leaves them.
     pub fn sort(&mut self) {
-        for list in [&mut self.filters, &mut self.allowed, &mut self.programs, &mut self.store_apps, &mut self.titles] {
+        for list in
+            [&mut self.filters, &mut self.allowed, &mut self.programs, &mut self.store_apps, &mut self.titles, &mut self.allowed_titles]
+        {
             list.sort_by_cached_key(|entry| entry.to_lowercase());
         }
     }
@@ -49,6 +54,7 @@ impl Entries {
             "programs" => Some(&mut self.programs),
             "store_apps" => Some(&mut self.store_apps),
             "titles" => Some(&mut self.titles),
+            "allowed_titles" => Some(&mut self.allowed_titles),
             _ => None,
         }
     }
@@ -65,6 +71,9 @@ pub struct Lists {
     pub programs: ProgramList,
     pub store_apps: Patterns,
     pub titles: Patterns,
+    /// The window titles that are always left alone, which win over `titles`: exceptions, like
+    /// `allowed`.
+    pub allowed_titles: Patterns,
 }
 
 impl Lists {
@@ -77,6 +86,7 @@ impl Lists {
             programs: ProgramList::parse(&entries.programs)?,
             store_apps: store_apps(&entries.store_apps)?,
             titles: Patterns::parse(&entries.titles).map_err(|why| format!("Window titles: {why}"))?,
+            allowed_titles: Patterns::parse(&entries.allowed_titles).map_err(|why| format!("Always allowed window titles: {why}"))?,
         })
     }
 
@@ -88,7 +98,20 @@ impl Lists {
             programs: self.programs.entries(),
             store_apps: self.store_apps.entries(),
             titles: self.titles.entries(),
+            allowed_titles: self.allowed_titles.entries(),
         }
+    }
+
+    /// Whether a window of this title is to be closed or minimized by these lists: one of the
+    /// titles, and not always allowed.
+    pub fn blocks_title(&self, title: &str) -> bool {
+        self.titles.is_match(title) && !self.allowed_titles.is_match(title)
+    }
+
+    /// Only the exceptions of these lists (the always-allowed sites and titles), which go with
+    /// whatever an allowance lets through of it.
+    pub fn exceptions(entries: &Entries) -> Entries {
+        Entries { allowed: entries.allowed.clone(), allowed_titles: entries.allowed_titles.clone(), ..Entries::default() }
     }
 
     /// Whether the list an enforcer needs has an entry (`Enforcers::can_run`).
@@ -121,10 +144,11 @@ mod tests {
     #[test]
     fn each_list_is_reached_by_its_field_name() {
         let mut entries = Entries::default();
-        for (n, key) in ["filters", "allowed", "programs", "store_apps", "titles"].into_iter().enumerate() {
+        for (n, key) in ["filters", "allowed", "programs", "store_apps", "titles", "allowed_titles"].into_iter().enumerate() {
             entries.field(key).unwrap().push(format!("entry{n}"));
         }
         assert_eq!(entries.titles, vec!["entry4"]);
+        assert_eq!(entries.allowed_titles, vec!["entry5"]);
         assert!(entries.field("sites").is_none(), "the field's name, not the CLI's");
     }
 
@@ -148,6 +172,32 @@ mod tests {
         assert!(
             why(Entries { programs: vec!["*".into()], ..Entries::default() }).starts_with("Would close programs Windows or this app needs")
         );
+    }
+
+    #[test]
+    fn an_always_allowed_title_wins_over_the_titles() {
+        let lists = Lists::parse(&Entries {
+            titles: vec!["*".into()],
+            allowed_titles: vec!["*Visual Studio Code".into(), "Calculator".into()],
+            ..Entries::default()
+        })
+        .unwrap();
+        assert!(lists.blocks_title("YouTube - Chrome"));
+        assert!(!lists.blocks_title("main.rs - bullseye - visual studio code") && !lists.blocks_title("Calculator"));
+        // On their own they do nothing: an exception, not something to watch.
+        let only = Lists::parse(&Entries { allowed_titles: vec!["Calculator".into()], ..Entries::default() }).unwrap();
+        assert!(!only.has(Uses::Titles) && !only.blocks_title("Calculator") && !only.blocks_title("Notes"));
+        // What the exceptions of a block list are.
+        let entries = Entries {
+            filters: vec!["*".into()],
+            allowed: vec!["google.com".into()],
+            titles: vec!["*".into()],
+            allowed_titles: vec!["Notes".into()],
+            ..Entries::default()
+        };
+        let exceptions = Lists::exceptions(&entries);
+        assert_eq!((exceptions.allowed, exceptions.allowed_titles), (vec!["google.com".to_string()], vec!["Notes".to_string()]));
+        assert!(exceptions.filters.is_empty() && exceptions.titles.is_empty());
     }
 
     #[test]

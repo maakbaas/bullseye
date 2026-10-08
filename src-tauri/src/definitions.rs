@@ -160,9 +160,14 @@ impl BlockList {
                 return Err(format!("A locked block uses this block list, so {what} can be added but not taken out: {gone}"));
             }
         }
-        let added = missing(&new_entries.allowed, &old.allowed);
-        if !added.is_empty() {
-            return Err(format!("A locked block uses this block list, so always-allowed sites can be taken out but not added: {added}"));
+        for (what, had, now) in [
+            ("always-allowed sites", &old.allowed, &new_entries.allowed),
+            ("always-allowed window titles", &old.allowed_titles, &new_entries.allowed_titles),
+        ] {
+            let added = missing(now, had);
+            if !added.is_empty() {
+                return Err(format!("A locked block uses this block list, so {what} can be taken out but not added: {added}"));
+            }
         }
         if self.enforcers.turned_off_by(&new.enforcers) {
             return Err("A locked block uses this block list, so enforcers can be turned on but not off".into());

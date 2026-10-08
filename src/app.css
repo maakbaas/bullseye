@@ -1,9 +1,12 @@
 /* Layout only: colours, type and spacing all come from Carbon tokens and classes. */
-html, body { min-height: 100%; }
-/* The room of the scrollbar is kept whether or not it is shown, so the content does not shift sideways between pages that scroll and pages that do not. */
-html { scrollbar-gutter: stable; }
+/* The window is two sections, one over the other: the fixed one on top and `#scroller`, which
+   fills the rest and is all that scrolls, so the scrollbar runs beside the content only. */
+html, body { height: 100%; }
 body {
   margin: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--cds-background);
   color: var(--cds-text-primary);
   font-family: "IBM Plex Sans", system-ui, sans-serif;
@@ -13,9 +16,15 @@ body:not(.ready) { visibility: hidden; }
 /* Two sections: the fixed one on top (heading and tabs: `.pinned`) and the content under the
    tabs, which is what scrolls. Both fill the width up to Carbon's lg breakpoint (66rem) and are
    centred beyond it, so the margins grow evenly instead of jumping. */
-/* White (the first layer) on the grey page. */
-.pinned { position: sticky; inset-block-start: 0; z-index: 100; background: var(--cds-layer-01); padding-block-start: var(--cds-spacing-07); }
+/* White (the first layer) on the grey page, across the whole window. */
+.pinned { flex: none; z-index: 100; background: var(--cds-layer-01); padding-block-start: var(--cds-spacing-07); }
 .tabbar { margin-block-start: var(--cds-spacing-06); border-block: 1px solid var(--cds-border-subtle); }
+/* The scrollbar's room is kept whether or not it is shown, so the content does not shift sideways
+   between pages that scroll and pages that do not; it is on the grey page, so it does not show. */
+#scroller { flex: 1; min-block-size: 0; overflow-y: auto; scrollbar-gutter: stable; }
+/* The fixed section's content keeps the same room at its right (`--gutter`, measured by main.js),
+   so it lines up with the content under it, while its white and its lines go to the edge. */
+.lane { padding-inline-end: var(--gutter, 0px); }
 .pinned .cds--css-grid, main { max-inline-size: 66rem; margin-inline: auto; }
 main { padding-block: var(--cds-spacing-06); }
 /* An icon before a tab's label, as Carbon's tabs with icons. */
