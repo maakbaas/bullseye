@@ -30,6 +30,9 @@ import '@carbon/web-components/es/components/textarea/textarea.js';
 import '@carbon/web-components/es/components/password-input/password-input.js';
 import '@carbon/web-components/es/components/checkbox/checkbox.js';
 import '@carbon/web-components/es/components/checkbox/checkbox-group.js';
+// One choice of several: how the windows by title are dealt with (close or minimize).
+import '@carbon/web-components/es/components/radio-button/radio-button.js';
+import '@carbon/web-components/es/components/radio-button/radio-button-group.js';
 import '@carbon/web-components/es/components/dropdown/dropdown.js';
 import '@carbon/web-components/es/components/dropdown/dropdown-item.js';
 import '@carbon/web-components/es/components/select/select.js';

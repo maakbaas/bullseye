@@ -520,7 +520,8 @@ mod tests {
             firefox_tabs: false,
             firefox_split_view: false,
             store_apps: false,
-            window_titles: false,
+            window_titles_close: false,
+            window_titles_minimize: false,
         };
         let none = Enforcers {
             chromium_tabs: false,
@@ -531,7 +532,8 @@ mod tests {
             firefox_tabs: false,
             firefox_split_view: false,
             store_apps: false,
-            window_titles: false,
+            window_titles_close: false,
+            window_titles_minimize: false,
         };
         for one in [definition("a", &[]).enforcers(only_the_list), definition("b", &["a.com"]).enforcers(none)] {
             assert!(failed(run(&context, one)));
@@ -560,7 +562,8 @@ mod tests {
             firefox_tabs: false,
             firefox_split_view: false,
             store_apps: false,
-            window_titles: false,
+            window_titles_close: false,
+            window_titles_minimize: false,
         };
         assert_eq!(run(&context, definition("a", &[]).enforcers(obsidian_only)), Response::Done);
         // The block keeps what it was started with: no entries, and Obsidian's enforcer only.
@@ -886,7 +889,8 @@ mod tests {
             firefox_tabs: false,
             firefox_split_view: false,
             store_apps: false,
-            window_titles: false,
+            window_titles_close: false,
+            window_titles_minimize: false,
         };
         let one = |programs: &[&str]| timed("p", &[], "1h").enforcers(programs_only).programs(programs);
         let context = context("programs");
@@ -936,7 +940,8 @@ mod tests {
             firefox_tabs: false,
             firefox_split_view: false,
             store_apps: false,
-            window_titles: false,
+            window_titles_close: false,
+            window_titles_minimize: false,
         };
         assert!(failed(run(&context, timed("a", &[], "1h").allowed(&["google.com"]).enforcers(tabs_only))));
         assert!(policies(&context).is_empty());

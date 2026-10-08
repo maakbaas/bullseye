@@ -18,11 +18,11 @@
 //! tabs, blocked pages in a split view (a window showing two pages), blocked app windows, and Obsidian. With several
 //! blocks running, each goes by its own enforcers and lists (`block::Active`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::block::Active;
+use crate::block::{Active, TitleAction};
 use crate::client::Remote;
 use crate::programs;
 use crate::store_apps;
@@ -37,7 +37,8 @@ use uiautomation::{UIAutomation, UIElement};
 use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM};
 use windows_sys::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, PostMessageW, WM_CLOSE,
+    EnumWindows, GetClassNameW, GetWindow, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
+    IsWindowVisible, PostMessageW, ShowWindowAsync, GWL_EXSTYLE, GW_OWNER, SW_MINIMIZE, WM_CLOSE, WS_EX_TOOLWINDOW,
 };
 
 const INTERVAL: Duration = Duration::from_secs(1);
@@ -61,6 +62,10 @@ const APP_AFTER: Duration = Duration::from_secs(1);
 const SLOW: Duration = Duration::from_millis(50);
 const SLOW_EVERY: Duration = Duration::from_secs(10);
 
+/// How long a window is given to go down when asked to minimize, before it is taken as one that
+/// cannot be minimized and left alone.
+const MINIMIZE_AFTER: Duration = Duration::from_secs(1);
+
 /// How long a program is given to close when asked to, before it is ended.
 const KILL_AFTER: Duration = Duration::from_secs(3);
 
@@ -78,7 +83,10 @@ pub fn spawn(remote: Remote) {
         loop {
             let start = Instant::now();
             closer.quick = false;
-            if let Some(active) = remote.active() {
+            let active = remote.active();
+            // While windows are minimized, any window coming up is worth a look at once.
+            wake::watch_every_window(active.as_ref().is_some_and(|active| active.minimizes_windows()));
+            if let Some(active) = active {
                 // With no entries there is nothing for these to match, so skip the UI Automation work.
                 if active.watches_sites() {
                     if let Err(e) = closer.tick(&active) {
@@ -90,7 +98,7 @@ pub fn spawn(remote: Remote) {
                 let obsidian = active.closes_obsidian();
                 let programs = active.closes_programs();
                 let store_apps = active.closes_store_apps();
-                let titles = active.closes_titles();
+                let titles = active.watches_titles();
                 if obsidian || programs || store_apps || titles {
                     closer.scan_processes(obsidian, store_apps);
                 }
@@ -101,7 +109,7 @@ pub fn spawn(remote: Remote) {
                     closer.close_processes(&active);
                 }
                 if titles {
-                    closer.close_windows_by_title(&active);
+                    closer.windows_by_title(&active);
                 }
             }
             // Until the next second, or sooner when something worth a look happened (`wake.rs`);
@@ -124,6 +132,10 @@ struct Closer {
     /// Windows that were asked to close because of their title, by handle and when, so one that
     /// stays (it asks to save first) is asked again later, not every pass.
     titles_asked: HashMap<isize, Instant>,
+    /// Windows that were asked to minimize because of their title, by handle and when, and those
+    /// that did not go down (left alone from then on, while they are open).
+    minimize_asked: HashMap<isize, Instant>,
+    unminimizable: HashSet<isize>,
     /// What started this pass, for the log (`wake::Woken`).
     woken: wake::Woken,
     /// How each Chromium window is laid out, found once (`Closer::layout`): never searched for again.
@@ -302,6 +314,8 @@ impl Closer {
             system: System::new(),
             asked: HashMap::new(),
             titles_asked: HashMap::new(),
+            minimize_asked: HashMap::new(),
+            unminimizable: HashSet::new(),
             woken: wake::Woken::Second,
             layouts: HashMap::new(),
             doubts: HashMap::new(),
@@ -696,16 +710,25 @@ impl Closer {
         self.asked.retain(|pid, _| running.contains(pid));
     }
 
-    /// Closes the windows whose title is on the running blocks' lists, as the X does, and again
-    /// every `KILL_AFTER` for one that stays. Only the window, never its program, so a browser
-    /// window goes with all its tabs and nothing else is ended. Not windows of programs Windows
+    /// Closes or minimizes the windows whose title is on the running blocks' lists
+    /// (`Active::title_action`). Closing is as the X does, and again every `KILL_AFTER` for one that
+    /// stays; only the window, never its program, so a browser window goes with all its tabs and
+    /// nothing else is ended. Minimizing is asked once; a window still up `MINIMIZE_AFTER` later
+    /// cannot be minimized and is left alone (never closed instead), and dialogs and tool windows
+    /// are not minimized, as they go with the window they belong to. Not windows of programs Windows
     /// needs (`programs::is_protected`; File Explorer's windows can go, but not the desktop and the
     /// taskbar, `SHELL_CLASSES`), nor this app's.
-    fn close_windows_by_title(&mut self, active: &Active) {
+    fn windows_by_title(&mut self, active: &Active) {
         let me = std::process::id();
-        let mut open = Vec::new();
-        for window in top_level_windows() {
-            if window.pid == me || SHELL_CLASSES.contains(&window.class.as_str()) || !active.blocks_title(&window.title) {
+        let windows = top_level_windows();
+        let mut closing = Vec::new();
+        let mut minimizing = Vec::new();
+        for window in &windows {
+            if window.pid == me || SHELL_CLASSES.contains(&window.class.as_str()) {
+                continue;
+            }
+            let Some(action) = active.title_action(&window.title, window.minimized) else { continue };
+            if action == TitleAction::Minimize && (window.owned || window.tool || self.unminimizable.contains(&window.handle)) {
                 continue;
             }
             // Without knowing the program (it may have just started) the window is left for the next pass.
@@ -714,20 +737,43 @@ impl Closer {
             if programs::is_protected(&program) && !program.eq_ignore_ascii_case("explorer.exe") {
                 continue;
             }
-            open.push(window.handle);
-            let due = match self.titles_asked.get(&window.handle) {
-                Some(since) => since.elapsed() >= KILL_AFTER,
-                None => true,
-            };
-            if due {
-                // SAFETY: a window handle Windows handed over a moment ago; a stale one only fails.
-                unsafe { PostMessageW(window.handle as HWND, WM_CLOSE, 0, 0) };
-                self.titles_asked.insert(window.handle, Instant::now());
-                note("app", &format!("asked the window \"{}\" of {program} to close ({})", window.title, self.woken.describe()));
+            match action {
+                TitleAction::Close => {
+                    closing.push(window.handle);
+                    let due = match self.titles_asked.get(&window.handle) {
+                        Some(since) => since.elapsed() >= KILL_AFTER,
+                        None => true,
+                    };
+                    if due {
+                        // SAFETY: a window handle Windows handed over a moment ago; a stale one only fails.
+                        unsafe { PostMessageW(window.handle as HWND, WM_CLOSE, 0, 0) };
+                        self.titles_asked.insert(window.handle, Instant::now());
+                        note("app", &format!("asked the window \"{}\" of {program} to close ({})", window.title, self.woken.describe()));
+                    }
+                }
+                TitleAction::Minimize => {
+                    minimizing.push(window.handle);
+                    match self.minimize_asked.get(&window.handle) {
+                        Some(since) if since.elapsed() >= MINIMIZE_AFTER => {
+                            self.unminimizable.insert(window.handle);
+                            note("app", &format!("the window \"{}\" of {program} does not minimize; it is left alone", window.title));
+                        }
+                        Some(_) => {}
+                        None => {
+                            // SAFETY: as above; asynchronous, so a window that does not answer holds nothing up.
+                            unsafe { ShowWindowAsync(window.handle as HWND, SW_MINIMIZE) };
+                            self.minimize_asked.insert(window.handle, Instant::now());
+                            note("app", &format!("minimized the window \"{}\" of {program} ({})", window.title, self.woken.describe()));
+                        }
+                    }
+                }
             }
         }
-        // A window that has gone is not remembered.
-        self.titles_asked.retain(|handle, _| open.contains(handle));
+        // A window that has gone, or went down, is not remembered (one brought up again is asked again);
+        // one that would not minimize is remembered for as long as it is open.
+        self.titles_asked.retain(|handle, _| closing.contains(handle));
+        self.minimize_asked.retain(|handle, _| minimizing.contains(handle));
+        self.unminimizable.retain(|handle| windows.iter().any(|window| window.handle == *handle));
     }
 
     /// The window's cached browser elements, or None if it is not a browser window.
@@ -824,6 +870,12 @@ struct TopWindow {
     pid: u32,
     title: String,
     class: String,
+    /// Down on the taskbar.
+    minimized: bool,
+    /// A dialog of another window (it has an owner).
+    owned: bool,
+    /// A tool window: no taskbar button of its own.
+    tool: bool,
 }
 
 /// The visible top-level windows that have a title, with the process each belongs to.
@@ -847,6 +899,9 @@ fn top_level_windows() -> Vec<TopWindow> {
                             pid,
                             title: String::from_utf16_lossy(&title[..copied as usize]),
                             class: String::from_utf16_lossy(&class[..class_length.max(0) as usize]),
+                            minimized: IsIconic(window) != 0,
+                            owned: !GetWindow(window, GW_OWNER).is_null(),
+                            tool: GetWindowLongPtrW(window, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW != 0,
                         });
                     }
                 }

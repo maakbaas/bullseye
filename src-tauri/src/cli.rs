@@ -774,20 +774,27 @@ fn enforcer_names() -> Vec<String> {
     }
 }
 
-/// `chromium_tabs,exe_names`, or `all`.
+/// `chromium_tabs,exe_names`, or `all`: every enforcer as a new block list has them (windows by
+/// title closed, not minimized: it is one or the other).
 fn parse_enforcers(list: &str) -> Result<Enforcers, String> {
     let names = enforcer_names();
     let mut chosen: Map<String, Value> = names.iter().map(|name| (name.clone(), Value::Bool(false))).collect();
     for name in list.split(',').map(str::trim).filter(|name| !name.is_empty()) {
         if name == "all" {
-            chosen.values_mut().for_each(|on| *on = Value::Bool(true));
+            if let Ok(Value::Object(all)) = serde_json::to_value(Enforcers::default()) {
+                for (name, on) in all.into_iter().filter(|(_, on)| *on == Value::Bool(true)) {
+                    chosen.insert(name, on);
+                }
+            }
         } else if let Some(on) = chosen.get_mut(name) {
             *on = Value::Bool(true);
         } else {
             return Err(format!("Unknown enforcer \"{name}\"; the enforcers are {}", names.join(", ")));
         }
     }
-    serde_json::from_value(Value::Object(chosen)).map_err(|e| e.to_string())
+    let enforcers: Enforcers = serde_json::from_value(Value::Object(chosen)).map_err(|e| e.to_string())?;
+    enforcers.check()?;
+    Ok(enforcers)
 }
 
 /// The arguments after the command, taken out one kind at a time; whatever is left is an error.
@@ -2227,6 +2234,17 @@ mod tests {
     }
 
     #[test]
+    fn windows_by_title_are_closed_or_minimized_never_both() {
+        let all = parse_enforcers("all").unwrap();
+        assert!(all.window_titles_close && !all.window_titles_minimize, "all is every enforcer as a new block list has them");
+        let down = parse_enforcers("chromium_tabs, window_titles_minimize").unwrap();
+        assert!(down.window_titles_minimize && !down.window_titles_close && down.chromium_tabs);
+        assert!(parse_enforcers("window_titles_close,window_titles_minimize").unwrap_err().contains("not both"));
+        assert!(parse_enforcers("all,window_titles_minimize").is_err());
+        assert!(parse_enforcers("window_titles").unwrap_err().starts_with("Unknown enforcer"));
+    }
+
+    #[test]
     fn a_new_block_list_with_everything() {
         let line = args(&[
             "list",
@@ -2266,7 +2284,8 @@ mod tests {
                 firefox_tabs: false,
                 firefox_split_view: false,
                 store_apps: false,
-                window_titles: false,
+                window_titles_close: false,
+                window_titles_minimize: false,
             }
         );
     }

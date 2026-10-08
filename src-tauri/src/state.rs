@@ -68,8 +68,14 @@ pub struct Enforcers {
     pub firefox_split_view: bool,
     /// Closes the Store apps on the list of them (`store_apps.rs`).
     pub store_apps: bool,
-    /// Closes the windows whose title is on the list of titles (`patterns.rs`).
-    pub window_titles: bool,
+    /// Closes the windows whose title is on the list of titles (`patterns.rs`). (Called
+    /// `window_titles` before minimizing came; files that say so still read.)
+    #[serde(alias = "window_titles")]
+    pub window_titles_close: bool,
+    /// Minimizes the windows whose title is on the list of titles, instead of closing them: nothing
+    /// is lost. Never together with `window_titles_close` (`check`).
+    #[serde(default)]
+    pub window_titles_minimize: bool,
     /// Closes Obsidian while it shows web content; not linked to the block list.
     pub obsidian_web_viewer: bool,
     /// Closes the programs on the program list (`programs.rs`).
@@ -105,13 +111,25 @@ impl Enforcers {
             (self.obsidian_web_viewer, Uses::Nothing),
             (self.exe_names, Uses::Programs),
             (self.store_apps, Uses::StoreApps),
-            (self.window_titles, Uses::Titles),
+            (self.window_titles_close, Uses::Titles),
+            (self.window_titles_minimize, Uses::Titles),
         ]
     }
 
     /// Whether `new` turns off an enforcer that is on here (for a locked block, that is a way out).
+    /// Closing windows instead of minimizing them is stricter, so that is no turning off.
     pub fn turned_off_by(&self, new: &Enforcers) -> bool {
+        let mut new = *new;
+        new.window_titles_minimize |= self.window_titles_minimize && new.window_titles_close;
         self.all().iter().zip(new.all()).any(|(&(was, _), (now, _))| was && !now)
+    }
+
+    /// Checked when a block list is saved: windows by title are closed or minimized, not both.
+    pub fn check(&self) -> Result<(), String> {
+        if self.window_titles_close && self.window_titles_minimize {
+            return Err("Windows by their title are either closed or minimized, not both".into());
+        }
+        Ok(())
     }
 
     /// Whether any enforcer that is turned on needs this kind of list.
@@ -138,7 +156,8 @@ impl Default for Enforcers {
             firefox_tabs: true,
             firefox_split_view: true,
             store_apps: true,
-            window_titles: true,
+            window_titles_close: true,
+            window_titles_minimize: false,
         }
     }
 }
@@ -331,7 +350,8 @@ mod tests {
             obsidian_web_viewer: obsidian,
             exe_names: exe,
             store_apps: false,
-            window_titles: false,
+            window_titles_close: false,
+            window_titles_minimize: false,
         };
         // Which lists have entries.
         let lists = |sites: bool, programs: bool| {
@@ -386,5 +406,26 @@ mod tests {
         // The app's own folder, for its log, is the user's.
         assert_eq!(user_dir(), std::env::var_os("LOCALAPPDATA").map(|local| PathBuf::from(local).join("bullseye")));
         assert!(now().is_some_and(|since| since.as_secs() > 1_700_000_000));
+    }
+
+    #[test]
+    fn windows_by_title_are_closed_or_minimized_and_closing_is_stricter() {
+        let with = |close, minimize| Enforcers { window_titles_close: close, window_titles_minimize: minimize, ..Enforcers::default() };
+        assert!(with(true, false).check().is_ok() && with(false, true).check().is_ok() && with(false, false).check().is_ok());
+        assert!(with(true, true).check().unwrap_err().contains("not both"));
+        // A locked block may go off < minimize < close, never back.
+        assert!(!with(false, false).turned_off_by(&with(false, true)));
+        assert!(!with(false, true).turned_off_by(&with(true, false)), "closing instead of minimizing is stricter");
+        assert!(with(true, false).turned_off_by(&with(false, true)), "minimizing instead of closing is not");
+        assert!(with(false, true).turned_off_by(&with(false, false)));
+        // Both need the list of titles.
+        assert!(with(false, true).uses(Uses::Titles) && !Enforcers { window_titles_close: false, ..with(false, false) }.uses(Uses::Titles));
+        // A file from before minimizing says `window_titles`, and reads as closing.
+        let mut old = serde_json::to_value(Enforcers::default()).unwrap();
+        let fields = old.as_object_mut().unwrap();
+        let close = fields.remove("window_titles_close").unwrap();
+        fields.remove("window_titles_minimize");
+        fields.insert("window_titles".into(), close);
+        assert_eq!(serde_json::from_value::<Enforcers>(old).unwrap(), Enforcers::default());
     }
 }

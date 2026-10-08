@@ -122,6 +122,15 @@ impl Usage {
     }
 }
 
+/// What is done with a window by its title (`Active::title_action`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TitleAction {
+    /// Asked to close, as its X does.
+    Close,
+    /// Minimized to the taskbar: nothing is lost.
+    Minimize,
+}
+
 /// What is to be enforced right now: every running block's part, each with its own enforcers.
 #[derive(Clone)]
 pub struct Active {
@@ -219,16 +228,40 @@ impl Active {
             )
     }
 
-    /// Whether any block closes windows by their title and has some titles (or to see in use).
-    pub fn closes_titles(&self) -> bool {
+    /// Whether any block closes or minimizes windows by their title and has some titles (or to see
+    /// in use).
+    pub fn watches_titles(&self) -> bool {
         self.blocks
             .iter()
             .any(|b| b.enforcers.uses(Uses::Titles) && (!b.lists.titles.is_empty() || b.free.iter().any(|f| !f.lists.titles.is_empty())))
     }
 
-    /// Whether a window with this title is closed by any block that closes windows by title.
-    pub fn blocks_title(&self, title: &str) -> bool {
-        self.judge(|b| b.enforcers.uses(Uses::Titles), |b| b.lists.titles.is_match(title), |lists| lists.titles.is_match(title))
+    /// Whether any block minimizes windows by their title, so any window coming up is worth a look
+    /// at once (`wake::watch_every_window`).
+    pub fn minimizes_windows(&self) -> bool {
+        self.blocks.iter().any(|b| b.enforcers.window_titles_minimize && !b.lists.titles.is_empty())
+    }
+
+    /// What is done with a window of this title (`minimized`: whether it is down already): closed
+    /// when any block that closes windows by title has it, the stricter, else minimized when one
+    /// that minimizes them has it and it is up. If neither, what an allowance lets through and
+    /// that matches is noted as in use: an open window for a block that closes, a window that is
+    /// up for one that minimizes (a window down is not in use).
+    pub fn title_action(&self, title: &str, minimized: bool) -> Option<TitleAction> {
+        let closes = |b: &&Enforced| b.enforcers.window_titles_close;
+        let minimizes = |b: &&Enforced| b.enforcers.window_titles_minimize && !minimized;
+        if self.blocks.iter().filter(closes).any(|b| b.lists.titles.is_match(title)) {
+            return Some(TitleAction::Close);
+        }
+        if self.blocks.iter().filter(minimizes).any(|b| b.lists.titles.is_match(title)) {
+            return Some(TitleAction::Minimize);
+        }
+        for block in self.blocks.iter().filter(|b| closes(b) || minimizes(b)) {
+            for free in block.free.iter().filter(|f| f.lists.titles.is_match(title)) {
+                self.used.note(&free.block, &free.key);
+            }
+        }
+        None
     }
 
     /// Whether any block closes Obsidian when it shows web pages.
@@ -1189,7 +1222,8 @@ mod tests {
             firefox_tabs: false,
             firefox_split_view: false,
             store_apps: false,
-            window_titles: false,
+            window_titles_close: false,
+            window_titles_minimize: false,
         };
         let split_only = Enforcers {
             chromium_tabs: false,
@@ -1200,7 +1234,8 @@ mod tests {
             firefox_tabs: false,
             firefox_split_view: false,
             store_apps: false,
-            window_titles: false,
+            window_titles_close: false,
+            window_titles_minimize: false,
         };
         let everything_but_google =
             Lists { sites: FilterList::parse(&["*"]).unwrap(), allowed: FilterList::parse(&["google.com"]).unwrap(), ..Lists::default() };
@@ -1357,7 +1392,8 @@ mod tests {
             firefox_tabs: false,
             firefox_split_view: false,
             store_apps: false,
-            window_titles: false,
+            window_titles_close: false,
+            window_titles_minimize: false,
         };
         let list = blocklist("enforcers");
         list.start("a", "A", vec![part(sites(&[]), only_obsidian)], None, StartLock::For(Duration::from_secs(3600))).unwrap();
@@ -1514,7 +1550,8 @@ mod tests {
             firefox_tabs: false,
             firefox_split_view: false,
             store_apps: false,
-            window_titles: false,
+            window_titles_close: false,
+            window_titles_minimize: false,
         };
         let programs_only = Enforcers {
             chromium_tabs: false,
@@ -1525,7 +1562,8 @@ mod tests {
             firefox_tabs: false,
             firefox_split_view: false,
             store_apps: false,
-            window_titles: false,
+            window_titles_close: false,
+            window_titles_minimize: false,
         };
         let games = Lists { programs: ProgramList::parse(&["steam"]).unwrap(), ..Lists::default() };
         let social = Part { name: "Social".into(), lists: sites(&["youtube.com"]), enforcers: tabs_only };
@@ -1774,7 +1812,7 @@ mod tests {
             titles: strings(&["*Chat*"]),
             ..Entries::default()
         });
-        let enforcers = only(&["chromium_app_windows", "firefox_split_view", "store_apps", "window_titles"]);
+        let enforcers = only(&["chromium_app_windows", "firefox_split_view", "store_apps", "window_titles_close"]);
         list.start("a", "A", vec![part(lists, enforcers)], None, StartLock::None).unwrap();
         let active = list.active().unwrap();
         // Sites: only where an enforcer for it is on.
@@ -1788,7 +1826,11 @@ mod tests {
         assert!(!active.blocks_store_app("Microsoft.Windows.Photos_8wekyb3d8bbwe"));
         assert!(!active.blocks_store_app("Microsoft.XboxGameOverlay_8wekyb3d8bbwe"), "only the app named");
         // Windows by their title.
-        assert!(active.closes_titles() && active.blocks_title("Team chat - Browser") && !active.blocks_title("Notes"));
+        assert!(
+            active.watches_titles()
+                && (active.title_action("Team chat - Browser", false) == Some(TitleAction::Close))
+                && active.title_action("Notes", false).is_none()
+        );
         // Nothing else.
         assert!(!active.closes_programs() && !active.closes_obsidian() && !active.blocks_program("chat.exe"));
         assert!(active.used.take().is_empty());
@@ -1803,7 +1845,7 @@ mod tests {
         list.start("a", "A", vec![part(lists, only(&["exe_names", "obsidian_web_viewer"]))], None, StartLock::None).unwrap();
         let active = list.active().unwrap();
         assert!(!active.closes_store_apps() && !active.blocks_store_app("Microsoft.XboxApp_8wekyb3d8bbwe"));
-        assert!(!active.closes_titles() && !active.blocks_title("Team chat"));
+        assert!(!active.watches_titles() && active.title_action("Team chat", false).is_none());
         assert!(!active.closes_programs() && active.closes_obsidian());
     }
 
@@ -1819,9 +1861,9 @@ mod tests {
         list.start_with("a", "A", vec![part(lists, Enforcers::default())], None, Some(budget("1s", Scope::Each)), StartLock::None).unwrap();
         let active = list.active().unwrap();
         // Let through, and what is seen is noted under each item's key.
-        assert!(active.closes_store_apps() && active.closes_titles() && active.closes_programs());
+        assert!(active.closes_store_apps() && active.watches_titles() && active.closes_programs());
         assert!(!active.blocks_store_app("Microsoft.XboxApp_8wekyb3d8bbwe"));
-        assert!(!active.blocks_title("Team chat"));
+        assert!(active.title_action("Team chat", false).is_none());
         assert!(!active.blocks_program("game.exe"));
         assert!(!active.blocks_app_window("https://a.com/") && !active.blocks_firefox_page("https://a.com/", false));
         let mut seen = active.used.take();
@@ -1836,8 +1878,68 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1100));
         list.charge(&[key("app:Microsoft.XboxApp_8wekyb3d8bbwe"), key("title:*Chat*")]);
         let active = list.active().unwrap();
-        assert!(active.blocks_store_app("Microsoft.XboxApp_8wekyb3d8bbwe") && active.blocks_title("Team chat"));
+        assert!(
+            active.blocks_store_app("Microsoft.XboxApp_8wekyb3d8bbwe")
+                && (active.title_action("Team chat", false) == Some(TitleAction::Close))
+        );
         assert!(!active.blocks_program("game.exe"), "the program has its own time");
+    }
+
+    #[test]
+    fn windows_by_title_are_minimized_or_closed_and_closing_wins() {
+        let list = blocklist("minimize");
+        let titles = |entries: &[&str]| lists_of(Entries { titles: strings(entries), ..Entries::default() });
+        list.start("down", "Down", vec![part(titles(&["*"]), only(&["window_titles_minimize"]))], None, StartLock::None).unwrap();
+        let active = list.active().unwrap();
+        assert!(active.watches_titles() && active.minimizes_windows());
+        assert_eq!(active.title_action("Report.docx - Word", false), Some(TitleAction::Minimize));
+        // A window that is down already is left as it is.
+        assert_eq!(active.title_action("Report.docx - Word", true), None);
+        // Another block that closes some of them: those are closed, also when they are down.
+        list.start("chat", "Chat", vec![part(titles(&["*Chat*"]), only(&["window_titles_close"]))], None, StartLock::None).unwrap();
+        let active = list.active().unwrap();
+        assert_eq!(active.title_action("Team Chat", false), Some(TitleAction::Close));
+        assert_eq!(active.title_action("Team Chat", true), Some(TitleAction::Close));
+        assert_eq!(active.title_action("Notes", false), Some(TitleAction::Minimize));
+        // Only closing: nothing is minimized, and no window wakes the worker for it.
+        list.stop("down", false).unwrap();
+        let active = list.active().unwrap();
+        assert!(!active.minimizes_windows() && active.title_action("Notes", false).is_none());
+    }
+
+    #[test]
+    fn a_budget_counts_a_minimized_title_only_while_its_window_is_up() {
+        let list = blocklist("minimize-budget");
+        let titles = || lists_of(Entries { titles: strings(&["*Chat*"]), ..Entries::default() });
+        list.start_with(
+            "a",
+            "A",
+            vec![part(titles(), only(&["window_titles_minimize"]))],
+            None,
+            Some(budget("1h", Scope::Total)),
+            StartLock::None,
+        )
+        .unwrap();
+        let active = list.active().unwrap();
+        // With time left the window is let be, and counted while it is up, not while it is down.
+        assert_eq!(active.title_action("Team Chat", false), None);
+        assert_eq!(active.used.take(), vec![("a".to_string(), TOTAL.to_string())]);
+        assert_eq!(active.title_action("Team Chat", true), None);
+        assert!(active.used.take().is_empty());
+        // A block that closes counts an open window, up or down.
+        let list = blocklist("close-budget");
+        list.start_with(
+            "a",
+            "A",
+            vec![part(titles(), only(&["window_titles_close"]))],
+            None,
+            Some(budget("1h", Scope::Total)),
+            StartLock::None,
+        )
+        .unwrap();
+        let active = list.active().unwrap();
+        assert_eq!(active.title_action("Team Chat", true), None);
+        assert_eq!(active.used.take(), vec![("a".to_string(), TOTAL.to_string())]);
     }
 
     #[test]

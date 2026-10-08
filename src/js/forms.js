@@ -31,7 +31,8 @@ const SECTIONS = [
   { key: "websites", lists: ["filters", "allowed"], enforcers: [enforcer("chromium_tabs"), enforcer("chromium_split_view"), enforcer("chromium_app_windows"), enforcer("firefox_tabs"), enforcer("firefox_split_view")] },
   { key: "programs", lists: ["programs"], enforcers: [enforcer("exe_names")] },
   { key: "store", lists: ["store_apps"], enforcers: [enforcer("store_apps")] },
-  { key: "titles", lists: ["titles"], enforcers: [enforcer("window_titles")] },
+  // One of these at most, or neither: a choice, not checkboxes (`state::Enforcers::check`).
+  { key: "titles", lists: ["titles"], choice: true, enforcers: [enforcer("window_titles_close"), enforcer("window_titles_minimize")] },
   { key: "other", lists: [], enforcers: [enforcer("obsidian_web_viewer")] },
 ].map((section) => ({ ...section, title: t(`lists.sections.${section.key}.title`), description: window.STRINGS.lists.sections[section.key].description && t(`lists.sections.${section.key}.description`) }));
 
@@ -232,6 +233,33 @@ function appPicker(list) {
   return picker;
 }
 
+// A section whose enforcers exclude each other: radio buttons, with one to turn them all off. Each
+// enforcer gets a stand-in for its checkbox in `checks` (`checked`, `disabled`), so the form reads
+// and fills them as the others.
+function choiceOf(section, legend, checks) {
+  const group = el("cds-radio-button-group", { "legend-text": legend, name: `enforcers-${section.key}`, orientation: "vertical" });
+  group.append(
+    el("cds-radio-button", { "label-text": t("lists.enforcers.off"), value: "off" }),
+    ...section.enforcers.map((enforcer) => el("cds-radio-button", { "label-text": enforcer.label, value: enforcer.key })),
+  );
+  group.value = "off";
+  for (const enforcer of section.enforcers) {
+    checks[enforcer.key] = {
+      get checked() {
+        return group.value === enforcer.key;
+      },
+      set checked(on) {
+        if (on) group.value = enforcer.key;
+        else if (group.value === enforcer.key) group.value = "off";
+      },
+      set disabled(off) {
+        group.disabled = off;
+      },
+    };
+  }
+  return group;
+}
+
 function listForm() {
   const name = nameField(t("lists.namePlaceholder"));
   const areas = {};
@@ -250,10 +278,13 @@ function listForm() {
       lists.append(areas[key]);
     }
     sameHeight(section.lists.map((key) => areas[key]));
-    const group = el("cds-checkbox-group", { "legend-text": t(section.lists.length ? "lists.howLegend" : "lists.enforcersLegend") });
-    for (const enforcer of section.enforcers) {
-      checks[enforcer.key] = el("cds-checkbox", { "label-text": enforcer.label });
-      group.append(checks[enforcer.key]);
+    const legend = t(section.lists.length ? "lists.howLegend" : "lists.enforcersLegend");
+    const group = section.choice ? choiceOf(section, legend, checks) : el("cds-checkbox-group", { "legend-text": legend });
+    if (!section.choice) {
+      for (const enforcer of section.enforcers) {
+        checks[enforcer.key] = el("cds-checkbox", { "label-text": enforcer.label });
+        group.append(checks[enforcer.key]);
+      }
     }
     const item = el(
       "cds-accordion-item",

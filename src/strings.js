@@ -334,10 +334,10 @@ window.STRINGS = {
       count: { one: "{n} Microsoft Store app closed", other: "{n} Microsoft Store apps closed" },
     },
     titles: {
-      label: "Window titles to close",
+      label: "Window titles",
       placeholder: "*YouTube*",
-      helper: "One per line, the whole title. * matches any part, case is ignored, a lone * closes every window but Bullseye. Closes the whole window with all its tabs",
-      count: { one: "{n} window title closed", other: "{n} window titles closed" },
+      helper: "One per line, the whole title. * matches any part, case is ignored, a lone * matches every window but Bullseye. The whole window goes, with all its tabs",
+      count: { one: "{n} window title", other: "{n} window titles" },
     },
 
     // The editor's sections, with the enforcers in each. `short` is the tile's line for an
@@ -357,7 +357,7 @@ window.STRINGS = {
       },
       titles: {
         title: "Windows by title",
-        description: "Closes windows whose title matches",
+        description: "Closes or minimizes windows whose title matches",
       },
       other: {
         title: "Other",
@@ -371,7 +371,10 @@ window.STRINGS = {
       firefox_split_view: { label: "Close blocked pages in Firefox split view" },
       exe_names: { label: "Close these programs" },
       store_apps: { label: "Close these Microsoft Store apps" },
-      window_titles: { label: "Close these windows" },
+      // One or the other, or neither (`off`): the window title section's choice.
+      window_titles_close: { label: "Close these windows" },
+      window_titles_minimize: { label: "Minimize these windows" },
+      off: "Leave these windows",
       obsidian_web_viewer: { label: "Close Obsidian when web viewer is active", short: "Closes Obsidian's web viewer" },
     },
   },

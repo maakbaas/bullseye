@@ -16,6 +16,7 @@
 //!   else can set it off or take its name first; interactive users may only wait on it.
 
 use std::ptr::{null, null_mut};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -30,7 +31,8 @@ use windows_sys::Win32::System::Threading::{
 use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetAncestor, GetClassNameW, GetMessageW, TranslateMessage, CHILDID_SELF, EVENT_OBJECT_NAMECHANGE,
-    EVENT_OBJECT_VALUECHANGE, EVENT_SYSTEM_FOREGROUND, GA_ROOT, MSG, OBJID_WINDOW, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+    EVENT_OBJECT_VALUECHANGE, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND, GA_ROOT, MSG, OBJID_WINDOW, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS,
 };
 
 use crate::block::Blocklist;
@@ -72,6 +74,16 @@ fn service() -> Option<HANDLE> {
         }
     }
     service.as_ref().map(|event| event.0)
+}
+
+/// Whether any window coming up is worth a look, not only a browser's: while a block minimizes
+/// windows by their title (`watch_every_window`).
+static EVERY_WINDOW: AtomicBool = AtomicBool::new(false);
+
+/// Says whether any window coming to the foreground, or back from the taskbar, should wake the
+/// worker: while windows are minimized, so one brought up goes down again at once.
+pub fn watch_every_window(on: bool) {
+    EVERY_WINDOW.store(on, Ordering::Relaxed);
 }
 
 /// What ended a wait, so the log can say what a close came from (and so whether the events work).
@@ -118,13 +130,16 @@ pub fn wait(timeout: Duration) -> Woken {
 pub fn spawn_hook() {
     spawn_critical("event hook", || {
         // SAFETY: the callback is a plain function; no module, every process and thread.
-        let hooks: Vec<HWINEVENTHOOK> =
-            [(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND), (EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_VALUECHANGE)]
-                .into_iter()
-                .map(|(first, last)| unsafe {
-                    SetWinEventHook(first, last, null_mut(), Some(on_event), 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS)
-                })
-                .collect();
+        let hooks: Vec<HWINEVENTHOOK> = [
+            (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND),
+            (EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZEEND),
+            (EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_VALUECHANGE),
+        ]
+        .into_iter()
+        .map(|(first, last)| unsafe {
+            SetWinEventHook(first, last, null_mut(), Some(on_event), 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS)
+        })
+        .collect();
         if hooks.iter().any(|hook| hook.is_null()) {
             note("app", "window events are not heard; blocked pages are closed at the next second");
             return;
@@ -143,15 +158,18 @@ pub fn spawn_hook() {
 /// A window event: worth a look when it comes from a Chromium or Firefox window itself, not from a page
 /// (a page's own events come from its child window, so typing in a form does not count): the
 /// window's title changing (a tab navigated or was switched to), a value changing (its address
-/// bar), or the window coming to the foreground.
+/// bar), or the window coming to the foreground. While windows are minimized (`EVERY_WINDOW`),
+/// also any window coming to the foreground or back from the taskbar.
 unsafe extern "system" fn on_event(_hook: HWINEVENTHOOK, event: u32, window: HWND, object: i32, child: i32, _thread: u32, _time: u32) {
+    let coming_up = matches!(event, EVENT_SYSTEM_FOREGROUND | EVENT_SYSTEM_MINIMIZEEND);
     let wanted = match event {
         EVENT_OBJECT_NAMECHANGE => object == OBJID_WINDOW && child == CHILDID_SELF as i32,
         EVENT_OBJECT_VALUECHANGE | EVENT_SYSTEM_FOREGROUND => true,
         _ => false,
     };
+    let any = coming_up && EVERY_WINDOW.load(Ordering::Relaxed);
     // SAFETY: a window handle from Windows; a stale one only makes these calls fail.
-    if wanted && !window.is_null() && unsafe { GetAncestor(window, GA_ROOT) } == window && is_browser(&class_of(window)) {
+    if (wanted || any) && !window.is_null() && unsafe { GetAncestor(window, GA_ROOT) } == window && (any || is_browser(&class_of(window))) {
         // SAFETY: the app's own event, open for as long as the app runs.
         unsafe { SetEvent(local()) };
     }
