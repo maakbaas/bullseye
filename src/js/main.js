@@ -347,12 +347,13 @@ function route() {
   $("scroller").scrollTo(0, 0);
 }
 
-// A session shown on its own: its name after Sessions in the breadcrumb, and Show all under it when
-// there are others.
+// A session shown on its own: its name as the title and after Sessions in the breadcrumb, and Show all
+// under it when there are others.
 function showSingle() {
   const session = single && overview.sessions.find((s) => s.id === single);
   $("show-all").hidden = !session || overview.sessions.length < 2;
   if (!session) return;
+  if ($("list-title").textContent !== session.name) $("list-title").textContent = session.name;
   $("trail").toggleAttribute("no-trailing-slash", true);
   const name = $("trail").querySelector(".single");
   if (name) name.querySelector("cds-breadcrumb-link").textContent = session.name;
