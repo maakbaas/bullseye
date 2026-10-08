@@ -96,7 +96,7 @@ With `edit`, an option replaces only what it names: `--list` replaces all its bl
 | `--store-app <family>` | A Store app to close, by its exact package family name (repeatable), as `list apps` shows the installed ones: `Microsoft.WindowsCalculator_8wekyb3d8bbwe`. No `*`, as in the window, where they are ticked. Windows' own apps are never closed. | none |
 | `--title <title>` | A window to close, by its title (repeatable), the whole title with `*` as a wildcard and letter case ignored: `*YouTube*`. The whole window closes, or is minimized (`--enforcers`), a browser's with all its tabs. A lone `*` matches every window but Bullseye's own and Windows' shell. | none |
 | `--sites-file <file>`, `--allowed-file <file>`, `--programs-file <file>`, `--store-apps-file <file>`, `--titles-file <file>` | The same, one entry per line, from a text file. Can be combined with the options above. | |
-| `--enforcers <list>` | Which enforcers act on this list, comma-separated: `chromium_tabs` (close blocked tabs in Chrome, Edge, Brave), `chromium_split_view` (close blocked pages in split view), `chromium_app_windows` (close app windows of blocked pages, e.g. `chrome --app=<url>`), `firefox_tabs` (close blocked tabs in Firefox), `firefox_split_view` (close blocked pages in Firefox split view), `exe_names` (close the programs), `store_apps` (close the Store apps), `window_titles_close` (close windows by title) or `window_titles_minimize` (minimize them instead: nothing is lost, and a window that cannot be minimized is left alone; never both), `obsidian_web_viewer` (close Obsidian when its web viewer is active), or `all` (every enforcer but minimizing windows, which goes instead of closing them). `bullseye-cli help` lists the current names. A locked block's list may go from minimizing to closing windows, not back. | `all` |
+| `--enforcers <list>` | Which enforcers act on this list, comma-separated: `chromium_tabs` (close blocked tabs in Chrome, Edge, Brave), `chromium_split_view` (close blocked pages in split view), `chromium_app_windows` (close app windows of blocked pages, e.g. `chrome --app=<url>`), `firefox_tabs` (close blocked tabs in Firefox), `firefox_split_view` (close blocked pages in Firefox split view), `window_titles_minimize` (minimize the windows by title instead of closing them: nothing is lost, and a window that cannot be minimized is left alone), `obsidian_web_viewer` (close Obsidian when its web viewer is active), or `all` (every enforcer but minimizing windows, which goes instead of closing them). Programs, Store apps and windows by title need no enforcer: a list with entries acts, an empty one does nothing. `bullseye-cli help` lists the current names. A locked block's list may go from minimizing to closing windows, not back. | `all` |
 | `--name <name>` | (`list edit` only) A new name. | |
 | `--clear <list>` | (`list edit` only) Empty a list: `sites`, `allowed`, `programs`, `store-apps` or `titles` (repeatable). | |
 
@@ -134,7 +134,7 @@ bullseye-cli edit "Focus" --allowance none
 ```powershell
 # What to block.
 bullseye-cli list new "Social media" --site youtube.com --site reddit.com
-bullseye-cli list new "Games" --programs-file games.txt --enforcers exe_names
+bullseye-cli list new "Games" --programs-file games.txt
 
 # When.
 bullseye-cli condition new "Work hours" --times "Mon-Fri 08:00-17:00"

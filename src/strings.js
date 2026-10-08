@@ -369,12 +369,9 @@ window.STRINGS = {
       chromium_app_windows: { label: "Close blocked app windows in Chromium" },
       firefox_tabs: { label: "Close blocked tabs in Firefox" },
       firefox_split_view: { label: "Close blocked pages in Firefox split view" },
-      exe_names: { label: "Close these programs" },
-      store_apps: { label: "Close these Microsoft Store apps" },
-      // One or the other, or neither (`off`): the window title section's choice.
-      window_titles_close: { label: "Close these windows" },
+      // The window title section's choice: closing (`close`, no enforcer of its own) or minimizing.
+      close: "Close these windows",
       window_titles_minimize: { label: "Minimize these windows" },
-      off: "Leave these windows",
       obsidian_web_viewer: { label: "Close Obsidian when web viewer is active", short: "Closes Obsidian's web viewer" },
     },
   },

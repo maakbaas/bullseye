@@ -515,24 +515,18 @@ mod tests {
             chromium_tabs: true,
             chromium_split_view: true,
             obsidian_web_viewer: false,
-            exe_names: false,
             chromium_app_windows: false,
             firefox_tabs: false,
             firefox_split_view: false,
-            store_apps: false,
-            window_titles_close: false,
             window_titles_minimize: false,
         };
         let none = Enforcers {
             chromium_tabs: false,
             chromium_split_view: false,
             obsidian_web_viewer: false,
-            exe_names: false,
             chromium_app_windows: false,
             firefox_tabs: false,
             firefox_split_view: false,
-            store_apps: false,
-            window_titles_close: false,
             window_titles_minimize: false,
         };
         for one in [definition("a", &[]).enforcers(only_the_list), definition("b", &["a.com"]).enforcers(none)] {
@@ -557,12 +551,9 @@ mod tests {
             chromium_tabs: false,
             chromium_split_view: false,
             obsidian_web_viewer: true,
-            exe_names: false,
             chromium_app_windows: false,
             firefox_tabs: false,
             firefox_split_view: false,
-            store_apps: false,
-            window_titles_close: false,
             window_titles_minimize: false,
         };
         assert_eq!(run(&context, definition("a", &[]).enforcers(obsidian_only)), Response::Done);
@@ -884,12 +875,9 @@ mod tests {
             chromium_tabs: false,
             chromium_split_view: false,
             obsidian_web_viewer: false,
-            exe_names: true,
             chromium_app_windows: false,
             firefox_tabs: false,
             firefox_split_view: false,
-            store_apps: false,
-            window_titles_close: false,
             window_titles_minimize: false,
         };
         let one = |programs: &[&str]| timed("p", &[], "1h").enforcers(programs_only).programs(programs);
@@ -935,12 +923,9 @@ mod tests {
             chromium_tabs: true,
             chromium_split_view: true,
             obsidian_web_viewer: false,
-            exe_names: false,
             chromium_app_windows: false,
             firefox_tabs: false,
             firefox_split_view: false,
-            store_apps: false,
-            window_titles_close: false,
             window_titles_minimize: false,
         };
         assert!(failed(run(&context, timed("a", &[], "1h").allowed(&["google.com"]).enforcers(tabs_only))));

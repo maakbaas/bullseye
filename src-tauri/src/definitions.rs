@@ -174,7 +174,6 @@ impl BlockList {
     /// checked when a block starts, so a list can be saved half done.
     fn check(&self) -> Result<(), String> {
         check_name("block list", &self.id, &self.name)?;
-        self.enforcers.check().map_err(|why| format!("{}: {why}", self.name))?;
         self.lists().map(|_| ())
     }
 }

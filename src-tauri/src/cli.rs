@@ -774,8 +774,8 @@ fn enforcer_names() -> Vec<String> {
     }
 }
 
-/// `chromium_tabs,exe_names`, or `all`: every enforcer as a new block list has them (windows by
-/// title closed, not minimized: it is one or the other).
+/// `chromium_tabs,firefox_tabs`, or `all`: every enforcer as a new block list has them (windows by
+/// title closed, not minimized: `window_titles_minimize` says to minimize them).
 fn parse_enforcers(list: &str) -> Result<Enforcers, String> {
     let names = enforcer_names();
     let mut chosen: Map<String, Value> = names.iter().map(|name| (name.clone(), Value::Bool(false))).collect();
@@ -792,9 +792,7 @@ fn parse_enforcers(list: &str) -> Result<Enforcers, String> {
             return Err(format!("Unknown enforcer \"{name}\"; the enforcers are {}", names.join(", ")));
         }
     }
-    let enforcers: Enforcers = serde_json::from_value(Value::Object(chosen)).map_err(|e| e.to_string())?;
-    enforcers.check()?;
-    Ok(enforcers)
+    serde_json::from_value(Value::Object(chosen)).map_err(|e| e.to_string())
 }
 
 /// The arguments after the command, taken out one kind at a time; whatever is left is an error.
@@ -2234,14 +2232,17 @@ mod tests {
     }
 
     #[test]
-    fn windows_by_title_are_closed_or_minimized_never_both() {
+    fn windows_by_title_are_closed_unless_minimized() {
         let all = parse_enforcers("all").unwrap();
-        assert!(all.window_titles_close && !all.window_titles_minimize, "all is every enforcer as a new block list has them");
+        assert_eq!(all, Enforcers::default(), "all is every enforcer as a new block list has them: closing windows by title");
+        assert!(!all.window_titles_minimize);
         let down = parse_enforcers("chromium_tabs, window_titles_minimize").unwrap();
-        assert!(down.window_titles_minimize && !down.window_titles_close && down.chromium_tabs);
-        assert!(parse_enforcers("window_titles_close,window_titles_minimize").unwrap_err().contains("not both"));
-        assert!(parse_enforcers("all,window_titles_minimize").is_err());
-        assert!(parse_enforcers("window_titles").unwrap_err().starts_with("Unknown enforcer"));
+        assert!(down.window_titles_minimize && down.chromium_tabs && !down.firefox_tabs);
+        assert!(parse_enforcers("all,window_titles_minimize").unwrap().window_titles_minimize);
+        // The lists with one way to act on them have no switch: their entries are it.
+        for gone in ["exe_names", "store_apps", "window_titles", "window_titles_close"] {
+            assert!(parse_enforcers(gone).unwrap_err().starts_with("Unknown enforcer"), "{gone}");
+        }
     }
 
     #[test]
@@ -2262,7 +2263,7 @@ mod tests {
             "--title",
             "*YouTube*",
             "--enforcers",
-            "chromium_tabs, exe_names",
+            "chromium_tabs, window_titles_minimize",
         ]);
         let Ok(Command::ListNew { name, changes }) = parse(&line) else { panic!("not a new list") };
         assert_eq!(name, "Social");
@@ -2279,13 +2280,10 @@ mod tests {
                 chromium_tabs: true,
                 chromium_split_view: false,
                 obsidian_web_viewer: false,
-                exe_names: true,
                 chromium_app_windows: false,
                 firefox_tabs: false,
                 firefox_split_view: false,
-                store_apps: false,
-                window_titles_close: false,
-                window_titles_minimize: false,
+                window_titles_minimize: true,
             }
         );
     }

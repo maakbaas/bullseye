@@ -25,14 +25,15 @@ const LISTS = Object.fromEntries(
 );
 
 // The enforcers (`state::Enforcers`), grouped into the block list editor's sections with the
-// lists they use.
+// lists they use. Programs, Store apps and windows by title have none to switch on: a list acts
+// when it has entries.
 const enforcer = (key) => ({ key, label: t(`lists.enforcers.${key}.label`), short: window.STRINGS.lists.enforcers[key].short });
 const SECTIONS = [
   { key: "websites", lists: ["filters", "allowed"], enforcers: [enforcer("chromium_tabs"), enforcer("chromium_split_view"), enforcer("chromium_app_windows"), enforcer("firefox_tabs"), enforcer("firefox_split_view")] },
-  { key: "programs", lists: ["programs"], enforcers: [enforcer("exe_names")] },
-  { key: "store", lists: ["store_apps"], enforcers: [enforcer("store_apps")] },
-  // One of these at most, or neither: a choice, not checkboxes (`state::Enforcers::check`).
-  { key: "titles", lists: ["titles"], choice: true, enforcers: [enforcer("window_titles_close"), enforcer("window_titles_minimize")] },
+  { key: "programs", lists: ["programs"], enforcers: [] },
+  { key: "store", lists: ["store_apps"], enforcers: [] },
+  // Closing (`choice`, the default: off) or minimizing: radio buttons, not a checkbox.
+  { key: "titles", lists: ["titles"], choice: "close", enforcers: [enforcer("window_titles_minimize")] },
   { key: "other", lists: [], enforcers: [enforcer("obsidian_web_viewer")] },
 ].map((section) => ({ ...section, title: t(`lists.sections.${section.key}.title`), description: window.STRINGS.lists.sections[section.key].description && t(`lists.sections.${section.key}.description`) }));
 
@@ -233,13 +234,13 @@ function appPicker(list) {
   return picker;
 }
 
-// A section whose enforcers exclude each other: radio buttons, with one to turn them all off. Each
-// enforcer gets a stand-in for its checkbox in `checks` (`checked`, `disabled`), so the form reads
-// and fills them as the others.
+// A section whose enforcers exclude each other: radio buttons, the first for all of them off
+// (`section.choice`, its label in `lists.enforcers`). Each enforcer gets a stand-in for its
+// checkbox in `checks` (`checked`, `disabled`), so the form reads and fills them as the others.
 function choiceOf(section, legend, checks) {
   const group = el("cds-radio-button-group", { "legend-text": legend, name: `enforcers-${section.key}`, orientation: "vertical" });
   group.append(
-    el("cds-radio-button", { "label-text": t("lists.enforcers.off"), value: "off" }),
+    el("cds-radio-button", { "label-text": t(`lists.enforcers.${section.choice}`), value: "off" }),
     ...section.enforcers.map((enforcer) => el("cds-radio-button", { "label-text": enforcer.label, value: enforcer.key })),
   );
   group.value = "off";
@@ -279,8 +280,8 @@ function listForm() {
     }
     sameHeight(section.lists.map((key) => areas[key]));
     const legend = t(section.lists.length ? "lists.howLegend" : "lists.enforcersLegend");
-    const group = section.choice ? choiceOf(section, legend, checks) : el("cds-checkbox-group", { "legend-text": legend });
-    if (!section.choice) {
+    const group = section.choice ? choiceOf(section, legend, checks) : section.enforcers.length ? el("cds-checkbox-group", { "legend-text": legend }) : null;
+    if (!section.choice && group) {
       for (const enforcer of section.enforcers) {
         checks[enforcer.key] = el("cds-checkbox", { "label-text": enforcer.label });
         group.append(checks[enforcer.key]);

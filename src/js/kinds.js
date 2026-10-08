@@ -3,7 +3,7 @@
 // allowance and lock are set on the block itself.)
 
 import { invoke, lockedUsersOf, names, newId, overview, runningOf, t } from "./core.js";
-import { ENFORCERS, LISTS, blockForm, conditionForm, listForm } from "./forms.js";
+import { LISTS, SECTIONS, blockForm, conditionForm, listForm } from "./forms.js";
 
 // The first free automatic name of a kind: "Block 1", "Block 2", … (`<kind>.autoName`), ignoring case.
 function freeName(kind, items) {
@@ -57,7 +57,8 @@ const KINDS = {
       id: newId(),
       name: freeName("lists", overview.lists),
       ...Object.fromEntries(Object.keys(LISTS).map((key) => [key, []])),
-      enforcers: Object.fromEntries(ENFORCERS.map((e) => [e.key, true])),
+      // Every checkbox ticked; a choice (windows by title) at its first option, closing.
+      enforcers: Object.fromEntries(SECTIONS.flatMap((s) => s.enforcers.map((e) => [e.key, !s.choice]))),
     }),
     save: (list) => invoke("save_list", { list }),
     remove: (id) => invoke("delete_list", { id }),
