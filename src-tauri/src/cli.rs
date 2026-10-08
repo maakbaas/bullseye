@@ -75,7 +75,9 @@ const HELP: &str = "\
 Bullseye command line: everything the window can do.
 
 Usage: bullseye <command> [options]
-A <block>, <list> or <condition> is its name (any case) or its id.
+A <block>, <list> or <condition> is its name (any case) or its id. An option that takes several
+items takes them separated by commas, e.g. --sites youtube.com,reddit.com; an item with a comma
+in it goes in double quotes: --titles '\"Inbox, 3 unread\",*YouTube*'.
 
 A block is what you start: one or more block lists (what to block), a condition (when it is
 active; 'always', a weekly schedule, or a flash drive that is not connected), at most one
@@ -86,7 +88,7 @@ Blocks:
                            block list and every condition.
   show <block> [--json]    One block: its lists, condition, lock and state.
   new <name> [options]     Make a block. Options:
-      --list <list>            A block list it enforces (repeatable).
+      --lists <lists>          The block lists it enforces.
       --condition <condition>  When it is active: a condition's name, or 'always' (the default).
       --allowance <budget|pomodoro|none>
                                What lets it go quiet for a while (none by default): a budget of
@@ -127,14 +129,14 @@ Blocks:
                                place to stop such a block (or by unlocking).
       --no-lock                Not locked: it can be stopped at any time (the default).
   edit <block> [options]   Change a block: the options of new, which replace what they name
-                           (--list replaces all its lists), and --name <name>. A running block
+                           (--lists replaces all its lists), and --name <name>. A running block
                            takes the change at once (not its lock); while it is locked, only its
                            name and a stricter allowance: a budget shorter or reset less often,
                            or none; a cycle cannot change.
-  delete <block> [--yes]   Delete a block that is not running. Asks first, unless --yes.
+  delete <block> [--force] Delete a block that is not running. Asks first, unless --force.
   duplicate <block>        Make a copy of a block, named after it with a number: \"Work (2)\".
-  start <block> [--yes]    Start a block. The lock options of new set its lock first, as the lock
-                           on its tile in the window does. A locked block asks first, unless --yes.
+  start <block> [--force]  Start a block. The lock options of new set its lock first, as the lock
+                           on its tile in the window does. A locked block asks first, unless --force.
   stop <block> [--password <pw>]
                            Stop a running block that is not locked right now; one locked with a
                            password with its password (asked for when not given). One locked
@@ -146,41 +148,43 @@ Blocks:
 Block lists:
   list show <list> [--json]   One block list, and the blocks that use it.
   list apps [--json]          The Store apps installed, by name and package family name, to
-                              block with --store-app.
+                              block with --store-apps.
   list new <name> [options]   Make a block list. Options:
-      --site <entry>           A site to block (repeatable): the site with its subdomains and
-                               everything under it, e.g. youtube.com. * as a wildcard.
-      --allow <entry>          A site that is always allowed, also when blocked (repeatable).
-      --program <name>         A program to close, by exe name (repeatable), e.g. steam.exe.
-      --store-app <family>     A Store app to close, by its exact package family name
-                               (repeatable), e.g. Microsoft.WindowsCalculator_8wekyb3d8bbwe, as
-                               'list apps' shows them; no *.
-      --title <title>          A window to close, by its title (repeatable), * as a wildcard,
-                               e.g. \"*YouTube*\". The whole window closes, tabs and all.
-      --allow-title <title>    A window title that is always left alone, also when one of
-                               the titles matches it (repeatable).
-      --sites-file <file>      Sites to block, one per line. Likewise --allowed-file,
+      --sites <sites>          The sites to block: each with its subdomains and everything under
+                               it, e.g. youtube.com. * as a wildcard.
+      --allowed-sites <sites>  Sites that are always allowed, also when blocked.
+      --programs <names>       Programs to close, by exe name, e.g. steam.exe.
+      --store-apps <families>  Store apps to close, by their exact package family names, e.g.
+                               Microsoft.WindowsCalculator_8wekyb3d8bbwe, as 'list apps' shows
+                               them; no *.
+      --titles <titles>        Windows to close, by their title, * as a wildcard, e.g.
+                               *YouTube*. The whole window closes, tabs and all.
+      --allowed-titles <titles>
+                               Window titles that are always left alone, also when one of the
+                               titles matches them.
+      --sites-file <file>      Sites to block, one per line. Likewise --allowed-sites-file,
                                --programs-file, --store-apps-file, --titles-file and
                                --allowed-titles-file.
-      --enforcers <list>       Comma-separated, or 'all' (the default). Names:
+      --enforcers <names>      The enforcers, or 'all' (the default). Names:
                                {enforcers}
   list edit <list> [options]  Change a block list: the options of list new, which replace what
-                              they name, --name <name> and --clear <sites|allowed|programs|
-                              store-apps|titles|allowed-titles> (repeatable). While a locked
-                              block uses it, only stricter: more to block, fewer allowed, more
-                              enforcers.
-  list delete <list> [--yes]  Delete a block list that no running block uses; it is taken out of
+                              they name, --name <name> and --clear <lists>, the lists to empty:
+                              sites, allowed-sites, programs, store-apps, titles,
+                              allowed-titles. While a locked block uses it, only stricter: more
+                              to block, fewer allowed, more enforcers.
+  list delete <list> [--force]
+                              Delete a block list that no running block uses; it is taken out of
                               the blocks that use it (a block left without one is deleted).
   list duplicate <list>       Make a copy of a block list, named after it with a number.
 
 Conditions:
   condition show <condition>        One condition, and the blocks that use it.
-  condition new <name> (--times <times> | --drive <drive> | --webhook <url> [webhook options] | --any <condition>... | --all <condition>...)
+  condition new <name> (--times <times> | --drive <drive> | --webhook <url> [webhook options] | --any <conditions> | --all <conditions>)
                                     Make a condition: a weekly schedule, e.g. --times
                                     \"Mon-Fri 08:00-17:00; Sat 10-12\"; or a flash drive, by name
                                     or serial number ('drives' lists them): active while it is
                                     not connected; or a combination of two or more other
-                                    conditions (--any or --all, once for each): active when any
+                                    conditions (--any or --all, separated by commas): active when any
                                     of them is, or when all are. Not of other combinations. A
                                     webhook asks one web address (it can hold GET parameters) every
                                     --every <time> (at least 1m, default 5m), with --method get|post
@@ -190,11 +194,11 @@ Conditions:
                                     and/or --false-body (a body must equal the text); if neither
                                     does, or no answer comes, --fallback active|inactive (default
                                     active) says. Both matchers are needed.
-  condition edit <condition> [--name <name>] [--times <times> | --drive <drive> | --webhook <url> [webhook options] | --any <condition>... | --all <condition>...]
+  condition edit <condition> [--name <name>] [--times <times> | --drive <drive> | --webhook <url> [webhook options] | --any <conditions> | --all <conditions>]
                                     Change a condition. While a locked block uses it, a schedule
                                     can only get more times, a drive cannot change, and a
                                     combination can only get more active.
-  condition delete <condition> [--yes]
+  condition delete <condition> [--force]
                                     Delete a condition that no running block uses, directly or
                                     in a combination; blocks it was the condition of are always
                                     active, and those it locked are not locked any more. It is
@@ -209,10 +213,10 @@ Moving to another computer:
   export <file>            Write every block list, condition and block to a settings
                            file, as Export in Settings does. Password locks are in it without
                            their password.
-  import <file> [--yes]    Replace every block list, condition and block with those in a settings
+  import <file> [--force]  Replace every block list, condition and block with those in a settings
                            file, as Import in Settings does; not while a block is locked, and
                            blocks that run unlocked end with it. A block with a password lock
-                           comes without a lock. Asks first, unless --yes.
+                           comes without a lock. Asks first, unless --force.
 
 Other:
   drives [--json]          The flash drives connected, by name and serial number, for
@@ -260,12 +264,12 @@ enum Command {
     },
     Delete {
         block: String,
-        yes: bool,
+        force: bool,
     },
     Start {
         block: String,
         lock: Option<Lock>,
-        yes: bool,
+        force: bool,
     },
     Stop {
         block: String,
@@ -292,7 +296,7 @@ enum Command {
     },
     ListDelete {
         list: String,
-        yes: bool,
+        force: bool,
     },
     ConditionShow {
         condition: String,
@@ -308,7 +312,7 @@ enum Command {
     },
     ConditionDelete {
         condition: String,
-        yes: bool,
+        force: bool,
     },
     ConditionCheck {
         times: String,
@@ -321,7 +325,7 @@ enum Command {
     },
     Import {
         file: String,
-        yes: bool,
+        force: bool,
     },
     /// `item` of the kind, by name or id.
     Duplicate {
@@ -392,15 +396,16 @@ struct ListChanges {
     enforcers: Option<Enforcers>,
 }
 
-/// The options that set a list, one per list: the option, the one that reads it from a file, its
-/// name in `--clear`, and its field of `Entries`. **A new list is a line here.**
-const LIST_OPTIONS: [(&str, &str, &str, &str); 6] = [
-    ("--site", "--sites-file", "sites", "filters"),
-    ("--allow", "--allowed-file", "allowed", "allowed"),
-    ("--program", "--programs-file", "programs", "programs"),
-    ("--store-app", "--store-apps-file", "store-apps", "store_apps"),
-    ("--title", "--titles-file", "titles", "titles"),
-    ("--allow-title", "--allowed-titles-file", "allowed-titles", "allowed_titles"),
+/// The options that set a list, one per list: the option (its items; `<option>-file` reads them
+/// from a file, one per line, and `--clear` names it without the dashes) and its field of
+/// `Entries`. **A new list is a line here.**
+const LIST_OPTIONS: [(&str, &str); 6] = [
+    ("--sites", "filters"),
+    ("--allowed-sites", "allowed"),
+    ("--programs", "programs"),
+    ("--store-apps", "store_apps"),
+    ("--titles", "titles"),
+    ("--allowed-titles", "allowed_titles"),
 ];
 
 impl ListChanges {
@@ -479,13 +484,13 @@ fn parse(args: &[String]) -> Result<Command, String> {
             Command::New { name, changes: parse_block_changes(&mut options, false)? }
         }
         "edit" => Command::Edit { block: named(&mut options, "block")?, changes: parse_block_changes(&mut options, true)? },
-        "delete" => Command::Delete { block: named(&mut options, "block")?, yes: options.flag("--yes") },
+        "delete" => Command::Delete { block: named(&mut options, "block")?, force: options.flag("--force") },
         "export" => Command::Export { file: options.positional().ok_or("Give the file to write, e.g. bullseye.json")? },
-        "import" => Command::Import { file: options.positional().ok_or("Give the settings file to read")?, yes: options.flag("--yes") },
+        "import" => Command::Import { file: options.positional().ok_or("Give the settings file to read")?, force: options.flag("--force") },
         "duplicate" => Command::Duplicate { kind: Kind::Block, item: named(&mut options, "block")? },
         "list duplicate" => Command::Duplicate { kind: Kind::List, item: named(&mut options, "block list")? },
         "condition duplicate" => Command::Duplicate { kind: Kind::Condition, item: named(&mut options, "condition")? },
-        "start" => Command::Start { block: named(&mut options, "block")?, lock: parse_lock(&mut options)?, yes: options.flag("--yes") },
+        "start" => Command::Start { block: named(&mut options, "block")?, lock: parse_lock(&mut options)?, force: options.flag("--force") },
         "stop" => {
             Command::Stop { block: named(&mut options, "block")?, password: options.value("--password")?, abort: options.flag("--abort") }
         }
@@ -497,7 +502,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
             Command::ListNew { name, changes: parse_list_changes(&mut options, false)? }
         }
         "list edit" => Command::ListEdit { list: named(&mut options, "block list")?, changes: parse_list_changes(&mut options, true)? },
-        "list delete" => Command::ListDelete { list: named(&mut options, "block list")?, yes: options.flag("--yes") },
+        "list delete" => Command::ListDelete { list: named(&mut options, "block list")?, force: options.flag("--force") },
         "condition show" => Command::ConditionShow { condition: named(&mut options, "condition")? },
         "condition new" => {
             let name = options.positional().ok_or("Give the new condition a name")?;
@@ -511,7 +516,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
             name: options.value("--name")?,
             rule: parse_rule(&mut options)?,
         },
-        "condition delete" => Command::ConditionDelete { condition: named(&mut options, "condition")?, yes: options.flag("--yes") },
+        "condition delete" => Command::ConditionDelete { condition: named(&mut options, "condition")?, force: options.flag("--force") },
         "condition test" => Command::ConditionTest { condition: named(&mut options, "condition")? },
         "condition check" => {
             Command::ConditionCheck { times: options.positional().ok_or("Give the times to check, e.g. \"Mon-Fri 08:00-17:00\"")? }
@@ -574,10 +579,9 @@ fn parse_way(options: &mut Options) -> Result<Option<Option<Lock>>, String> {
 
 /// The options of `new` and `edit`. Only `edit` takes `--name`.
 fn parse_block_changes(options: &mut Options, editing: bool) -> Result<BlockChanges, String> {
-    let lists = options.values("--list")?;
     Ok(BlockChanges {
         name: if editing { options.value("--name")? } else { None },
-        lists: (!lists.is_empty()).then_some(lists),
+        lists: options.items("--lists")?,
         condition: options.value("--condition")?.map(|c| (!c.eq_ignore_ascii_case("always")).then_some(c)),
         allowance: parse_allowance_changes(options)?,
         lock: parse_lock(options)?,
@@ -678,21 +682,15 @@ fn build_terms(changes: AllowanceChanges, old: Option<&Terms>) -> Result<Terms, 
     terms.checked()
 }
 
-/// `--times <times>`, `--drive <drive>`, `--any <condition>...` or `--all <condition>...` of a
+/// `--times <times>`, `--drive <drive>`, `--any <conditions>` or `--all <conditions>` of a
 /// condition, at most one kind.
 fn parse_rule(options: &mut Options) -> Result<Option<RuleChoice>, String> {
     let mut given: Vec<RuleChoice> = Vec::new();
     given.extend(options.value("--times")?.map(RuleChoice::Times));
     given.extend(options.value("--drive")?.map(RuleChoice::Drive));
     given.extend(parse_webhook(options)?.map(RuleChoice::Webhook));
-    let any = options.values("--any")?;
-    let all = options.values("--all")?;
-    if !any.is_empty() {
-        given.push(RuleChoice::Any(any));
-    }
-    if !all.is_empty() {
-        given.push(RuleChoice::All(all));
-    }
+    given.extend(options.items("--any")?.map(RuleChoice::Any));
+    given.extend(options.items("--all")?.map(RuleChoice::All));
     match given.len() {
         0 | 1 => Ok(given.pop()),
         _ => Err("Give one of --times, --drive, --webhook, --any or --all".into()),
@@ -742,28 +740,30 @@ fn parse_webhook(options: &mut Options) -> Result<Option<Hook>, String> {
 /// The options of `list new` and `list edit`. Only `list edit` takes `--name` and `--clear`.
 fn parse_list_changes(options: &mut Options, editing: bool) -> Result<ListChanges, String> {
     let mut changes = ListChanges::default();
-    let cleared = if editing { options.values("--clear")? } else { Vec::new() };
-    let names: Vec<&str> = LIST_OPTIONS.iter().map(|(_, _, name, _)| *name).collect();
+    let cleared = if editing { options.items("--clear")?.unwrap_or_default() } else { Vec::new() };
+    let names: Vec<&str> = LIST_OPTIONS.iter().map(|(option, _)| &option[2..]).collect();
     for list in &cleared {
         if !names.contains(&list.as_str()) {
             return Err(format!("--clear takes {}, not \"{list}\"", names.join(", ")));
         }
     }
-    for (option, file, cleared_as, key) in LIST_OPTIONS {
-        let mut entries = options.values(option)?;
-        for path in options.values(file)? {
-            let text = std::fs::read_to_string(&path).map_err(|e| format!("Cannot read {path}: {e}"))?;
+    for (option, key) in LIST_OPTIONS {
+        let given = options.items(option)?;
+        let from_file = options.value(&format!("{option}-file"))?;
+        let mut entries = given.clone().unwrap_or_default();
+        if let Some(path) = &from_file {
+            let text = std::fs::read_to_string(path).map_err(|e| format!("Cannot read {path}: {e}"))?;
             entries.extend(text.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string));
         }
-        if !entries.is_empty() || cleared.iter().any(|c| c == cleared_as) {
+        if given.is_some() || from_file.is_some() || cleared.iter().any(|c| c == &option[2..]) {
             changes.lists.insert(key, entries);
         }
     }
     if editing {
         changes.name = options.value("--name")?;
     }
-    changes.enforcers = match options.value("--enforcers")? {
-        Some(list) => Some(parse_enforcers(&list)?),
+    changes.enforcers = match options.items("--enforcers")? {
+        Some(names) => Some(parse_enforcers(&names.join(","))?),
         None if editing => None,
         None => Some(parse_enforcers("all")?),
     };
@@ -805,6 +805,47 @@ struct Options {
     args: Vec<String>,
 }
 
+/// One value of a list option as its items: split at commas (`a,b` and `a, b` alike), each
+/// trimmed, empty ones left out. Quotes are only needed for an item with a comma in it: one in
+/// double quotes keeps its commas and spaces (`"Inbox, 3 unread"`), and `""` inside it is a quote,
+/// as in a CSV file.
+fn split_items(value: &str) -> Result<Vec<String>, String> {
+    let mut items = Vec::new();
+    let mut chars = value.chars().peekable();
+    loop {
+        while chars.next_if(|c| c.is_whitespace()).is_some() {}
+        let Some(&first) = chars.peek() else { break };
+        let item = if first == '"' {
+            chars.next();
+            let mut item = String::new();
+            loop {
+                match chars.next() {
+                    None => return Err(format!("A quote is not closed in \"{value}\"")),
+                    Some('"') if chars.next_if_eq(&'"').is_some() => item.push('"'),
+                    Some('"') => break,
+                    Some(c) => item.push(c),
+                }
+            }
+            while chars.next_if(|c| c.is_whitespace()).is_some() {}
+            if chars.peek().is_some_and(|&c| c != ',') {
+                return Err(format!("Put a comma after a quoted item in \"{value}\""));
+            }
+            item
+        } else {
+            let mut item = String::new();
+            while let Some(c) = chars.next_if(|&c| c != ',') {
+                item.push(c);
+            }
+            item.trim().to_string()
+        };
+        chars.next_if_eq(&',');
+        if !item.trim().is_empty() {
+            items.push(item);
+        }
+    }
+    Ok(items)
+}
+
 impl Options {
     fn new(args: &[String]) -> Options {
         Options { args: args.to_vec() }
@@ -835,6 +876,28 @@ impl Options {
             }
         }
         Ok(values)
+    }
+
+    /// The items of a list option, `None` when it is not given: `--name a,b`, `--name a b` (each
+    /// value up to the next option, which is also how PowerShell passes `a,b`), `--name=a,b` or
+    /// any mix, items split at commas (`split_items`). Given once at most.
+    fn items(&mut self, name: &str) -> Result<Option<Vec<String>>, String> {
+        let Some(at) = self.args.iter().position(|arg| arg == name || arg.starts_with(&format!("{name}="))) else {
+            return Ok(None);
+        };
+        let first = self.args.remove(at);
+        let mut values: Vec<String> = first.strip_prefix(&format!("{name}=")).map(str::to_string).into_iter().collect();
+        while at < self.args.len() && !self.args[at].starts_with("--") {
+            values.push(self.args.remove(at));
+        }
+        if self.args.iter().any(|arg| arg == name || arg.starts_with(&format!("{name}="))) {
+            return Err(format!("{name} is given more than once; give all its items at once, separated by commas"));
+        }
+        let items: Vec<String> = values.iter().map(|value| split_items(value)).collect::<Result<Vec<_>, _>>()?.concat();
+        if items.is_empty() {
+            return Err(format!("{name} needs one or more items, separated by commas"));
+        }
+        Ok(Some(items))
     }
 
     /// At most one `--name value`.
@@ -910,16 +973,16 @@ fn execute(command: Command) -> Result<(), Failure> {
             send(Request::SaveBlock { block })?;
             say!("Saved the block \"{name}\".");
         }
-        Command::Delete { block, yes } => {
+        Command::Delete { block, force } => {
             let overview = overview()?;
             let block = find(&overview.blocks, &block, "block", |b| (&b.id, &b.name))?;
-            if !confirm(&format!("Delete the block \"{}\"? This cannot be undone.", block.name), yes)? {
+            if !confirm(&format!("Delete the block \"{}\"? This cannot be undone.", block.name), force)? {
                 return Err(failed("Not deleted."));
             }
             send(Request::DeleteBlock { id: block.id.clone() })?;
             say!("Deleted the block \"{}\".", block.name);
         }
-        Command::Start { block, lock, yes } => {
+        Command::Start { block, lock, force } => {
             let overview = overview()?;
             let mut block = find(&overview.blocks, &block, "block", |b| (&b.id, &b.name))?.clone();
             // As the lock on the block's tile: set on the block, then started with it.
@@ -931,7 +994,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             // As in the window: a block that cannot be stopped is only started after a second yes.
             if let Some(how) = lock_warning(&overview, &block) {
                 let question = format!("Start \"{}\"? {how} Only unlocking ends it early.", block.name);
-                if !confirm(&question, yes)? {
+                if !confirm(&question, force)? {
                     return Err(failed("Not started."));
                 }
             }
@@ -1028,10 +1091,11 @@ fn execute(command: Command) -> Result<(), Failure> {
             send(Request::SaveList { list })?;
             say!("Saved the block list \"{name}\".");
         }
-        Command::ListDelete { list, yes } => {
+        Command::ListDelete { list, force } => {
             let overview = overview()?;
             let list = find(&overview.lists, &list, "block list", |l| (&l.id, &l.name))?;
-            if !confirm(&format!("Delete the block list \"{}\"?{} This cannot be undone.", list.name, fallout(&overview, &list.id)), yes)? {
+            if !confirm(&format!("Delete the block list \"{}\"?{} This cannot be undone.", list.name, fallout(&overview, &list.id)), force)?
+            {
                 return Err(failed("Not deleted."));
             }
             send(Request::DeleteList { id: list.id.clone() })?;
@@ -1073,12 +1137,12 @@ fn execute(command: Command) -> Result<(), Failure> {
             send(Request::SaveCondition { condition })?;
             say!("Saved the condition \"{name}\".");
         }
-        Command::ConditionDelete { condition, yes } => {
+        Command::ConditionDelete { condition, force } => {
             let overview = overview()?;
             let condition = find(&overview.conditions, &condition, "condition", |c| (&c.id, &c.name))?;
             if !confirm(
                 &format!("Delete the condition \"{}\"?{} This cannot be undone.", condition.name, fallout(&overview, &condition.id)),
-                yes,
+                force,
             )? {
                 return Err(failed("Not deleted."));
             }
@@ -1093,7 +1157,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             definitions::write_settings(std::path::Path::new(&file), remote().library().map_err(failed)?).map_err(failed)?;
             say!("Wrote every block list, condition and block to {file}.");
         }
-        Command::Import { file, yes } => {
+        Command::Import { file, force } => {
             let library = definitions::read_settings(std::path::Path::new(&file)).map_err(failed)?;
             let contents = library.contents();
             // A Store app this computer has not installed is left out, as the window does.
@@ -1115,7 +1179,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             if !apps.is_empty() {
                 question.push_str(&format!(" {apps}"));
             }
-            if !confirm(&question, yes)? {
+            if !confirm(&question, force)? {
                 return Err(failed("Not imported."));
             }
             send(Request::Import { library })?;
@@ -1454,14 +1518,14 @@ fn new_id() -> String {
     format!("cli-{nanos:x}-{:x}", std::process::id())
 }
 
-/// Asks a yes/no question in the terminal; `yes` (from `--yes`) answers it beforehand. Without a
-/// terminal there is nobody to ask, so `--yes` is needed.
-fn confirm(question: &str, yes: bool) -> Result<bool, Failure> {
-    if yes {
+/// Asks a force/no question in the terminal; `force` (from `--force`) answers it beforehand. Without a
+/// terminal there is nobody to ask, so `--force` is needed.
+fn confirm(question: &str, force: bool) -> Result<bool, Failure> {
+    if force {
         return Ok(true);
     }
     if !std::io::stdin().is_terminal() {
-        return Err(failed(format!("{question}\nNo terminal to ask in; add --yes to go ahead.")));
+        return Err(failed(format!("{question}\nNo terminal to ask in; add --force to go ahead.")));
     }
     eprint!("{question} [y/N] ");
     let _ = std::io::stderr().flush();
@@ -1771,11 +1835,11 @@ mod tests {
         serve("lifecycle");
         assert!(ok(&["status"]).contains("Blocks:\n  None yet"));
         assert_eq!(
-            ok(&["list", "new", "Social", "--site", "youtube.com", "--allow", "music.youtube.com"]),
+            ok(&["list", "new", "Social", "--sites", "youtube.com", "--allowed-sites", "music.youtube.com"]),
             "Made the block list \"Social\". Use it with: bullseye new <block> --list \"Social\"\n"
         );
         assert!(ok(&["condition", "new", "Work", "--times", "Mon-Fri 08:00-17:00"]).starts_with("Made the condition \"Work\"."));
-        let made = ok(&["new", "Evening", "--list", "Social", "--condition", "Work", "--allowance", "budget", "--allowed", "30m"]);
+        let made = ok(&["new", "Evening", "--lists", "Social", "--condition", "Work", "--allowance", "budget", "--allowed", "30m"]);
         assert!(
             made.starts_with("Made the block \"Evening\" (id cli-") && made.ends_with("Start it with: bullseye start \"Evening\"\n"),
             "{made}"
@@ -1811,13 +1875,13 @@ mod tests {
         assert_eq!(ok(&["list", "duplicate", "Social"]), "Made \"Social (2)\", a copy of the block list \"Social\".\n");
         assert_eq!(ok(&["condition", "duplicate", "Work"]), "Made \"Work (2)\", a copy of the condition \"Work\".\n");
         assert_eq!(
-            ok(&["list", "edit", "Social (2)", "--site", "reddit.com", "--clear", "allowed"]),
+            ok(&["list", "edit", "Social (2)", "--sites", "reddit.com", "--clear", "allowed-sites"]),
             "Saved the block list \"Social (2)\".\n"
         );
         let copy = ok(&["list", "show", "Social (2)"]);
         assert!(copy.contains("reddit.com") && !copy.contains("music.youtube.com"), "{copy}");
         assert_eq!(ok(&["condition", "edit", "Work (2)", "--name", "Weekend", "--times", "Sat-Sun"]), "Saved the condition \"Weekend\".\n");
-        ok(&["condition", "new", "Either", "--any", "Work", "--any", "Weekend"]);
+        ok(&["condition", "new", "Either", "--any", "Work,Weekend"]);
         assert!(ok(&["condition", "show", "Either"]).contains("any of \"Work\", \"Weekend\""));
         assert!(refused(&["condition", "new", "Pair", "--any", "Work"]).contains("at least two"));
 
@@ -1827,14 +1891,14 @@ mod tests {
         assert_eq!(ok(&["stop", "Night"]), "Stopped \"Night\".\n");
 
         // Deleted.
-        assert_eq!(ok(&["delete", "Night (2)", "--yes"]), "Deleted the block \"Night (2)\".\n");
-        assert_eq!(ok(&["list", "delete", "Social (2)", "--yes"]), "Deleted the block list \"Social (2)\".\n");
-        assert_eq!(ok(&["condition", "delete", "Either", "--yes"]), "Deleted the condition \"Either\".\n");
+        assert_eq!(ok(&["delete", "Night (2)", "--force"]), "Deleted the block \"Night (2)\".\n");
+        assert_eq!(ok(&["list", "delete", "Social (2)", "--force"]), "Deleted the block list \"Social (2)\".\n");
+        assert_eq!(ok(&["condition", "delete", "Either", "--force"]), "Deleted the condition \"Either\".\n");
 
         // What is not there, or not of the kind.
         assert!(refused(&["show", "Nope"]).starts_with("No block called \"Nope\""));
-        assert!(refused(&["new", "X", "--list", "Nope"]).starts_with("No block list called \"Nope\""));
-        assert!(refused(&["list", "new", "Games", "--store-app", "Microsoft.Xbox*"]).contains("exact package family name"));
+        assert!(refused(&["new", "X", "--lists", "Nope"]).starts_with("No block list called \"Nope\""));
+        assert!(refused(&["list", "new", "Games", "--store-apps", "Microsoft.Xbox*"]).contains("exact package family name"));
         assert!(refused(&["new", "X", "--condition", "Nope"]).starts_with("No condition called \"Nope\""));
         assert_eq!(refused(&["condition", "test", "Work"]), "\"Work\" is not a webhook condition");
     }
@@ -1858,9 +1922,9 @@ mod tests {
     #[test]
     fn locks_are_set_shown_and_held_by_the_service() {
         serve("locks");
-        ok(&["list", "new", "L", "--site", "a.com"]);
+        ok(&["list", "new", "L", "--sites", "a.com"]);
         ok(&["condition", "new", "Always", "--times", "Mon-Sun 00:00-24:00"]);
-        let new = |name: &str, lock: &[&str]| ok(&[&["new", name, "--list", "L"][..], lock].concat());
+        let new = |name: &str, lock: &[&str]| ok(&[&["new", name, "--lists", "L"][..], lock].concat());
         new("Timed", &["--lock-duration", "1h"]);
         new("Slow", &["--lock-delay", "1h"]);
         new("Typed", &["--lock-text", "let me out"]);
@@ -1876,7 +1940,7 @@ mod tests {
         assert!(lock_of("Later").starts_with("Lock:        until Thursday 1 January 2099, 00:00"), "{}", lock_of("Later"));
 
         for name in ["Timed", "Slow", "Typed", "Kept", "Restart"] {
-            assert_eq!(ok(&["start", name, "--yes"]), format!("Started \"{name}\".\n"));
+            assert_eq!(ok(&["start", name, "--force"]), format!("Started \"{name}\".\n"));
         }
         let status = ok(&["status"]);
         for line in [
@@ -1896,8 +1960,8 @@ mod tests {
         assert!(ok(&["stop", "Slow"]).starts_with("\"Slow\" can be stopped in "));
         assert_eq!(ok(&["stop", "Slow", "--abort"]), "Stopping \"Slow\" aborted: back to locked.\n");
         // A password: set with start, as the tile sets it, and stopped with it.
-        ok(&["new", "Pw", "--list", "L"]);
-        assert_eq!(ok(&["start", "Pw", "--lock-password", "secret", "--yes"]), "Started \"Pw\".\n");
+        ok(&["new", "Pw", "--lists", "L"]);
+        assert_eq!(ok(&["start", "Pw", "--lock-password", "secret", "--force"]), "Started \"Pw\".\n");
         assert!(ok(&["status"]).contains("Pw       Running · active · locked with a password"));
         assert!(cli(&["stop", "Pw", "--password", "wrong"]).is_err());
         assert_eq!(ok(&["stop", "Pw", "--password", "secret"]), "Stopped \"Pw\".\n");
@@ -1909,12 +1973,12 @@ mod tests {
     #[test]
     fn unlocking_counts_down_and_has_another_way() {
         serve("unlock");
-        ok(&["list", "new", "L", "--site", "a.com"]);
-        ok(&["new", "Timed", "--list", "L", "--lock-duration", "1h"]);
+        ok(&["list", "new", "L", "--sites", "a.com"]);
+        ok(&["new", "Timed", "--lists", "L", "--lock-duration", "1h"]);
         assert_eq!(ok(&["unlock-delay"]), "Unlocking takes no time: it is free.\n");
         assert_eq!(ok(&["unlock-delay", "1h"]), "Unlocking now takes 1 hour.\n");
         assert_eq!(ok(&["unlock-delay"]), "Unlocking takes 1 hour.\n");
-        ok(&["start", "Timed", "--yes"]);
+        ok(&["start", "Timed", "--force"]);
         assert!(ok(&["unlock"]).starts_with("Unlocking was asked for: ready in 1 hour."));
         assert!(ok(&["unlock"]).starts_with("Unlocking is not ready yet: "));
         assert_eq!(ok(&["unlock", "--abort"]), "Unlocking aborted: back to locked.\n");
@@ -1924,9 +1988,9 @@ mod tests {
         assert!(cli(&["unlock-way", "--text", "let me out"]).is_err());
 
         serve("unlock-way");
-        ok(&["list", "new", "L", "--site", "a.com"]);
+        ok(&["list", "new", "L", "--sites", "a.com"]);
         ok(&["condition", "new", "Always", "--times", "Mon-Sun 00:00-24:00"]);
-        ok(&["new", "Timed", "--list", "L", "--lock-duration", "1h"]);
+        ok(&["new", "Timed", "--lists", "L", "--lock-duration", "1h"]);
         assert_eq!(ok(&["unlock-way", "--text", "let me out"]), "Unlocking is also possible by typing a text in, in the window.\n");
         assert_eq!(ok(&["unlock-way", "--condition", "Always"]), "Unlocking is locked while its condition is active\n");
         assert_eq!(
@@ -1934,7 +1998,7 @@ mod tests {
             "Unlocking is also possible at once with a password (`unlock --password`).\n"
         );
         ok(&["unlock-delay", "1h"]);
-        ok(&["start", "Timed", "--yes"]);
+        ok(&["start", "Timed", "--force"]);
         assert!(cli(&["unlock", "--password", "wrong"]).is_err());
         assert_eq!(ok(&["unlock", "--password", "secret"]), "Unlocked: every block has ended.\n");
         assert_eq!(ok(&["unlock-way", "--none"]), "Only the delay unlocks.\n");
@@ -1946,12 +2010,12 @@ mod tests {
         let dir = serve("export");
         let file = dir.join("bullseye.json");
         let path = file.to_string_lossy().to_string();
-        ok(&["list", "new", "L", "--site", "a.com"]);
-        ok(&["new", "B", "--list", "L", "--lock-password", "secret", "--allowance", "pomodoro", "--blocked", "50m", "--allowed", "10m"]);
+        ok(&["list", "new", "L", "--sites", "a.com"]);
+        ok(&["new", "B", "--lists", "L", "--lock-password", "secret", "--allowance", "pomodoro", "--blocked", "50m", "--allowed", "10m"]);
         assert_eq!(ok(&["export", &path]), format!("Wrote every block list, condition and block to {path}.\n"));
         serve("import");
         // (The file has no Store apps, so none are left out and nothing is said of them.)
-        assert_eq!(ok(&["import", &path, "--yes"]), format!("Imported {path}.\n"));
+        assert_eq!(ok(&["import", &path, "--force"]), format!("Imported {path}.\n"));
         let shown = ok(&["show", "B"]);
         assert!(shown.contains("Lock:        password") && shown.contains("Allowance:   Blocked for 50 minutes"), "{shown}");
         assert!(refused(&["import", &dir.join("missing.json").to_string_lossy()]).starts_with("Cannot read"));
@@ -2003,15 +2067,15 @@ mod tests {
     #[test]
     fn a_combination_of_all_and_a_list_renamed() {
         serve("all");
-        ok(&["list", "new", "L", "--site", "a.com"]);
+        ok(&["list", "new", "L", "--sites", "a.com"]);
         assert_eq!(ok(&["list", "edit", "L", "--name", "Media"]), "Saved the block list \"Media\".\n");
         ok(&["condition", "new", "Work", "--times", "Mon-Fri 08:00-17:00"]);
         ok(&["condition", "new", "Late", "--times", "Mon-Sun 16:00-18:00"]);
-        ok(&["condition", "new", "Both", "--all", "Work", "--all", "Late"]);
+        ok(&["condition", "new", "Both", "--all", "Work,Late"]);
         assert!(ok(&["condition", "show", "Both"]).contains("all of \"Work\", \"Late\""));
         // A lock until a date and time asks first, with the time it ends.
-        ok(&["new", "Later", "--list", "Media", "--lock-until", "2099-01-01 00:00"]);
-        assert_eq!(ok(&["start", "Later", "--yes"]), "Started \"Later\".\n");
+        ok(&["new", "Later", "--lists", "Media", "--lock-until", "2099-01-01 00:00"]);
+        assert_eq!(ok(&["start", "Later", "--force"]), "Started \"Later\".\n");
         assert!(ok(&["status"]).contains("Later  Running · active · locked for the next"));
     }
 
@@ -2024,7 +2088,7 @@ mod tests {
         let library = Library { lists: vec![block_list("l", &["a.com"])], blocks: vec![locked], ..Library::default() };
         std::fs::create_dir_all(&dir).unwrap();
         definitions::write_settings(&file, library).unwrap();
-        ok(&["import", &file.to_string_lossy(), "--yes"]);
+        ok(&["import", &file.to_string_lossy(), "--force"]);
         assert!(ok(&["show", "Block b"]).contains("Lock:        none"));
     }
 
@@ -2258,18 +2322,18 @@ mod tests {
             "list",
             "new",
             "Social",
-            "--site",
+            "--sites",
             "youtube.com",
-            "--site=reddit.com",
-            "--allow",
+            "reddit.com",
+            "--allowed-sites",
             "youtube.com/watch*",
-            "--program",
+            "--programs",
             "steam",
-            "--store-app",
+            "--store-apps",
             "Microsoft.XboxApp_8wekyb3d8bbwe",
-            "--title",
+            "--titles",
             "*YouTube*",
-            "--allow-title",
+            "--allowed-titles",
             "*Visual Studio Code",
             "--enforcers",
             "chromium_tabs, window_titles_minimize",
@@ -2300,7 +2364,7 @@ mod tests {
 
     #[test]
     fn a_new_block_finds_its_lists_and_condition_by_name() {
-        let line = args(&["new", "Evening", "--list", "social", "--list", "l1", "--condition", "WORK HOURS", "--lock-duration", "2h 30m"]);
+        let line = args(&["new", "Evening", "--lists", "social,l1", "--condition", "WORK HOURS", "--lock-duration", "2h 30m"]);
         let Ok(Command::New { name, changes }) = parse(&line) else { panic!("not new") };
         assert_eq!(name, "Evening");
         let mut b = block("x", &[]);
@@ -2317,24 +2381,24 @@ mod tests {
         let mut b = library().blocks[0].clone();
         assert!(apply_block_changes(&library(), &mut b, changes).is_ok());
         assert_eq!((b.condition, b.lock), (None, Lock::None));
-        let Ok(Command::Edit { changes, .. }) = parse(&args(&["edit", "Work", "--list", "Games"])) else { panic!("not edit") };
+        let Ok(Command::Edit { changes, .. }) = parse(&args(&["edit", "Work", "--lists", "Games"])) else { panic!("not edit") };
         assert!(apply_block_changes(&library(), &mut library().blocks[0].clone(), changes).is_err());
     }
 
     #[test]
     fn start_can_set_the_lock_as_the_tile_does() {
         assert_eq!(
-            parse(&args(&["start", "Work", "--lock-condition", "Work hours", "--yes"])),
-            Ok(Command::Start { block: "Work".into(), lock: Some(Lock::Condition { condition: "Work hours".into() }), yes: true })
+            parse(&args(&["start", "Work", "--lock-condition", "Work hours", "--force"])),
+            Ok(Command::Start { block: "Work".into(), lock: Some(Lock::Condition { condition: "Work hours".into() }), force: true })
         );
-        assert_eq!(parse(&args(&["start", "Work"])), Ok(Command::Start { block: "Work".into(), lock: None, yes: false }));
+        assert_eq!(parse(&args(&["start", "Work"])), Ok(Command::Start { block: "Work".into(), lock: None, force: false }));
         assert_eq!(
             parse(&args(&["start", "Work", "--lock-until", "2026-10-06 18:00"])),
-            Ok(Command::Start { block: "Work".into(), lock: Some(Lock::Until { until: "2026-10-06 18:00".into() }), yes: false })
+            Ok(Command::Start { block: "Work".into(), lock: Some(Lock::Until { until: "2026-10-06 18:00".into() }), force: false })
         );
         assert_eq!(
             parse(&args(&["start", "Work", "--lock-until-restart"])),
-            Ok(Command::Start { block: "Work".into(), lock: Some(Lock::UntilRestart), yes: false })
+            Ok(Command::Start { block: "Work".into(), lock: Some(Lock::UntilRestart), force: false })
         );
         assert!(parse(&args(&["start", "Work", "--lock-until", "tomorrow"])).is_err());
         assert!(parse(&args(&["start", "Work", "--lock-until-restart", "--no-lock"])).is_err());
@@ -2363,10 +2427,55 @@ mod tests {
     }
 
     #[test]
+    fn several_items_are_separated_by_commas() {
+        let split = |value: &str| split_items(value).unwrap();
+        assert_eq!(split("a.com,b.com"), vec!["a.com", "b.com"]);
+        // Spaces around items and empty items do not count.
+        assert_eq!(split(" a.com , ,b.com, "), vec!["a.com", "b.com"]);
+        // Quotes keep commas and spaces, and two quotes in them are one.
+        assert_eq!(split(r#""Inbox, 3 unread",*YouTube*"#), vec!["Inbox, 3 unread", "*YouTube*"]);
+        assert_eq!(split(r#" " padded " , "say ""hi""" "#), vec![" padded ", r#"say "hi""#]);
+        assert_eq!(split(r#""""#), Vec::<String>::new(), "an empty item in quotes is no item");
+        assert_eq!(split_items(r#""open,b"#), Err(r#"A quote is not closed in ""open,b""#.into()));
+        assert_eq!(split_items(r#""a" b,c"#), Err(r#"Put a comma after a quoted item in ""a" b,c""#.into()));
+        // Quotes are only needed for a comma: inside an item they are kept.
+        assert_eq!(split(r#"say "hi", b"#), vec![r#"say "hi""#, "b"]);
+
+        let items = |line: &[&str], name: &str| Options::new(&args(line)).items(name);
+        // With a comma, with spaces between (as PowerShell passes a,b), with =, and all of them.
+        let both = Ok(Some(vec!["a.com".to_string(), "b.com".into()]));
+        assert_eq!(items(&["--sites", "a.com,b.com"], "--sites"), both);
+        assert_eq!(items(&["--sites", "a.com", "b.com", "--force"], "--sites"), both);
+        assert_eq!(items(&["--sites=a.com", "b.com"], "--sites"), both);
+        assert_eq!(items(&["--force"], "--sites"), Ok(None));
+        // Once, and with something in it.
+        assert!(items(&["--sites", "a.com", "--sites", "b.com"], "--sites").unwrap_err().contains("more than once"));
+        assert_eq!(items(&["--sites", "--force"], "--sites"), Err("--sites needs one or more items, separated by commas".into()));
+        assert_eq!(items(&["--sites="], "--sites"), Err("--sites needs one or more items, separated by commas".into()));
+        // What is left after the items is for the other options.
+        let mut options = Options::new(&args(&["--any", "Work", "Weekend", "--name", "Either"]));
+        assert_eq!(options.items("--any"), Ok(Some(vec!["Work".to_string(), "Weekend".into()])));
+        assert_eq!(options.value("--name"), Ok(Some("Either".into())));
+        assert_eq!(options.finish(), Ok(()));
+        // The commands take them so.
+        let Ok(Command::ListNew { changes, .. }) = parse(&args(&["list", "new", "A", "--titles", r#""Inbox, 3 unread",*Chat*"#])) else {
+            panic!("not new")
+        };
+        assert_eq!(changes.lists.get("titles"), Some(&vec!["Inbox, 3 unread".to_string(), "*Chat*".into()]));
+        let Ok(Command::ListEdit { changes, .. }) = parse(&args(&["list", "edit", "A", "--clear", "sites,allowed-titles"])) else {
+            panic!("not edit")
+        };
+        assert_eq!(changes.lists.keys().copied().collect::<Vec<_>>(), vec!["allowed_titles", "filters"]);
+        assert_eq!(changes.lists.get("filters"), Some(&Vec::new()));
+        let Ok(Command::New { changes, .. }) = parse(&args(&["new", "B", "--lists", "Social", "Games"])) else { panic!("not new") };
+        assert_eq!(changes.lists, Some(vec!["Social".to_string(), "Games".into()]));
+    }
+
+    #[test]
     fn lists_come_from_files_too() {
         let path = std::env::temp_dir().join(format!("cli-{}-sites.txt", std::process::id()));
         std::fs::write(&path, "a.com\r\n\r\nb.com\n").unwrap();
-        let line = args(&["list", "new", "A", "--sites-file", path.to_str().unwrap(), "--site", "c.com"]);
+        let line = args(&["list", "new", "A", "--sites-file", path.to_str().unwrap(), "--sites", "c.com"]);
         let Ok(Command::ListNew { changes, .. }) = parse(&line) else { panic!("not new") };
         assert_eq!(changes.lists.get("filters"), Some(&vec!["c.com".to_string(), "a.com".into(), "b.com".into()]));
         let _ = std::fs::remove_file(path);
@@ -2377,15 +2486,15 @@ mod tests {
         for bad in [
             &["frobnicate"][..],
             &["new"],
-            &["new", "--list", "a"],
+            &["new", "--lists", "a"],
             &["new", "A", "--lock-duration", "soon"],
             &["new", "A", "--lock-duration", ""],
             &["new", "A", "--lock-duration", "1h", "--no-lock"],
             &["new", "A", "--name", "B"],
-            &["new", "A", "--site", "a.com"],
+            &["new", "A", "--sites", "a.com"],
             &["list"],
             &["list", "new"],
-            &["list", "new", "A", "--site"],
+            &["list", "new", "A", "--sites"],
             &["list", "new", "A", "--enforcers", "chromium_tabs,lasers"],
             &["list", "new", "A", "--clear", "sites"],
             &["list", "edit", "A", "--clear", "everything"],
@@ -2409,9 +2518,9 @@ mod tests {
         assert_eq!(parse(&args(&["--version"])), Ok(Command::Version));
         assert_eq!(parse(&args(&["status", "--json"])), Ok(Command::Status { json: true }));
         assert_eq!(parse(&args(&["show", "Work", "--json"])), Ok(Command::Show { block: "Work".into(), json: true }));
-        assert_eq!(parse(&args(&["delete", "Work", "--yes"])), Ok(Command::Delete { block: "Work".into(), yes: true }));
+        assert_eq!(parse(&args(&["delete", "Work", "--force"])), Ok(Command::Delete { block: "Work".into(), force: true }));
         assert_eq!(parse(&args(&["export", "b.json"])), Ok(Command::Export { file: "b.json".into() }));
-        assert_eq!(parse(&args(&["import", "b.json", "--yes"])), Ok(Command::Import { file: "b.json".into(), yes: true }));
+        assert_eq!(parse(&args(&["import", "b.json", "--force"])), Ok(Command::Import { file: "b.json".into(), force: true }));
         assert!(parse(&args(&["import"])).is_err());
         assert_eq!(parse(&args(&["duplicate", "Work"])), Ok(Command::Duplicate { kind: Kind::Block, item: "Work".into() }));
         assert_eq!(parse(&args(&["list", "duplicate", "Social"])), Ok(Command::Duplicate { kind: Kind::List, item: "Social".into() }));
@@ -2429,13 +2538,13 @@ mod tests {
             Ok(Command::Start {
                 block: "Work".into(),
                 lock: Some(Lock::Password { password: Some("partner".into()), hash: None }),
-                yes: false
+                force: false
             })
         );
         assert!(parse(&args(&["start", "Work", "--lock-password", "pw", "--no-lock"])).is_err());
         assert_eq!(
-            parse(&args(&["start", "Work", "--lock-text", "I will not scroll", "--yes"])),
-            Ok(Command::Start { block: "Work".into(), lock: Some(Lock::Text { text: "I will not scroll".into() }), yes: true })
+            parse(&args(&["start", "Work", "--lock-text", "I will not scroll", "--force"])),
+            Ok(Command::Start { block: "Work".into(), lock: Some(Lock::Text { text: "I will not scroll".into() }), force: true })
         );
         assert!(parse(&args(&["start", "Work", "--lock-text", "x", "--lock-password", "pw"])).is_err());
         // A flash drive is named here and looked up among the connected ones when the command runs.
@@ -2445,11 +2554,11 @@ mod tests {
         );
         assert_eq!(parse(&args(&["drives", "--json"])), Ok(Command::Drives { json: true }));
         assert_eq!(parse(&args(&["list", "show", "Social"])), Ok(Command::ListShow { list: "Social".into(), json: false }));
-        assert_eq!(parse(&args(&["list", "delete", "Social", "--yes"])), Ok(Command::ListDelete { list: "Social".into(), yes: true }));
+        assert_eq!(parse(&args(&["list", "delete", "Social", "--force"])), Ok(Command::ListDelete { list: "Social".into(), force: true }));
         assert_eq!(parse(&args(&["condition", "show", "Work hours"])), Ok(Command::ConditionShow { condition: "Work hours".into() }));
         assert_eq!(
             parse(&args(&["condition", "delete", "Work hours"])),
-            Ok(Command::ConditionDelete { condition: "Work hours".into(), yes: false })
+            Ok(Command::ConditionDelete { condition: "Work hours".into(), force: false })
         );
         assert_eq!(parse(&args(&["condition", "check", "weekdays 9-5pm"])), Ok(Command::ConditionCheck { times: "weekdays 9-5pm".into() }));
         assert_eq!(parse(&args(&["unlock"])), Ok(Command::Unlock { abort: false, password: None }));

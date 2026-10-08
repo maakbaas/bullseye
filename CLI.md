@@ -38,25 +38,25 @@ A running block keeps what it was started with: while it runs, it cannot be chan
 | `bullseye show <block> [--json]` | a block's tile and its editor |
 | `bullseye new <name> [options]` | **New block**, then **Save** |
 | `bullseye edit <block> [options]` | **Edit**, then **Save** |
-| `bullseye delete <block> [--yes]` | **Delete** (asks first, unless `--yes`) |
+| `bullseye delete <block> [--force]` | **Delete** (asks first, unless `--force`) |
 | `bullseye duplicate <block>` | **Duplicate** |
-| `bullseye start <block> [lock option] [--yes]` | the lock on the block's tile, then **Start** (a locked block asks first, unless `--yes`) |
+| `bullseye start <block> [lock option] [--force]` | the lock on the block's tile, then **Start** (a locked block asks first, unless `--force`) |
 | `bullseye stop <block> [--password <pw>] [--abort]` | **Stop** (a block locked with a password asks for it, as the window does; one locked with a delay is asked to stop first, `--abort` ends the wait) |
 | `bullseye list show <list> [--json]` | a block list's tile and its editor |
 | `bullseye list apps [--json]` | the installed Store apps the editor offers to tick, by name and package family name |
 | `bullseye list new <name> [options]` | **New block list**, then **Save** |
 | `bullseye list edit <list> [options]` | **Edit** a block list, then **Save** |
-| `bullseye list delete <list> [--yes]` | **Delete** a block list |
+| `bullseye list delete <list> [--force]` | **Delete** a block list |
 | `bullseye list duplicate <list>` | **Duplicate** a block list |
 | `bullseye condition show <condition>` | a condition's tile and its editor |
-| `bullseye condition new <name> (--times <times> \| --drive <drive> \| --webhook <url> [webhook options] \| --any <condition>... \| --all <condition>...)` | **New condition**, of the type Weekly schedule, Flash drive or Combination, then **Save** |
-| `bullseye condition edit <condition> [--name <name>] [--times <times> \| --drive <drive> \| --webhook <url> [webhook options] \| --any <condition>... \| --all <condition>...]` | **Edit** a condition, then **Save** |
-| `bullseye condition delete <condition> [--yes]` | **Delete** a condition |
+| `bullseye condition new <name> (--times <times> \| --drive <drive> \| --webhook <url> [webhook options] \| --any <conditions> \| --all <conditions>)` | **New condition**, of the type Weekly schedule, Flash drive or Combination, then **Save** |
+| `bullseye condition edit <condition> [--name <name>] [--times <times> \| --drive <drive> \| --webhook <url> [webhook options] \| --any <conditions> \| --all <conditions>]` | **Edit** a condition, then **Save** |
+| `bullseye condition delete <condition> [--force]` | **Delete** a condition |
 | `bullseye condition duplicate <condition>` | **Duplicate** a condition |
 | `bullseye condition test <condition>` | **Test** in a webhook condition's editor: asks it once and shows the status, the start of the body and what the matchers make of it |
 | `bullseye condition check <times>` | the schedule written out under the week grid in the condition editor |
 | `bullseye export <file>` | **Export** in Settings |
-| `bullseye import <file> [--yes]` | **Import** in Settings |
+| `bullseye import <file> [--force]` | **Import** in Settings |
 | `bullseye drives [--json]` | the flash drives the **Flash drive** type of a condition offers, by name and serial number |
 | `bullseye unlock [--abort] [--password <pw>]` | **Request unlock**, **Unlock** and **Keep locked** / **Lock again** in Settings; `--password` unlocks at once with the password of the other way to unlock |
 | `bullseye unlock-way [--condition <condition> \| --password <pw> \| --text <text> \| --none]` | **Another way to unlock** in Settings: show it, set it or remove it |
@@ -66,11 +66,13 @@ A running block keeps what it was started with: while it runs, it cannot be chan
 
 Exit codes: `0` done, `1` failed, refused or cancelled (the reason is printed), `2` not understood. Every option can also be written as `--option=value`. The name or id comes right after the command.
 
+**Several items** (block lists, sites, programs, titles, conditions of a combination, enforcers, lists to clear) are given once, after their option, separated by commas: `--sites youtube.com,reddit.com` or `--sites "youtube.com, reddit.com"` (spaces after a comma do not matter). Quotes around an item are only needed when it has a comma in it, such as a window title: `--titles '"Inbox, 3 unread",*YouTube*'` in PowerShell 7, `--titles "\"Inbox, 3 unread\",*YouTube*"` in cmd; two quotes inside a quoted item are one, as in a CSV file. Items separated by spaces instead (`--sites youtube.com reddit.com`, which is also how PowerShell passes an unquoted `a,b`) are taken too, up to the next option.
+
 ### Blocks: `new`, `edit`, `start`
 
 | Option | Meaning | New block's default |
 |---|---|---|
-| `--list <list>` | A block list it enforces (repeatable). | none (it cannot start without one) |
+| `--lists <lists>` | The block lists it enforces. | none (it cannot start without one) |
 | `--condition <condition>` | When it is active: a condition, or `always`. | `always` |
 | `--allowance <budget\|pomodoro\|none>` | Its allowance, with the options below (see [Allowances](#allowances---allowance-and-its-options)). | `none` |
 | `--allowed`, `--scope`, `--reset`, `--blocked`, `--anchor` | The allowance's terms. | |
@@ -84,22 +86,22 @@ Exit codes: `0` done, `1` failed, refused or cancelled (the reason is printed), 
 | `--no-lock` | Not locked. | yes |
 | `--name <name>` | (`edit` only) A new name. | |
 
-With `edit`, an option replaces only what it names: `--list` replaces all its block lists with the ones given, and what is not named stays. A running block takes the change at once (its lock aside, which is for the next start); while it is locked, only its name and a stricter allowance. `start` takes the lock options too: they set the block's lock before it starts, as the lock on its tile in the window does.
+With `edit`, an option replaces only what it names: `--lists` replaces all its block lists with the ones given, and what is not named stays. A running block takes the change at once (its lock aside, which is for the next start); while it is locked, only its name and a stricter allowance. `start` takes the lock options too: they set the block's lock before it starts, as the lock on its tile in the window does.
 
 ### Block lists: `list new`, `list edit`
 
 | Option | Meaning | New list's default |
 |---|---|---|
-| `--site <entry>` | A site to block (repeatable): the site, its subdomains and everything under it (`youtube.com` is `www.youtube.com` and `music.youtube.com` too), with `*` as a wildcard as in the window: `reddit.com/r/*`, `*` (every site). `*.reddit.com` is the subdomains only. An exception for one subdomain goes in `--allow`. | none |
-| `--allow <entry>` | A site that is always allowed, also when this list's sites match it (repeatable). | none |
-| `--program <name>` | A program to close, by exe name (repeatable): `steam`, `steam*.exe`. | none |
-| `--store-app <family>` | A Store app to close, by its exact package family name (repeatable), as `list apps` shows the installed ones: `Microsoft.WindowsCalculator_8wekyb3d8bbwe`. No `*`, as in the window, where they are ticked. Windows' own apps are never closed. | none |
-| `--title <title>` | A window to close, by its title (repeatable), the whole title with `*` as a wildcard and letter case ignored: `*YouTube*`. The whole window closes, or is minimized (`--enforcers`), a browser's with all its tabs. A lone `*` matches every window but Bullseye's own and Windows' shell. | none |
-| `--allow-title <title>` | A window title that is always left alone, also when this list's titles match it (repeatable), written as `--title`: `*Visual Studio Code`. | none |
-| `--sites-file <file>`, `--allowed-file <file>`, `--programs-file <file>`, `--store-apps-file <file>`, `--titles-file <file>`, `--allowed-titles-file <file>` | The same, one entry per line, from a text file. Can be combined with the options above. | |
+| `--sites <sites>` | The sites to block: each site, its subdomains and everything under it (`youtube.com` is `www.youtube.com` and `music.youtube.com` too), with `*` as a wildcard as in the window: `reddit.com/r/*`, `*` (every site). `*.reddit.com` is the subdomains only. An exception for one subdomain goes in `--allowed-sites`. | none |
+| `--allowed-sites <sites>` | Sites that are always allowed, also when this list's sites match them. | none |
+| `--programs <names>` | Programs to close, by exe name: `steam`, `steam*.exe`. | none |
+| `--store-apps <families>` | Store apps to close, by their exact package family names, as `list apps` shows the installed ones: `Microsoft.WindowsCalculator_8wekyb3d8bbwe`. No `*`, as in the window, where they are ticked. Windows' own apps are never closed. | none |
+| `--titles <titles>` | Windows to close, by their title, the whole title with `*` as a wildcard and letter case ignored: `*YouTube*`. The whole window closes, or is minimized (`--enforcers`), a browser's with all its tabs. A lone `*` matches every window but Bullseye's own and Windows' shell. | none |
+| `--allowed-titles <titles>` | Window titles that are always left alone, also when this list's titles match them, written as in `--titles`: `*Visual Studio Code`. | none |
+| `--sites-file <file>`, `--allowed-sites-file <file>`, `--programs-file <file>`, `--store-apps-file <file>`, `--titles-file <file>`, `--allowed-titles-file <file>` | The same, one entry per line, from a text file. Can be combined with the options above. | |
 | `--enforcers <list>` | Which enforcers act on this list, comma-separated: `chromium_tabs` (close blocked tabs in Chrome, Edge, Brave), `chromium_split_view` (close blocked pages in split view), `chromium_app_windows` (close app windows of blocked pages, e.g. `chrome --app=<url>`), `firefox_tabs` (close blocked tabs in Firefox), `firefox_split_view` (close blocked pages in Firefox split view), `window_titles_minimize` (minimize the windows by title instead of closing them: nothing is lost, and a window that cannot be minimized is left alone), `obsidian_web_viewer` (close Obsidian when its web viewer is active), or `all` (every enforcer but minimizing windows, which goes instead of closing them). Programs, Store apps and windows by title need no enforcer: a list with entries acts, an empty one does nothing. `bullseye help` lists the current names. A locked block's list may go from minimizing to closing windows, not back. | `all` |
 | `--name <name>` | (`list edit` only) A new name. | |
-| `--clear <list>` | (`list edit` only) Empty a list: `sites`, `allowed`, `programs`, `store-apps`, `titles` or `allowed-titles` (repeatable). | |
+| `--clear <lists>` | (`list edit` only) Empty lists: `sites`, `allowed-sites`, `programs`, `store-apps`, `titles`, `allowed-titles`, e.g. `--clear sites,titles`. | |
 
 ### Allowances: `--allowance` and its options
 
@@ -124,9 +126,9 @@ With `edit`, an option replaces only what it names. While the block is locked, i
 Obsidian's web viewer enforcer has no items to count, so a budget (total or for each item) never lets it through: Obsidian is closed on web content all the time. Only a Pomodoro's allowed time lets it be.
 
 ```powershell
-bullseye new "Social time" --list "Social media" --allowance budget --allowed 30m --scope total --reset 1d --anchor clock
+bullseye new "Social time" --lists "Social media" --allowance budget --allowed 30m --scope total --reset 1d --anchor clock
 bullseye edit "Social time" --allowed 10m --scope each --reset 2h
-bullseye new "Focus" --list "Social media" --allowance pomodoro --blocked 50m --allowed 10m --anchor clock
+bullseye new "Focus" --lists "Social media" --allowance pomodoro --blocked 50m --allowed 10m --anchor clock
 bullseye edit "Focus" --allowance none
 ```
 
@@ -134,7 +136,7 @@ bullseye edit "Focus" --allowance none
 
 ```powershell
 # What to block.
-bullseye list new "Social media" --site youtube.com --site reddit.com
+bullseye list new "Social media" --sites youtube.com,reddit.com
 bullseye list new "Games" --programs-file games.txt
 
 # When.
@@ -145,17 +147,17 @@ bullseye drives
 bullseye condition new "Key" --drive "Kingston DataTraveler 3.0"
 
 # A combination of two or more conditions (not of other combinations): active when any of them
-# is (--any), or when all of them are (--all). Give the option once for each condition.
+# is (--any), or when all of them are (--all). Give the conditions separated by commas.
 bullseye condition new "Room" --webhook "https://example.com/state?room=1" --true-body on --false-body off --every 5m
 bullseye condition new "Door" --webhook https://example.com/door --method post --true-status 200 --false-status 423 --fallback inactive
 bullseye condition test "Room"
-bullseye condition new "Work or weekend" --any "Work hours" --any "Weekend"
-bullseye condition new "Work hours with the key out" --all "Work hours" --all "Key"
+bullseye condition new "Work or weekend" --any "Work hours, Weekend"
+bullseye condition new "Work hours with the key out" --all "Work hours, Key"
 
 # Blocks: work hours that cannot be stopped during work hours, and an evening one for 2 hours.
-bullseye new "Work" --list "Social media" --list Games --condition "Work hours" --lock-condition "Work hours"
-bullseye new "Evening" --list Games
-bullseye start Work --yes
+bullseye new "Work" --lists "Social media",Games --condition "Work hours" --lock-condition "Work hours"
+bullseye new "Evening" --lists Games
+bullseye start Work --force
 bullseye start Evening --lock-duration 2h
 bullseye start Evening --lock-until "2026-10-06 18:00"
 bullseye start Evening --lock-until-restart
@@ -185,7 +187,7 @@ A running block with an allowance says what it is doing at the end of its line: 
 
 ### `stop`, `delete`, `list delete`, `condition delete`
 
-`stop <block>` stops a running block that is not locked right now; a locked one is refused, and the message says why and for how long. A block locked with a text is not stopped here: it is stopped in the window, by typing its text. A block locked with a password stops with it: give it with `--password`, or the CLI asks for it without showing it. Deleting asks first (`[y/N]`), or goes ahead with `--yes`, which is also needed when there is no terminal to ask in (a script). A running block, and a block list or condition that a running block uses, cannot be deleted; and while a locked block uses a block list or condition, `list edit` and `condition edit` only make it stricter (more sites, programs, apps or titles to block, fewer allowed sites, more enforcers; a schedule with more times, never fewer; a flash drive stays the same one); the question before deleting a block list or schedule says what it does to the blocks that use it.
+`stop <block>` stops a running block that is not locked right now; a locked one is refused, and the message says why and for how long. A block locked with a text is not stopped here: it is stopped in the window, by typing its text. A block locked with a password stops with it: give it with `--password`, or the CLI asks for it without showing it. Deleting asks first (`[y/N]`), or goes ahead with `--force`, which is also needed when there is no terminal to ask in (a script). A running block, and a block list or condition that a running block uses, cannot be deleted; and while a locked block uses a block list or condition, `list edit` and `condition edit` only make it stricter (more sites, programs, apps or titles to block, fewer allowed sites, more enforcers; a schedule with more times, never fewer; a flash drive stays the same one); the question before deleting a block list or schedule says what it does to the blocks that use it.
 
 ### `duplicate`, `list duplicate`, `condition duplicate`
 
@@ -193,7 +195,7 @@ Make a copy, as **Duplicate** in a tile's menu does: named after the original wi
 
 ### `export`, `import`
 
-To move to another computer: `export <file>` writes every block list, condition and block to a settings file (JSON), the same file the window's **Export** saves. `import <file>` replaces all of them with what is in such a file, after asking (or with `--yes`); it is refused while any block runs. A password lock is in the file with its hash (never the password), so keep the file private; a block whose file has no hash comes without a lock, and the question names them. A Store app in the file that is not installed on this PC (by its exact package family name: the same app can be another package on another PC) is left out, and the question and the output say which. The unlock delay is a setting of Bullseye itself, not of the file.
+To move to another computer: `export <file>` writes every block list, condition and block to a settings file (JSON), the same file the window's **Export** saves. `import <file>` replaces all of them with what is in such a file, after asking (or with `--force`); it is refused while any block runs. A password lock is in the file with its hash (never the password), so keep the file private; a block whose file has no hash comes without a lock, and the question names them. A Store app in the file that is not installed on this PC (by its exact package family name: the same app can be another package on another PC) is left out, and the question and the output say which. The unlock delay is a setting of Bullseye itself, not of the file.
 
 ```powershell
 bullseye export D:\bullseye.json
