@@ -124,8 +124,6 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 .lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); align-items: start; gap: var(--cds-spacing-05); }
 .lists:empty { display: none; }
 .inline-action { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--cds-spacing-04); }
-.list-row { display: flex; align-items: center; gap: var(--cds-spacing-05); }
-.list-row cds-checkbox { margin: 0; }
 /* The weekly schedule: a column per day and a row per half hour, labelled every two hours.
    Carbon has no calendar grid, so this is layout in Carbon's tokens (see `weekEditor`). */
 /* As wide as the fields above it, whatever the window's width: the days share the room. */
