@@ -4,7 +4,7 @@ import { $, applyStrings, ask, el, invalid, invoke, joined, notify, overview, qu
 import { LOCKS } from "./locks.js";
 import { durationField } from "./duration.js";
 import { KINDS } from "./kinds.js";
-import { askText, renderTiles, showSession, tiles } from "./tiles.js";
+import { askText, renderTiles, showOnly, showSession, tiles } from "./tiles.js";
 import { newSession } from "./fields.js";
 import { closeEditor, openEditor, renderEditorLock } from "./editor.js";
 import { detour } from "./detour.js";
@@ -13,10 +13,19 @@ applyStrings();
 whenRefreshed(render);
 
 let page = "sessions"; // the kind whose page or editor is shown
+let single = null; // the session shown on its own (`#/edit/<id>`), or null
 
 function render() {
   if (!$("view-settings").hidden) renderSettings();
-  if (!$("view-list").hidden) renderTiles(page);
+  if (!$("view-list").hidden) {
+    // A session shown on its own that is gone (deleted): back to all of them.
+    if (single && !overview.sessions.some((s) => s.id === single)) {
+      location.hash = KINDS.sessions.path;
+      return;
+    }
+    renderTiles(page);
+    showSingle();
+  }
   renderEditorLock();
 }
 
@@ -293,15 +302,15 @@ function route() {
     return;
   }
   detour.current = null;
-  // A session has no page of its own: a link to one opens its tile on the sessions page.
-  let shown = null;
+  // A link to a session shows its tile on its own, under Sessions in the breadcrumb.
+  single = null;
   const match = hash.match(/^#\/(?:(targets|conditions)(?:\/|$))?(new|edit\/(.+))?$/);
   if (hash === "#/settings") view = "settings";
   else if (match) {
     kind = match[1] || "sessions";
     if (match[2] && kind === "sessions") {
-      if (match[3]) shown = decodeURIComponent(match[3]);
-      history.replaceState(null, "", KINDS.sessions.path);
+      if (match[3]) single = decodeURIComponent(match[3]);
+      else history.replaceState(null, "", KINDS.sessions.path);
     } else if (match[2]) {
       view = "editor";
       edit = match[3] ? decodeURIComponent(match[3]) : "";
@@ -323,7 +332,9 @@ function route() {
     notify("list-notices");
     $("tiles").replaceChildren();
     tiles.clear();
+    showOnly(single);
     renderTiles(kind);
+    showSingle();
   }
   if (view === "editor") openEditor(kind, edit || null);
   else closeEditor();
@@ -334,11 +345,28 @@ function route() {
     notify("settings-notices");
   }
   $("scroller").scrollTo(0, 0);
-  if (shown) showSession(shown);
 }
+
+// A session shown on its own: its name after Sessions in the breadcrumb, and Show all under it when
+// there are others.
+function showSingle() {
+  const session = single && overview.sessions.find((s) => s.id === single);
+  $("show-all").hidden = !session || overview.sessions.length < 2;
+  if (!session) return;
+  $("trail").toggleAttribute("no-trailing-slash", true);
+  const name = $("trail").querySelector(".single");
+  if (name) name.querySelector("cds-breadcrumb-link").textContent = session.name;
+  else $("trail").append(el("cds-breadcrumb-item", { class: "single" }, el("cds-breadcrumb-link", { "is-currentpage": true }, session.name)));
+}
+$("show-all-button").replaceChildren(t("sessions.showAll"), carbonIcon("list", "icon"));
 window.addEventListener("hashchange", route);
 // A new session is asked in the modal (its name and targets), and its tile opens for the rest.
-$("new-item").addEventListener("click", () => (page === "sessions" ? newSession(showSession) : (location.hash = KINDS[page].newPath)));
+// (From a session shown on its own, back to all of them first.)
+$("new-item").addEventListener("click", () => {
+  if (page !== "sessions") return (location.hash = KINDS[page].newPath);
+  if (single) location.hash = KINDS.sessions.path;
+  newSession(showSession);
+});
 const PAGES = { sessions: "#/", targets: "#/targets", conditions: "#/conditions", settings: "#/settings" };
 // Below Carbon's md breakpoint (672 px) the tabs are icons only, each with its label as tooltip.
 const narrow = matchMedia("(max-width: 41.99rem)");

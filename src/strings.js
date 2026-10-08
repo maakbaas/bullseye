@@ -117,6 +117,8 @@ window.STRINGS = {
       inactive: "Inactive",
     },
     start: "Start",
+    // Under a session shown on its own (a link to it), when there are others.
+    showAll: "Show all sessions",
     stop: "Stop",
     requestStop: "Request stop",
     abortStop: "Keep locked",

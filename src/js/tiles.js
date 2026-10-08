@@ -15,11 +15,10 @@ function ruleName(rule) {
   return t(rule.type === "combined" ? "sessions.tile.activeCombined" : rule.type === "webhook" ? "sessions.tile.activeWebhook" : "sessions.tile.active");
 }
 
-// The sessions that use an item, by name (plain: a session has no page of its own to go to); or a
-// word that none does.
+// The sessions that use an item, as links to their tiles; or a word that none does.
 const usersText = (item) => {
   const users = usersOf(item.id);
-  return users.length ? joined(users.map((b) => b.name)).join("") : t("tiles.none");
+  return users.length ? joined(users.map((b) => ref(b.name, editHref("sessions", b.id)))) : t("tiles.none");
 };
 
 // A target or condition tile's rows, as a session's are (`fields.js`) but only to read: [icon, label,
@@ -157,10 +156,14 @@ function makeTile(kind, id) {
   return parts;
 }
 
+// The one session shown on its own (`#/edit/<id>`), or null for all.
+let only = null;
+const showOnly = (id) => (only = id);
+
 function renderTiles(kind) {
   const container = $("tiles");
   const kindOf = KINDS[kind];
-  const shown = kindOf.items();
+  const shown = kindOf.items().filter((item) => kind !== "sessions" || !only || item.id === only);
   const wanted = new Set(shown.map((item) => `${kind}:${item.id}`));
   for (const [key, parts] of tiles) {
     if (!wanted.has(key)) {
@@ -454,4 +457,4 @@ async function duplicate(kind, id) {
   }
 }
 
-export { tiles, renderTiles, showSession, confirmDelete, askText };
+export { tiles, renderTiles, showSession, showOnly, confirmDelete, askText };

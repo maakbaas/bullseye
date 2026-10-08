@@ -76,6 +76,7 @@ import application16 from '@carbon/icons/es/application/16.js';
 import shoppingBag16 from '@carbon/icons/es/shopping--bag/16.js';
 import textFont16 from '@carbon/icons/es/text--font/16.js';
 import apps16 from '@carbon/icons/es/apps/16.js';
+import list16 from '@carbon/icons/es/list/16.js';
 import webhook16 from '@carbon/icons/es/webhook/16.js';
 
 const icons = {
@@ -113,6 +114,8 @@ const icons = {
   'shopping-bag': shoppingBag16,
   'text-font': textFont16,
   apps: apps16,
+  // Show all sessions, under one shown on its own.
+  list: list16,
   // A webhook condition's row on its tile.
   webhook: webhook16,
 };

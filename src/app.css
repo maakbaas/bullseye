@@ -83,6 +83,9 @@ main { padding-block: var(--cds-spacing-06); }
 .session-tile .title-edit { margin-block-start: calc(var(--cds-spacing-02) + var(--cds-spacing-01)); margin-inline-start: calc(-1 * var(--cds-spacing-02)); fill: var(--cds-icon-secondary); opacity: 0; transition: opacity var(--cds-duration-fast-01, 70ms); }
 .session-tile .title-edit.unavailable { display: none; }
 .session-tile h2 cds-link:hover .title-edit, .session-tile h2 cds-link:focus-within .title-edit { opacity: 1; }
+/* Show all sessions, under one shown on its own. */
+.show-all { margin-bottom: var(--cds-spacing-05); }
+.show-all[hidden] { display: none; }
 /* A session's Start / Stop (and Keep locked), on the right under its rows. */
 .session-tile .actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--cds-spacing-04); margin-block-start: var(--cds-spacing-03); }
 /* The dropdown of the other way to unlock, in Settings: as wide as the lock dropdown on a tile. */
