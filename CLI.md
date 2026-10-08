@@ -15,13 +15,13 @@ It sends the same requests to the Bullseye service as the window, so the service
 | `bullseye status [--json]` | the three pages: every session (running or not, active or not, locked or not), every target, every condition |
 | `bullseye show <session> [--json]` | a session's tile, expanded |
 | `bullseye new <name> [options]` | **New session**, then **Save**, then its fields |
-| `bullseye edit <session> [options]` | the fields on a session's tile, and **Rename** in its menu |
-| `bullseye add <session> --targets <targets>` | ticking more targets in a session's Block field |
-| `bullseye remove <session> --targets <targets>` | unticking targets in a session's Block field |
+| `bullseye edit <session> [options]` | the rows on a session's tile, and **Rename** in its menu |
+| `bullseye add <session> --targets <targets>` | ticking more targets in a session's Targets row |
+| `bullseye remove <session> --targets <targets>` | unticking targets in a session's Targets row |
 | `bullseye delete <session> [--force]` | **Delete** (asks first, unless `--force`) |
 | `bullseye duplicate <session>` | **Duplicate** |
-| `bullseye start <session> [lock option] [--force]` | the Lock field on the session's tile, then **Start** (a locked session asks first, unless `--force`) |
-| `bullseye lock <session> <lock option> [--force]` | the Lock field of a running session that is not locked: it is locked from now on, and that is its lock for the next start too (asks first, unless `--force`) |
+| `bullseye start <session> [lock option] [--force]` | the Lock row on the session's tile, then **Start** (a locked session asks first, unless `--force`) |
+| `bullseye lock <session> <lock option> [--force]` | the Lock row of a running session that is not locked: it is locked from now on, and that is its lock for the next start too (asks first, unless `--force`) |
 | `bullseye stop <session> [--password <pw>] [--abort]` | **Stop** (a session locked with a password asks for it, as the window does; one locked with a delay is asked to stop first, `--abort` ends the wait) |
 | `bullseye target show <target> [--json]` | a target's tile and its editor |
 | `bullseye target apps [--json]` | the installed Store apps the editor offers to tick, by name and package family name |
@@ -90,7 +90,7 @@ With `edit`, an option replaces only what it names: `--targets` replaces all its
 
 ### Allowances: `--allowance` and its options
 
-An allowance lets a session go quiet for a while. A session has at most one, set on the session itself with the options of `new` and `edit` (as in the window, where it is the Unless field on the session's tile). Three kinds:
+An allowance lets a session go quiet for a while. A session has at most one, set on the session itself with the options of `new` and `edit` (as in the window, where it is the Allowance row on the session's tile). Three kinds:
 
 - A **budget** is a time of use. It is for the session as a whole (`--scope total`) or for each of its items on its own (`--scope each`: each site, program, Store app and window title in its targets). While time is left, what is covered is not closed; it is only watched, and the time it is in use is counted. When the time is used up it is closed again, until the budget is reset.
 - A **Pomodoro** is a fixed cycle: blocked for `--blocked`, then everything allowed for `--allowed`, over and over. While it allows, the session enforces nothing, Obsidian's web viewer included.
@@ -170,7 +170,7 @@ bullseye condition edit "Work hours" --times "Mon-Fri 08:00-17:00; Sat 10:00-14:
 > bullseye status
 Sessions:
   Work     Running · inactive for the next 15 hours · unlocked for the next 15 hours
-  Evening  Running · active · locked for the next 1 hour and 2 minutes
+  Evening  Running · active · locked for the next 62 minutes
 Targets:
   Social media  used by Work
   Games         used by Work, Evening
@@ -273,4 +273,4 @@ A running session reads its schedule in the time zone Windows had when the sessi
 
 ## Durations
 
-In the window a duration is picked in boxes for days, hours, minutes and seconds; the command line takes it typed: `30s`, `10m`, `2h`, `1d`, or several parts together: `2h 30m`, `2h30m`, `1d 12h`. Words work too: `2 hours 30 minutes`. Everything the CLI and the window show is written out, leaving out units that are zero: `2 hours and 30 minutes`, `2 hours and 5 seconds`, `1 day, 2 hours and 1 minute`. A period leaves out a lone 1: "every day", "every hour", "every 2 hours".
+In the window a duration is a number and a unit (days, hours, minutes, and seconds where they make sense): an hour and a half is 90 minutes; the command line takes it typed: `30s`, `10m`, `2h`, `1d`, or several parts together: `2h 30m`, `2h30m`, `1d 12h`. Words work too: `2 hours 30 minutes`. A duration that was set is written out in at most two units, leaving out one that is zero: `2 hours and 30 minutes`, `1 day and 2 hours`, `45 minutes`. A period leaves out a lone 1: "every day", "every hour", "every 2 hours". Time left (until a lock ends, a condition changes, an allowance runs out) is one unit, rounded: a unit counts from one and a half of it, so `2 minutes` for 2 minutes and 5 seconds, `89 seconds` for 1 minute and 29 seconds, `60 minutes` for an hour, `2 hours` from an hour and a half.

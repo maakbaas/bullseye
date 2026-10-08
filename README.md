@@ -25,7 +25,7 @@ Each target also has **actions**: the ways things are closed. Blocked tabs in Ch
 
 ## Features
 
-- **Sessions set up on their tiles**: each row (targets, condition, allowance, lock) has an edit button to change it in place. Several run at once, each started and stopped on its own, from the window or the command line, and a running session can be locked on the spot.
+- **Sessions set up on their tiles**: each row (targets, condition, allowance, lock) is changed in place, from a list or a dropdown in the row. Several run at once, each started and stopped on its own, from the window or the command line, and a running session can be locked on the spot.
 - **Conditions** by weekly schedule (drawn on a week grid), USB flash drive, webhook (any URL that answers, so you can hook up a home automation or a calendar), or any / all of those combined.
 - **Locks that hold**: the rules live in a Windows service that runs as SYSTEM, so ending the app in Task Manager does not help, times are measured on internet time so changing the clock does not either, and sessions survive a restart. A locked session's targets and conditions can only be made stricter, and so can its lock (a later end, a longer wait) and its allowance.
 - **A way out you choose**: Unlock in Settings ends every session, behind a countdown you set (none by default) and optionally another way, such as a password or the USB key.
