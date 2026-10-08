@@ -53,12 +53,14 @@ import '@carbon/web-components/es/components/modal/modal-body-content.js';
 import '@carbon/web-components/es/components/modal/modal-footer.js';
 import '@carbon/web-components/es/components/modal/modal-footer-button.js';
 import '@carbon/web-components/es/components/inline-loading/inline-loading.js';
-// A session's settings on its tile: one row each, whose edit button opens what it can be.
+// A session's settings on its tile: one row each, which opens a menu of what it can be.
 import '@carbon/web-components/es/components/contained-list/contained-list.js';
 import '@carbon/web-components/es/components/contained-list/contained-list-item.js';
-// A row's edit button: a tab-tip popover, the button and the open panel one shape.
-import '@carbon/web-components/es/components/popover/popover.js';
-import '@carbon/web-components/es/components/popover/popover-content.js';
+import '@carbon/web-components/es/components/menu/menu.js';
+import '@carbon/web-components/es/components/menu/menu-item.js';
+import '@carbon/web-components/es/components/menu/menu-item-divider.js';
+import '@carbon/web-components/es/components/menu/menu-item-radio-group.js';
+import '@carbon/web-components/es/components/menu/menu-item-selectable.js';
 
 // Carbon icons, as `carbonIcon(name)`: an <svg> element, 16 px unless another size is given.
 import { getAttributes, toSVG } from '@carbon/icon-helpers';
