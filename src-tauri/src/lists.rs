@@ -102,3 +102,38 @@ impl Lists {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_list_is_reached_by_its_field_name() {
+        let mut entries = Entries::default();
+        for (n, key) in ["filters", "allowed", "programs", "store_apps", "titles"].into_iter().enumerate() {
+            entries.field(key).unwrap().push(format!("entry{n}"));
+        }
+        assert_eq!(entries.titles, vec!["entry4"]);
+        assert!(entries.field("sites").is_none(), "the field's name, not the CLI's");
+    }
+
+    #[test]
+    fn an_enforcer_has_something_to_do_when_its_list_has_entries() {
+        let empty = Lists::default();
+        assert!(empty.has(Uses::Nothing));
+        assert!(!empty.has(Uses::Sites) && !empty.has(Uses::Programs) && !empty.has(Uses::StoreApps) && !empty.has(Uses::Titles));
+        let full = Lists::parse(&Entries {
+            filters: vec!["a.com".into()],
+            programs: vec!["game.exe".into()],
+            store_apps: vec!["Microsoft.Xbox*".into()],
+            titles: vec!["*Chat*".into()],
+            ..Entries::default()
+        })
+        .unwrap();
+        assert!([Uses::Sites, Uses::Programs, Uses::StoreApps, Uses::Titles].into_iter().all(|uses| full.has(uses)));
+        // What a list cannot read says which list.
+        let why = |entries: Entries| Lists::parse(&entries).err().unwrap_or_default();
+        assert!(why(Entries { titles: vec!["*".into()], ..Entries::default() }).starts_with("Window titles:"));
+        assert!(why(Entries { store_apps: vec!["*".into()], ..Entries::default() }).starts_with("Store apps:"));
+    }
+}

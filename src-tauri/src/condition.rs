@@ -333,4 +333,75 @@ mod tests {
         assert!(drive.week().is_none());
         assert_eq!(drive.next_change(&Zone::fixed(0), SystemTime::now()), None);
     }
+
+    fn hook(url: &str) -> Hook {
+        Hook {
+            url: url.into(),
+            method: webhook::Method::Get,
+            interval: 60,
+            fallback: false,
+            when_true: webhook::Matcher { on: webhook::Match::Status, status: Some(200), body: None },
+            when_false: webhook::Matcher { on: webhook::Match::Status, status: Some(404), body: None },
+        }
+    }
+
+    #[test]
+    fn a_webhook_condition_is_checked_and_only_ever_the_same_while_locked() {
+        // Checked as the hook is, and kept without the white space around its address.
+        assert_eq!(Rule::Webhook(hook(" https://example.com/on ")).checked(), Ok(Rule::Webhook(hook("https://example.com/on"))));
+        assert!(Rule::Webhook(hook("example.com")).checked().is_err());
+        let json = serde_json::to_string(&Rule::Webhook(hook("https://example.com/on"))).unwrap();
+        assert!(json.starts_with(r#"{"type":"webhook","url":"https://example.com/on""#), "{json}");
+        // No time to say when it changes, alone or in a combination.
+        let now = SystemTime::now();
+        let zone = Zone::fixed(0);
+        assert_eq!(Rule::Webhook(hook("https://example.com/on")).next_change(&zone, now), None);
+        let with = Rule::Combined {
+            mode: Mode::Any,
+            members: vec!["a".into(), "b".into()],
+            rules: vec![weekdays(), Rule::Webhook(hook("https://example.com/on"))],
+        };
+        assert_eq!(with.next_change(&zone, now), None);
+        // While locked, the same hook only.
+        let old = Rule::Webhook(hook("https://example.com/on"));
+        assert!(old.tightened_by(&Rule::Webhook(hook(" https://example.com/on"))).is_ok());
+        assert!(old
+            .tightened_by(&Rule::Webhook(Hook { fallback: true, ..hook("https://example.com/on") }))
+            .unwrap_err()
+            .contains("webhook"));
+        assert!(old.tightened_by(&weekdays()).unwrap_err().contains("webhook"));
+        assert!(weekdays().tightened_by(&old).unwrap_err().contains("type"));
+    }
+
+    #[test]
+    fn a_webhook_that_has_not_answered_goes_by_its_fallback() {
+        // Nothing listens on port 9 of this machine: no answer comes, so the fallback holds.
+        let zone = Zone::fixed(0);
+        assert!(!Rule::Webhook(hook("http://127.0.0.1:9/")).active(&zone, SystemTime::now()));
+        assert!(Rule::Webhook(Hook { fallback: true, ..hook("http://127.0.0.1:9/") }).active(&zone, SystemTime::now()));
+    }
+
+    #[test]
+    fn a_combination_is_checked_and_needs_its_conditions_resolved() {
+        let combined = |members: &[&str], rules: Vec<Rule>| Rule::Combined {
+            mode: Mode::All,
+            members: members.iter().map(|m| m.to_string()).collect(),
+            rules,
+        };
+        assert!(combined(&["a"], vec![]).checked().unwrap_err().contains("at least two"));
+        assert!(combined(&["a", "a"], vec![]).checked().unwrap_err().contains("only once"));
+        assert!(combined(&["a", "b"], vec![weekdays()]).checked().unwrap_err().contains("one rule for each"));
+        let nested = combined(&["a", "b"], vec![weekdays(), combined(&["c", "d"], vec![])]);
+        assert!(nested.checked().unwrap_err().contains("another combination"));
+        assert!(combined(&["a", "b"], vec![]).checked().is_ok());
+        // Unresolved (no rules), it cannot be known, so it is active; resolved, all must be.
+        let zone = Zone::fixed(0);
+        // 1970-01-05 was a Monday: 10:00 then is in office hours, Saturday is not.
+        let monday = SystemTime::UNIX_EPOCH + Duration::from_secs(4 * 86400 + 10 * 3600);
+        assert!(combined(&["a", "b"], vec![]).active(&zone, monday));
+        let saturday = Rule::Schedule { week: Week::parse("sat").unwrap().unwrap() };
+        assert!(!combined(&["a", "b"], vec![weekdays(), saturday.clone()]).active(&zone, monday));
+        assert!(Rule::Combined { mode: Mode::Any, members: vec!["a".into(), "b".into()], rules: vec![weekdays(), saturday] }
+            .active(&zone, monday));
+    }
 }

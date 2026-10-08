@@ -424,6 +424,13 @@ fn failed(why: impl Into<String>) -> Failure {
     Failure::Failed(why.into())
 }
 
+/// A line of what a command says (`out`).
+macro_rules! say {
+    ($($arg:tt)*) => {
+        out(&format!("{}\n", format_args!($($arg)*)))
+    };
+}
+
 /// The CLI; returns the exit code.
 pub fn main() -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -840,14 +847,14 @@ impl Options {
 
 fn execute(command: Command) -> Result<(), Failure> {
     match command {
-        Command::Help => println!("{}", HELP.replace("{enforcers}", &enforcer_names().join(", "))),
-        Command::Version => println!("bullseye-cli {}", env!("CARGO_PKG_VERSION")),
+        Command::Help => say!("{}", HELP.replace("{enforcers}", &enforcer_names().join(", "))),
+        Command::Version => say!("bullseye-cli {}", env!("CARGO_PKG_VERSION")),
         Command::Status { json } => {
             let overview = overview()?;
             if json {
-                println!("{}", serde_json::to_string_pretty(&overview).map_err(|e| failed(e.to_string()))?);
+                say!("{}", serde_json::to_string_pretty(&overview).map_err(|e| failed(e.to_string()))?);
             } else {
-                print!("{}", describe_overview(&overview));
+                out(&describe_overview(&overview));
             }
         }
         Command::Show { block, json } => {
@@ -856,9 +863,9 @@ fn execute(command: Command) -> Result<(), Failure> {
             let running = overview.running.iter().find(|r| r.id == block.id);
             if json {
                 let both = serde_json::json!({ "block": block, "running": running });
-                println!("{}", serde_json::to_string_pretty(&both).map_err(|e| failed(e.to_string()))?);
+                say!("{}", serde_json::to_string_pretty(&both).map_err(|e| failed(e.to_string()))?);
             } else {
-                print!("{}", describe_block(&overview, block, running));
+                out(&describe_block(&overview, block, running));
             }
         }
         Command::New { name, changes } => {
@@ -875,7 +882,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             apply_block_changes(&overview, &mut block, changes)?;
             let (id, name) = (block.id.clone(), block.name.clone());
             send(Request::SaveBlock { block })?;
-            println!("Made the block \"{name}\" (id {id}). Start it with: bullseye-cli start \"{name}\"");
+            say!("Made the block \"{name}\" (id {id}). Start it with: bullseye-cli start \"{name}\"");
         }
         Command::Edit { block, changes } => {
             let overview = overview()?;
@@ -883,7 +890,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             apply_block_changes(&overview, &mut block, changes)?;
             let name = block.name.clone();
             send(Request::SaveBlock { block })?;
-            println!("Saved the block \"{name}\".");
+            say!("Saved the block \"{name}\".");
         }
         Command::Delete { block, yes } => {
             let overview = overview()?;
@@ -892,7 +899,7 @@ fn execute(command: Command) -> Result<(), Failure> {
                 return Err(failed("Not deleted."));
             }
             send(Request::DeleteBlock { id: block.id.clone() })?;
-            println!("Deleted the block \"{}\".", block.name);
+            say!("Deleted the block \"{}\".", block.name);
         }
         Command::Start { block, lock, yes } => {
             let overview = overview()?;
@@ -911,7 +918,7 @@ fn execute(command: Command) -> Result<(), Failure> {
                 }
             }
             send(Request::Start { id: block.id.clone() })?;
-            println!("Started \"{}\".", block.name);
+            say!("Started \"{}\".", block.name);
         }
         Command::Stop { block, password, abort } => {
             let overview = overview()?;
@@ -920,13 +927,13 @@ fn execute(command: Command) -> Result<(), Failure> {
             if let Some(run) = overview.running.iter().find(|r| r.id == block.id && r.stop_delay.is_some()) {
                 if abort {
                     send(Request::AbortStop { id: block.id.clone() })?;
-                    println!("Stopping \"{}\" aborted: back to locked.", block.name);
+                    say!("Stopping \"{}\" aborted: back to locked.", block.name);
                     return Ok(());
                 }
                 match (run.stop_remaining, &run.stop_remaining_words) {
                     (Some(0), _) => {}
                     (Some(_), Some(left)) => {
-                        println!(
+                        say!(
                             "\"{}\" can be stopped in {left}. Run `bullseye-cli stop` again then, or `stop --abort` to end the wait.",
                             block.name
                         );
@@ -934,7 +941,7 @@ fn execute(command: Command) -> Result<(), Failure> {
                     }
                     _ => {
                         send(Request::AskToStop { id: block.id.clone() })?;
-                        println!(
+                        say!(
                             "Stopping \"{}\" was asked for: ready in {}. Run `bullseye-cli stop` again then, or `stop --abort` to end the wait.",
                             block.name,
                             run.stop_delay_words.clone().unwrap_or_default()
@@ -955,36 +962,36 @@ fn execute(command: Command) -> Result<(), Failure> {
                 given => given,
             };
             send(Request::Stop { id: block.id.clone(), password, text: None })?;
-            println!("Stopped \"{}\".", block.name);
+            say!("Stopped \"{}\".", block.name);
         }
         Command::ListShow { list, json } => {
             let overview = overview()?;
             let list = find(&overview.lists, &list, "block list", |l| (&l.id, &l.name))?;
             if json {
-                println!("{}", serde_json::to_string_pretty(list).map_err(|e| failed(e.to_string()))?);
+                say!("{}", serde_json::to_string_pretty(list).map_err(|e| failed(e.to_string()))?);
             } else {
-                print!("{}", describe_list(&overview, list));
+                out(&describe_list(&overview, list));
             }
         }
         Command::Drives { json } => {
             let drives = crate::drives::connected().map_err(Failure::Failed)?;
             if json {
-                println!("{}", serde_json::to_string_pretty(&drives).map_err(|e| failed(e.to_string()))?);
+                say!("{}", serde_json::to_string_pretty(&drives).map_err(|e| failed(e.to_string()))?);
             } else if drives.is_empty() {
-                println!("No flash drive with a serial number is connected.");
+                say!("No flash drive with a serial number is connected.");
             } else {
                 for drive in drives {
-                    println!("{:<40} {}", drive.name, drive.serial);
+                    say!("{:<40} {}", drive.name, drive.serial);
                 }
             }
         }
         Command::ListApps { json } => {
             let apps = crate::store_apps::installed().map_err(Failure::Failed)?;
             if json {
-                println!("{}", serde_json::to_string_pretty(&apps).map_err(|e| failed(e.to_string()))?);
+                say!("{}", serde_json::to_string_pretty(&apps).map_err(|e| failed(e.to_string()))?);
             } else {
                 for app in apps {
-                    println!("{:<40} {}", app.name, app.family);
+                    say!("{:<40} {}", app.name, app.family);
                 }
             }
         }
@@ -993,7 +1000,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             changes.apply(&mut list);
             let name = list.name.clone();
             send(Request::SaveList { list })?;
-            println!("Made the block list \"{name}\". Use it with: bullseye-cli new <block> --list \"{name}\"");
+            say!("Made the block list \"{name}\". Use it with: bullseye-cli new <block> --list \"{name}\"");
         }
         Command::ListEdit { list, changes } => {
             let overview = overview()?;
@@ -1001,7 +1008,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             changes.apply(&mut list);
             let name = list.name.clone();
             send(Request::SaveList { list })?;
-            println!("Saved the block list \"{name}\".");
+            say!("Saved the block list \"{name}\".");
         }
         Command::ListDelete { list, yes } => {
             let overview = overview()?;
@@ -1010,7 +1017,7 @@ fn execute(command: Command) -> Result<(), Failure> {
                 return Err(failed("Not deleted."));
             }
             send(Request::DeleteList { id: list.id.clone() })?;
-            println!("Deleted the block list \"{}\".", list.name);
+            say!("Deleted the block list \"{}\".", list.name);
         }
         Command::ConditionTest { condition } => {
             let overview = overview()?;
@@ -1018,22 +1025,22 @@ fn execute(command: Command) -> Result<(), Failure> {
             let Rule::Webhook(hook) = &condition.rule else {
                 return Err(failed(format!("\"{}\" is not a webhook condition", condition.name)));
             };
-            println!("{}", webhook::test(hook).map_err(failed)?);
+            say!("{}", webhook::test(hook).map_err(failed)?);
         }
         Command::ConditionShow { condition } => {
             let overview = overview()?;
             let condition = find(&overview.conditions, &condition, "condition", |c| (&c.id, &c.name))?;
-            println!("{}", condition.name);
+            say!("{}", condition.name);
             match &condition.rule {
-                Rule::Schedule { week } => print!("{}", per_day(week)),
-                rule => println!("{}", describe_rule(&overview, rule)),
+                Rule::Schedule { week } => out(&per_day(week)),
+                rule => say!("{}", describe_rule(&overview, rule)),
             }
-            println!("Used by: {}", users(&overview, &condition.id));
+            say!("Used by: {}", users(&overview, &condition.id));
         }
         Command::ConditionNew { name, rule } => {
             let rule = resolve_rule(&overview()?, rule)?;
             send(Request::SaveCondition { condition: Condition { id: new_id(), name: name.clone(), rule } })?;
-            println!("Made the condition \"{name}\". Use it with: bullseye-cli new <block> --condition \"{name}\"");
+            say!("Made the condition \"{name}\". Use it with: bullseye-cli new <block> --condition \"{name}\"");
         }
         Command::ConditionEdit { condition, name, rule } => {
             let overview = overview()?;
@@ -1046,7 +1053,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             }
             let name = condition.name.clone();
             send(Request::SaveCondition { condition })?;
-            println!("Saved the condition \"{name}\".");
+            say!("Saved the condition \"{name}\".");
         }
         Command::ConditionDelete { condition, yes } => {
             let overview = overview()?;
@@ -1058,15 +1065,15 @@ fn execute(command: Command) -> Result<(), Failure> {
                 return Err(failed("Not deleted."));
             }
             send(Request::DeleteCondition { id: condition.id.clone() })?;
-            println!("Deleted the condition \"{}\".", condition.name);
+            say!("Deleted the condition \"{}\".", condition.name);
         }
         Command::ConditionCheck { times } => match Week::parse(&times).map_err(Failure::Usage)? {
-            Some(week) => print!("{}", per_day(&week)),
-            None => println!("Always active: a block without a condition"),
+            Some(week) => out(&per_day(&week)),
+            None => say!("Always active: a block without a condition"),
         },
         Command::Export { file } => {
             definitions::write_settings(std::path::Path::new(&file), remote().library().map_err(failed)?).map_err(failed)?;
-            println!("Wrote every block list, condition and block to {file}.");
+            say!("Wrote every block list, condition and block to {file}.");
         }
         Command::Import { file, yes } => {
             let library = definitions::read_settings(std::path::Path::new(&file)).map_err(failed)?;
@@ -1086,7 +1093,7 @@ fn execute(command: Command) -> Result<(), Failure> {
                 return Err(failed("Not imported."));
             }
             send(Request::Import { library })?;
-            println!("Imported {file}.");
+            say!("Imported {file}.");
         }
         Command::Duplicate { kind, item } => {
             // The item's id and name, then the copy's name, which the service gives it.
@@ -1107,14 +1114,14 @@ fn execute(command: Command) -> Result<(), Failure> {
             let new_id = new_id();
             send(Request::Duplicate { kind, id: id.clone(), new_id: new_id.clone() })?;
             let copy = names(&overview()?).into_iter().find(|(id, _)| *id == new_id).map(|(_, name)| name).unwrap_or_default();
-            println!("Made \"{copy}\", a copy of the {noun} \"{name}\".");
+            say!("Made \"{copy}\", a copy of the {noun} \"{name}\".");
         }
         Command::Unlock { abort, password } => {
             let status = overview()?.unlock;
             let password_way = matches!(status.way, Some(Lock::Password { .. }));
             if abort {
                 send(Request::AbortUnlock)?;
-                println!("Unlocking aborted: back to locked.");
+                say!("Unlocking aborted: back to locked.");
             } else if password.is_some() || (password_way && status.remaining != Some(0) && !status.way_open) {
                 // The other way to unlock, with its password: at once, whatever the countdown.
                 let password = match password {
@@ -1122,43 +1129,43 @@ fn execute(command: Command) -> Result<(), Failure> {
                     None => read_password("Password to unlock: ").map_err(Failure::Failed)?,
                 };
                 send(Request::UnlockWith { password: Some(password), text: None })?;
-                println!("Unlocked: every block has ended.");
+                say!("Unlocked: every block has ended.");
             } else if status.remaining == Some(0) || status.way_open {
                 send(Request::Unlock)?;
                 // The service tells the app to quit at its next policy request, within a second.
-                println!("Unlocked: every block has ended.");
+                say!("Unlocked: every block has ended.");
             } else if let Some(left) = status.remaining_words {
-                println!("Unlocking is not ready yet: {left} to go. Run `bullseye-cli unlock` again then, or `bullseye-cli unlock --abort` to stop.");
+                say!("Unlocking is not ready yet: {left} to go. Run `bullseye-cli unlock` again then, or `bullseye-cli unlock --abort` to stop.");
             } else {
                 send(Request::AskForUnlock)?;
-                println!(
+                say!(
                     "Unlocking was asked for: ready in {}. Run `bullseye-cli unlock` again then, or `bullseye-cli unlock --abort` to stop.",
                     status.delay_words
                 );
             }
         }
         Command::UnlockWay { way } => match way {
-            None => println!("{}", describe_unlock_way(&overview()?.unlock)),
+            None => say!("{}", describe_unlock_way(&overview()?.unlock)),
             Some(way) => {
                 let overview = overview()?;
                 let way = way.map(|lock| resolve_lock(&overview, lock)).transpose()?;
                 send(Request::SetUnlockWay { way })?;
-                println!("{}", describe_unlock_way(&self::overview()?.unlock));
+                say!("{}", describe_unlock_way(&self::overview()?.unlock));
             }
         },
         Command::UnlockDelay { delay } => match delay {
             None => {
                 let status = overview()?.unlock;
                 if status.delay == 0 {
-                    println!("Unlocking takes no time: it is free.");
+                    say!("Unlocking takes no time: it is free.");
                 } else {
-                    println!("Unlocking takes {}.", status.delay_words);
+                    say!("Unlocking takes {}.", status.delay_words);
                 }
             }
             Some(delay) => {
                 send(Request::SetUnlockDelay { delay })?;
                 let status = overview()?.unlock;
-                println!(
+                say!(
                     "{}",
                     if status.delay == 0 {
                         "Unlocking is free again.".to_string()
@@ -1354,9 +1361,23 @@ fn lock_warning(overview: &Overview, block: &Definition) -> Option<String> {
     }
 }
 
-/// The service, as the window reaches it: the same `Remote`, so the same requests and answers.
+/// The service, as the window reaches it: the same `Remote`, so the same requests and answers. In
+/// tests, one in the test's own process (`tests::serve`).
 fn remote() -> Remote {
+    #[cfg(test)]
+    if let Some(remote) = tests::REMOTE.with(|remote| remote.borrow().clone()) {
+        return remote;
+    }
     Remote::for_cli()
+}
+
+/// What a command says, on standard output; in tests, kept for the test to read (`tests::cli`).
+fn out(text: &str) {
+    #[cfg(test)]
+    if tests::SAID.with(|said| said.borrow_mut().as_mut().map(|said| said.push_str(text)).is_some()) {
+        return;
+    }
+    print!("{text}");
 }
 
 fn overview() -> Result<Overview, Failure> {
@@ -1650,11 +1671,251 @@ fn per_day(week: &Week) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block::RunningList;
+    use crate::block::{Blocklist, RunningList};
     use crate::definitions::tests::{block, block_list, weekly};
+    use crate::definitions::Definitions;
+    use crate::handler::{handle, Context};
+    use crate::state::Store;
+    use crate::watchdog::AppSlot;
+    use std::cell::RefCell;
+    use std::sync::Arc;
+
+    thread_local! {
+        /// The service the commands of this test talk to (`serve`).
+        pub static REMOTE: RefCell<Option<Remote>> = const { RefCell::new(None) };
+        /// What the command being run says (`cli`).
+        pub static SAID: RefCell<Option<String>> = const { RefCell::new(None) };
+    }
 
     fn args(line: &[&str]) -> Vec<String> {
         line.iter().map(|arg| arg.to_string()).collect()
+    }
+
+    /// A service of its own, in this process and with files of its own, which the commands run on
+    /// this thread talk to from now on.
+    fn serve(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("cli-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let blocklist = Blocklist::with_store(Store::new(dir.join("state.json")));
+        let context = Arc::new(Context::new(blocklist, Definitions::at(Some(dir.join("blocks.json"))), Arc::new(AppSlot::new(false))));
+        REMOTE.with(|remote| *remote.borrow_mut() = Some(Remote::local(Arc::new(move |request| handle(&context, 0, request).0))));
+        dir
+    }
+
+    /// A command line run as `bullseye-cli` runs it: what it says, or why it did not work.
+    fn cli(line: &[&str]) -> Result<String, String> {
+        SAID.with(|said| *said.borrow_mut() = Some(String::new()));
+        let result = parse(&args(line)).map_err(Failure::Usage).and_then(execute);
+        let said = SAID.with(|said| said.borrow_mut().take()).unwrap_or_default();
+        match result {
+            Ok(()) => Ok(said),
+            Err(Failure::Usage(why) | Failure::Failed(why)) => Err(why),
+        }
+    }
+
+    /// What a command says, which has to work.
+    fn ok(line: &[&str]) -> String {
+        cli(line).unwrap_or_else(|why| panic!("{line:?}: {why}"))
+    }
+
+    /// Why a command does not work, which it has to.
+    fn refused(line: &[&str]) -> String {
+        cli(line).err().unwrap_or_else(|| panic!("{line:?} worked"))
+    }
+
+    #[test]
+    fn blocks_lists_and_conditions_are_made_shown_changed_and_deleted() {
+        serve("lifecycle");
+        assert!(ok(&["status"]).contains("Blocks:\n  None yet"));
+        assert_eq!(
+            ok(&["list", "new", "Social", "--site", "youtube.com", "--allow", "music.youtube.com"]),
+            "Made the block list \"Social\". Use it with: bullseye-cli new <block> --list \"Social\"\n"
+        );
+        assert!(ok(&["condition", "new", "Work", "--times", "Mon-Fri 08:00-17:00"]).starts_with("Made the condition \"Work\"."));
+        let made = ok(&["new", "Evening", "--list", "Social", "--condition", "Work", "--allowance", "budget", "--allowed", "30m"]);
+        assert!(
+            made.starts_with("Made the block \"Evening\" (id cli-") && made.ends_with("Start it with: bullseye-cli start \"Evening\"\n"),
+            "{made}"
+        );
+
+        // Shown as the pages show them, and as JSON for scripts.
+        let shown = ok(&["show", "evening"]);
+        assert!(shown.contains("Block lists: Social\nCondition:   Work\nAllowance:   30 minutes in total, never reset\n"), "{shown}");
+        let json: Value = serde_json::from_str(&ok(&["show", "Evening", "--json"])).unwrap();
+        assert_eq!(json["block"]["allowance"]["type"], "budget");
+        assert!(json["running"].is_null());
+        let status = ok(&["status"]);
+        assert!(
+            status.contains("  Evening  Not running")
+                && status.contains("  Social  used by Evening")
+                && status.contains("  Work  Mon-Fri 08:00-17:00")
+        );
+        let json: Value = serde_json::from_str(&ok(&["status", "--json"])).unwrap();
+        assert_eq!(json["blocks"].as_array().map(Vec::len), Some(1));
+        assert!(ok(&["list", "show", "Social"]).contains("Always allowed: music.youtube.com"));
+        let json: Value = serde_json::from_str(&ok(&["list", "show", "Social", "--json"])).unwrap();
+        assert_eq!(json["filters"][0], "youtube.com");
+        let condition = ok(&["condition", "show", "Work"]);
+        assert!(condition.starts_with("Work\nMon-Fri 08:00-17:00\n") && condition.ends_with("Used by: Evening\n"), "{condition}");
+        assert!(ok(&["condition", "check", "Mon 8-9"]).starts_with("Mon 08:00-09:00\n"));
+        assert_eq!(ok(&["condition", "check", "always"]), "Always active: a block without a condition\n");
+        assert!(cli(&["condition", "check", "Mon 25-26"]).is_err());
+
+        // Changed, copied.
+        assert_eq!(ok(&["edit", "Evening", "--name", "Night"]), "Saved the block \"Night\".\n");
+        assert_eq!(ok(&["duplicate", "Night"]), "Made \"Night (2)\", a copy of the block \"Night\".\n");
+        assert_eq!(ok(&["list", "duplicate", "Social"]), "Made \"Social (2)\", a copy of the block list \"Social\".\n");
+        assert_eq!(ok(&["condition", "duplicate", "Work"]), "Made \"Work (2)\", a copy of the condition \"Work\".\n");
+        assert_eq!(
+            ok(&["list", "edit", "Social (2)", "--site", "reddit.com", "--clear", "allowed"]),
+            "Saved the block list \"Social (2)\".\n"
+        );
+        let copy = ok(&["list", "show", "Social (2)"]);
+        assert!(copy.contains("reddit.com") && !copy.contains("music.youtube.com"), "{copy}");
+        assert_eq!(ok(&["condition", "edit", "Work (2)", "--name", "Weekend", "--times", "Sat-Sun"]), "Saved the condition \"Weekend\".\n");
+        ok(&["condition", "new", "Either", "--any", "Work", "--any", "Weekend"]);
+        assert!(ok(&["condition", "show", "Either"]).contains("any of \"Work\", \"Weekend\""));
+        assert!(refused(&["condition", "new", "Pair", "--any", "Work"]).contains("at least two"));
+
+        // Started and stopped.
+        assert_eq!(ok(&["start", "Night"]), "Started \"Night\".\n");
+        assert!(ok(&["status"]).contains("  Night      Running"), "{}", ok(&["status"]));
+        assert_eq!(ok(&["stop", "Night"]), "Stopped \"Night\".\n");
+
+        // Deleted.
+        assert_eq!(ok(&["delete", "Night (2)", "--yes"]), "Deleted the block \"Night (2)\".\n");
+        assert_eq!(ok(&["list", "delete", "Social (2)", "--yes"]), "Deleted the block list \"Social (2)\".\n");
+        assert_eq!(ok(&["condition", "delete", "Either", "--yes"]), "Deleted the condition \"Either\".\n");
+
+        // What is not there, or not of the kind.
+        assert!(refused(&["show", "Nope"]).starts_with("No block called \"Nope\""));
+        assert!(refused(&["new", "X", "--list", "Nope"]).starts_with("No block list called \"Nope\""));
+        assert!(refused(&["new", "X", "--condition", "Nope"]).starts_with("No condition called \"Nope\""));
+        assert_eq!(refused(&["condition", "test", "Work"]), "\"Work\" is not a webhook condition");
+    }
+
+    #[test]
+    fn a_webhook_condition_is_shown_and_tested() {
+        serve("webhook");
+        let url = "http://127.0.0.1:9/state";
+        ok(&["condition", "new", "Home", "--webhook", url, "--true-status", "200", "--false-body", "away", "--fallback", "inactive"]);
+        let shown = ok(&["condition", "show", "Home"]);
+        assert!(
+            shown.contains(
+                "GET http://127.0.0.1:9/state every 5 minutes: active on HTTP 200, not active on body \"away\", otherwise not active"
+            ),
+            "{shown}"
+        );
+        // Nothing answers there.
+        assert!(cli(&["condition", "test", "Home"]).is_err());
+    }
+
+    #[test]
+    fn locks_are_set_shown_and_held_by_the_service() {
+        serve("locks");
+        ok(&["list", "new", "L", "--site", "a.com"]);
+        ok(&["condition", "new", "Always", "--times", "Mon-Sun 00:00-24:00"]);
+        let new = |name: &str, lock: &[&str]| ok(&[&["new", name, "--list", "L"][..], lock].concat());
+        new("Timed", &["--lock-duration", "1h"]);
+        new("Slow", &["--lock-delay", "1h"]);
+        new("Typed", &["--lock-text", "let me out"]);
+        new("Kept", &["--lock-condition", "always"]);
+        new("Restart", &["--lock-until-restart"]);
+        new("Later", &["--lock-until", "2099-01-01 00:00"]);
+        let lock_of = |name: &str| ok(&["show", name]).lines().find(|l| l.starts_with("Lock:")).unwrap_or_default().to_string();
+        assert_eq!(lock_of("Timed"), "Lock:        duration, 1 hour (cannot be stopped for that long once started)");
+        assert_eq!(lock_of("Slow"), "Lock:        delay, 1 hour (stopping is asked for, then waited out)");
+        assert_eq!(lock_of("Typed"), "Lock:        text: can only be stopped by typing its text in, in the window");
+        assert_eq!(lock_of("Kept"), "Lock:        condition: cannot be stopped while \"Always\" is active");
+        assert_eq!(lock_of("Restart"), "Lock:        until restart: cannot be stopped until Windows restarts, and ends then");
+        assert!(lock_of("Later").starts_with("Lock:        until Thursday 1 January 2099, 00:00"), "{}", lock_of("Later"));
+
+        for name in ["Timed", "Slow", "Typed", "Kept", "Restart"] {
+            assert_eq!(ok(&["start", name, "--yes"]), format!("Started \"{name}\".\n"));
+        }
+        let status = ok(&["status"]);
+        for line in [
+            "Timed    Running · active · locked for the next",
+            "Typed    Running · active · locked until its text is typed",
+            "Restart  Running · active · locked until Windows restarts",
+            "Kept     Running · active · locked",
+        ] {
+            assert!(status.contains(line), "{line:?} in {status}");
+        }
+        assert!(refused(&["stop", "Timed"]).contains("is locked for the next"));
+        assert!(refused(&["stop", "Kept"]).contains("is locked by its lock schedule"));
+        assert!(refused(&["stop", "Restart"]).contains("until Windows restarts"));
+        assert_eq!(refused(&["stop", "Typed"]), "\"Typed\" is locked until its text is typed in: stop it in the window");
+        // A delay: the first stop asks, the next says how long, and --abort ends the wait.
+        assert!(ok(&["stop", "Slow"]).starts_with("Stopping \"Slow\" was asked for: ready in 1 hour."));
+        assert!(ok(&["stop", "Slow"]).starts_with("\"Slow\" can be stopped in "));
+        assert_eq!(ok(&["stop", "Slow", "--abort"]), "Stopping \"Slow\" aborted: back to locked.\n");
+        // A password: set with start, as the tile sets it, and stopped with it.
+        ok(&["new", "Pw", "--list", "L"]);
+        assert_eq!(ok(&["start", "Pw", "--lock-password", "secret", "--yes"]), "Started \"Pw\".\n");
+        assert!(ok(&["status"]).contains("Pw       Running · active · locked with a password"));
+        assert!(cli(&["stop", "Pw", "--password", "wrong"]).is_err());
+        assert_eq!(ok(&["stop", "Pw", "--password", "secret"]), "Stopped \"Pw\".\n");
+        // Without a delay, unlocking is free and ends them all.
+        assert_eq!(ok(&["unlock"]), "Unlocked: every block has ended.\n");
+        assert!(!ok(&["status"]).contains("Running"));
+    }
+
+    #[test]
+    fn unlocking_counts_down_and_has_another_way() {
+        serve("unlock");
+        ok(&["list", "new", "L", "--site", "a.com"]);
+        ok(&["new", "Timed", "--list", "L", "--lock-duration", "1h"]);
+        assert_eq!(ok(&["unlock-delay"]), "Unlocking takes no time: it is free.\n");
+        assert_eq!(ok(&["unlock-delay", "1h"]), "Unlocking now takes 1 hour.\n");
+        assert_eq!(ok(&["unlock-delay"]), "Unlocking takes 1 hour.\n");
+        ok(&["start", "Timed", "--yes"]);
+        assert!(ok(&["unlock"]).starts_with("Unlocking was asked for: ready in 1 hour."));
+        assert!(ok(&["unlock"]).starts_with("Unlocking is not ready yet: "));
+        assert_eq!(ok(&["unlock", "--abort"]), "Unlocking aborted: back to locked.\n");
+        assert_eq!(ok(&["unlock-way"]), "Only the delay unlocks.\n");
+        // Locked and not ready: neither a shorter delay nor another way.
+        assert!(cli(&["unlock-delay", "0"]).is_err());
+        assert!(cli(&["unlock-way", "--text", "let me out"]).is_err());
+
+        serve("unlock-way");
+        ok(&["list", "new", "L", "--site", "a.com"]);
+        ok(&["condition", "new", "Always", "--times", "Mon-Sun 00:00-24:00"]);
+        ok(&["new", "Timed", "--list", "L", "--lock-duration", "1h"]);
+        assert_eq!(ok(&["unlock-way", "--text", "let me out"]), "Unlocking is also possible by typing a text in, in the window.\n");
+        assert_eq!(ok(&["unlock-way", "--condition", "Always"]), "Unlocking is locked while its condition is active\n");
+        assert_eq!(
+            ok(&["unlock-way", "--password", "secret"]),
+            "Unlocking is also possible at once with a password (`unlock --password`).\n"
+        );
+        ok(&["unlock-delay", "1h"]);
+        ok(&["start", "Timed", "--yes"]);
+        assert!(cli(&["unlock", "--password", "wrong"]).is_err());
+        assert_eq!(ok(&["unlock", "--password", "secret"]), "Unlocked: every block has ended.\n");
+        assert_eq!(ok(&["unlock-way", "--none"]), "Only the delay unlocks.\n");
+        assert_eq!(ok(&["unlock-delay", "0"]), "Unlocking is free again.\n");
+    }
+
+    #[test]
+    fn everything_moves_through_a_settings_file() {
+        let dir = serve("export");
+        let file = dir.join("bullseye.json");
+        let path = file.to_string_lossy().to_string();
+        ok(&["list", "new", "L", "--site", "a.com"]);
+        ok(&["new", "B", "--list", "L", "--lock-password", "secret", "--allowance", "pomodoro", "--blocked", "50m", "--allowed", "10m"]);
+        assert_eq!(ok(&["export", &path]), format!("Wrote every block list, condition and block to {path}.\n"));
+        serve("import");
+        assert_eq!(ok(&["import", &path, "--yes"]), format!("Imported {path}.\n"));
+        let shown = ok(&["show", "B"]);
+        assert!(shown.contains("Lock:        password") && shown.contains("Allowance:   Blocked for 50 minutes"), "{shown}");
+        assert!(refused(&["import", &dir.join("missing.json").to_string_lossy()]).starts_with("Cannot read"));
+    }
+
+    #[test]
+    fn help_and_version_need_no_service() {
+        let help = cli(&["help"]).unwrap();
+        assert!(help.starts_with("Bullseye command line") && help.contains("chromium_tabs") && !help.contains("{enforcers}"));
+        assert_eq!(cli(&["version"]).unwrap(), format!("bullseye-cli {}\n", env!("CARGO_PKG_VERSION")));
     }
 
     fn library() -> Overview {

@@ -1741,6 +1741,195 @@ mod tests {
         assert!(running(&resumed, "a").allowance.is_none());
     }
 
+    /// The lists of these entries, checked.
+    fn lists_of(entries: Entries) -> Lists {
+        Lists::parse(&entries).unwrap()
+    }
+
+    fn strings(entries: &[&str]) -> Vec<String> {
+        entries.iter().map(|e| e.to_string()).collect()
+    }
+
+    /// Only these enforcers (by `Enforcers::all`'s field names) turned on.
+    fn only(on: &[&str]) -> Enforcers {
+        let mut fields = serde_json::to_value(Enforcers::default()).unwrap();
+        for (name, value) in fields.as_object_mut().unwrap() {
+            *value = serde_json::Value::Bool(on.contains(&name.as_str()));
+        }
+        serde_json::from_value(fields).unwrap()
+    }
+
+    #[test]
+    fn each_enforcer_answers_for_its_own_kind_of_window() {
+        let list = blocklist("kinds");
+        let lists = lists_of(Entries {
+            filters: strings(&["a.com"]),
+            store_apps: strings(&["Microsoft.Xbox*", "Microsoft.Windows.*"]),
+            titles: strings(&["*Chat*"]),
+            ..Entries::default()
+        });
+        let enforcers = only(&["chromium_app_windows", "firefox_split_view", "store_apps", "window_titles"]);
+        list.start("a", "A", vec![part(lists, enforcers)], None, StartLock::None).unwrap();
+        let active = list.active().unwrap();
+        // Sites: only where an enforcer for it is on.
+        assert!(active.blocks_app_window("https://a.com/x") && !active.blocks_app_window("https://b.com/"));
+        assert!(active.blocks_firefox_page("https://a.com/", true) && !active.blocks_firefox_page("https://a.com/", false));
+        assert!(!active.blocks_page("https://a.com/", false) && !active.blocks_page("https://a.com/", true));
+        assert!(active.watches_sites());
+        // Store apps, never one of Windows' own whatever the list says.
+        assert!(active.closes_store_apps());
+        assert!(active.blocks_store_app("Microsoft.XboxApp_8wekyb3d8bbwe"));
+        assert!(!active.blocks_store_app("Microsoft.Windows.Photos_8wekyb3d8bbwe"));
+        assert!(!active.blocks_store_app("Microsoft.WindowsCalculator_8wekyb3d8bbwe"));
+        // Windows by their title.
+        assert!(active.closes_titles() && active.blocks_title("Team chat - Browser") && !active.blocks_title("Notes"));
+        // Nothing else.
+        assert!(!active.closes_programs() && !active.closes_obsidian() && !active.blocks_program("chat.exe"));
+        assert!(active.used.take().is_empty());
+
+        // Without those enforcers, nothing of it is closed.
+        let list = blocklist("kinds-off");
+        let lists = lists_of(Entries { store_apps: strings(&["Microsoft.Xbox*"]), titles: strings(&["*Chat*"]), ..Entries::default() });
+        list.start("a", "A", vec![part(lists, only(&["exe_names", "obsidian_web_viewer"]))], None, StartLock::None).unwrap();
+        let active = list.active().unwrap();
+        assert!(!active.closes_store_apps() && !active.blocks_store_app("Microsoft.XboxApp_8wekyb3d8bbwe"));
+        assert!(!active.closes_titles() && !active.blocks_title("Team chat"));
+        assert!(!active.closes_programs() && active.closes_obsidian());
+    }
+
+    #[test]
+    fn a_budget_for_each_item_watches_store_apps_and_titles_too() {
+        let list = blocklist("budget-kinds");
+        let lists = lists_of(Entries {
+            store_apps: strings(&["Microsoft.Xbox*"]),
+            titles: strings(&["*Chat*"]),
+            programs: strings(&["game.exe"]),
+            ..Entries::default()
+        });
+        list.start_with("a", "A", vec![part(lists, Enforcers::default())], None, Some(budget("1s", Scope::Each)), StartLock::None).unwrap();
+        let active = list.active().unwrap();
+        // Let through, and what is seen is noted under each item's key.
+        assert!(active.closes_store_apps() && active.closes_titles() && active.closes_programs());
+        assert!(!active.blocks_store_app("Microsoft.XboxApp_8wekyb3d8bbwe"));
+        assert!(!active.blocks_title("Team chat"));
+        assert!(!active.blocks_program("game.exe"));
+        assert!(!active.blocks_app_window("https://a.com/") && !active.blocks_firefox_page("https://a.com/", false));
+        let mut seen = active.used.take();
+        seen.sort();
+        let key = |k: &str| ("a".to_string(), k.to_string());
+        assert_eq!(seen, vec![key("app:Microsoft.Xbox*"), key("program:game.exe"), key("title:*Chat*")]);
+        // What could not be reported is taken back, to go with the next report.
+        active.used.put_back(seen.clone());
+        assert_eq!(active.used.take(), seen);
+        // Used up: closed again.
+        list.polled();
+        std::thread::sleep(Duration::from_millis(1100));
+        list.charge(&[key("app:Microsoft.Xbox*"), key("title:*Chat*")]);
+        let active = list.active().unwrap();
+        assert!(active.blocks_store_app("Microsoft.XboxApp_8wekyb3d8bbwe") && active.blocks_title("Team chat"));
+        assert!(!active.blocks_program("game.exe"), "the program has its own time");
+    }
+
+    #[test]
+    fn a_budget_never_lets_obsidian_through_and_an_allowed_cycle_does() {
+        // Obsidian's enforcer has no list, so no item: a budget, total or for each item, leaves it on.
+        for scope in [Scope::Total, Scope::Each] {
+            let list = blocklist(&format!("obsidian-{scope:?}"));
+            list.start_with(
+                "a",
+                "A",
+                vec![part(sites(&["a.com"]), Enforcers::default())],
+                None,
+                Some(budget("1h", scope)),
+                StartLock::None,
+            )
+            .unwrap();
+            let active = list.active().unwrap();
+            assert!(!active.blocks_page("https://a.com/", false), "{scope:?}: the site is let through");
+            assert!(active.closes_obsidian(), "{scope:?}: Obsidian is not");
+            assert!(active.used.take().iter().all(|(_, key)| key.starts_with("site:") || key == TOTAL));
+        }
+        // While a cycle allows, the block enforces nothing at all, Obsidian included.
+        let list = blocklist("obsidian-cycle");
+        let cycle = Terms::Pomodoro { blocked: "1s".into(), allowed: "1h".into(), anchor: allowance::Anchor::Start };
+        list.start_with("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, Some(cycle), StartLock::None).unwrap();
+        assert!(list.active().unwrap().closes_obsidian(), "blocked first");
+        list.clock.at_least(SystemTime::now() + Duration::from_secs(2));
+        assert!(list.active().is_none(), "allowed: nothing to enforce");
+    }
+
+    #[test]
+    fn a_budget_item_is_an_entry_as_typed_wildcards_and_all() {
+        let list = blocklist("wildcards");
+        list.start_with(
+            "a",
+            "A",
+            vec![part(sites(&["*.reddit.com", "youtube.com", "*"]), Enforcers::default())],
+            None,
+            Some(budget("1s", Scope::Each)),
+            StartLock::None,
+        )
+        .unwrap();
+        let key = |k: &str| ("a".to_string(), k.to_string());
+        // A wildcard entry is one item for everything it matches; a page that two entries match is
+        // seen as both.
+        let active = list.active().unwrap();
+        assert!(!active.blocks_page("https://old.reddit.com/r/x", false) && !active.blocks_page("https://www.reddit.com/", false));
+        assert_eq!(active.used.take(), vec![key("site:*"), key("site:*.reddit.com")]);
+        assert!(!active.blocks_page("https://youtube.com/", false));
+        assert_eq!(active.used.take(), vec![key("site:*"), key("site:youtube.com")]);
+        // Once one of the entries that match a page is used up, the page is closed, though the other
+        // has time.
+        list.polled();
+        std::thread::sleep(Duration::from_millis(1100));
+        list.charge(&[key("site:youtube.com")]);
+        let active = list.active().unwrap();
+        assert!(active.blocks_page("https://youtube.com/", false));
+        assert!(!active.blocks_page("https://example.com/", false), "* still has time for the rest");
+        list.polled();
+        std::thread::sleep(Duration::from_millis(1100));
+        list.charge(&[key("site:*")]);
+        let active = list.active().unwrap();
+        assert!(active.blocks_page("https://example.com/", false) && active.blocks_page("https://old.reddit.com/", false));
+        // The items as the window shows them: by the entry as typed.
+        let mut items: Vec<String> = running(&list, "a").allowance.unwrap().items.into_iter().map(|i| i.item).collect();
+        items.sort();
+        assert_eq!(items, vec!["*", "youtube.com"]);
+    }
+
+    #[test]
+    fn a_condition_lock_says_what_it_waits_for() {
+        let list = blocklist("lock-words");
+        list.clock.at_least(monday(16 * 3600));
+        let start = |id: &str, rule: Rule| {
+            list.start(id, id, vec![part(sites(&["a.com"]), Enforcers::default())], None, StartLock::Condition(rule))
+        };
+        // A drive that is not connected (no drive has this serial number) holds the lock.
+        start("Drive", Rule::FlashDrive { serial: "no-such-serial".into(), drive: "Key".into() }).unwrap();
+        let why = |id: &str| list.stop(id, false).unwrap_err();
+        assert!(why("Drive").starts_with("“Drive” is locked until the flash drive “Key” is connected,"), "{}", why("Drive"));
+        // A webhook that does not answer goes by its fallback: active, so locked.
+        let hook = crate::webhook::Hook {
+            url: "http://127.0.0.1:9/".into(),
+            method: crate::webhook::Method::Get,
+            interval: 60,
+            fallback: true,
+            when_true: crate::webhook::Matcher { on: crate::webhook::Match::Status, status: Some(200), body: None },
+            when_false: crate::webhook::Matcher { on: crate::webhook::Match::Status, status: Some(204), body: None },
+        };
+        start("Hook", Rule::Webhook(hook)).unwrap();
+        assert!(why("Hook").starts_with("“Hook” is locked by its webhook condition,"), "{}", why("Hook"));
+        // A combination says how long, when its conditions have times.
+        let any = Rule::Combined {
+            mode: crate::condition::Mode::Any,
+            members: vec!["m".into(), "t".into()],
+            rules: vec![weekly("mon 08:00-17:00").unwrap(), weekly("tue 08:00-17:00").unwrap()],
+        };
+        start("Both", any).unwrap();
+        let both = why("Both");
+        assert!(both.starts_with("“Both” is locked by its lock condition for the next 1 hour") || both.contains("59 minutes"), "{both}");
+    }
+
     #[test]
     fn without_a_store_a_block_still_works_for_this_run() {
         let dir = std::env::temp_dir().join(format!("block-nostore-{}", std::process::id()));

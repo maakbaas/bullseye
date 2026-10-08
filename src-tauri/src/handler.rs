@@ -1086,6 +1086,111 @@ mod tests {
     }
 
     #[test]
+    fn a_condition_as_the_way_to_unlock_is_open_while_it_is_not_active() {
+        let context = context("hatch-way-condition");
+        let ask = |request: Request| handle(&context, 0, request).0;
+        // Never active, in any time zone: two hours that never come together. And always active.
+        let mut never = weekly("never", "mon 00:00-01:00");
+        never.rule = crate::condition::Rule::Combined {
+            mode: crate::condition::Mode::All,
+            members: vec!["mon".into(), "tue".into()],
+            rules: vec![],
+        };
+        for condition in
+            [weekly("mon", "mon 00:00-01:00"), weekly("tue", "tue 00:00-01:00"), never, weekly("always", "mon-sun 00:00-24:00")]
+        {
+            assert_eq!(ask(Request::SaveCondition { condition }), Response::Done);
+        }
+        let way = |condition: &str| Request::SetUnlockWay { way: Some(Lock::Condition { condition: condition.into() }) };
+        assert!(failed(ask(way("gone"))), "a condition that is not there");
+        assert_eq!(ask(Request::SetUnlockDelay { delay: "1h".into() }), Response::Done);
+
+        // Always active: locked, so the countdown is the way out.
+        assert_eq!(ask(way("always")), Response::Done);
+        assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
+        let status = overview(&context).unlock;
+        assert!(!status.way_open && status.way == Some(Lock::Condition { condition: "always".into() }));
+        assert!(failed(ask(Request::Unlock)) && context.blocklist.is_running());
+
+        // Never active: open, so unlocking needs no countdown and no answer.
+        let open = self::context("hatch-way-open");
+        let ask = |request: Request| handle(&open, 0, request).0;
+        // The conditions it is of first, then the combination.
+        let mut conditions = context.definitions.library().conditions;
+        conditions.sort_by_key(|c| !c.rule.members().is_empty());
+        for condition in conditions {
+            assert_eq!(ask(Request::SaveCondition { condition }), Response::Done);
+        }
+        assert_eq!(ask(Request::SetUnlockDelay { delay: "1h".into() }), Response::Done);
+        assert_eq!(ask(way("never")), Response::Done);
+        assert_eq!(run(&open, timed("a", &["a.com"], "1h")), Response::Done);
+        assert!(overview(&open).unlock.way_open);
+        assert_eq!(ask(Request::Unlock), Response::Done);
+        assert!(!open.blocklist.is_running());
+    }
+
+    #[test]
+    fn a_password_way_keeps_its_password_when_none_is_given() {
+        let context = context("hatch-way-kept");
+        let ask = |request: Request| handle(&context, 0, request).0;
+        let password = |password: Option<&str>| Request::SetUnlockWay {
+            way: Some(Lock::Password { password: password.map(str::to_string), hash: None }),
+        };
+        // Without one set before, there is nothing to keep.
+        assert!(failed(ask(password(None))));
+        assert_eq!(ask(password(Some("secret"))), Response::Done);
+        assert_eq!(ask(password(None)), Response::Done);
+        assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);
+        assert_eq!(ask(Request::UnlockWith { password: Some("secret".into()), text: None }), Response::Done);
+        // No way at all, or "none", is no way.
+        assert_eq!(ask(Request::SetUnlockWay { way: Some(Lock::None) }), Response::Done);
+        assert_eq!(overview(&context).unlock.way, None);
+    }
+
+    #[test]
+    fn what_the_app_reports_is_counted_against_the_block() {
+        use crate::allowance::{Reset, Scope, Terms};
+        use crate::proto::Used;
+        let context = context("report");
+        let mut one = definition("a", &["a.com"]);
+        one.block.allowance = Some(Terms::Budget { allowed: "1s".into(), scope: Scope::Total, reset: Reset::Never });
+        assert_eq!(run(&context, one), Response::Done);
+        assert_eq!(policies(&context)[0].free.len(), 1, "let through while there is time");
+        std::thread::sleep(Duration::from_millis(1100));
+        let used = |block: &str| Used { block: block.into(), key: crate::allowance::TOTAL.into() };
+        assert_eq!(handle(&context, 0, Request::Report { used: vec![used("a"), used("other")] }).0, Response::Done);
+        let policy = &policies(&context)[0];
+        assert!(policy.free.is_empty() && policy.entries.filters == vec!["a.com"], "used up: enforced again");
+    }
+
+    #[test]
+    fn a_delay_lock_is_asked_and_aborted_through_the_service() {
+        let context = context("delay-requests");
+        let ask = |request: Request| handle(&context, 0, request).0;
+        assert_eq!(run(&context, definition("a", &["a.com"]).lock(Lock::Delay { delay: "1h".into() })), Response::Done);
+        assert!(failed(ask(Request::Stop { id: "a".into(), password: None, text: None })));
+        assert_eq!(ask(Request::AskToStop { id: "a".into() }), Response::Done);
+        assert!(overview(&context).running[0].stop_remaining.is_some_and(|left| left > 3500));
+        assert_eq!(ask(Request::AbortStop { id: "a".into() }), Response::Done);
+        assert_eq!(overview(&context).running[0].stop_remaining, None);
+        assert!(failed(ask(Request::AskToStop { id: "gone".into() })));
+    }
+
+    #[test]
+    fn an_export_has_everything_password_hashes_included() {
+        let context = context("export");
+        assert_eq!(
+            save(&context, definition("a", &["a.com"]).lock(Lock::Password { password: Some("pw".into()), hash: None })),
+            Response::Done
+        );
+        let Response::Library(library) = handle(&context, 0, Request::Export).0 else { panic!("no library") };
+        assert_eq!(library.lists.len(), 1);
+        assert!(matches!(&library.blocks[0].lock, Lock::Password { hash: Some(hash), password: None } if !hash.is_empty()));
+        // The status, unlike the export, never has the hash.
+        assert_eq!(overview(&context).blocks[0].lock, Lock::Password { password: None, hash: None });
+    }
+
+    #[test]
     fn a_locked_block_can_still_be_renamed_and_nothing_else() {
         let context = context("rename-locked");
         let ask = |request: Request| handle(&context, 0, request).0;

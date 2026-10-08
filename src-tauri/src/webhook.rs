@@ -305,6 +305,117 @@ mod tests {
         assert!(quiet.active_by(Some(Outcome::True)) && !hook().active_by(Some(Outcome::False)));
     }
 
+    /// A web server on 127.0.0.1 that answers every request with `status` and `body`, and says
+    /// what each request's first line was. Its address, with a path and a parameter.
+    fn serve(status: u16, body: String) -> (String, std::sync::mpsc::Receiver<String>) {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/state?room=1", listener.local_addr().unwrap());
+        let (said, heard) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut request = Vec::new();
+                let mut byte = [0u8; 1];
+                while !request.ends_with(b"\r\n\r\n") && stream.read(&mut byte).is_ok_and(|n| n == 1) {
+                    request.push(byte[0]);
+                }
+                let line = String::from_utf8_lossy(&request).lines().next().unwrap_or_default().to_string();
+                let _ = said.send(line);
+                let head = format!("HTTP/1.1 {status} Something\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                let _ = stream.write_all(head.as_bytes()).and_then(|_| stream.write_all(body.as_bytes()));
+            }
+        });
+        (url, heard)
+    }
+
+    /// An address where nothing answers.
+    fn nobody() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        drop(listener);
+        url
+    }
+
+    #[test]
+    fn a_request_gives_the_status_and_the_body() {
+        let (url, heard) = serve(200, "on\n".into());
+        assert_eq!(fetch(&Hook { url: format!("  {url} "), ..hook() }), Ok((200, "on\n".to_string())));
+        assert_eq!(heard.recv().unwrap(), "GET /state?room=1 HTTP/1.1");
+        assert_eq!(fetch(&Hook { url: url.clone(), method: Method::Post, ..hook() }), Ok((200, "on\n".to_string())));
+        assert!(heard.recv().unwrap().starts_with("POST /state?room=1 "));
+        // An error status is an answer too.
+        let (missing, _) = serve(404, "off".into());
+        assert_eq!(fetch(&Hook { url: missing, ..hook() }), Ok((404, "off".to_string())));
+        // A body longer than 64 KiB is cut, so it equals nothing.
+        let (long, _) = serve(200, "x".repeat(70_000));
+        assert_eq!(fetch(&Hook { url: long, ..hook() }).map(|(_, body)| body.len()), Ok(64 * 1024));
+        // No answer at all is an error.
+        assert!(fetch(&Hook { url: nobody(), ..hook() }).is_err());
+    }
+
+    #[test]
+    fn a_test_says_what_the_matchers_make_of_the_answer() {
+        let on = |status: u16, body: &str| {
+            let (url, _) = serve(status, body.into());
+            let hook = Hook {
+                url,
+                when_true: Matcher { on: Match::Body, status: None, body: Some("on".into()) },
+                when_false: Matcher { on: Match::Body, status: None, body: Some("off".into()) },
+                ..hook()
+            };
+            (probe(&hook), test(&hook))
+        };
+        let (found, words) = on(200, " on ");
+        assert_eq!(found, Ok(Probe { status: 200, body: "on".into(), outcome: Outcome::True, active: true }));
+        assert_eq!(words.unwrap(), "HTTP 200, body \"on\": the condition is active (the true matcher matches)");
+        let (found, words) = on(200, "off");
+        assert!(found.is_ok_and(|p| p.outcome == Outcome::False && !p.active));
+        assert!(words.unwrap().ends_with("the condition is not active (the false matcher matches)"));
+        let (found, words) = on(500, "maybe");
+        assert!(found.is_ok_and(|p| p.outcome == Outcome::Neither && p.active));
+        assert_eq!(words.unwrap(), "HTTP 500, body \"maybe\": neither matcher matches, so the fallback applies: active");
+        let (url, _) = serve(500, "maybe".into());
+        let quiet = Hook { url, fallback: false, ..hook() };
+        assert!(test(&quiet).unwrap().ends_with("the fallback applies: not active"));
+        // The body shown is cut to 200 characters.
+        let (url, _) = serve(200, "y".repeat(300));
+        assert_eq!(probe(&Hook { url, ..hook() }).map(|p| p.body.len()), Ok(200));
+        // A hook that cannot be saved is not asked; one that gets no answer says so.
+        assert!(probe(&Hook { interval: 1, ..hook() }).is_err());
+        assert!(test(&Hook { url: nobody(), ..hook() }).is_err());
+    }
+
+    #[test]
+    fn the_condition_goes_by_the_last_answer_and_else_its_fallback() {
+        let (url, _) = serve(204, String::new());
+        // The false matcher matches a 204; until the poller has asked, the fallback (active) holds.
+        let asked = Hook { url, when_false: Matcher { on: Match::Status, status: Some(204), body: None }, ..hook() };
+        assert!(answer(&asked));
+        let waited = Instant::now();
+        while answer(&asked) && waited.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(!answer(&asked), "the poller's answer: not active");
+        // An answer older than three intervals is as good as none.
+        let key = serde_json::to_string(&asked).unwrap();
+        if let Some(old) = Instant::now().checked_sub(Duration::from_secs(asked.interval * 3 + 1)) {
+            registry().locked().get_mut(&key).unwrap().last = Some((old, Outcome::False));
+            assert!(answer(&asked), "too old: the fallback");
+        }
+        // A webhook nobody asks about any more is dropped at the next round.
+        if let Some(old) = Instant::now().checked_sub(IDLE + Duration::from_secs(1)) {
+            registry().locked().get_mut(&key).unwrap().asked = old;
+            poll_due();
+            assert!(!registry().locked().contains_key(&key));
+        }
+        // No answer at all leaves the fallback, inactive here.
+        let silent = Hook { url: nobody(), fallback: false, ..hook() };
+        assert!(!answer(&silent));
+        poll_due();
+        assert!(!answer(&silent) && registry().locked().get(&serde_json::to_string(&silent).unwrap()).is_some_and(|e| e.last.is_none()));
+    }
+
     #[test]
     fn it_travels_as_json() {
         let json = serde_json::to_string(&hook()).unwrap();

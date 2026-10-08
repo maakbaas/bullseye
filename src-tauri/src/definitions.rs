@@ -1025,6 +1025,64 @@ pub mod tests {
     }
 
     #[test]
+    fn a_file_with_too_much_or_a_password_without_its_hash() {
+        let definitions = Definitions::at(None);
+        let many = Library { lists: (0..=MAX_ITEMS).map(|n| block_list(&format!("l{n}"), &[])).collect(), ..Library::default() };
+        assert_eq!(definitions.replace(many), Err(format!("At most {MAX_ITEMS} of each")));
+        // A password lock with no hash comes without a lock, and a kept one without a hash is dropped.
+        let mut locked = block("b", &["l"]);
+        locked.lock = Lock::Password { password: Some("sent".into()), hash: None };
+        locked.kept_locks = vec![Lock::Password { password: None, hash: None }, Lock::Duration { duration: "1h".into() }];
+        let library = Library { lists: vec![block_list("l", &[])], blocks: vec![locked], ..Library::default() };
+        assert_eq!(library.contents().unlocked, vec!["Block b"]);
+        definitions.replace(library).unwrap();
+        let imported = definitions.library().blocks.remove(0);
+        assert_eq!(imported.lock, Lock::None);
+        assert_eq!(imported.kept_locks, vec![Lock::Duration { duration: "1h".into() }]);
+        // An allowance comes with its block, checked.
+        let mut budget = block("a", &["l"]);
+        budget.allowance =
+            Some(Terms::Budget { allowed: "soon".into(), scope: crate::allowance::Scope::Total, reset: crate::allowance::Reset::Day });
+        let bad = Library { lists: vec![block_list("l", &[])], blocks: vec![budget], ..Library::default() };
+        assert!(definitions.replace(bad).is_err());
+    }
+
+    #[test]
+    fn a_settings_file_is_written_and_read_back() {
+        let dir = path("settings-file").parent().unwrap().to_path_buf();
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("bullseye.json");
+        let library = Library { lists: vec![block_list("l", &["a.com"])], blocks: vec![block("b", &["l"])], ..Library::default() };
+        write_settings(&file, library.clone()).unwrap();
+        assert_eq!(read_settings(&file), Ok(library.clone()));
+        // A file that is not there, or a folder where the file should go.
+        assert!(read_settings(&dir.join("missing.json")).unwrap_err().starts_with("Cannot read"));
+        assert!(write_settings(&dir, library).unwrap_err().starts_with("Cannot write"));
+    }
+
+    #[test]
+    fn a_library_file_that_cannot_be_read_is_an_empty_library() {
+        let file = path("unreadable");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, "not json").unwrap();
+        assert_eq!(Definitions::at(Some(file)).library(), Library::default());
+    }
+
+    #[test]
+    fn a_combination_is_resolved_from_its_conditions_as_they_are() {
+        let mut both = weekly("both", "mon 8-9");
+        both.rule = Rule::Combined { mode: Mode::Any, members: vec!["a".into(), "b".into()], rules: vec![] };
+        let mut nested = weekly("nested", "mon 8-9");
+        nested.rule = Rule::Combined { mode: Mode::Any, members: vec!["a".into(), "both".into()], rules: vec![] };
+        let library = Library { conditions: vec![weekly("a", "mon 8-9"), weekly("b", "tue 8-9"), both, nested], ..Library::default() };
+        assert!(matches!(library.rule_of("both"), Ok(Rule::Combined { rules, .. }) if rules.len() == 2));
+        assert_eq!(library.rule_of("nested"), Err("A combination cannot hold another combination".into()));
+        assert_eq!(library.rule_of("gone"), Err("A condition of this block is gone".into()));
+        let without_b = Library { conditions: library.conditions.into_iter().filter(|c| c.id != "b").collect(), ..Library::default() };
+        assert_eq!(without_b.rule_of("both"), Err("A condition of this combination is gone".into()));
+    }
+
+    #[test]
     fn a_schedule_travels_with_its_days_beside_its_name() {
         let json = serde_json::to_string(&weekly("s", "sat")).unwrap();
         assert!(json.starts_with(r#"{"id":"s","name":"Schedule s","type":"schedule","days":[[],[],[],[],[],[[0,1440]],[]]"#), "{json}");

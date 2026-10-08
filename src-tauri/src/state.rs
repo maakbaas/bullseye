@@ -367,4 +367,24 @@ mod tests {
         let time = from_unix(1_700_000_000_123);
         assert_eq!(to_unix(time), Some(1_700_000_000_123));
     }
+
+    /// The only test that points the service's folder somewhere (it can be set once per process):
+    /// everything the service keeps goes there.
+    #[test]
+    fn the_service_keeps_its_files_in_its_data_folder() {
+        let dir = std::env::temp_dir().join(format!("state-{}-data", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        use_dir(dir.clone());
+        assert_eq!(super::dir(), Some(dir.clone()));
+        assert_eq!(super::store().map(|store| store.path().to_path_buf()), Some(dir.join("state.json")));
+        crate::definitions::Definitions::new().save_list(crate::definitions::tests::block_list("l", &[])).unwrap();
+        assert!(dir.join("blocks.json").exists());
+        crate::unlock::UnlockDelay::new().set_delay(3600, SystemTime::now()).unwrap();
+        assert!(dir.join("unlock.json").exists());
+        let blocklist = crate::block::Blocklist::new();
+        assert!(!blocklist.is_running());
+        // The app's own folder, for its log, is the user's.
+        assert_eq!(user_dir(), std::env::var_os("LOCALAPPDATA").map(|local| PathBuf::from(local).join("bullseye")));
+        assert!(now().is_some_and(|since| since.as_secs() > 1_700_000_000));
+    }
 }

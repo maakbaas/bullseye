@@ -297,4 +297,16 @@ mod tests {
         wire.extend_from_slice(body);
         assert!(read_message::<Request>(&mut Cursor::new(wire)).is_err());
     }
+
+    #[test]
+    fn a_message_over_a_megabyte_is_neither_sent_nor_read() {
+        let huge = "x".repeat(MAX_MESSAGE + 1);
+        let mut wire = Vec::new();
+        assert_eq!(write_message(&mut wire, &huge), Err("message too large".into()));
+        assert!(wire.is_empty(), "nothing is written");
+        let claimed = ((MAX_MESSAGE + 1) as u32).to_le_bytes().to_vec();
+        assert_eq!(read_message::<String>(&mut Cursor::new(claimed)), Err("message too large".into()));
+        // A message cut short is an error, not a wait.
+        assert!(read_message::<String>(&mut Cursor::new(vec![9, 0, 0, 0, b'"'])).is_err());
+    }
 }
