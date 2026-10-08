@@ -56,9 +56,6 @@ import '@carbon/web-components/es/components/inline-loading/inline-loading.js';
 // A session's settings on its tile: one row each.
 import '@carbon/web-components/es/components/contained-list/contained-list.js';
 import '@carbon/web-components/es/components/contained-list/contained-list-item.js';
-// A row's panel: Carbon's popover, below the row's edit button.
-import '@carbon/web-components/es/components/popover/popover.js';
-import '@carbon/web-components/es/components/popover/popover-content.js';
 
 // Carbon icons, as `carbonIcon(name)`: an <svg> element, 16 px unless another size is given.
 import { getAttributes, toSVG } from '@carbon/icon-helpers';
@@ -67,6 +64,7 @@ import checkmark16 from '@carbon/icons/es/checkmark/16.js';
 import close16 from '@carbon/icons/es/close/16.js';
 import calendar16 from '@carbon/icons/es/calendar/16.js';
 import edit16 from '@carbon/icons/es/edit/16.js';
+import information16 from '@carbon/icons/es/information/16.js';
 import documentExport16 from '@carbon/icons/es/document--export/16.js';
 import documentImport16 from '@carbon/icons/es/document--import/16.js';
 import locked16 from '@carbon/icons/es/locked/16.js';
@@ -90,6 +88,8 @@ const icons = {
   // Export and Import in Settings.
   // Edit, beside a block's block lists and schedule.
   edit: edit16,
+  // Beside a session's rows: what the row's choice means, in a tooltip.
+  information: information16,
   // Buttons: Save and the dialog's confirm, Cancel, and Scan again.
   checkmark: checkmark16,
   close: close16,

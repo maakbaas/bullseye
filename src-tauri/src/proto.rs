@@ -9,6 +9,7 @@ use std::io::{Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::allowance::Terms;
 use crate::definitions::{Condition, Definition, Kind, Library, Target};
 use crate::lists::Entries;
 use crate::lock::Lock;
@@ -21,6 +22,22 @@ pub const PIPE: &str = r"\\.\pipe\bullseye";
 /// Larger messages are refused, so a request cannot make the service allocate without limit.
 /// Room for the status of everything defined (`definitions::MAX_ITEMS` of each) with long lists.
 const MAX_MESSAGE: usize = 1024 * 1024;
+
+/// A change to check (`Request::Check`): the same rules as making it (`handler::check_stricter`).
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[serde(tag = "what", rename_all = "snake_case")]
+pub enum Check {
+    /// The session's allowance set to this kind (`none`, `budget`, `pomodoro`, `delayed`).
+    AllowanceKind { id: String, kind: String },
+    /// The session's allowance set to these terms (none: taken away).
+    Allowance { id: String, allowance: Option<Terms> },
+    /// The session's lock set to this one (a timed lock or a delay, longer).
+    Lock { id: String, lock: Lock },
+    /// A target saved like this.
+    Target { target: Target },
+    /// A condition saved like this.
+    Condition { condition: Condition },
+}
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 #[serde(tag = "cmd", content = "args", rename_all = "snake_case")]
@@ -65,6 +82,10 @@ pub enum Request {
     /// Gives the running session `id` this lock, as if it started with it now, and saves it as the
     /// session's lock. Only while the session is not locked.
     Lock { id: String, lock: Lock },
+    /// Whether a change to what a locked session holds would be accepted, asked before the window
+    /// asks the person to confirm it: answered `Done`, or why not, and nothing is changed. A change that
+    /// nothing locked holds is accepted.
+    Check { check: Check },
     /// Stops the running session `id`, unless it is locked right now. `password`: the password of its
     /// password lock, which stops that one; `text`: the text of its text lock, likewise.
     Stop {
@@ -243,7 +264,9 @@ mod tests {
             Request::SaveCondition { condition: weekly("s", "mon-fri 8-17") },
             Request::SaveSession { session: session("a", &["l"]) },
             Request::Start { id: "a".into() },
-            Request::Lock { id: "a".into(), lock: Lock::Duration { duration: "2h".into() } },
+            Request::Lock { id: "a".into(), lock: Lock::timed_for("2h") },
+            Request::Check { check: Check::AllowanceKind { id: "a".into(), kind: "budget".into() } },
+            Request::Check { check: Check::Lock { id: "a".into(), lock: Lock::timed_for("2h") } },
             Request::DeleteSession { id: "a".into() },
             Request::DeleteTarget { id: "l".into() },
             Request::DeleteCondition { id: "s".into() },

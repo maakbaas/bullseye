@@ -71,9 +71,28 @@ pub fn countdown(seconds: u64) -> String {
     }
 }
 
+/// A countdown after "every": a lone one is left out (`day`, not `1 day`), `2 days` and
+/// `1 day and 12 hours` stay as they are.
+pub fn period(seconds: u64) -> String {
+    let words = countdown(seconds);
+    match words.strip_prefix("1 ") {
+        Some(rest) if !rest.contains(" and ") => rest.to_string(),
+        _ => words,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_period_drops_a_lone_one() {
+        assert_eq!(period(86400), "day");
+        assert_eq!(period(3600), "hour");
+        assert_eq!(period(60), "minute");
+        assert_eq!(period(2 * 86400), "2 days");
+        assert_eq!(period(36 * 3600), "1 day and 12 hours");
+    }
 
     #[test]
     fn a_zero_is_a_duration_only_where_none_is_a_value() {

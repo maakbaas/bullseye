@@ -15,14 +15,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value};
 
-use crate::allowance::{Anchor, Reset, Scope, Status as AllowanceStatus, Terms};
+use crate::allowance::{Anchor, DelayKind, Reset, Scope, Status as AllowanceStatus, Terms};
 use crate::client::Remote;
 use crate::condition::{Mode, Rule};
 use crate::definitions::{self, Condition, Definition, Kind, Library, Target};
 use crate::duration;
 use crate::lists::{Entries, Lists};
 use crate::localtime;
-use crate::lock::Lock;
+use crate::lock::{Lock, TimedKind};
 use crate::proto::{Overview, Request, UnlockStatus};
 use crate::schedule::Week;
 use crate::session::Running;
@@ -31,7 +31,7 @@ use crate::webhook::{self, Hook, Match, Matcher, Method};
 
 /// Each command the window can invoke, and the CLI commands that do the same. Empty: it is about
 /// the window itself.
-pub const GUI_COMMANDS: [(&str, &[&str]); 31] = [
+pub const GUI_COMMANDS: [(&str, &[&str]); 32] = [
     ("status", &["status", "show", "target show", "condition show"]),
     ("save_session", &["new", "edit"]),
     ("delete_session", &["delete"]),
@@ -70,7 +70,13 @@ pub const GUI_COMMANDS: [(&str, &[&str]); 31] = [
     ("open_settings", &["import"]),
     ("import_settings", &["import"]),
     ("window_ready", &[]),
+    // Asked before a confirmation in the window; the CLI asks, and the service answers when it does it.
+    ("check_stricter", &[]),
 ];
+
+/// Where the descriptions start in `HELP`, and how wide a line of it may be.
+const HELP_COLUMN: usize = 36;
+const HELP_WIDTH: usize = 100;
 
 const HELP: &str = "\
 Bullseye command line: everything the window can do.
@@ -85,137 +91,135 @@ active; 'always', a weekly schedule, or a flash drive that is not connected), at
 allowance (what lets it go quiet for a while) and a lock (how it is kept from being stopped).
 
 Sessions:
-  status [--json]          Every session (running or not, active or not, locked or not), every
-                           target and every condition.
-  show <session> [--json]  One session: its targets, condition, lock and state.
-  new <name> [options]     Make a session. Options:
-      --targets <targets>      The targets it enforces.
-      --condition <condition>  When it is active: a condition's name, or 'always' (the default).
-      --allowance <budget|pomodoro|none>
-                               What lets it go quiet for a while (none by default): a budget of
-                               use, or a Pomodoro cycle; use is what the app sees: a page shown
-                               in a tab, a window, a program that runs. Given with the options
-                               below, it can be left out (they say which); edit changes only
-                               what they name.
-      --allowed <duration>     Budget: the time allowed, e.g. 30m. Pomodoro: how long
-                               everything is allowed for each cycle.
-      --scope <total|each>     Budget: for the whole session (the default) or for each site,
-                               program, Store app and window title on its own.
+  status [--json]                   Every session (running or not, active or not, locked or not),
+                                    every target and every condition.
+  show <session> [--json]           One session: its targets, condition, lock and state.
+  new <name> [options]              Make a session. Options:
+      --targets <targets>           The targets it enforces.
+      --condition <condition>       When it is active: a condition's name, or 'always' (the
+                                    default).
+      --allowance <budget|pomodoro|delayed|none>
+                                    What lets it go quiet for a while (none by default): a budget of
+                                    use, a Pomodoro cycle, or a delayed start; use is what the app
+                                    sees: a page shown in a tab, a window, a program that runs.
+                                    Given with the options below, it can be left out (they say
+                                    which); edit changes only what they name.
+      --allowed <duration>          Budget: the time allowed, e.g. 30m. Pomodoro: how long
+                                    everything is allowed for each cycle.
+      --scope <total|each>          Budget: for the whole session (the default) or for each site,
+                                    program, Store app and window title on its own.
       --reset <never|condition|duration>
-                               Budget: when what was used is given back: never while the
-                               session runs (the default), each time the session's condition
-                               turns on, or every so long, e.g. 1d or 12h, counted by --anchor.
-      --blocked <duration>     Pomodoro: how long it is blocked for before it allows.
-      --anchor <start|clock>   What a Pomodoro, or a budget's reset every so long, is counted
-                               from: the session's start (the default), or midnight on the
-                               clock, so an hour starts at xx:00 (it must then fit a day evenly).
-      --lock-duration <duration>
-                               Locked for this long once started, e.g. 2h 30m: it cannot be
-                               stopped and ends by itself.
-      --lock-until <date time> Locked until then, e.g. \"2026-10-06 18:00\" (local time): it
-                               cannot be stopped and ends by itself.
-      --lock-until-restart     Locked until Windows restarts, and ends then. A shut down with
-                               Fast Startup is not a restart.
-      --lock-condition <condition>
-                               Locked while this condition is active: it cannot be stopped then,
-                               and runs until stopped otherwise. With the session's own
-                               condition, it is locked exactly while it is active.
-      --lock-password <pw>     Locked with a password: it runs until stopped with that password
-                               (or by unlocking). Only a hash of it is kept.
-      --lock-delay <time>      Locked behind a wait, like unlocking: stopping is asked for, counts
-                               down this long (e.g. 30m), can be aborted, and then it can be
-                               stopped.
-      --lock-text <text>       Locked until the text is typed in exactly: the window shows it
-                               above an input that cannot be pasted into, and that is the only
-                               place to stop such a session (or by unlocking).
-      --no-lock                Not locked: it can be stopped at any time (the default).
-  edit <session> [options] Change a session: the options of new, which replace what they name
-                           (--targets replaces all its targets), and --name <name>. A running
-                           session takes the change at once (not its lock); while it is locked,
-                           only its name and a stricter allowance: a budget shorter or reset
-                           less often, or none; a cycle cannot change.
+                                    Budget: when what was used is given back: never while the
+                                    session runs (the default), each time the session's condition
+                                    turns on, or every so long, e.g. 1d or 12h, counted by --anchor.
+      --blocked <duration>          Pomodoro: how long it is blocked for before it allows.
+      --after <duration>            Delayed start: nothing is enforced for this long after the
+                                    session starts, e.g. 30m, and everything is from then on.
+      --from <date time>            Delayed start: nothing is enforced until then, e.g.
+                                    \"2026-10-06 18:00\" (local time).
+      --anchor <start|clock>        What a Pomodoro, or a budget's reset every so long, is counted
+                                    from: the session's start (the default), or midnight on the
+                                    clock, so an hour starts at xx:00 (it must then fit a day
+                                    evenly).
+      --lock-duration <duration>    Locked for this long once started, e.g. 2h 30m: it cannot be
+                                    stopped and ends by itself.
+      --lock-until <date time>      Locked until then, e.g. \"2026-10-06 18:00\" (local time): it
+                                    cannot be stopped and ends by itself.
+      --lock-until-restart          Locked until Windows restarts, and ends then. A shut down with
+                                    Fast Startup is not a restart.
+      --lock-condition <condition>  Locked while this condition is active: it cannot be stopped
+                                    then, and runs until stopped otherwise. With the session's own
+                                    condition, it is locked exactly while it is active.
+      --lock-password <pw>          Locked with a password: it runs until stopped with that password
+                                    (or by unlocking). Only a hash of it is kept.
+      --lock-delay <time>           Locked behind a wait, like unlocking: stopping is asked for,
+                                    counts down this long (e.g. 30m), can be aborted, and then it
+                                    can be stopped.
+      --lock-text <text>            Locked until the text is typed in exactly: the window shows it
+                                    above an input that cannot be pasted into, and that is the only
+                                    place to stop such a session (or by unlocking).
+      --no-lock                     Not locked: it can be stopped at any time (the default).
+  edit <session> [options]          Change a session: the options of new, which replace what they
+                                    name (--targets replaces all its targets), and --name <name>. A
+                                    running session takes the change at once (not its lock); while
+                                    it is locked, only its name and a stricter allowance: a budget
+                                    shorter or reset less often, or none; a cycle cannot change.
   add <session> --targets <targets>
-                           Add targets to a session, keeping the ones it has.
+                                    Add targets to a session, keeping the ones it has.
   remove <session> --targets <targets>
-                           Take targets out of a session.
-  delete <session> [--force]
-                           Delete a session that is not running. Asks first, unless --force.
-  duplicate <session>      Make a copy of a session, named after it with a number: \"Work (2)\".
-  start <session> [--force]
-                           Start a session. The lock options of new set its lock first, as the
-                           lock on its tile in the window does. A locked session asks first,
-                           unless --force.
+                                    Take targets out of a session.
+  delete <session> [--force]        Delete a session that is not running. Asks first, unless
+                                    --force.
+  duplicate <session>               Make a copy of a session, named after it with a number:
+                                    \"Work (2)\".
+  start <session> [--force]         Start a session. The lock options of new set its lock first, as
+                                    the lock on its tile in the window does. A locked session asks
+                                    first, unless --force.
   lock <session> <lock option> [--force]
-                           Lock a running session that is not locked right now, from now on,
-                           with one of the lock options of new (--no-lock takes its lock away). It
-                           is also the lock its next start has. Asks first, unless --force.
-  stop <session> [--password <pw>]
-                           Stop a running session that is not locked right now; one locked with
-                           a password with its password (asked for when not given). One locked
-                           with a text is stopped in the window, by typing the text. One locked
-                           with a delay: the first stop asks for it and starts the wait, the
-                           next one, once it is over, stops the session; `stop <session> --abort`
-                           ends the wait.
+                                    Lock a running session that is not locked right now, from now
+                                    on, with one of the lock options of new (--no-lock takes its
+                                    lock away). It is also the lock its next start has. Asks first,
+                                    unless --force.
+  stop <session> [--password <pw>]  Stop a running session that is not locked right now; one locked
+                                    with a password with its password (asked for when not given).
+                                    One locked with a text is stopped in the window, by typing the
+                                    text. One locked with a delay: the first stop asks for it and
+                                    starts the wait, the next one, once it is over, stops the
+                                    session; `stop <session> --abort` ends the wait.
 
 Targets:
-  target show <target> [--json]
-                              One target, and the sessions that use it.
-  target apps [--json]        The Store apps installed, by name and package family name, to
-                              block with --store-apps.
-  target new <name> [options] Make a target. Options:
-      --sites <sites>          The sites to block: each with its subdomains and everything under
-                               it, e.g. youtube.com. * as a wildcard.
-      --allowed-sites <sites>  Sites that are always allowed, also when blocked.
-      --programs <names>       Programs to close, by exe name, e.g. steam.exe.
-      --store-apps <families>  Store apps to close, by their exact package family names, e.g.
-                               Microsoft.WindowsCalculator_8wekyb3d8bbwe, as 'target apps' shows
-                               them; no *.
-      --titles <titles>        Windows to close, by their title, * as a wildcard, e.g.
-                               *YouTube*. The whole window closes, tabs and all.
-      --allowed-titles <titles>
-                               Window titles that are always left alone, also when one of the
-                               titles matches them.
-      --sites-file <file>      Sites to block, one per line. Likewise --allowed-sites-file,
-                               --programs-file, --store-apps-file, --titles-file and
-                               --allowed-titles-file.
-      --actions <names>        The actions, or 'all' (the default). Names:
-                               {actions}
-  target edit <target> [options]
-                              Change a target: the options of target new, which replace what
-                              they name, --name <name> and --clear <lists>, the lists to empty:
-                              sites, allowed-sites, programs, store-apps, titles,
-                              allowed-titles. While a locked session uses it, only stricter: more
-                              to block, fewer allowed, more actions.
-  target add <target> [options]
-                              Add entries to the lists of a target, keeping what it has: the
-                              list options of target new (--sites, --programs, …), and
-                              --actions to turn on. While a locked session uses it, adding
-                              entries to block is allowed.
-  target remove <target> [options]
-                              Take entries out of a target, however they are written
-                              (Steam is steam.exe), and turn --actions off. One that is not
-                              in it is refused, as a typo.
-  target delete <target> [--force]
-                              Delete a target that no running session uses; it is taken out of
-                              the sessions that use it (a session left without one is deleted).
-  target duplicate <target>   Make a copy of a target, named after it with a number.
+  target show <target> [--json]     One target, and the sessions that use it.
+  target apps [--json]              The Store apps installed, by name and package family name, to
+                                    block with --store-apps.
+  target new <name> [options]       Make a target. Options:
+      --sites <sites>               The sites to block: each with its subdomains and everything
+                                    under it, e.g. youtube.com. * as a wildcard.
+      --allowed-sites <sites>       Sites that are always allowed, also when blocked.
+      --programs <names>            Programs to close, by exe name, e.g. steam.exe.
+      --store-apps <families>       Store apps to close, by their exact package family names, e.g.
+                                    Microsoft.WindowsCalculator_8wekyb3d8bbwe, as 'target apps'
+                                    shows them; no *.
+      --titles <titles>             Windows to close, by their title, * as a wildcard, e.g.
+                                    *YouTube*. The whole window closes, tabs and all.
+      --allowed-titles <titles>     Window titles that are always left alone, also when one of the
+                                    titles matches them.
+      --sites-file <file>           Sites to block, one per line. Likewise --allowed-sites-file,
+                                    --programs-file, --store-apps-file, --titles-file and
+                                    --allowed-titles-file.
+      --actions <names>             The actions, or 'all' (the default). Names:
+                                    {actions}
+  target edit <target> [options]    Change a target: the options of target new, which replace what
+                                    they name, --name <name> and --clear <lists>, the lists to
+                                    empty: sites, allowed-sites, programs, store-apps, titles,
+                                    allowed-titles. While a locked session uses it, only stricter:
+                                    more to block, fewer allowed, more actions.
+  target add <target> [options]     Add entries to the lists of a target, keeping what it has: the
+                                    list options of target new (--sites, --programs, …), and
+                                    --actions to turn on. While a locked session uses it, adding
+                                    entries to block is allowed.
+  target remove <target> [options]  Take entries out of a target, however they are written (Steam is
+                                    steam.exe), and turn --actions off. One that is not in it is
+                                    refused, as a typo.
+  target delete <target> [--force]  Delete a target that no running session uses; it is taken out of
+                                    the sessions that use it (one left with none does
+                                    nothing).
+  target duplicate <target>         Make a copy of a target, named after it with a number.
 
 Conditions:
   condition show <condition>        One condition, and the sessions that use it.
   condition new <name> (--times <times> | --drive <drive> | --webhook <url> [webhook options] | --any <conditions> | --all <conditions>)
                                     Make a condition: a weekly schedule, e.g. --times
-                                    \"Mon-Fri 08:00-17:00; Sat 10-12\"; or a flash drive, by name
-                                    or serial number ('drives' lists them): active while it is
-                                    not connected; or a combination of two or more other
-                                    conditions (--any or --all, separated by spaces): active when
-                                    any of them is, or when all are. Not of other combinations. A
-                                    webhook asks one web address (it can hold GET parameters) every
-                                    --every <time> (at least 1m, the default), with --method
-                                    get|post (default get). It is what --fallback active|inactive
-                                    says (default active; also when no answer comes), unless the
-                                    answer matches --match-status <code> or --match-body <text>
-                                    (the whole body, white space around it aside): then it is the
-                                    other.
+                                    \"Mon-Fri 08:00-17:00; Sat 10-12\"; or a flash drive, by name or
+                                    serial number ('drives' lists them): active while it is not
+                                    connected; or a combination of two or more other conditions
+                                    (--any or --all, separated by spaces): active when any of them
+                                    is, or when all are. Not of other combinations. A webhook asks
+                                    one web address (it can hold GET parameters) every --every
+                                    <time> (at least 1m, the default), with --method get|post
+                                    (default get). It is what --fallback active|inactive says
+                                    (default active; also when no answer comes), unless the answer
+                                    matches --match-status <code> or --match-body <text> (the whole
+                                    body, white space around it aside): then it is the other.
   condition edit <condition> [--name <name>] [--times <times> | --drive <drive> | --webhook <url> [webhook options] | --any <conditions> | --all <conditions>]
                                     Change a condition. While a locked session uses it, a schedule
                                     can only get more times, a drive cannot change, and a
@@ -225,46 +229,48 @@ Conditions:
   condition remove <condition> --conditions <conditions>
                                     Take conditions out of a combination (at least two stay).
   condition delete <condition> [--force]
-                                    Delete a condition that no running session uses, directly or
-                                    in a combination; sessions it was the condition of are always
-                                    active, and those it locked are not locked any more. It is
-                                    taken out of its combinations, and one left with a single
-                                    condition is deleted too.
+                                    Delete a condition that no running session uses, directly or in
+                                    a combination; sessions it was the condition of are always
+                                    active, and those it locked are not locked any more. It is taken
+                                    out of its combinations, and one left with a single condition is
+                                    deleted too.
   condition duplicate <condition>   Make a copy of a condition, named after it with a number.
-  condition test <condition>        Ask a webhook condition once: the status, the start of the
-                                    body, and what the match makes of it.
+  condition test <condition>        Ask a webhook condition once: the status, the start of the body,
+                                    and what the match makes of it.
   condition check <times>           Check times and show them per day, as a schedule takes them.
 
 Moving to another computer:
-  export <file>            Write every target, condition and session to a settings
-                           file, as Export in Settings does. Password locks are in it without
-                           their password.
-  import <file> [--force]  Replace every target, condition and session with those in a settings
-                           file, as Import in Settings does; not while a session is locked, and
-                           sessions that run unlocked end with it. A session with a password lock
-                           comes without a lock. Asks first, unless --force.
+  export <file>                     Write every target, condition and session to a settings file, as
+                                    Export in Settings does. Password locks are in it without their
+                                    password.
+  import <file> [--force]           Replace every target, condition and session with those in a
+                                    settings file, as Import in Settings does; not while a session
+                                    is locked, and sessions that run unlocked end with it. A session
+                                    with a password lock comes without a lock. Asks first, unless
+                                    --force.
 
 Other:
-  drives [--json]          The flash drives connected, by name and serial number, for
-                           'condition new --drive'.
+  drives [--json]                   The flash drives connected, by name and serial number, for
+                                    'condition new --drive'.
   unlock [--abort] [--password <pw>]
-                           End every running session, as the window's Unlock does. By default
-                           unlocking is free. With an unlock delay it is a countdown: the first
-                           'unlock' starts it, a later one ends every session once it is over,
-                           and --abort stops it (back to locked). The other way to unlock (below)
-                           works instead of the countdown, never as well: with a password
-                           (asked for when not given) unlocking is at once; one set to a text is
-                           used in the window, by typing the text.
-  unlock-way [options]     Show the other way to unlock besides the delay, or set it: --condition
-                           <condition> (locked while it is active, open when it is not),
-                           --password <pw>, --text <text> or --none to remove it. Setting one
-                           needs unlocking to be ready, or no session to be locked; removing it
-                           is free.
-  unlock-delay [<time>]    Show how long unlocking takes, or set it: 0 to 24 hours, e.g. 30m
-                           or 2h 30m, or 0 for none. A longer delay is free; a shorter one needs
-                           unlocking to be ready, or no session to be locked.
-  help                     Show this.
-  version                  Show the version.
+                                    End every running session, as the window's Unlock does. By
+                                    default unlocking is free. With an unlock delay it is a
+                                    countdown: the first 'unlock' starts it, a later one ends every
+                                    session once it is over, and --abort stops it (back to locked).
+                                    The other way to unlock (below) works instead of the countdown,
+                                    never as well: with a password (asked for when not given)
+                                    unlocking is at once; one set to a text is used in the window,
+                                    by typing the text.
+  unlock-way [options]              Show the other way to unlock besides the delay, or set it:
+                                    --condition <condition> (locked while it is active, open when it
+                                    is not), --password <pw>, --text <text> or --none to remove it.
+                                    Setting one needs unlocking to be ready, or no session to be
+                                    locked; removing it is free.
+  unlock-delay [<time>]             Show how long unlocking takes, or set it: 0 to 24 hours, e.g.
+                                    30m or 2h 30m, or 0 for none. A longer delay is free; a shorter
+                                    one needs unlocking to be ready, or no session to be locked.
+  help                              Show this.
+  version                           Show the version.
 
 Durations: 30s, 10m, 2h, 1d, or several together: 2h 30m, 1d 12h.
 Exit codes: 0 done, 1 failed, refused or cancelled, 2 not understood.";
@@ -428,7 +434,7 @@ struct SessionChanges {
 /// it (with no allowance yet, the default). Read when the command runs (`build_terms`).
 #[derive(Debug, PartialEq, Default)]
 struct AllowanceChanges {
-    /// `budget`, `pomodoro` or `none`.
+    /// `budget`, `pomodoro`, `delayed` or `none`.
     kind: Option<String>,
     allowed: Option<String>,
     scope: Option<Scope>,
@@ -437,6 +443,9 @@ struct AllowanceChanges {
     every: Option<String>,
     blocked: Option<String>,
     anchor: Option<Anchor>,
+    /// A delayed start: how long after the session starts, or the date and time, enforcing begins.
+    after: Option<String>,
+    from: Option<String>,
 }
 
 /// What `target new` and `target edit` set on a target; `None` leaves it.
@@ -616,8 +625,8 @@ fn parse(args: &[String]) -> Result<Command, String> {
 /// `--lock-condition <condition>`, `--lock-password <pw>`, `--lock-text <text>` or `--no-lock`, at most one. A lock
 /// condition by name or id, looked up when the command runs (`resolve_lock`).
 fn parse_lock(options: &mut Options) -> Result<Option<Lock>, String> {
-    let duration = options.value("--lock-duration")?.map(|duration| Lock::Duration { duration });
-    let until = options.value("--lock-until")?.map(|until| Lock::Until { until });
+    let duration = options.value("--lock-duration")?.map(Lock::timed_for);
+    let until = options.value("--lock-until")?.map(Lock::timed_until);
     let restart = options.flag("--lock-until-restart").then_some(Lock::UntilRestart);
     let conditional = options.value("--lock-condition")?.map(|condition| Lock::Condition { condition });
     let password = options.value("--lock-password")?.map(|password| Lock::Password { password: Some(password), hash: None });
@@ -676,8 +685,8 @@ fn parse_session_changes(options: &mut Options, editing: bool) -> Result<Session
 fn parse_allowance_changes(options: &mut Options) -> Result<Option<AllowanceChanges>, String> {
     let kind = options.value("--allowance")?.map(|kind| kind.to_lowercase());
     if let Some(kind) = &kind {
-        if !["budget", "pomodoro", "none"].contains(&kind.as_str()) {
-            return Err(format!("--allowance takes budget, pomodoro or none, not \"{kind}\""));
+        if !["budget", "pomodoro", "delayed", "none"].contains(&kind.as_str()) {
+            return Err(format!("--allowance takes budget, pomodoro, delayed or none, not \"{kind}\""));
         }
     }
     let allowed = options.value("--allowed")?;
@@ -710,26 +719,62 @@ fn parse_allowance_changes(options: &mut Options) -> Result<Option<AllowanceChan
             other => Err(format!("--anchor takes start or clock, not \"{other}\"")),
         })
         .transpose()?;
-    let changes = AllowanceChanges { kind, allowed, scope, reset, every, blocked, anchor };
+    let after = options.value("--after")?;
+    let from = options.value("--from")?;
+    let changes = AllowanceChanges { kind, allowed, scope, reset, every, blocked, anchor, after, from };
     if changes == AllowanceChanges::default() {
         return Ok(None);
     }
+    let delayed_given = changes.after.is_some() || changes.from.is_some();
     let terms_given = changes.allowed.is_some()
         || changes.scope.is_some()
         || changes.reset.is_some()
         || changes.blocked.is_some()
-        || changes.anchor.is_some();
+        || changes.anchor.is_some()
+        || delayed_given;
     if changes.kind.as_deref() == Some("none") && terms_given {
         return Err("--allowance none takes no other allowance options".into());
+    }
+    if (delayed_given || changes.kind.as_deref() == Some("delayed"))
+        && (changes.allowed.is_some()
+            || changes.scope.is_some()
+            || changes.reset.is_some()
+            || changes.blocked.is_some()
+            || changes.anchor.is_some())
+    {
+        return Err("A delayed start takes only --after or --from".into());
+    }
+    if delayed_given && changes.kind.as_deref().is_some_and(|kind| kind != "delayed") {
+        return Err("--after and --from go with --allowance delayed".into());
+    }
+    if changes.after.is_some() && changes.from.is_some() {
+        return Err("Give --after or --from, not both".into());
     }
     Ok(Some(changes))
 }
 
 /// An allowance's terms from what was given, over the ones it has (`old`, when editing): what is not
 /// named stays, and a new one has defaults (the whole session, never reset, counted from the start).
-/// `--blocked` makes a Pomodoro, `--scope` or `--reset` a budget, and `--allowed` or `--anchor` alone
-/// keep the kind there is. Checked, so a mistake is told before anything is sent.
+/// `--blocked` makes a Pomodoro, `--scope` or `--reset` a budget, `--after` or `--from` a delayed
+/// start, and `--allowed` or `--anchor` alone keep the kind there is. Checked, so a mistake is told
+/// before anything is sent.
 fn build_terms(changes: AllowanceChanges, old: Option<&Terms>) -> Result<Terms, String> {
+    let delayed = match changes.kind.as_deref() {
+        Some(kind) => kind == "delayed",
+        None => changes.after.is_some() || changes.from.is_some(),
+    };
+    if delayed {
+        let old = match old {
+            Some(Terms::Delayed { kind, value }) => Some((*kind, value.clone())),
+            _ => None,
+        };
+        let (kind, value) = match (changes.after, changes.from) {
+            (Some(value), _) => (DelayKind::After, value),
+            (None, Some(value)) => (DelayKind::From, value),
+            (None, None) => old.ok_or("Give --after, how long to wait before enforcing, e.g. 30m, or --from, a date and time")?,
+        };
+        return Terms::Delayed { kind, value }.checked();
+    }
     let pomodoro = match changes.kind.as_deref() {
         Some(kind) => kind == "pomodoro",
         None if changes.blocked.is_some() => true,
@@ -862,6 +907,23 @@ fn parse_list_entries(options: &mut Options, cleared: &[String]) -> Result<BTree
 
 /// The names of the actions, as `Actions` calls its fields: a new action is known here
 /// without a change.
+/// The help, with the action names where `{actions}` stands: as many to a line as fit, under the
+/// text above them (the descriptions start in column `HELP_COLUMN`).
+fn help() -> String {
+    let (indent, width) = (" ".repeat(HELP_COLUMN), HELP_WIDTH - HELP_COLUMN);
+    let mut lines: Vec<String> = Vec::new();
+    for name in action_names() {
+        match lines.last_mut() {
+            Some(line) if line.len() + 2 + name.len() < width => {
+                line.push_str(", ");
+                line.push_str(&name);
+            }
+            _ => lines.push(name),
+        }
+    }
+    HELP.replace("{actions}", &lines.join(&format!(",\n{indent}")))
+}
+
 fn action_names() -> Vec<String> {
     match serde_json::to_value(Actions::default()) {
         Ok(Value::Object(fields)) => fields.keys().cloned().collect(),
@@ -977,7 +1039,7 @@ impl Options {
 
 fn execute(command: Command) -> Result<(), Failure> {
     match command {
-        Command::Help => say!("{}", HELP.replace("{actions}", &action_names().join(", "))),
+        Command::Help => say!("{}", help()),
         Command::Version => say!("bullseye {}", env!("CARGO_PKG_VERSION")),
         Command::Status { json } => {
             let overview = overview()?;
@@ -1490,7 +1552,7 @@ fn describe_webhook(hook: &Hook) -> String {
         "{} {} every {}: {usually}, {other} on {matched}",
         if hook.method == Method::Post { "POST" } else { "GET" },
         hook.url,
-        duration::countdown(hook.interval)
+        duration::period(hook.interval)
     )
 }
 
@@ -1597,11 +1659,11 @@ fn resolve_lock(overview: &Overview, lock: Lock) -> Result<Lock, Failure> {
 fn lock_warning(overview: &Overview, session: &Definition) -> Option<String> {
     match &session.lock {
         Lock::None => None,
-        Lock::Duration { .. } => {
+        Lock::Timed { kind: TimedKind::For, .. } => {
             let words = duration::countdown(session.lock.duration().ok()??.as_secs());
             Some(format!("It cannot be stopped, changed or deleted for {words}."))
         }
-        Lock::Until { until } => match localtime::until(until) {
+        Lock::Timed { kind: TimedKind::Until, value } => match localtime::until(value) {
             Ok(end) => Some(format!("It cannot be stopped, changed or deleted until {} ({} from now).", end.when, end.left)),
             // It will not start; the service says why.
             Err(_) => None,
@@ -1768,6 +1830,10 @@ fn allowance_words(status: &AllowanceStatus) -> String {
             (true, None) => "allowed".into(),
             (false, None) => "blocked".into(),
         },
+        Terms::Delayed { .. } => match &status.change_words {
+            Some(change) => format!("nothing enforced for the next {change}"),
+            None => "enforcing".into(),
+        },
         Terms::Budget { allowed, scope, .. } => {
             let total =
                 duration::parse(allowed).ok().flatten().map(|d| duration::countdown(d.as_secs())).unwrap_or_else(|| allowed.clone());
@@ -1809,8 +1875,7 @@ fn fallout(overview: &Overview, id: &str) -> String {
     let quoted = |names: &[String]| names.iter().map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ");
     let mut text = String::new();
     for (names, what) in [
-        (&fallout.deleted, "is deleted too, as it has no other target"),
-        (&fallout.without_it, "keeps its other targets"),
+        (&fallout.without_it, "goes on without this target"),
         (&fallout.always, "is always active from then on"),
         (&fallout.unlocked, "has no lock from then on"),
         (&fallout.shrinks, "goes on without it"),
@@ -1875,11 +1940,11 @@ fn describe_session(overview: &Overview, session: &Definition, running: Option<&
     let allowance = session.allowance.as_ref().map_or("none".to_string(), Terms::describe);
     let lock = match &session.lock {
         Lock::None => "none: can be stopped at any time".to_string(),
-        Lock::Duration { duration } => match session.lock.duration() {
+        Lock::Timed { kind: TimedKind::For, value: duration } => match session.lock.duration() {
             Ok(Some(d)) => format!("duration, {} (cannot be stopped for that long once started)", duration::countdown(d.as_secs())),
             _ => format!("duration, {duration}"),
         },
-        Lock::Until { until } => match session.lock.until() {
+        Lock::Timed { kind: TimedKind::Until, value: until } => match session.lock.until() {
             Ok(Some(at)) => format!("until {at} (cannot be stopped until then once started)"),
             _ => format!("until {until}"),
         },
@@ -2144,7 +2209,7 @@ mod tests {
         let url = "http://127.0.0.1:9/state";
         ok(&["condition", "new", "Home", "--webhook", url, "--match-body", "home", "--fallback", "inactive"]);
         let shown = ok(&["condition", "show", "Home"]);
-        assert!(shown.contains("GET http://127.0.0.1:9/state every 1 minute: not active, active on body \"home\""), "{shown}");
+        assert!(shown.contains("GET http://127.0.0.1:9/state every minute: not active, active on body \"home\""), "{shown}");
         ok(&["condition", "new", "Door", "--webhook", url, "--match-status", "423", "--every", "5m"]);
         let shown = ok(&["condition", "show", "Door"]);
         assert!(shown.contains("GET http://127.0.0.1:9/state every 5 minutes: active, not active on HTTP 423"), "{shown}");
@@ -2204,7 +2269,10 @@ mod tests {
         assert!(refused(&["lock", "Pw", "--lock-duration", "1h"]).contains("No terminal to ask in; add --force"));
         assert_eq!(ok(&["lock", "Pw", "--lock-duration", "1h", "--force"]), "Locked \"Pw\" now.\n");
         assert!(ok(&["status"]).contains("Pw       Running · active · locked for the next"));
-        assert_eq!(refused(&["lock", "Pw", "--no-lock"]), "This session is locked, so its lock cannot be changed until it can be stopped");
+        assert_eq!(
+            refused(&["lock", "Pw", "--no-lock"]),
+            "This session is locked, so its lock cannot be changed until it can be stopped, except to end later or to wait longer"
+        );
         assert!(refused(&["lock", "Pw"]).starts_with("Give the lock"));
         // Without a delay, unlocking is free and ends them all.
         assert_eq!(ok(&["unlock"]), "Unlocked: every session has ended.\n");
@@ -2351,7 +2419,7 @@ mod tests {
         let condition = || Lock::Condition { condition: "c".into() };
         assert_eq!(with(condition(), true, None), "Unlocking is open: its condition is not active.");
         assert_eq!(with(condition(), false, Some("2 hours")), "Unlocking is locked while its condition is active (in 2 hours)");
-        assert_eq!(with(Lock::Duration { duration: "1h".into() }, false, None), "Only the delay unlocks.");
+        assert_eq!(with(Lock::timed_for("1h"), false, None), "Only the delay unlocks.");
     }
 
     /// A running session as the status gives it, always active and not locked.
@@ -2439,8 +2507,8 @@ mod tests {
             let shown = describe_session(&overview, &Definition { lock, ..b.clone() }, None);
             shown.lines().find(|l| l.starts_with("Lock:")).unwrap_or_default().to_string()
         };
-        assert_eq!(lock_of(Lock::Duration { duration: "soon".into() }), "Lock:        duration, soon");
-        assert_eq!(lock_of(Lock::Until { until: "someday".into() }), "Lock:        until someday");
+        assert_eq!(lock_of(Lock::timed_for("soon")), "Lock:        duration, soon");
+        assert_eq!(lock_of(Lock::timed_until("someday")), "Lock:        until someday");
         assert_eq!(lock_of(Lock::Delay { delay: "a while".into() }), "Lock:        delay, a while");
         assert_eq!(lock_of(Lock::Condition { condition: "gone".into() }), "Lock:        condition: (condition gone)");
         assert_eq!(lock_of(Lock::Password { password: None, hash: None }), "Lock:        password: can only be stopped with its password");
@@ -2457,7 +2525,7 @@ mod tests {
             lock_warning(&overview, &Definition { lock: Lock::Condition { condition: "d".into() }, ..b.clone() }).unwrap(),
             "It cannot be stopped while its lock condition \"Key\" is active (the flash drive \"Kingston\" is not connected)."
         );
-        assert_eq!(lock_warning(&overview, &Definition { lock: Lock::Until { until: "2001-01-01 00:00".into() }, ..b.clone() }), None);
+        assert_eq!(lock_warning(&overview, &Definition { lock: Lock::timed_until("2001-01-01 00:00"), ..b.clone() }), None);
         // A combination with one of its conditions gone.
         let combined = Rule::Combined { mode: Mode::Any, members: vec!["s1".into(), "gone".into()], rules: vec![] };
         assert_eq!(describe_rule(&overview, &combined), "any of \"Work hours\", (gone)");
@@ -2469,7 +2537,7 @@ mod tests {
             fallback: true,
             matcher: Matcher { on: Match::Status, status: None, body: None },
         };
-        assert_eq!(describe_webhook(&hook), "GET https://x.io every 1 minute: active, not active on (not set)");
+        assert_eq!(describe_webhook(&hook), "GET https://x.io every minute: active, not active on (not set)");
     }
 
     #[test]
@@ -2615,7 +2683,7 @@ mod tests {
         assert!(apply_session_changes(&library(), &mut b, changes).is_ok());
         assert_eq!(
             (b.targets, b.condition, b.lock),
-            (vec!["l1".to_string(), "l1".to_string()], Some("s1".to_string()), Lock::Duration { duration: "2h 30m".into() })
+            (vec!["l1".to_string(), "l1".to_string()], Some("s1".to_string()), Lock::timed_for("2h 30m"))
         );
 
         // `always`, and a list that does not exist.
@@ -2638,12 +2706,12 @@ mod tests {
         assert_eq!(parse(&args(&["start", "Work"])), Ok(Command::Start { session: "Work".into(), lock: None, force: false }));
         assert_eq!(
             parse(&args(&["lock", "Work", "--lock-duration", "2h", "--force"])),
-            Ok(Command::Lock { session: "Work".into(), lock: Lock::Duration { duration: "2h".into() }, force: true })
+            Ok(Command::Lock { session: "Work".into(), lock: Lock::timed_for("2h"), force: true })
         );
         assert!(parse(&args(&["lock", "Work"])).is_err());
         assert_eq!(
             parse(&args(&["start", "Work", "--lock-until", "2026-10-06 18:00"])),
-            Ok(Command::Start { session: "Work".into(), lock: Some(Lock::Until { until: "2026-10-06 18:00".into() }), force: false })
+            Ok(Command::Start { session: "Work".into(), lock: Some(Lock::timed_until("2026-10-06 18:00")), force: false })
         );
         assert_eq!(
             parse(&args(&["start", "Work", "--lock-until-restart"])),
@@ -2656,7 +2724,7 @@ mod tests {
         let warning = lock_warning(&overview, &overview.sessions[0]).unwrap();
         assert!(warning.contains("while its lock condition \"Work hours\" is active."), "{warning}");
         assert!(!warning.contains("08:00"), "{warning}");
-        let timed = Definition { lock: Lock::Duration { duration: "2h5m".into() }, ..overview.sessions[0].clone() };
+        let timed = Definition { lock: Lock::timed_for("2h5m"), ..overview.sessions[0].clone() };
         assert!(lock_warning(&overview, &timed).unwrap().contains("for 2 hours and 5 minutes."));
         assert_eq!(lock_warning(&overview, &Definition { lock: Lock::None, ..timed }), None);
     }
@@ -2825,7 +2893,7 @@ mod tests {
     #[test]
     fn deleting_says_what_it_does_to_the_sessions() {
         let overview = library();
-        assert_eq!(fallout(&overview, "l1"), " \"Work\" is deleted too, as it has no other target.");
+        assert_eq!(fallout(&overview, "l1"), " \"Work\" goes on without this target.");
         assert_eq!(fallout(&overview, "s1"), " \"Work\" is always active from then on. \"Work\" has no lock from then on.");
         assert_eq!(fallout(&overview, "other"), "");
     }
@@ -3023,6 +3091,75 @@ mod tests {
             items: vec![],
         };
         assert_eq!(allowance_words(&used), "12 minutes left of 30 minutes, reset in 3 hours");
+    }
+
+    #[test]
+    fn a_delayed_start_is_set_by_after_or_from() {
+        let delayed = |kind, value: &str| Some(Terms::Delayed { kind, value: value.into() });
+        assert_eq!(allowance_of(&["new", "A", "--after", "30m"], None), Ok(delayed(DelayKind::After, "30m")));
+        assert_eq!(allowance_of(&["new", "A", "--allowance", "delayed", "--after", "1h"], None), Ok(delayed(DelayKind::After, "1h")));
+        assert_eq!(
+            allowance_of(&["new", "A", "--from", "2026-10-06 18:00"], None),
+            Ok(delayed(DelayKind::From, "2026-10-06 18:00"))
+        );
+        // Over any allowance, a delayed start replaces it; over an old delayed start, the one named wins.
+        let cycle = Some(Terms::Pomodoro { blocked: "50m".into(), allowed: "10m".into(), anchor: Anchor::Start });
+        assert_eq!(allowance_of(&["edit", "Work", "--after", "5m"], cycle.clone()), Ok(delayed(DelayKind::After, "5m")));
+        let old = delayed(DelayKind::After, "30m");
+        assert_eq!(allowance_of(&["edit", "Work", "--from", "2026-10-06 18:00"], old.clone()), Ok(delayed(DelayKind::From, "2026-10-06 18:00")));
+        assert_eq!(allowance_of(&["edit", "Work", "--after", "10m"], old.clone()), Ok(delayed(DelayKind::After, "10m")));
+        // Without --after or --from the old delayed start stays; without one there is nothing to keep.
+        assert_eq!(allowance_of(&["edit", "Work", "--allowance", "delayed"], old.clone()), Ok(old.clone()));
+        assert!(allowance_of(&["edit", "Work", "--allowance", "delayed"], cycle).unwrap_err().contains("Give --after"));
+        assert!(allowance_of(&["new", "A", "--allowance", "delayed"], None).unwrap_err().contains("Give --after"));
+        // The start is checked before anything is sent.
+        assert!(allowance_of(&["new", "A", "--after", "soon"], None).is_err());
+        assert!(allowance_of(&["new", "A", "--after", "0m"], None).is_err());
+        assert!(allowance_of(&["new", "A", "--from", "tomorrow"], None).is_err());
+        // None takes it away.
+        assert_eq!(allowance_of(&["edit", "Work", "--allowance", "none"], old), Ok(None));
+        // What does not go together.
+        for (line, why) in [
+            (&["new", "A", "--after", "5m", "--from", "2026-10-06 18:00"][..], "not both"),
+            (&["new", "A", "--after", "5m", "--allowed", "5m"], "takes only --after or --from"),
+            (&["new", "A", "--from", "2026-10-06 18:00", "--blocked", "5m"], "takes only --after or --from"),
+            (&["new", "A", "--allowance", "delayed", "--scope", "each"], "takes only --after or --from"),
+            (&["new", "A", "--allowance", "delayed", "--reset", "never"], "takes only --after or --from"),
+            (&["new", "A", "--allowance", "delayed", "--anchor", "clock"], "takes only --after or --from"),
+            (&["new", "A", "--allowance", "none", "--after", "5m"], "takes no other allowance options"),
+            (&["new", "A", "--allowance", "none", "--from", "2026-10-06 18:00"], "takes no other allowance options"),
+            (&["new", "A", "--allowance", "budget", "--after", "5m"], "go with --allowance delayed"),
+            (&["new", "A", "--allowance", "pomodoro", "--from", "2026-10-06 18:00"], "go with --allowance delayed"),
+        ] {
+            let error = parse(&args(line)).unwrap_err();
+            let error = match error {
+                Failure::Failed(why) | Failure::Usage(why) => why,
+            };
+            assert!(error.contains(why), "{line:?}: {error}");
+        }
+        assert!(parse(&args(&["new", "A", "--allowance", "wait"])).is_err());
+        // It is shown on the session, and what it is doing with a running one.
+        let mut overview = library();
+        overview.sessions[0].allowance = delayed(DelayKind::After, "30m");
+        let shown = describe_session(&overview, &overview.sessions[0], None);
+        assert!(shown.contains("Allowance:   Nothing is enforced for the first 30 minutes\n"), "{shown}");
+        overview.sessions[0].allowance = delayed(DelayKind::From, "2026-10-06 18:00");
+        let shown = describe_session(&overview, &overview.sessions[0], None);
+        assert!(shown.contains("Allowance:   Nothing is enforced until Tuesday 6 October 2026, 18:00\n"), "{shown}");
+        let status = AllowanceStatus {
+            terms: Terms::Delayed { kind: DelayKind::After, value: "30m".into() },
+            open: true,
+            change: Some(240),
+            change_words: Some("4 minutes".into()),
+            left: None,
+            left_words: None,
+            reset_in: None,
+            reset_words: None,
+            items: vec![],
+        };
+        assert_eq!(allowance_words(&status), "nothing enforced for the next 4 minutes");
+        let begun = AllowanceStatus { open: false, change: None, change_words: None, ..status };
+        assert_eq!(allowance_words(&begun), "enforcing");
     }
 
     #[test]

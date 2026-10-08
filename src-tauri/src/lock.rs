@@ -18,19 +18,26 @@ const MAX_TEXT: usize = 1000;
 /// The longest wait of a delay lock, as long as the unlock delay can be.
 const MAX_DELAY: Duration = Duration::from_secs(24 * 3600);
 
+/// What a timed lock's value is: how long it lasts, or when it ends.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TimedKind {
+    For,
+    Until,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(tag = "method", rename_all = "snake_case")]
 pub enum Lock {
     /// Not locked: the session can be stopped at any time.
     #[default]
     None,
-    /// Locked for a while (`2h 30m`, `duration.rs`): the session cannot be stopped, and ends by
-    /// itself when the time is up. Measured on internet time.
-    Duration { duration: String },
-    /// Locked until a local date and time (`2026-10-06 18:00`, `datetime.rs`): the same as a
-    /// duration lock that ends then. Read in Windows' time zone when the session starts, and then
-    /// measured on internet time; a time that has passed by then does not start.
-    Until { until: String },
+    /// Locked until a time: the session cannot be stopped, and ends by itself when the time is up.
+    /// `kind` says what `value` is: `For`, a while (`2h 30m`, `duration.rs`), or `Until`, a local
+    /// date and time (`2026-10-06 18:00`, `datetime.rs`), the same as a lock for the while that ends
+    /// then. Read in Windows' time zone when the session starts, and then measured on internet time;
+    /// a time that has passed by then does not start.
+    Timed { kind: TimedKind, value: String },
     /// Locked until Windows restarts (`boot.rs`): the session cannot be stopped before, and ends with
     /// the restart. A shut down with Fast Startup is not a restart (Windows hibernates then).
     UntilRestart,
@@ -64,6 +71,16 @@ pub enum Lock {
 }
 
 impl Lock {
+    /// A timed lock for a while (`2h 30m`).
+    pub fn timed_for(value: impl Into<String>) -> Lock {
+        Lock::Timed { kind: TimedKind::For, value: value.into() }
+    }
+
+    /// A timed lock until a local date and time (`2026-10-06 18:00`).
+    pub fn timed_until(value: impl Into<String>) -> Lock {
+        Lock::Timed { kind: TimedKind::Until, value: value.into() }
+    }
+
     /// As a client may see it: a password lock without its hash.
     pub fn redacted(&self) -> Lock {
         match self {
@@ -98,10 +115,10 @@ impl Lock {
         }
     }
 
-    /// How long a duration lock locks the session for; `None` for the other methods.
+    /// How long a timed lock for a while locks the session for; `None` for the other locks.
     pub fn duration(&self) -> Result<Option<Duration>, String> {
         match self {
-            Lock::Duration { duration } => {
+            Lock::Timed { kind: TimedKind::For, value: duration } => {
                 duration::parse(duration)?.map(Some).ok_or_else(|| "Enter how long to lock the session for, e.g. 2h 30m".into())
             }
             _ => Ok(None),
@@ -122,10 +139,10 @@ impl Lock {
         }
     }
 
-    /// The local date and time an until lock ends at; `None` for the other methods.
+    /// The local date and time a timed lock until a time ends at; `None` for the other locks.
     pub fn until(&self) -> Result<Option<DateTime>, String> {
         match self {
-            Lock::Until { until } => DateTime::parse(until).map(Some),
+            Lock::Timed { kind: TimedKind::Until, value } => DateTime::parse(value).map(Some),
             _ => Ok(None),
         }
     }
@@ -155,14 +172,14 @@ mod tests {
     #[test]
     fn a_lock_says_how_long() {
         assert_eq!(Lock::None.duration(), Ok(None));
-        assert_eq!(Lock::Duration { duration: "2h 5m".into() }.duration(), Ok(Some(Duration::from_secs(7500))));
-        assert!(Lock::Duration { duration: "".into() }.duration().is_err());
-        assert!(Lock::Duration { duration: "soon".into() }.duration().is_err());
+        assert_eq!(Lock::timed_for("2h 5m").duration(), Ok(Some(Duration::from_secs(7500))));
+        assert!(Lock::timed_for("").duration().is_err());
+        assert!(Lock::timed_for("soon").duration().is_err());
         assert_eq!(Lock::Condition { condition: "s".into() }.duration(), Ok(None));
-        let until = Lock::Until { until: "2026-10-06 18:00".into() };
+        let until = Lock::timed_until("2026-10-06 18:00");
         assert_eq!(until.until().unwrap().map(|at| at.to_string()).as_deref(), Some("Tuesday 6 October 2026, 18:00"));
         assert_eq!(until.duration(), Ok(None));
-        assert!(Lock::Until { until: "tomorrow".into() }.check().is_err());
+        assert!(Lock::timed_until("tomorrow").check().is_err());
         assert!(Lock::UntilRestart.check().is_ok());
         let delayed = Lock::Delay { delay: "1h".into() };
         assert_eq!(delayed.delay(), Ok(Some(Duration::from_secs(3600))));
@@ -175,13 +192,15 @@ mod tests {
     #[test]
     fn a_lock_travels_as_json() {
         assert_eq!(serde_json::to_string(&Lock::None).unwrap(), r#"{"method":"none"}"#);
-        let timed = Lock::Duration { duration: "10m".into() };
-        assert_eq!(serde_json::to_string(&timed).unwrap(), r#"{"method":"duration","duration":"10m"}"#);
-        assert_eq!(serde_json::from_str::<Lock>(r#"{"method":"duration","duration":"10m"}"#).unwrap(), timed);
+        let timed = Lock::timed_for("10m");
+        assert_eq!(serde_json::to_string(&timed).unwrap(), r#"{"method":"timed","kind":"for","value":"10m"}"#);
+        assert_eq!(serde_json::from_str::<Lock>(r#"{"method":"timed","kind":"for","value":"10m"}"#).unwrap(), timed);
         assert_eq!(
-            serde_json::to_string(&Lock::Until { until: "2026-10-06 18:00".into() }).unwrap(),
-            r#"{"method":"until","until":"2026-10-06 18:00"}"#
+            serde_json::to_string(&Lock::timed_until("2026-10-06 18:00")).unwrap(),
+            r#"{"method":"timed","kind":"until","value":"2026-10-06 18:00"}"#
         );
+        // One method, whichever way it is given: they keep their settings together.
+        assert!(timed.same_method(&Lock::timed_until("2026-10-06 18:00")));
         assert_eq!(serde_json::to_string(&Lock::UntilRestart).unwrap(), r#"{"method":"until_restart"}"#);
         let typed = Lock::Text { text: "I will not scroll".into() };
         assert_eq!(serde_json::to_string(&typed).unwrap(), r#"{"method":"text","text":"I will not scroll"}"#);

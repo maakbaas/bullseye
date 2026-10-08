@@ -59,10 +59,10 @@ Exit codes: `0` done, `1` failed, refused or cancelled (the reason is printed), 
 |---|---|---|
 | `--targets <targets>` | The targets it enforces. | none (it cannot start without one) |
 | `--condition <condition>` | When it is active: a condition, or `always`. | `always` |
-| `--allowance <budget\|pomodoro\|none>` | Its allowance, with the options below (see [Allowances](#allowances---allowance-and-its-options)). | `none` |
-| `--allowed`, `--scope`, `--reset`, `--blocked`, `--anchor` | The allowance's terms. | |
-| `--lock-duration <duration>` | Lock: for this long once started. | |
-| `--lock-until <date time>` | Lock: until then, e.g. `"2026-10-06 18:00"` (local time). A time that has passed when the session starts is refused. | |
+| `--allowance <budget\|pomodoro\|delayed\|none>` | Its allowance, with the options below (see [Allowances](#allowances---allowance-and-its-options)). | `none` |
+| `--allowed`, `--scope`, `--reset`, `--blocked`, `--anchor`, `--after`, `--from` | The allowance's terms. | |
+| `--lock-duration <duration>` | Lock: timed, for this long once started. | |
+| `--lock-until <date time>` | Lock: timed, until then, e.g. `"2026-10-06 18:00"` (local time). A time that has passed when the session starts is refused. | |
 | `--lock-until-restart` | Lock: until Windows restarts. | |
 | `--lock-condition <condition>` | Lock: while this condition is active. A schedule locks at its times; a flash drive locks while it is not connected. | |
 | `--lock-password <pw>` | Lock: with this password. Only a hash of it is kept. | |
@@ -71,7 +71,7 @@ Exit codes: `0` done, `1` failed, refused or cancelled (the reason is printed), 
 | `--no-lock` | Not locked. | yes |
 | `--name <name>` | (`edit` only) A new name. | |
 
-With `edit`, an option replaces only what it names: `--targets` replaces all its targets with the ones given, and what is not named stays. A running session takes the change at once (its lock aside: `lock` gives a running session that is not locked a lock); while it is locked, only its name and a stricter allowance. `start` takes the lock options too: they set the session's lock before it starts, as the Lock field on its tile in the window does.
+With `edit`, an option replaces only what it names: `--targets` replaces all its targets with the ones given, and what is not named stays. A running session takes the change at once (its lock aside: `lock` gives a running session that is not locked a lock); while it is locked, only its name, a stricter allowance and a stricter lock (`lock`). `start` takes the lock options too: they set the session's lock before it starts, as the Lock field on its tile in the window does.
 
 ### Targets: `target new`, `target edit`
 
@@ -90,23 +90,26 @@ With `edit`, an option replaces only what it names: `--targets` replaces all its
 
 ### Allowances: `--allowance` and its options
 
-An allowance lets a session go quiet for a while. A session has at most one, set on the session itself with the options of `new` and `edit` (as in the window, where it is the Unless field on the session's tile). Two kinds:
+An allowance lets a session go quiet for a while. A session has at most one, set on the session itself with the options of `new` and `edit` (as in the window, where it is the Unless field on the session's tile). Three kinds:
 
 - A **budget** is a time of use. It is for the session as a whole (`--scope total`) or for each of its items on its own (`--scope each`: each site, program, Store app and window title in its targets). While time is left, what is covered is not closed; it is only watched, and the time it is in use is counted. When the time is used up it is closed again, until the budget is reset.
 - A **Pomodoro** is a fixed cycle: blocked for `--blocked`, then everything allowed for `--allowed`, over and over. While it allows, the session enforces nothing, Obsidian's web viewer included.
+- A **delayed start** enforces nothing for the first `--after` of the session (e.g. `30m`), or until `--from` a local date and time; from then on everything is enforced, for good. The session is running and locked all along; only the enforcing waits.
 
 **Use** is what the app sees: a page shown in a visible tab (a page in a background tab is not seen), an open window or app, a program that is running. The service counts it, on internet time.
 
 | Option | Meaning | Default |
 |---|---|---|
-| `--allowance <budget\|pomodoro\|none>` | Which kind, or `none` to take it away. Without it, `--blocked` makes a Pomodoro, `--scope` or `--reset` a budget, and `--allowed` or `--anchor` alone keep the kind the session has (a budget if none). Another kind starts from its defaults. | `budget` |
+| `--allowance <budget\|pomodoro\|delayed\|none>` | Which kind, or `none` to take it away. Without it, `--blocked` makes a Pomodoro, `--scope` or `--reset` a budget, `--after` or `--from` a delayed start, and `--allowed` or `--anchor` alone keep the kind the session has (a budget if none). Another kind starts from its defaults. | `budget` |
 | `--allowed <duration>` | Budget: the time allowed, e.g. `30m`. Pomodoro: how long everything is allowed each cycle. | required |
 | `--scope <total\|each>` | Budget: the session as a whole, or each item on its own. | `total` |
 | `--reset <never\|condition\|duration>` | Budget: when what was used is given back: `never` while the session runs, each time the session's `condition` turns it on (a time block of a schedule, a flash drive being unplugged; a session with no condition is always on, so never resets), or every so long, a duration such as `1d`, `12h` or `90m`, counted as `--anchor` says. | `never` |
 | `--blocked <duration>` | Pomodoro: how long it is blocked each cycle, e.g. `50m`. | required |
+| `--after <duration>` | Delayed start: how long after the session starts enforcing begins, e.g. `30m`. | one of `--after` and `--from` |
+| `--from <date time>` | Delayed start: the local date and time enforcing begins, e.g. `"2026-10-06 18:00"`. Not together with `--after`, nor with the budget and Pomodoro options. | |
 | `--anchor <start\|clock>` | What a Pomodoro, or a budget's reset every so long, is counted from: the start of the session (a cycle is blocked first), or midnight on the clock, so a cycle or reset of an hour comes at every xx:00 and `1d` at midnight. On the clock it has to fit a day evenly: 30 minutes, 1 hour, 1 day. | `start` |
 
-With `edit`, an option replaces only what it names. While the session is locked, its allowance can only get stricter: a budget's time shorter or reset less often (every so long only longer and counted from the same point, or never; a reset by condition stays), its scope and a Pomodoro's cycle stay as they are, and `--allowance none` takes it away; a session without one cannot be given one.
+With `edit`, an option replaces only what it names. While the session is locked, its allowance can only get stricter: a budget's time shorter or reset less often (every so long only longer and counted from the same point, or never; a reset by condition stays), its scope and a Pomodoro's cycle stay as they are, a delayed start can only come sooner (a shorter `--after`, an earlier `--from`, of the same kind), and `--allowance none` takes it away; a session without one cannot be given one.
 
 Obsidian's web viewer action has no items to count, so a budget (total or for each item) never lets it through: Obsidian is closed on web content all the time. Only a Pomodoro's allowed time lets it be.
 
@@ -114,6 +117,8 @@ Obsidian's web viewer action has no items to count, so a budget (total or for ea
 bullseye new "Social time" --targets "Social media" --allowance budget --allowed 30m --scope total --reset 1d --anchor clock
 bullseye edit "Social time" --allowed 10m --scope each --reset 2h
 bullseye new "Focus" --targets "Social media" --allowance pomodoro --blocked 50m --allowed 10m --anchor clock
+bullseye new "Settle in" --targets "Social media" --allowance delayed --after 30m
+bullseye edit "Settle in" --from "2026-10-06 18:00"
 bullseye edit "Focus" --allowance none
 ```
 
@@ -179,7 +184,7 @@ A running session with an allowance says what it is doing at the end of its line
 
 ### `lock`
 
-`lock <session>` with a lock option gives a running session that is not locked right now that lock, from now on, as if it started with it now (`--lock-duration 1h` is locked for the next hour); it is also the lock its next start has. A lock that holds asks first (`[y/N]`), unless `--force`. A locked session keeps its lock; `--no-lock` takes the lock away from one that is not locked (a condition lock while its condition is inactive).
+`lock <session>` with a lock option gives a running session that is not locked right now that lock, from now on, as if it started with it now (`--lock-duration 1h` is locked for the next hour); it is also the lock its next start has. A lock that holds asks first (`[y/N]`), unless `--force`. A locked session keeps its lock, except that a timed lock (`--lock-duration` or `--lock-until`, either) can end later and a delay (`--lock-delay`) can be longer; `--no-lock` takes the lock away from one that is not locked (a condition lock while its condition is inactive).
 
 ### `stop`, `delete`, `target delete`, `condition delete`
 
@@ -268,4 +273,4 @@ A running session reads its schedule in the time zone Windows had when the sessi
 
 ## Durations
 
-`30s`, `10m`, `2h`, `1d`, or several parts together: `2h 30m`, `2h30m`, `1d 12h`. Words work too: `2 hours 30 minutes`. Everything the CLI and the window show is written out, leaving out units that are zero: `2 hours and 30 minutes`, `2 hours and 5 seconds`, `1 day, 2 hours and 1 minute`.
+In the window a duration is picked in boxes for days, hours, minutes and seconds; the command line takes it typed: `30s`, `10m`, `2h`, `1d`, or several parts together: `2h 30m`, `2h30m`, `1d 12h`. Words work too: `2 hours 30 minutes`. Everything the CLI and the window show is written out, leaving out units that are zero: `2 hours and 30 minutes`, `2 hours and 5 seconds`, `1 day, 2 hours and 1 minute`. A period leaves out a lone 1: "every day", "every hour", "every 2 hours".

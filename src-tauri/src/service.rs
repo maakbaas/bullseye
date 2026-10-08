@@ -238,7 +238,7 @@ mod tests {
         let Ok(Response::Status(status)) = client::call(&Request::Status) else { panic!("no status") };
         assert!(status.running.is_empty());
         assert_eq!(client::call(&Request::SaveTarget { target: target("a", &["a.com"]) }), Ok(Response::Done));
-        let session = Definition { lock: Lock::Duration { duration: "1h".into() }, ..session("a", &["a"]) };
+        let session = Definition { lock: Lock::timed_for("1h"), ..session("a", &["a"]) };
         assert_eq!(client::call(&Request::SaveSession { session }), Ok(Response::Done));
         assert_eq!(client::call(&Request::Start { id: "a".into() }), Ok(Response::Done));
         let Ok(Response::Policy(policies)) = client::call(&Request::Policy) else { panic!("no policy") };

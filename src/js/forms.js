@@ -3,6 +3,8 @@
 // `disable(off)`, `settle()` and `error()`.
 
 import { el, invalid, invoke, lines, overview, t } from "./core.js";
+import { durationField } from "./duration.js";
+import { timingFields } from "./timing.js";
 
 // ---- What things are made of. Three kinds, each a list of its own: targets (what to
 // session), conditions (when) and sessions (one or more targets, a condition, an allowance and a
@@ -367,7 +369,8 @@ function webhookPicker() {
   const url = el("cds-text-input", { label: t("conditions.webhook.url"), placeholder: "https://example.com/state?room=1", "helper-text": t("conditions.webhook.urlHelper") });
   const method = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.webhook.method") });
   for (const key of ["get", "post"]) method.append(el("cds-dropdown-item", { value: key }, key.toUpperCase()));
-  const every = el("cds-text-input", { label: t("conditions.webhook.every"), placeholder: "1", "helper-text": t("conditions.webhook.everyHelper") });
+  // No seconds: it is asked at most once a minute.
+  const every = durationField({ label: t("conditions.webhook.every"), helper: t("conditions.webhook.everyHelper"), units: ["d", "h", "m"] });
   const fallback = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.webhook.fallback"), "helper-text": t("conditions.webhook.fallbackHelper") });
   for (const key of ["active", "inactive"]) fallback.append(el("cds-dropdown-item", { value: key }, t(`conditions.webhook.fallback_${key}`)));
   const matcher = matcherFields();
@@ -384,20 +387,19 @@ function webhookPicker() {
   const read = () => ({
     url: url.value.trim(),
     method: method.value || "get",
-    interval: Math.round(Number(every.value.trim()) * 60),
+    interval: every.seconds(),
     fallback: fallback.value !== "inactive",
     matcher: matcher.read(),
   });
   const error = () => {
     invalid(url, null);
-    invalid(every, null);
+    every.error(null);
     if (!/^https?:\/\/\S{3,}$/.test(url.value.trim())) {
       invalid(url, t("conditions.webhook.urlWrong"));
       return t("conditions.webhook.urlWrong");
     }
-    const minutes = Number(every.value.trim());
-    if (!Number.isFinite(minutes) || minutes < 1) {
-      invalid(every, t("conditions.webhook.everyWrong"));
+    if (every.seconds() < 60) {
+      every.error(t("conditions.webhook.everyWrong"));
       return t("conditions.webhook.everyWrong");
     }
     return matcher.error();
@@ -420,7 +422,7 @@ function webhookPicker() {
   });
   return {
     nodes: [
-      section(t("conditions.webhook.requestTitle"), t("conditions.webhook.requestText"), url, method, every),
+      section(t("conditions.webhook.requestTitle"), t("conditions.webhook.requestText"), url, method, every.node),
       section(t("conditions.webhook.defaultTitle"), t("conditions.webhook.defaultText"), fallback),
       matchPart,
       section(t("conditions.webhook.testTitle"), t("conditions.webhook.testText"), el("div", { class: "inline-action" }, test), result),
@@ -429,7 +431,7 @@ function webhookPicker() {
       const hook = condition.type === "webhook" ? condition : {};
       url.value = hook.url || "";
       method.value = hook.method || "get";
-      every.value = hook.interval ? String(Math.round(hook.interval / 60)) : "1";
+      every.set(hook.interval || 60);
       fallback.value = hook.fallback === false ? "inactive" : "active";
       matcher.fill(hook.matcher);
       nameMatch();
@@ -438,7 +440,8 @@ function webhookPicker() {
     read,
     error,
     disable(off) {
-      for (const control of [url, method, every, fallback, test]) control.disabled = off;
+      for (const control of [url, method, fallback, test]) control.disabled = off;
+      every.disable(off);
       matcher.disable(off);
     },
   };
@@ -554,30 +557,36 @@ function allowanceSection() {
     for (const key of keys) field.append(el("cds-dropdown-item", { value: key }, t(`${path}.${key}`)));
     return field;
   };
-  const type = dropdown(t("allowance.typeLabel"), t("allowance.typeHelper"), ["none", "budget", "pomodoro"], "allowance.type");
-  const text = (label, placeholder, helper) => el("cds-text-input", { label, placeholder, "helper-text": helper });
-  const allowed = text(t("allowance.budget.allowedLabel"), t("allowance.budget.allowedPlaceholder"), t("allowance.budget.allowedHelper"));
+  const type = dropdown(t("allowance.typeLabel"), t("allowance.typeHelper"), ["none", "budget", "pomodoro", "delayed"], "allowance.type");
+  const text = (label, helper) => durationField({ label, helper });
+  const allowed = text(t("allowance.budget.allowedLabel"), t("allowance.budget.allowedHelper"));
   const scope = dropdown(t("allowance.budget.scopeLabel"), t("allowance.budget.scopeHelper"), ["total", "each"], "allowance.budget");
   const reset = dropdown(t("allowance.budget.resetLabel"), t("allowance.budget.resetHelper"), ["never", "every", "condition"], "allowance.budget");
   // Given back every so long: how long, and counted from the session's start or the clock.
-  const every = text(t("allowance.budget.everyLabel"), t("allowance.budget.everyPlaceholder"), t("allowance.budget.everyHelper"));
+  const every = text(t("allowance.budget.everyLabel"), t("allowance.budget.everyHelper"));
   const resetAnchor = dropdown(t("allowance.budget.anchorLabel"), t("allowance.budget.anchorHelper"), ["start", "clock"], "allowance.budget");
-  const everyPart = el("div", { class: "fields" }, every, resetAnchor);
-  const blocked = text(t("allowance.cycle.blockedLabel"), t("allowance.cycle.blockedPlaceholder"), t("allowance.cycle.helper"));
-  const cycleAllowed = text(t("allowance.cycle.allowedLabel"), t("allowance.cycle.allowedPlaceholder"), t("allowance.cycle.helper"));
+  const everyPart = el("div", { class: "fields" }, every.node, resetAnchor);
+  const blocked = text(t("allowance.cycle.blockedLabel"), t("allowance.cycle.helper"));
+  const cycleAllowed = text(t("allowance.cycle.allowedLabel"), t("allowance.cycle.helper"));
   const anchor = dropdown(t("allowance.cycle.anchorLabel"), t("allowance.cycle.anchorHelper"), ["start", "clock"], "allowance.cycle");
-  const budgetPart = el("div", { class: "fields" }, allowed, scope, reset, everyPart);
-  const cyclePart = el("div", { class: "fields" }, blocked, cycleAllowed, anchor);
+  const budgetPart = el("div", { class: "fields" }, allowed.node, scope, reset, everyPart);
+  const cyclePart = el("div", { class: "fields" }, blocked.node, cycleAllowed.node, anchor);
+  // Nothing enforced for a while after the start, or until a time (`timing.js`).
+  const delayed = timingFields(["after", "from"], "delayed");
+  const delayedPart = el("div", { class: "fields" }, ...delayed.nodes);
   const summary = el("p", { class: "cds--type-body-01 week-summary" });
   let problem = null;
+  // What is wrong is only said once a save was tried (or after, as it is changed).
+  let tried = false;
   let asked = 0;
   let timer = null;
 
   const terms = () => {
-    if (type.value === "pomodoro") return { type: "pomodoro", blocked: blocked.value.trim(), allowed: cycleAllowed.value.trim(), anchor: anchor.value };
+    if (type.value === "pomodoro") return { type: "pomodoro", blocked: blocked.text(), allowed: cycleAllowed.text(), anchor: anchor.value };
+    if (type.value === "delayed") return { type: "delayed", ...delayed.value() };
     if (type.value === "budget") {
-      const often = reset.value === "every" ? { every: every.value.trim(), anchor: resetAnchor.value } : {};
-      return { type: "budget", allowed: allowed.value.trim(), scope: scope.value, reset: reset.value, ...often };
+      const often = reset.value === "every" ? { every: every.text(), anchor: resetAnchor.value } : {};
+      return { type: "budget", allowed: allowed.text(), scope: scope.value, reset: reset.value, ...often };
     }
     return null;
   };
@@ -596,8 +605,8 @@ function allowanceSection() {
     }
     if (mine !== asked) return;
     problem = wrong;
-    summary.textContent = wrong || words;
-    summary.classList.toggle("problem", !!wrong);
+    summary.textContent = wrong ? (tried ? wrong : "") : words;
+    summary.classList.toggle("problem", !!wrong && tried);
   }
   const soon = () => {
     clearTimeout(timer);
@@ -606,10 +615,11 @@ function allowanceSection() {
   const show = () => {
     budgetPart.hidden = type.value !== "budget";
     cyclePart.hidden = type.value !== "pomodoro";
+    delayedPart.hidden = type.value !== "delayed";
     everyPart.hidden = reset.value !== "every";
     summary.hidden = !terms();
   };
-  for (const field of [allowed, blocked, cycleAllowed, every]) field.addEventListener("input", soon);
+  for (const field of [allowed, blocked, cycleAllowed, every, delayed]) field.onChange(soon);
   for (const field of [scope, anchor, resetAnchor]) field.addEventListener("cds-dropdown-selected", describe);
   reset.addEventListener("cds-dropdown-selected", () => {
     show();
@@ -620,27 +630,32 @@ function allowanceSection() {
     describe();
   });
   return {
-    nodes: [type, budgetPart, cyclePart, summary],
+    nodes: [type, budgetPart, cyclePart, delayedPart, summary],
     // Both types' fields start from what the session has, else from an example of each.
     fill(allowance) {
       type.value = (allowance && allowance.type) || "none";
       const budget = allowance && allowance.type === "budget" ? allowance : {};
       const cycle = allowance && allowance.type === "pomodoro" ? allowance : {};
-      allowed.value = budget.allowed || "30m";
+      const delay = allowance && allowance.type === "delayed" ? allowance : null;
+      delayed.fill(delay);
+      allowed.set(budget.allowed || 0);
       scope.value = budget.scope || "total";
       reset.value = budget.reset || "every";
-      every.value = budget.every || "1d";
+      every.set(budget.every || 0);
       resetAnchor.value = budget.reset === "every" ? budget.anchor : "clock";
-      blocked.value = cycle.blocked || "50m";
-      cycleAllowed.value = cycle.allowed || "10m";
+      // A new cycle is the classic one; the rest start empty.
+      blocked.set(cycle.blocked || "25m");
+      cycleAllowed.set(cycle.allowed || "5m");
       anchor.value = cycle.anchor || "start";
       show();
+      tried = false;
       summary.textContent = t("allowance.describing");
       describe();
     },
     read: terms,
     settle: async () => {
       clearTimeout(timer);
+      tried = true;
       await describe();
     },
     error: () => problem,

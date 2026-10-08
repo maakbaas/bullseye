@@ -635,6 +635,22 @@ pub struct Status {
     pub clock_synced: bool,
 }
 
+/// The lock a locked session may take instead of `old`: only a stricter one of the same kind. A
+/// lock that ends at a time may end later (a duration or until, whichever it was given as), and a
+/// delay may be longer, its wait if it has been asked for going on from when it was asked.
+fn stricter(old: &RunLock, new: RunLock) -> Result<RunLock, String> {
+    match (old, new) {
+        (RunLock::Ends { at: old }, RunLock::Ends { at }) if at > *old => Ok(RunLock::Ends { at }),
+        (RunLock::Ends { .. }, RunLock::Ends { .. }) => Err("This session is locked, so its lock can only end later".into()),
+        (RunLock::Delay { delay: old, asked }, RunLock::Delay { delay, .. }) if delay > *old => Ok(RunLock::Delay { delay, asked: *asked }),
+        (RunLock::Delay { .. }, RunLock::Delay { .. }) => Err("This session is locked, so its delay can only get longer".into()),
+        _ => {
+            Err("This session is locked, so its lock cannot be changed until it can be stopped, except to end later or to wait longer"
+                .into())
+        }
+    }
+}
+
 impl Sessions {
     /// The service's target, over the real store in its data folder.
     pub fn new() -> Sessions {
@@ -719,16 +735,14 @@ impl Sessions {
 
     /// Gives the running session `id` another lock, as if it started with it now (in the time zone
     /// it runs in). Only while it is not locked: it could be stopped and started again with that
-    /// lock anyway, so this loosens nothing; a locked one keeps its lock.
+    /// lock anyway, so this loosens nothing. A locked one keeps its lock, except that a lock that
+    /// ends at a time (a duration or until) may end later, and a delay may be longer (`stricter`).
     pub fn relock(&self, id: &str, lock: StartLock) -> Result<(), String> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
         let now = self.clock.now();
         let session = inner.sessions.iter().find(|b| b.id == id).ok_or("This session is not running")?;
-        if session.locked(now).is_some() {
-            return Err("This session is locked, so its lock cannot be changed until it can be stopped".into());
-        }
-        let lock = self.run_lock(lock, &session.zone, now)?;
+        let lock = self.lock_for(session, lock, now)?;
         let at = inner.sessions.iter().position(|b| b.id == id).expect("found above");
         let old = std::mem::replace(&mut inner.sessions[at].lock, lock);
         // Written at once, as starting is: a lock that cannot be kept over a restart is not given.
@@ -738,6 +752,24 @@ impl Sessions {
         }
         inner.saved_at = Instant::now();
         Ok(())
+    }
+
+    /// What `relock` would do, without doing it: whether the running session `id` may take this lock.
+    pub fn check_relock(&self, id: &str, lock: StartLock) -> Result<(), String> {
+        let mut inner = self.inner.locked();
+        self.expire(&mut inner);
+        let session = inner.sessions.iter().find(|b| b.id == id).ok_or("This session is not running")?;
+        self.lock_for(session, lock, self.clock.now()).map(|_| ())
+    }
+
+    /// The lock a running session takes when it is given `lock`: as it starts with it now, and for a
+    /// session that is locked only a stricter one (`stricter`).
+    fn lock_for(&self, session: &Session, lock: StartLock, now: SystemTime) -> Result<RunLock, String> {
+        let lock = self.run_lock(lock, &session.zone, now)?;
+        if session.locked(now).is_some() {
+            return stricter(&session.lock, lock);
+        }
+        Ok(lock)
     }
 
     /// Stops the session `id` unless it is locked right now. `answered`: the right password of its
@@ -1296,9 +1328,14 @@ mod tests {
         list.relock("a", StartLock::For(Duration::from_secs(3600))).unwrap();
         assert!(running(&list, "a").remaining.is_some_and(|left| (3595..=3600).contains(&left)));
         assert!(list.stop("a", false).is_err());
-        // Locked now, so it keeps the lock it has.
-        let refused = list.relock("a", StartLock::None).unwrap_err();
-        assert_eq!(refused, "This session is locked, so its lock cannot be changed until it can be stopped");
+        // Locked now, so it keeps the lock it has, whatever else is asked.
+        for other in [StartLock::None, StartLock::Delay(Duration::from_secs(60)), StartLock::Text("x".into())] {
+            let refused = list.relock("a", other).unwrap_err();
+            assert_eq!(
+                refused,
+                "This session is locked, so its lock cannot be changed until it can be stopped, except to end later or to wait longer"
+            );
+        }
         // The lock is kept over a restart, as a lock it started with is.
         let resumed = reopened("relock");
         resumed.restore();
@@ -1309,6 +1346,41 @@ mod tests {
         let passed = list.relock("b", StartLock::Until(DateTime::parse("2000-01-01 00:00").unwrap())).unwrap_err();
         assert!(passed.contains("has passed"), "{passed}");
         assert!(list.stop("b", false).is_ok());
+    }
+
+    #[test]
+    fn a_locked_session_can_end_later_or_wait_longer_but_not_the_opposite() {
+        let list = sessions("relock-stricter");
+        start(&list, "a", sites(&["a.com"]), Some(Duration::from_secs(3600))).unwrap();
+        let hours = |n: u64| StartLock::For(Duration::from_secs(n * 3600));
+        // Ending sooner or at the same time is refused; later is taken, and held over a restart.
+        for sooner in [1, 0] {
+            let refused = list.relock("a", StartLock::For(Duration::from_secs(sooner * 1800))).unwrap_err();
+            assert_eq!(refused, "This session is locked, so its lock can only end later");
+        }
+        list.relock("a", hours(3)).unwrap();
+        assert!(running(&list, "a").remaining.is_some_and(|left| (10795..=10800).contains(&left)));
+        assert!(list.relock("a", hours(2)).is_err());
+        let resumed = reopened("relock-stricter");
+        resumed.restore();
+        assert!(running(&resumed, "a").remaining.is_some_and(|left| (10795..=10800).contains(&left)));
+        // A date does as well as a duration.
+        let far = DateTime::parse("2099-01-01 00:00").unwrap();
+        list.relock("a", StartLock::Until(far)).unwrap();
+        assert!(running(&list, "a").remaining.is_some_and(|left| left > 10800));
+
+        // A delay: only a longer one, and a wait that has begun goes on from when it was asked.
+        start(&list, "d", sites(&["d.com"]), None).unwrap();
+        list.relock("d", StartLock::Delay(Duration::from_secs(60))).unwrap();
+        assert_eq!(running(&list, "d").stop_delay, Some(60));
+        for shorter in [60, 30] {
+            let refused = list.relock("d", StartLock::Delay(Duration::from_secs(shorter))).unwrap_err();
+            assert_eq!(refused, "This session is locked, so its delay can only get longer");
+        }
+        list.ask_to_stop("d").unwrap();
+        list.relock("d", StartLock::Delay(Duration::from_secs(600))).unwrap();
+        assert_eq!(running(&list, "d").stop_delay, Some(600));
+        assert!(running(&list, "d").stop_remaining.is_some_and(|left| left > 60));
     }
 
     #[test]

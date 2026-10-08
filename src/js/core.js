@@ -167,16 +167,25 @@ function invalid(field, why) {
 // The one dialog: a question before anything that cannot be taken back, or a short form (a
 // lock's settings, a password). Resolves false for Cancel, the X or Escape; otherwise true,
 // or with `fields`, what `read` makes of them: the dialog stays open while that is null (the
-// fields then say what is wrong).
+// fields then say what is wrong) or `read` throws (what it says is shown in the dialog).
 let answer = null;
 let reader = null;
+// Without an `action` it has no buttons: a list to choose from, closed by `dismiss` (a choice
+// made), by the X, Escape or a click outside it.
 function ask({ heading, body = "", action, kind, fields = [], read = null }) {
   if (answer) answer(false);
   $("confirm-heading").textContent = heading;
   $("confirm-body").textContent = body;
   $("confirm-body").hidden = !body;
-  $("confirm-action").textContent = action;
-  $("confirm-action").setAttribute("kind", kind);
+  $("confirm-error").hidden = true;
+  // A list to choose from has no buttons and closes on a click outside it, like on the X; a
+  // question or a form stays until it is answered.
+  $("confirm-footer").hidden = !action;
+  $("confirm").classList.toggle("list", !action);
+  $("confirm").preventCloseOnClickOutside = !!action;
+  $("confirm-action").hidden = !action;
+  $("confirm-action").textContent = action || "";
+  if (kind) $("confirm-action").setAttribute("kind", kind);
   $("confirm-fields").replaceChildren(...fields);
   $("confirm-fields").hidden = fields.length === 0;
   $("confirm").setAttribute("size", fields.length ? "sm" : "xs");
@@ -188,7 +197,7 @@ function ask({ heading, body = "", action, kind, fields = [], read = null }) {
   return new Promise((resolve) => (answer = resolve));
 }
 $("confirm-fields").addEventListener("keydown", (event) => {
-  if (event.key === "Enter") $("confirm-action").click();
+  if (event.key === "Enter" && !$("confirm-action").hidden) $("confirm-action").click();
 });
 function answered(value) {
   const resolve = answer;
@@ -196,11 +205,34 @@ function answered(value) {
   if (resolve) resolve(value);
 }
 $("confirm-action").addEventListener("click", async () => {
-  const value = reader ? await reader() : true;
+  $("confirm-error").hidden = true;
+  let value;
+  try {
+    value = reader ? await reader() : true;
+  } catch (e) {
+    // Refused: it stays open with the reason, to be changed.
+    $("confirm-error").setAttribute("title", t("common.notSaved"));
+    $("confirm-error").setAttribute("subtitle", String(e));
+    $("confirm-error").hidden = false;
+    return;
+  }
   if (value === null || value === undefined) return;
   $("confirm").open = false;
   answered(value);
 });
-$("confirm").addEventListener("cds-modal-closed", () => answered(false));
+// Closes the dialog from inside it, as a choice in a list does. (Opened again at once, it stays.)
+function dismiss(value = false) {
+  $("confirm").open = false;
+  answered(value);
+}
+$("confirm").addEventListener("cds-modal-closed", () => {
+  if (!$("confirm").open) answered(false);
+});
 
-export { invoke, $, t, tn, ref, joined, nodesOf, editHref, quoted, names, applyStrings, el, described, weekText, allowanceLabel, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, targetName, usersOf, wordingOf, holdersOf, lockedUsersOf, invalid, ask };
+// Asked before a locked session is made stricter, in whatever way: as when it is started locked, it
+// cannot be taken back. `names`: the session or sessions, quoted; `what`: what it will be, a sentence.
+function confirmStricter(names, what) {
+  return ask({ heading: t("stricter.heading", { names }), body: t("stricter.body", { names, what }), action: t("stricter.action"), kind: "primary" });
+}
+
+export { invoke, $, t, tn, ref, joined, nodesOf, editHref, quoted, names, applyStrings, el, described, weekText, allowanceLabel, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, targetName, usersOf, wordingOf, holdersOf, lockedUsersOf, invalid, ask, dismiss, confirmStricter };

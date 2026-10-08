@@ -106,6 +106,13 @@ fn start_session(id: String, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::Start { id })
 }
 
+/// Whether a change to what a locked session holds would be accepted, asked before the person is asked
+/// to confirm it (the service says why not, in its words).
+#[tauri::command]
+fn check_stricter(check: proto::Check, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::Check { check })
+}
+
 /// Locks a running session that is not locked, from now on, with this lock (also its lock for the
 /// next start).
 #[tauri::command]
@@ -335,6 +342,7 @@ pub fn run() {
         .manage(ui::Ui::new())
         .invoke_handler(tauri::generate_handler![
             status,
+            check_stricter,
             save_session,
             delete_session,
             save_target,

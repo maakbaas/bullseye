@@ -2,7 +2,7 @@
 // `detour.js`), its breadcrumb, saving and deleting, and keeping what a locked session uses to
 // stricter changes.
 
-import { $, el, notify, refresh, t } from "./core.js";
+import { $, confirmStricter, el, invoke, lockedUsersOf, names, notify, refresh, t } from "./core.js";
 import { KINDS } from "./kinds.js";
 import { confirmDelete } from "./tiles.js";
 
@@ -85,6 +85,17 @@ $("save").addEventListener("click", async () => {
   $("save").disabled = true;
   try {
     const saved = form.read(editing.item);
+    // What a locked session uses can only get stricter, and that cannot be taken back: asked first
+    // (nothing to ask when nothing is changed).
+    const holders = editing.isNew ? [] : lockedUsersOf(editing.item.id);
+    if (holders.length && JSON.stringify(saved) !== JSON.stringify(editing.item)) {
+      // The service says first if it would be refused, as it is when it is looser.
+      await invoke("check_stricter", { check: kind === "targets" ? { what: "target", target: saved } : { what: "condition", condition: saved } });
+      if (!(await confirmStricter(names(holders), t("stricter.shared")))) {
+        $("save").disabled = false;
+        return;
+      }
+    }
     await KINDS[kind].save(saved);
     const { via } = editing;
     if (via) {

@@ -1,16 +1,15 @@
 // A session is set up on its own tile, never in an editor page: a row each for its Targets,
-// Condition, Allowance and Lock, each with an edit button opening a panel of what it can be. Each
-// choice is saved as it is made. An allowance's settings, a lock's settings, a new session and a
-// new name are asked in the modal. New target and New condition (in their panels) go to that
-// kind's editor and come back with it chosen (`detour`).
+// Condition, Allowance and Lock. Each choice is saved as it is made. An allowance's settings, a
+// lock's settings, a new session and a new name are asked in the modal. New target and New
+// condition go to that kind's editor and come back with it chosen (`detour`).
 
-import { ask, el, invalid, invoke, newId, notify, overview, quoted, refresh, runningOf, t } from "./core.js";
+import { ask, confirmStricter, dismiss, editHref, el, invalid, invoke, newId, nodesOf, notify, overview, quoted, refresh, runningOf, t } from "./core.js";
 import { LOCKS } from "./locks.js";
 import { allowanceSection } from "./forms.js";
 import { KINDS, freeName } from "./kinds.js";
 import { detour } from "./detour.js";
 
-// The condition panel's choice for no condition.
+// The condition dropdown's choice for no condition.
 const ALWAYS = "always";
 
 // Saves a session with `change` applied; a refusal (a locked session, no target) is shown on the page.
@@ -25,11 +24,12 @@ async function save(session, change) {
 }
 
 // ---- A session's rows: Targets, Condition, Allowance and Lock (keys `block`, `when`, `unless`,
-// `lock`), a `cds-contained-list` on its tile. A row that can be changed has an edit button that
-// opens a panel of what it can be: the targets to tick, one condition, allowance or lock method to
-// choose, and making a new target or condition, or the settings of the allowance or lock it has.
-// A locked session's targets, condition and lock stay as they are (no edit button); its allowance
-// may still get stricter, which is for the service to judge.
+// `lock`), a `cds-contained-list` on its tile. Condition, Allowance and Lock are a dropdown in the
+// row, each choice saved as it is made; beside it a button for what the choice has to set (the
+// condition's page, an allowance's or a lock's settings, in the modal). Targets are many, so their
+// button opens a list to tick in the modal. A locked session's targets, condition and lock method
+// stay as they are; its allowance may still get stricter, and a timed or delay lock longer, which is
+// for the service to judge.
 
 const ROWS = [
   { key: "block", icon: "target-16" },
@@ -37,6 +37,42 @@ const ROWS = [
   { key: "unless", icon: "pause-16" },
   { key: "lock", icon: "locked" },
 ];
+
+// What a row's dropdown offers, and which of it the session has.
+function optionsOf(key) {
+  if (key === "when") {
+    return [[ALWAYS, t("sessions.fields.always")], ...overview.conditions.map((c) => [c.id, c.name])];
+  }
+  if (key === "unless") {
+    return [["none", t("sessions.fields.noAllowance")], ["budget", t("sessions.fields.budget")], ["pomodoro", t("sessions.fields.pomodoro")], ["delayed", t("sessions.fields.delayed")]];
+  }
+  return Object.entries(LOCKS).map(([value, lock]) => [value, lock.label]);
+}
+function chosenOf(key, session) {
+  if (key === "when") return overview.conditions.some((c) => c.id === session.condition) ? session.condition : ALWAYS;
+  if (key === "unless") return session.allowance ? session.allowance.type : "none";
+  return session.lock.method;
+}
+
+// Whether there is more room above a dropdown than below it, in the scrolling part of the window
+// (a menu cannot show outside it).
+function roomAbove(select) {
+  const [box, view] = [select.getBoundingClientRect(), document.getElementById("scroller").getBoundingClientRect()];
+  return box.top - view.top > view.bottom - box.bottom;
+}
+
+// Whether the service would accept a change to what a locked session holds (`check_stricter`); if
+// not, why, where the other errors of the tile are. Asked before anything is confirmed.
+async function allowed(check, session) {
+  if (!runningOf(session.id)?.locked) return true;
+  try {
+    await invoke("check_stricter", { check });
+    return true;
+  } catch (e) {
+    notify("list-notices", "error", t("sessions.fields.saveFailed", { name: quoted(session.name) }), String(e));
+    return false;
+  }
+}
 
 // The rows of the session `id`, added to its tile's parts (`tiles.js`).
 function addRows(parts, id) {
@@ -46,69 +82,119 @@ function addRows(parts, id) {
     const label = el("span", { class: "row-label" }, t(`sessions.fields.${key}`));
     const value = el("span", { class: "row-value" });
     const now = el("span", { class: "row-now" });
-    // The row's inline action: a ghost icon button, as Carbon's contained lists have them, opening
-    // Carbon's popover below it, or above it where it fits there and not below (`align`; below, the
-    // page scrolls to it); the panel is filled each time it opens (`fillPanel`). Carbon's popover
-    // closes itself on Escape and on a click elsewhere.
-    const what = t("sessions.fields.change", { what: t(`sessions.fields.${key}`).toLowerCase() });
-    const button = el("cds-icon-button", { kind: "ghost", size: "lg", align: "left" }, carbonIcon("edit", "icon"), el("span", { slot: "tooltip-content" }, what));
-    const panel = el("cds-popover-content", {});
-    const edit = el("cds-popover", { slot: "action", align: "bottom-end", class: "row-action" }, button, panel);
-    // No caret: it would notch the row's separator line (Carbon drops it from popovers in v12).
-    edit.caret = false;
-    const close = () => (edit.open = false);
-    button.addEventListener("click", async () => {
-      if (!edit.open) fillPanel(parts, id, key, panel, close);
-      edit.align = "bottom-end";
-      edit.open = !edit.open;
-      if (!edit.open) return;
-      await edit.updateComplete;
-      // Opened below: above instead if it runs out of view there and the room above the row holds it.
-      const shown = panel.firstElementChild.getBoundingClientRect();
-      const top = row.getBoundingClientRect().top;
-      const view = document.getElementById("scroller").getBoundingClientRect();
-      if (shown.bottom > view.bottom && top - view.top >= shown.bottom - top) edit.align = "top-end";
-      // The focus to its first control, as a popover's content should have it (and Escape closes it
-      // from there).
-      const first = panel.querySelector("cds-checkbox, cds-contained-list-item[clickable]");
-      const inner = first && first.shadowRoot && first.shadowRoot.querySelector("button");
-      (inner || first)?.focus();
-    });
-    const row = el("cds-contained-list-item", {}, carbonIcon(icon, "icon"), el("span", { class: "row" }, label, el("span", { class: "row-text" }, value, now)), edit);
+    // The row's inline action: a ghost icon button, as Carbon's contained lists have them.
+    const button = (symbol, tip, act) => {
+      const node = el("cds-icon-button", { kind: "ghost", size: "lg", align: "left" }, carbonIcon(symbol, "icon"), el("span", { slot: "tooltip-content" }, tip));
+      node.addEventListener("click", act);
+      return node;
+    };
+    let select = null;
+    let edit;
+    if (key === "block" || key === "when") {
+      // A list to tick or choose from in the modal (`fillPanel`), filled each time it opens.
+      edit = button("edit", t("sessions.fields.change", { what: t(`sessions.fields.${key}`).toLowerCase() }), async () => {
+        const panel = el("div");
+        fillPanel(parts, id, key, panel, dismiss);
+        await ask({ heading: t("sessions.fields.panelHeading", { what: t(`sessions.fields.${key}`), name: quoted(current(id).name) }), fields: [panel] });
+      });
+    } else {
+      select = el("cds-dropdown", { type: "inline", size: "sm", "aria-label": t(`sessions.fields.${key}`) });
+      // Its menu opens under it, left edges together, or above it where there is more room there.
+      for (const gesture of ["pointerdown", "keydown"]) select.addEventListener(gesture, () => (select.direction = roomAbove(select) ? "top" : "bottom"), true);
+      select.addEventListener("cds-dropdown-selected", async (event) => {
+        const chosen = event.detail.item.value;
+        const session = current(id);
+        if (chosen === chosenOf(key, session)) return;
+        if (key === "unless") {
+          // A locked session may only keep the kind it has or lose it: the service says so before anything is asked.
+          if (!(await allowed({ what: "allowance_kind", id, kind: chosen }, session))) return refresh();
+          return setAllowance(parts, id, chosen);
+        }
+        parts.setLock(chosen);
+      });
+      edit = {
+        unless: () => button("settings", t("sessions.fields.allowanceSettings"), () => setAllowance(parts, id, chosenOf("unless", current(id)))),
+        lock: () => button("settings", t("sessions.lockSettings"), () => parts.setLock(chosenOf("lock", current(id)))),
+      }[key]();
+    }
+    // Under what the row has (its dropdown, or the condition's name): what the choice means, and while
+    // the session runs what is happening now. The condition's name takes the first line of its own
+    // text, so its explanation is a line of its own (`extra`).
+    const extra = el("span", { class: "row-extra" });
+    const buttons = el("span", { slot: "action", class: "row-actions" }, edit);
+    const box = el("span", { class: "row" }, label, el("span", { class: "row-text" }, select, value, extra, now));
+    const row = el("cds-contained-list-item", {}, carbonIcon(icon, "icon"), box, buttons);
     list.append(row);
-    parts.rows[key] = { row, label, value, now, edit };
+    parts.rows[key] = { row, box, label, value, extra, now, edit, select };
   }
   parts.top.after(list);
 }
 
-// What the rows say: `lines` per row, its value and what is happening now (`tiles.js`), and which
-// can be changed.
+// Whether a running lock can be made stricter: one that ends at a time (a duration or until) can
+// end later, a delay can be longer (the service judges which).
+const lengthens = (running) => running.remaining !== null && !running.lock_condition && !running.until_restart && !running.password && !running.lock_text ? true : !!running.stop_delay;
+
+// What the rows say: `lines` per row, its value and what is happening now (`tiles.js`), what the
+// dropdowns have chosen, and which can be changed.
 function renderRows(parts, session, lines) {
   const running = runningOf(session.id);
   const locked = !!(running && running.locked);
   for (const { key } of ROWS) {
-    const { label, value, now, edit } = parts.rows[key];
+    const { label, value, extra, now, edit, select } = parts.rows[key];
     // "Target" or "Targets", as many as it has.
     if (key === "block") {
       const named = t("sessions.fields.blockCount", { n: session.targets.length });
       if (label.textContent !== named) label.textContent = named;
     }
-    const [text, current] = lines[key];
-    if (value.textContent !== text) value.textContent = text;
-    if (now.textContent !== (current || "")) now.textContent = current || "";
-    now.hidden = !current;
-    // Fixed while locked; the allowance only stricter.
-    const open = !(locked && key !== "unless");
+    const [text, current, described] = lines[key];
+    // The row's explanation: what the choice means (for none, in a few words of its own). Text, or parts with links in them (`ref`); only redrawn when it changed.
+    const none = { unless: "none", lock: "none" }[key];
+    const explained = none !== undefined && chosenOf(key, session) === none ? t(`sessions.fields.explain_${key}`) : text;
+    // Below the dropdown, one line while the session is stopped (what the choice means) and two while
+    // it runs (that, and what is happening now). The condition is named first, a link as the targets
+    // are, and its explanation and status follow.
+    const line = key === "when" || key === "block" ? text : explained;
+    const shown = JSON.stringify(line);
+    if (value.dataset.shown !== shown) {
+      value.dataset.shown = shown;
+      value.replaceChildren(...nodesOf(line));
+    }
+    const sentence = key === "when" ? described : "";
+    if (extra.textContent !== sentence) extra.textContent = sentence;
+    extra.hidden = !sentence;
+    const status = key === "block" ? "" : current || "";
+    if (now.textContent !== status) now.textContent = status;
+    now.hidden = !status;
+    if (select) {
+      // The choices are rebuilt only when they changed, so an open dropdown is left alone.
+      const options = optionsOf(key);
+      const signature = JSON.stringify(options);
+      if (select.dataset.options !== signature) {
+        select.dataset.options = signature;
+        select.replaceChildren(...options.map(([choice, name]) => el("cds-dropdown-item", { value: choice }, name)));
+        select.value = "";
+      }
+      const chosen = chosenOf(key, session);
+      if (select.value !== chosen) select.value = chosen;
+      // Fixed while locked; the allowance only stricter.
+      select.disabled = locked && key !== "unless";
+    }
+    // The button: targets and the condition's page, the settings of the allowance or lock it has. A
+    // locked session's targets cannot change; its lock settings only to end later or wait longer.
+    let open = true;
+    if (key === "block" || key === "when") open = !locked;
+    if (key === "unless") open = chosenOf(key, session) !== "none";
+    if (key === "lock") open = !!(LOCKS[session.lock.method] && LOCKS[session.lock.method].form) && (!locked || lengthens(running));
     edit.hidden = !open;
   }
 }
 
-// What a row's panel holds, with no heading of its own (the row says what it is): the targets as
-// Carbon checkboxes, each tick saved at once and the panel staying open for the next, and a button
-// to make a new one; or one condition, allowance or lock method in a plain list to click
-// (`choices`).
+// What the targets' list holds, with no heading of its own (the row says what it is): the targets
+// in a list to click, each marked or unmarked and saved at once with the dialog staying open for the
+// next, and a button under it to make a new one.
 function fillPanel(parts, id, key, panel, close) {
   const session = current(id);
+  // Making a new one is a button of its own under the list.
   const button = (text, icon, act) => {
     const node = el("cds-button", { kind: "tertiary", size: "md" }, text, carbonIcon(icon, "icon"));
     node.addEventListener("click", () => {
@@ -117,79 +203,41 @@ function fillPanel(parts, id, key, panel, close) {
     });
     return node;
   };
-  // One of several: a plain list to click (Carbon's contained list, its kind for one in a popover),
-  // the one it has checked, the others keeping its room; a choice closes the panel. Making a new one
-  // or the settings of the one it has are the list's last rows, with their icons.
-  const choices = (options, chosen, choose, more = []) =>
-    el(
-      "cds-contained-list",
-      { kind: "disclosed", "aria-label": t(`sessions.fields.${key}`) },
-      ...options.map(([value, text]) =>
-        listItem(text, value === chosen ? carbonIcon("checkmark", "icon") : el("span", { slot: "icon", class: "no-mark" }), () => value !== chosen && choose(value)),
-      ),
-      ...more.map(([text, icon, act]) => listItem(text, carbonIcon(icon, "icon"), act)),
-    );
-  const listItem = (text, icon, act) => {
-    const item = el("cds-contained-list-item", { clickable: true }, icon, text);
+  if (key === "when") {
+    // One of several: a plain list to click, the one it has checked; a choice closes the dialog.
+    const has = chosenOf("when", session);
+    const options = optionsOf("when").map(([value, text]) => {
+      const item = el("cds-contained-list-item", { clickable: true }, value === has ? carbonIcon("checkmark", "icon") : el("span", { slot: "icon", class: "no-mark" }), text);
+      item.addEventListener("cds-contained-list-item-click", () => {
+        close();
+        if (value !== has) save(current(id), { condition: value === ALWAYS ? null : value });
+      });
+      return item;
+    });
+    const list = el("cds-contained-list", { kind: "disclosed", "aria-label": t("sessions.fields.when") }, ...options);
+    const more = button(t("sessions.fields.newCondition"), "add", () => make(id, "conditions", (made) => save(current(id), { condition: made.id })));
+    return panel.replaceChildren(el("div", { class: "row-panel" }, list, more));
+  }
+  // What is chosen while it is open: each click builds on the last, also before the last one's
+  // save has come back.
+  const chosen = new Set(session.targets);
+  const group = el("cds-contained-list", { kind: "disclosed", "aria-label": t("sessions.fields.block") });
+  const items = overview.targets.map((target) => {
+    const mark = (on) => (on ? carbonIcon("checkmark", "icon") : el("span", { slot: "icon", class: "no-mark" }));
+    let icon = mark(chosen.has(target.id));
+    const item = el("cds-contained-list-item", { clickable: true }, icon, target.name);
     item.addEventListener("cds-contained-list-item-click", () => {
-      close();
-      act();
+      if (chosen.has(target.id)) chosen.delete(target.id);
+      else chosen.add(target.id);
+      const next = mark(chosen.has(target.id));
+      icon.replaceWith(next);
+      icon = next;
+      save(current(id), { targets: overview.targets.map((t) => t.id).filter((t) => chosen.has(t)) });
     });
     return item;
-  };
-  let nodes;
-  if (key === "block") {
-    // What is ticked while it is open: each tick builds on the last, also before the last one's
-    // save has come back.
-    const chosen = new Set(session.targets);
-    const group = el("cds-checkbox-group", { "aria-label": t("sessions.fields.block") });
-    for (const target of overview.targets) {
-      const box = el("cds-checkbox", { "label-text": target.name });
-      box.checked = chosen.has(target.id);
-      box.addEventListener("cds-checkbox-changed", () => {
-        const now = current(id);
-        // A session needs a target (the service refuses it too).
-        if (!box.checked && chosen.size === 1) {
-          box.checked = true;
-          return notify("list-notices", "error", t("sessions.fields.saveFailed", { name: quoted(now.name) }), t("sessions.noTargets"));
-        }
-        if (box.checked) chosen.add(target.id);
-        else chosen.delete(target.id);
-        save(now, { targets: overview.targets.map((t) => t.id).filter((t) => chosen.has(t)) });
-      });
-      group.append(box);
-    }
-    nodes = [group, button(t("sessions.fields.newTarget"), "add", () => make(id, "targets", (made) => save(current(id), { targets: [...current(id).targets, made.id] })))];
-  } else if (key === "when") {
-    nodes = [
-      choices(
-        [[ALWAYS, t("sessions.fields.always")], ...overview.conditions.map((c) => [c.id, c.name])],
-        session.condition || ALWAYS,
-        (value) => save(current(id), { condition: value === ALWAYS ? null : value }),
-        [[t("sessions.fields.newCondition"), "add", () => make(id, "conditions", (made) => save(current(id), { condition: made.id }))]],
-      ),
-    ];
-  } else if (key === "unless") {
-    const kind = session.allowance ? session.allowance.type : "none";
-    nodes = [
-      choices(
-        [["none", t("sessions.fields.noAllowance")], ["budget", t("sessions.fields.budget")], ["pomodoro", t("sessions.fields.pomodoro")]],
-        kind,
-        (value) => setAllowance(parts, id, value),
-        kind !== "none" ? [[t("sessions.fields.allowanceSettings"), "settings", () => setAllowance(parts, id, kind)]] : [],
-      ),
-    ];
-  } else {
-    const method = session.lock.method;
-    nodes = [
-      choices(
-        Object.entries(LOCKS).map(([value, lock]) => [value, lock.label]),
-        method,
-        (value) => parts.setLock(value),
-        LOCKS[method] && LOCKS[method].form ? [[t("sessions.lockSettings"), "settings", () => parts.setLock(method)]] : [],
-      ),
-    ];
-  }
+  });
+  group.append(...items);
+  const nodes = [group, button(t("sessions.fields.newTarget"), "add", () => make(id, "targets", (made) => save(current(id), { targets: [...current(id).targets, made.id] })))];
   panel.replaceChildren(el("div", { class: "row-panel" }, ...nodes));
 }
 
@@ -208,7 +256,13 @@ function make(id, kind, onSaved) {
 // Sets a session's allowance: none at once, a budget or a cycle by its settings in the modal.
 async function setAllowance(parts, id, type) {
   const session = overview.sessions.find((s) => s.id === id);
-  if (type === "none") return save(session, { allowance: null });
+  const running = runningOf(id);
+  const locked = !!(running && running.locked);
+  if (type === "none") {
+    // Taking it away from a locked session is stricter: asked first.
+    if (locked && !((await allowed({ what: "allowance", id, allowance: null }, session)) && (await confirmStricter(quoted(session.name), t("stricter.noAllowance"))))) return refresh();
+    return save(session, { allowance: null });
+  }
   const form = allowanceSection();
   form.fill(session.allowance && session.allowance.type === type ? session.allowance : { type });
   // Its type is what was chosen in the panel.
@@ -221,36 +275,38 @@ async function setAllowance(parts, id, type) {
     fields: form.nodes,
     read: async () => {
       await form.settle();
-      return form.error() ? null : form.read();
+      if (form.error()) return null;
+      const read = form.read();
+      // A locked session takes only a stricter one: the service says if it would not, in the dialog.
+      if (locked) await invoke("check_stricter", { check: { what: "allowance", id, allowance: read } });
+      return read;
     },
   });
   parts.choosing = false;
-  if (terms) await save(session, { allowance: terms });
-  else await refresh();
+  if (!terms) return refresh();
+  // A locked session takes only a stricter one, which cannot be taken back: asked first.
+  if (locked) {
+    const words = await invoke("describe_allowance", { terms }).then((described) => `${described.words}.`, () => "");
+    parts.choosing = true;
+    const sure = await confirmStricter(quoted(session.name), words);
+    parts.choosing = false;
+    if (!sure) return refresh();
+  }
+  await save(session, { allowance: terms });
 }
 
-// A new session: its name and its targets, in the modal; the rest is set on its tile, which is
-// brought into view (`show`).
+// A new session: its name, in the modal; the rest, targets too, is set on its tile, which is
+// brought into view (`show`). Without a target it does nothing yet.
 async function newSession(show) {
   const name = el("cds-text-input", { label: t("common.name"), value: freeName("sessions", overview.sessions) });
-  const targets = el("cds-multi-select", {
-    "title-text": t("sessions.fields.targets"),
-    label: t("sessions.fields.chooseTargets"),
-    size: "md",
-    autoalign: true,
-    "selection-feedback": "fixed",
-  });
-  targets.append(...overview.targets.map((target) => el("cds-multi-select-item", { value: target.id }, target.name)));
   const made = await ask({
     heading: t("sessions.newLabel"),
     action: t("common.save"),
     kind: "primary",
-    fields: [name, targets],
+    fields: [name],
     read: async () => {
-      const chosen = targets.value ? targets.value.split(",") : [];
       if (!name.value.trim()) return invalid(name, t("sessions.nameMissing")) && null;
-      if (!chosen.length) return invalid(targets, t("sessions.noTargets")) && null;
-      return { id: newId(), name: name.value.trim(), targets: chosen, condition: null, allowance: null, lock: { method: "none" } };
+      return { id: newId(), name: name.value.trim(), targets: [], condition: null, allowance: null, lock: { method: "none" } };
     },
   });
   if (!made) return;

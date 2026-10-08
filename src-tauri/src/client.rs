@@ -278,7 +278,7 @@ mod tests {
         assert!(remote.active().is_none());
 
         remote.command(Request::SaveTarget { target: target("a", &["a.com"]) }).unwrap();
-        let session = Definition { lock: Lock::Duration { duration: "1h".into() }, ..session("a", &["a"]) };
+        let session = Definition { lock: Lock::timed_for("1h"), ..session("a", &["a"]) };
         remote.command(Request::SaveSession { session }).unwrap();
         remote.command(Request::Start { id: "a".into() }).unwrap();
         assert!(remote.active().unwrap().blocks_page("https://a.com/x", false));

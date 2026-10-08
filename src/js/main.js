@@ -2,6 +2,7 @@
 
 import { $, applyStrings, ask, el, invalid, invoke, joined, notify, overview, quoted, refresh, t, whenRefreshed } from "./core.js";
 import { LOCKS } from "./locks.js";
+import { durationField } from "./duration.js";
 import { KINDS } from "./kinds.js";
 import { askText, renderTiles, showSession, tiles } from "./tiles.js";
 import { newSession } from "./fields.js";
@@ -61,18 +62,10 @@ function renderSettings() {
   if ($("set-delay").textContent.trim() !== delayLabel) $("set-delay").replaceChildren(delayLabel, carbonIcon("time", "icon"));
 }
 
-// A delay in seconds as it is typed (`1d`, `2h 30m`), to start the field from: the words the
-// backend writes (`2 hours and 30 minutes`) are not what it reads.
-function typedDelay(seconds) {
-  const units = [["d", 86400], ["h", 3600], ["m", 60], ["s", 1]];
-  const parts = [];
-  for (const [unit, size] of units) {
-    const n = Math.floor(seconds / size);
-    seconds -= n * size;
-    if (n) parts.push(`${n}${unit}`);
-  }
-  return parts.join(" ");
-}
+// How long unlocking takes, as a duration field (none is all zeros).
+// No seconds: a wait of seconds is no wait.
+const delayField = durationField({ label: t("settings.delayLabel"), units: ["d", "h", "m"] });
+$("delay-field").append(delayField.node);
 
 async function unlock() {
   const { delay, remaining, way_open: wayOpen } = overview.unlock;
@@ -204,7 +197,7 @@ $("abort-unlock").addEventListener("click", async () => {
 $("set-delay").addEventListener("click", async () => {
   notify("delay-notices");
   try {
-    await invoke("set_unlock_delay", { delay: $("delay").value });
+    await invoke("set_unlock_delay", { delay: delayField.text() });
     await refresh();
     const { delay, delay_words: words } = overview.unlock;
     notify("delay-notices", "success", t(delay === 0 ? "settings.delayFree" : "settings.delaySet", { delay: words }));
@@ -213,7 +206,6 @@ $("set-delay").addEventListener("click", async () => {
   }
   renderSettings();
 });
-$("delay").addEventListener("keydown", (event) => { if (event.key === "Enter") $("set-delay").click(); });
 
 // Export and Import: the dialogs, the file and its reading are the app's (`export_settings`,
 // `open_settings`); the service replaces everything on Import.
@@ -335,7 +327,7 @@ function route() {
   if (view === "editor") openEditor(kind, edit || null);
   else closeEditor();
   if (view === "settings") {
-    $("delay").value = typedDelay(overview.unlock.delay);
+    delayField.set(overview.unlock.delay);
     notify("delay-notices");
     renderSettings();
     notify("settings-notices");

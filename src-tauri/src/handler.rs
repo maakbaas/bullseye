@@ -10,8 +10,8 @@ use crate::definitions::{Condition, Definition, Definitions, Library, Resolved, 
 use crate::duration;
 use crate::lists::Entries;
 use crate::localtime::Zone;
-use crate::lock::Lock;
-use crate::proto::{FreeEntries, Overview, Policy, Request, Response, UnlockStatus};
+use crate::lock::{Lock, TimedKind};
+use crate::proto::{Check, FreeEntries, Overview, Policy, Request, Response, UnlockStatus};
 use crate::session::{Part, Sessions, StartLock};
 use crate::sync::LockExt;
 use crate::unlock::{self, UnlockDelay};
@@ -127,6 +127,7 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
         Request::Import { library } => (done(import(context, library)), None),
         Request::Start { id } => (done(start(context, &id)), None),
         Request::Lock { id, lock } => (done(lock_running(context, &id, lock)), None),
+        Request::Check { check } => (done(check_stricter(context, check)), None),
         // A password lock stops with its own password, a text lock with its text typed in; the
         // others take none.
         Request::Stop { id, password, text } => {
@@ -180,7 +181,7 @@ fn delete_session(context: &Context, id: &str) -> Result<(), String> {
 
 /// Deleting a target or condition. Unless a locked session uses it (it would loosen that session)
 /// it goes, and the running sessions that used it follow what is left: a session that is left without
-/// a target is deleted by it and so ends, one that lost its condition is always active, and
+/// a target goes on doing nothing, one that lost its condition is always active, and
 /// one that lost its lock condition has no lock now (`Sessions::refresh`).
 fn delete_shared(context: &Context, id: &str, delete: impl FnOnce(&Definitions) -> Result<(), String>) -> Result<(), String> {
     let _editing = context.editing.locked();
@@ -227,9 +228,6 @@ fn edit_session(context: &Context, session: Definition) -> Result<(), String> {
     if session.lock != old.lock {
         return Err("The lock of a running session is not changed by saving it: lock it now instead, or stop it first".into());
     }
-    if session.targets.is_empty() {
-        return Err("A running session needs at least one target".into());
-    }
     let id = session.id.clone();
     context.definitions.save_session(session)?;
     refresh_running(context, &[id])
@@ -259,6 +257,7 @@ enum Proposed {
 /// all of them. Otherwise a locked session could be loosened by editing what it uses.
 fn edit_shared(context: &Context, proposed: Proposed) -> Result<(), String> {
     let _editing = context.editing.locked();
+    check_shared(context, &proposed)?;
     let library = context.definitions.library();
     let id = match &proposed {
         Proposed::List(new) => new.id.clone(),
@@ -266,40 +265,90 @@ fn edit_shared(context: &Context, proposed: Proposed) -> Result<(), String> {
     };
     let running = context.sessions.running_ids();
     let users: Vec<String> = library.users_of(&id).into_iter().filter(|b| running.contains(&b.id)).map(|b| b.id.clone()).collect();
-    let locked: Vec<String> = context.sessions.locked_ids().into_iter().filter(|b| users.contains(b)).collect();
-    if !locked.is_empty() {
-        match &proposed {
-            Proposed::List(new) => {
-                if let Some(old) = library.target(&new.id) {
-                    old.tightened_by(new)?;
-                }
-            }
-            Proposed::Condition(new) => {
-                if let Some(old) = library.condition(&new.id) {
-                    for (session, via) in library.usages(&new.id).into_iter().filter(|(session, _)| locked.contains(&session.id)) {
-                        // In a combination that needs all its conditions, more active time in
-                        // this one is not more in the combination: it stays as it is.
-                        if via == Via::All {
-                            if old.rule != new.rule.clone().checked()? {
-                                return Err(format!(
-                                    "“{}” is locked and has this in a combination that needs all of its conditions, so it cannot change",
-                                    session.name
-                                ));
-                            }
-                        } else {
-                            old.rule.tightened_by(&new.rule)?;
-                        }
-                    }
-                }
-            }
-        }
-    }
     match proposed {
         Proposed::List(list) => context.definitions.save_target(list)?,
         Proposed::Condition(condition) => context.definitions.save_condition(condition)?,
     }
     // What the sessions that run use is what is defined now.
     refresh_running(context, &users)
+}
+
+/// Whether a target or condition may be saved like this: any way while no locked session uses it, and
+/// when one does, only to be stricter (`Target::tightened_by`, `Rule::tightened_by`).
+fn check_shared(context: &Context, proposed: &Proposed) -> Result<(), String> {
+    let library = context.definitions.library();
+    let id = match proposed {
+        Proposed::List(new) => &new.id,
+        Proposed::Condition(new) => &new.id,
+    };
+    let running = context.sessions.running_ids();
+    let locked: Vec<String> = context.sessions.locked_ids().into_iter().filter(|b| running.contains(b)).collect();
+    let locked: Vec<String> = library.users_of(id).into_iter().filter(|b| locked.contains(&b.id)).map(|b| b.id.clone()).collect();
+    if locked.is_empty() {
+        return Ok(());
+    }
+    match proposed {
+        Proposed::List(new) => {
+            if let Some(old) = library.target(&new.id) {
+                old.tightened_by(new)?;
+            }
+        }
+        Proposed::Condition(new) => {
+            if let Some(old) = library.condition(&new.id) {
+                for (session, via) in library.usages(&new.id).into_iter().filter(|(session, _)| locked.contains(&session.id)) {
+                    // In a combination that needs all its conditions, more active time in
+                    // this one is not more in the combination: it stays as it is.
+                    if via == Via::All {
+                        if old.rule != new.rule.clone().checked()? {
+                            return Err(format!(
+                                "“{}” is locked and has this in a combination that needs all of its conditions, so it cannot change",
+                                session.name
+                            ));
+                        }
+                    } else {
+                        old.rule.tightened_by(&new.rule)?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether a change would be accepted, without making it (`Request::Check`): the window asks before it
+/// asks the person to confirm making a locked session stricter, so nothing is confirmed that is then
+/// refused. The rules are the ones the change itself goes by.
+fn check_stricter(context: &Context, check: Check) -> Result<(), String> {
+    let _editing = context.editing.locked();
+    let locked = |id: &str| context.sessions.locked_ids().iter().any(|locked| locked == id);
+    let library = context.definitions.library();
+    match check {
+        Check::AllowanceKind { id, kind } => {
+            let old = library.session(&id).ok_or("No such session")?;
+            if locked(&id) {
+                allowance::kind_allowed(old.allowance.as_ref(), &kind)?;
+            }
+            Ok(())
+        }
+        Check::Allowance { id, allowance } => {
+            let old = library.session(&id).ok_or("No such session")?;
+            if locked(&id) {
+                allowance::tightened(old.allowance.as_ref(), allowance.as_ref())?;
+            }
+            Ok(())
+        }
+        Check::Lock { id, lock } => {
+            if !context.sessions.running_ids().iter().any(|running| running == &id) {
+                return Ok(());
+            }
+            let mut library = library;
+            library.sessions.iter_mut().find(|session| session.id == id).ok_or("No such session")?.lock = lock;
+            let start = library.resolve(&id).and_then(|resolved| start_lock(&resolved))?;
+            context.sessions.check_relock(&id, start)
+        }
+        Check::Target { target } => check_shared(context, &Proposed::List(target)),
+        Check::Condition { condition } => check_shared(context, &Proposed::Condition(condition)),
+    }
 }
 
 /// What a running session enforces of its targets: each with its own lists and actions.
@@ -324,15 +373,13 @@ fn start(context: &Context, id: &str) -> Result<(), String> {
 
 /// Locks a running session that is not locked: the lock is saved as the session's (so it is what
 /// the next start has too, a password hashed as always) and the session runs with it from now on,
-/// as if it started with it now (`Sessions::relock`). A session that is locked keeps its lock: this
-/// is refused before anything is saved.
+/// as if it started with it now (`Sessions::relock`). A session that is locked keeps its lock, except
+/// that one that ends at a time may end later and a delay may get longer; the rest is refused, and
+/// nothing is kept.
 fn lock_running(context: &Context, id: &str, lock: Lock) -> Result<(), String> {
     let _editing = context.editing.locked();
     if !context.sessions.running_ids().iter().any(|running| running == id) {
         return Err("This session is not running: choose its lock for the next start instead".into());
-    }
-    if context.sessions.locked_ids().iter().any(|locked| locked == id) {
-        return Err("This session is locked, so its lock cannot be changed until it can be stopped".into());
     }
     let old = context.definitions.library().session(id).ok_or("No such session")?.clone();
     context.definitions.save_session(Definition { lock, ..old.clone() })?;
@@ -354,8 +401,8 @@ fn start_lock(resolved: &Resolved) -> Result<StartLock, String> {
     let lock = &resolved.session.lock;
     Ok(match lock {
         Lock::None => StartLock::None,
-        Lock::Duration { .. } => StartLock::For(lock.duration()?.ok_or("No duration for the lock")?),
-        Lock::Until { .. } => StartLock::Until(lock.until()?.ok_or("No end for the lock")?),
+        Lock::Timed { kind: TimedKind::For, .. } => StartLock::For(lock.duration()?.ok_or("No duration for the lock")?),
+        Lock::Timed { kind: TimedKind::Until, .. } => StartLock::Until(lock.until()?.ok_or("No end for the lock")?),
         Lock::Condition { .. } => StartLock::Condition(resolved.lock_condition.clone().ok_or("No condition for the lock")?),
         Lock::UntilRestart => StartLock::UntilRestart,
         Lock::Delay { .. } => StartLock::Delay(lock.delay()?.ok_or("No delay for the lock")?),
@@ -508,7 +555,7 @@ mod tests {
     }
 
     fn timed(id: &str, filters: &[&str], duration: &str) -> One {
-        definition(id, filters).lock(Lock::Duration { duration: duration.into() })
+        definition(id, filters).lock(Lock::timed_for(duration))
     }
 
     /// Saves the list, the condition and the session; the first answer that is not Done, or Done.
@@ -650,9 +697,9 @@ mod tests {
         assert!(overview(&context).running[0].condition.is_none());
         assert_eq!(handle(&context, 0, Request::DeleteTarget { id: "games".into() }).0, Response::Done);
         assert_eq!(overview(&context).running[0].targets.len(), 1);
-        // Deleting the last target of a running session deletes the session, which ends it.
+        // Deleting its last target leaves the session running with nothing to do.
         assert_eq!(handle(&context, 0, Request::DeleteTarget { id: "social".into() }).0, Response::Done);
-        assert!(overview(&context).running.is_empty() && overview(&context).sessions.is_empty());
+        assert!(overview(&context).running[0].targets.is_empty() && overview(&context).sessions[0].targets.is_empty());
     }
 
     #[test]
@@ -669,7 +716,7 @@ mod tests {
             })
         };
         let with = |id: &str, allowance: Option<Terms>| {
-            let mut one = definition(id, &["a.com"]).lock(Lock::Duration { duration: "1h".into() });
+            let mut one = definition(id, &["a.com"]).lock(Lock::timed_for("1h"));
             one.session.allowance = allowance;
             one
         };
@@ -715,7 +762,7 @@ mod tests {
         assert_eq!(handle(&context, 0, Request::SaveCondition { condition: weekly("office", "mon-fri 8-17") }).0, Response::Done);
         let mut work = session("work", &["social"]);
         work.condition = Some("office".into());
-        work.lock = Lock::Duration { duration: "1h".into() };
+        work.lock = Lock::timed_for("1h");
         assert_eq!(handle(&context, 0, Request::SaveSession { session: work }).0, Response::Done);
         assert_eq!(handle(&context, 0, Request::Start { id: "work".into() }).0, Response::Done);
 
@@ -775,7 +822,7 @@ mod tests {
         for (id, condition) in [("w", "either"), ("v", "both")] {
             let mut session = session(id, &["social"]);
             session.condition = Some(condition.into());
-            session.lock = Lock::Duration { duration: "1h".into() };
+            session.lock = Lock::timed_for("1h");
             assert_eq!(handle(&context, 0, Request::SaveSession { session }).0, Response::Done);
             assert_eq!(handle(&context, 0, Request::Start { id: id.into() }).0, Response::Done);
         }
@@ -812,7 +859,7 @@ mod tests {
         // A lock is not given to a session that runs by saving it (`Request::Lock` does that), and it
         // cannot be left with nothing to block.
         let mut locked = session("a", &["b"]);
-        locked.lock = Lock::Duration { duration: "1h".into() };
+        locked.lock = Lock::timed_for("1h");
         assert!(failed(handle(&context, 0, Request::SaveSession { session: locked }).0));
         assert!(failed(handle(&context, 0, Request::SaveSession { session: session("a", &[]) }).0));
         // Deleting it ends it.
@@ -824,16 +871,16 @@ mod tests {
     fn a_running_session_that_is_not_locked_can_be_locked_now() {
         let context = context("lock-now");
         let lock = |id: &str, lock: Lock| handle(&context, 0, Request::Lock { id: id.into(), lock }).0;
-        let hour = || Lock::Duration { duration: "1h".into() };
+        let hour = || Lock::timed_for("1h");
         // Only a session that runs: one that does not has its lock chosen for its next start.
         assert_eq!(save(&context, definition("a", &["a.com"])), Response::Done);
         assert_eq!(lock("a", hour()), Response::Failed("This session is not running: choose its lock for the next start instead".into()));
         assert_eq!(handle(&context, 0, Request::Start { id: "a".into() }).0, Response::Done);
         // A lock that does not read is refused, and nothing changes.
-        assert!(failed(lock("a", Lock::Duration { duration: "soon".into() })));
+        assert!(failed(lock("a", Lock::timed_for("soon"))));
         assert_eq!(overview(&context).sessions[0].lock, Lock::None);
         // A date that has passed: refused, and the session keeps the lock it had, also as defined.
-        assert!(failed(lock("a", Lock::Until { until: "2000-01-01 00:00".into() })));
+        assert!(failed(lock("a", Lock::timed_until("2000-01-01 00:00"))));
         assert_eq!(overview(&context).sessions[0].lock, Lock::None);
         assert!(!overview(&context).running[0].locked);
         // Locked now, for an hour from now, and that is its lock for the next start too.
@@ -842,12 +889,22 @@ mod tests {
         assert!(status.running[0].locked && status.running[0].remaining.is_some_and(|left| (3595..=3600).contains(&left)));
         assert_eq!(status.sessions[0].lock, hour());
         assert!(failed(handle(&context, 0, Request::Stop { id: "a".into(), password: None, text: None }).0));
-        // Locked, so its lock stays.
+        // Locked, so its lock stays, but it may end later, which is then its lock for the next start.
         assert_eq!(
             lock("a", Lock::None),
-            Response::Failed("This session is locked, so its lock cannot be changed until it can be stopped".into())
+            Response::Failed(
+                "This session is locked, so its lock cannot be changed until it can be stopped, except to end later or to wait longer"
+                    .into()
+            )
         );
         assert_eq!(overview(&context).sessions[0].lock, hour());
+        let shorter = Lock::timed_for("30m");
+        assert_eq!(lock("a", shorter), Response::Failed("This session is locked, so its lock can only end later".into()));
+        assert_eq!(overview(&context).sessions[0].lock, hour());
+        let longer = Lock::timed_for("2h");
+        assert_eq!(lock("a", longer.clone()), Response::Done);
+        assert_eq!(overview(&context).sessions[0].lock, longer);
+        assert!(overview(&context).running[0].remaining.is_some_and(|left| left > 7000));
     }
 
     #[test]
@@ -1068,14 +1125,13 @@ mod tests {
     fn until_a_time_and_until_a_restart_are_locks_too() {
         let context = context("until");
         // A time that is not one is refused when saved; one that has passed when started.
-        assert!(failed(save(&context, definition("a", &["a.com"]).lock(Lock::Until { until: "tomorrow".into() }))));
-        let Response::Failed(why) = run(&context, definition("a", &["a.com"]).lock(Lock::Until { until: "2001-01-01 00:00".into() }))
-        else {
+        assert!(failed(save(&context, definition("a", &["a.com"]).lock(Lock::timed_until("tomorrow")))));
+        let Response::Failed(why) = run(&context, definition("a", &["a.com"]).lock(Lock::timed_until("2001-01-01 00:00"))) else {
             panic!("started")
         };
         assert!(why.contains("has passed"), "{why}");
         // A time ahead locks like a duration.
-        assert_eq!(run(&context, definition("a", &["a.com"]).lock(Lock::Until { until: "2999-01-01 00:00".into() })), Response::Done);
+        assert_eq!(run(&context, definition("a", &["a.com"]).lock(Lock::timed_until("2999-01-01 00:00"))), Response::Done);
         assert!(overview(&context).running[0].remaining.is_some());
         assert!(failed(handle(&context, 0, Request::Stop { id: "a".into(), password: None, text: None }).0));
         // Until Windows restarts: locked, no stop, no uninstall.
@@ -1103,7 +1159,7 @@ mod tests {
     fn every_lock() -> Vec<(&'static str, One)> {
         vec![
             ("duration", timed("d", &["d.com"], "1h")),
-            ("until", definition("u", &["u.com"]).lock(Lock::Until { until: "2040-06-01 00:00".into() })),
+            ("until", definition("u", &["u.com"]).lock(Lock::timed_until("2040-06-01 00:00"))),
             ("condition", definition("c", &["c.com"]).week("daily").lock(Lock::Condition { condition: "c-schedule".into() })),
             ("delay", definition("l", &["l.com"]).lock(Lock::Delay { delay: "1h".into() })),
             ("text", definition("t", &["t.com"]).lock(Lock::Text { text: "Write this out".into() })),

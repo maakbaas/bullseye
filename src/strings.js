@@ -28,6 +28,8 @@ window.STRINGS = {
 
   common: {
     cancel: "Cancel",
+    // The title of a refusal shown in a dialog, above the reason.
+    notSaved: "Could not be saved",
     // The button of a list page: short, so it fits at any width.
     new: "New",
     save: "Save",
@@ -67,7 +69,6 @@ window.STRINGS = {
     emptyTitle: "No sessions yet",
     emptyText: "Make a target first, then a session that uses it",
     nameMissing: "Name the session",
-    noTargets: "A session needs at least one target",
 
     // A session is set up on its tile: a row each for its targets, condition, allowance and lock,
     // each opening a menu, and the modal of a new session. {name}: the session's name, quoted.
@@ -75,8 +76,6 @@ window.STRINGS = {
       block: "Targets",
       // The Targets row's label: as many as it has.
       blockCount: { one: "Target", other: "Targets" },
-      targets: "Targets",
-      chooseTargets: "Choose targets",
       newTarget: "New target",
       when: "Condition",
       always: "Always",
@@ -86,6 +85,14 @@ window.STRINGS = {
       allowanceSettings: "Allowance settings",
       // A row's edit button, its tooltip and name. {what}: the row's label.
       change: "Change {what}",
+      // A running session's status where there is no condition or allowance to report on.
+      enforcing: "Enforcing",
+      // What a row explains when it has nothing set.
+      explain_when: "Active at all times",
+      explain_unless: "Nothing pauses it",
+      explain_lock: "Can be stopped at any time",
+      // The dialog of a row: {what}: the row ("Condition"), {name}: the session.
+      panelHeading: "{what} of {name}",
       // Under a running session's condition. {change}: how long, in words.
       active: "Active now",
       activeFor: "Active for the next {change}",
@@ -94,8 +101,10 @@ window.STRINGS = {
       noAllowance: "No allowance",
       budget: "Time budget",
       pomodoro: "Pomodoro cycle",
+      delayed: "Delayed start",
       budgetHeading: "Time budget of {name}",
       pomodoroHeading: "Pomodoro cycle of {name}",
+      delayedHeading: "Delayed start of {name}",
       saveFailed: "Could not save {name}",
       rename: "Rename",
       renameHeading: "Rename {name}",
@@ -140,6 +149,9 @@ window.STRINGS = {
       // day"). A Pomodoro: {change}: the time until it turns.
       allowanceOpenFor: "Allowed for the next {change}",
       allowanceBlockedFor: "Allowed again in {change}",
+      // A delayed start: nothing is enforced yet ({change}: until it is), or enforcing from now on.
+      delayedWaiting: "Not enforced for the next {change}",
+      delayedBegun: "Enforcing",
       allowanceOpen: "Allowed now",
       allowanceBlocked: "Not allowed now",
       // A budget: {left}: the time left; {reset}: the time until it is given back.
@@ -188,6 +200,40 @@ window.STRINGS = {
     stopPasswordMissing: "Enter the password",
   },
 
+  // The question before a locked session is made stricter, like the one before it starts locked.
+  // {names}: the session or sessions, quoted; {what}: what it will be, a sentence.
+  stricter: {
+    heading: "Make {names} stricter?",
+    body: "{what} It cannot be loosened until {names} can be stopped. Only unlocking in Settings ends it early",
+    action: "Make stricter",
+    noAllowance: "Its allowance is taken away, so nothing pauses it.",
+    shared: "These changes only make what it uses stricter.",
+  },
+  // The units of a duration field (`duration.js`).
+  duration: { d: "Days", h: "Hours", m: "Minutes", s: "Seconds" },
+  // A time given as how long or as when (`timing.js`), for a timed lock and a delayed start.
+  timing: {
+    date: "Date",
+    datePlaceholder: "yyyy-mm-dd",
+    dateMissing: "Choose a date",
+    time: "Time",
+    timePlaceholder: "hh:mm",
+    timeMissing: "Enter a time, e.g. 18:00",
+    lock: {
+      kind: "Locked",
+      for: "For a while",
+      until: "Until a time",
+      field: "Locked for",
+      helper: "",
+    },
+    delayed: {
+      kind: "Enforcing starts",
+      after: "After a while",
+      from: "From a time",
+      field: "Enforcing starts after",
+      helper: "Counted from the start of the session",
+    },
+  },
   // The lock methods, as chosen on a session's tile. `describe` is the tile's line for a session that
   // is not running; `confirm*` is the question before starting a locked session. A confirmAction is
   // the modal's button: keep it to a few words without placeholders, as Carbon's modal buttons
@@ -197,29 +243,16 @@ window.STRINGS = {
       label: "No lock",
       describe: "No active lock",
     },
-    duration: {
-      label: "Duration",
-      field: "Locked for",
-      placeholder: "e.g. 2h 30m",
-      helper: "e.g. 30m, 2h 30m or 1d",
-      // {duration}: the length in words.
-      describe: "Locks for {duration}",
-      confirmHeading: "Start {name} for {duration}?",
-      confirmBody: "Locked for {duration}. Only unlocking in Settings ends it early",
-      confirmAction: "Start locked",
-    },
-    // {when}: the end written out (Tuesday 6 October 2026, 18:00); {left}: how long from now.
-    until: {
-      label: "Until",
-      date: "Date",
-      datePlaceholder: "yyyy-mm-dd",
-      dateMissing: "Choose a date",
-      time: "Time",
-      timePlaceholder: "hh:mm",
-      timeMissing: "Enter a time, e.g. 18:00",
-      describe: "Locks until {when}",
-      confirmHeading: "Start {name} until {when}?",
-      confirmBody: "Locked until {when}, {left} from now. Only unlocking in Settings ends it early",
+    // {duration}: the length in words; {when}: the end written out (Tuesday 6 October 2026, 18:00);
+    // {left}: how long from now.
+    timed: {
+      label: "Timed",
+      describeFor: "Locks for {duration}",
+      describeUntil: "Locks until {when}",
+      forConfirmHeading: "Start {name} for {duration}?",
+      forConfirmBody: "Locked for {duration}. Only unlocking in Settings ends it early",
+      untilConfirmHeading: "Start {name} until {when}?",
+      untilConfirmBody: "Locked until {when}, {left} from now. Only unlocking in Settings ends it early",
       confirmAction: "Start locked",
     },
     until_restart: {
@@ -264,7 +297,6 @@ window.STRINGS = {
     delay: {
       label: "Delay",
       field: "Time to wait before stopping",
-      placeholder: "e.g. 30m",
       helper: "Stopping is asked for, counts down this long and can be aborted. At most 24 hours",
       describe: "Locks until stopping has waited {delay}",
       confirmHeading: "Start {name} locked by a delay?",
@@ -419,9 +451,9 @@ window.STRINGS = {
       urlHelper: "One address, GET parameters can be part of it. No tokens or headers",
       urlWrong: "Enter an address starting with http:// or https://",
       method: "Method",
-      every: "Ask every (minutes)",
-      everyHelper: "At least 1",
-      everyWrong: "Enter a whole number of minutes, at least 1",
+      every: "Ask every",
+      everyHelper: "At least a minute",
+      everyWrong: "Ask at most once a minute",
       requestTitle: "Request",
       requestText: "The web address that is asked, and how often. No tokens or headers",
       // First what the condition is by default, then the one answer that makes it the other.
@@ -512,12 +544,12 @@ window.STRINGS = {
       none: "None",
       budget: "Time budget",
       pomodoro: "Pomodoro",
+      delayed: "Delayed start",
     },
     // A time budget.
     budget: {
       allowedLabel: "Time allowed",
-      allowedPlaceholder: "e.g. 30m",
-      allowedHelper: "e.g. 30m, 2h 30m. Counts while a blocked page is shown in a tab, a blocked window or app is open, or a blocked program runs",
+      allowedHelper: "Counts while a blocked page is shown in a tab, a blocked window or app is open, or a blocked program runs",
       scopeLabel: "Applies to",
       scopeHelper: "Each item is a site, program, app or window title on the target, with its own time",
       total: "The whole session",
@@ -529,8 +561,7 @@ window.STRINGS = {
       condition: "Each time the condition turns on",
       // Given back every so long.
       everyLabel: "Every",
-      everyPlaceholder: "e.g. 1d",
-      everyHelper: "e.g. 1d, 12h, 90m",
+      everyHelper: "Counted from the point chosen below",
       anchorLabel: "Counted from",
       anchorHelper: "On the clock, every 1d comes at midnight and every 1h on the hour. It has to fit a day evenly",
       start: "The start of the session",
@@ -539,10 +570,8 @@ window.STRINGS = {
     // A Pomodoro cycle: blocked first, then everything is allowed, over and over.
     cycle: {
       blockedLabel: "Blocked for",
-      blockedPlaceholder: "e.g. 50m",
       allowedLabel: "Allowed for",
-      allowedPlaceholder: "e.g. 10m",
-      helper: "e.g. 30m, 2h 30m. Everything the session closes is allowed during this time",
+      helper: "Everything the session closes is allowed during the allowed time",
       anchorLabel: "Cycles count from",
       anchorHelper: "On the clock, a cycle of an hour starts at every full hour. It has to fit a day evenly",
       start: "The start of the session",
@@ -557,8 +586,7 @@ window.STRINGS = {
     heading: "Delete {name}?",
     body: "Deletes the {noun} for good",
     // What it does to the sessions that use a target or condition; {names}: those sessions, quoted.
-    deletesToo: "Also deleted, no other target: {names}",
-    keepsOthers: "Keeps its other targets: {names}",
+    losesTarget: "Goes on without it: {names}",
     becomesAlways: "Always active from now: {names}",
     losesLock: "No lock from now: {names}",
     shrinksCombination: "Continues without it: {names}",
@@ -619,7 +647,6 @@ window.STRINGS = {
     delayTitle: "Unlock delay",
     delayText: "Time between requesting and unlocking, up to 24 hours. A longer delay can always be set. A shorter one needs unlocking to be ready, or no locked session",
     delayLabel: "Delay (up to 24 hours)",
-    delayPlaceholder: "e.g. 2h 30m or 0",
     setDelay: "Set delay",
     changeDelay: "Change delay",
     // {delay}: the new delay in words.

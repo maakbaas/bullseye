@@ -61,6 +61,15 @@ main { padding-block: var(--cds-spacing-06); }
 #tiles { display: contents; }
 /* One session per row, full width. On wider windows its actions move to the right of the row. */
 .session-tile.cds--css-grid-column { display: flex; flex-direction: column; gap: var(--cds-spacing-03); margin-bottom: var(--cds-spacing-05); }
+/* From Carbon's lg breakpoint on the tiles are in two columns, each stacking its own tiles, so a taller tile
+   leaves the one beside it as it is (staggered). The columns are laid out as if they were not there
+   below it. The list's outer edge is kept as the grid's columns have it (its margins). */
+.tile-column { display: contents; }
+@media (min-width: 66rem) {
+  #tiles { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; column-gap: var(--cds-spacing-06); margin-inline: var(--cds-grid-gutter-start) var(--cds-grid-gutter-end); }
+  .tile-column { display: flex; flex-direction: column; gap: var(--cds-spacing-06); min-inline-size: 0; }
+  .tile-column .session-tile.cds--css-grid-column { margin: 0; }
+}
 .session-tile .body { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
 .session-tile .info { display: flex; flex-direction: column; align-items: flex-start; gap: var(--cds-spacing-05); }
 .session-tile .top { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--cds-spacing-03); }
@@ -81,6 +90,7 @@ main { padding-block: var(--cds-spacing-06); }
 .session-tile h2 cds-link::part(link):hover { text-decoration: none; }
 /* The link centres the icon in its line box, which reads high next to the letters: a hair lower, and a hair closer. */
 .session-tile .title-edit { margin-block-start: calc(var(--cds-spacing-02) + var(--cds-spacing-01)); margin-inline-start: calc(-1 * var(--cds-spacing-02)); fill: var(--cds-icon-secondary); opacity: 0; transition: opacity var(--cds-duration-fast-01, 70ms); }
+.session-tile .title-edit.unavailable { display: none; }
 .session-tile h2 cds-link:hover .title-edit, .session-tile h2 cds-link:focus-within .title-edit { opacity: 1; }
 .session-tile .summary { display: flex; flex-direction: column; gap: var(--cds-spacing-02); color: var(--cds-text-secondary); }
 /* An icon in front of a session's line, level with its first line of text. */
@@ -98,11 +108,21 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 .modal-fields .fields[hidden] { display: none; }
 /* Carbon leaves 3rem under a modal's content, which looks high under a form field or a sentence: 1.5rem, the same everywhere. */
 #confirm cds-modal-body { padding-block-end: var(--cds-spacing-06); }
+/* A list to choose from fills the dialog from edge to edge, as the lists on a tile do. */
+#confirm.list cds-modal-body { padding-inline: 0; padding-block-end: 0; }
+/* A duration: its units in one row that shares the width of its container, each as narrow as it needs to be to fit, with the usual gap between them. */
+.duration-fields { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: var(--cds-spacing-05); margin-block-start: var(--cds-spacing-03); }
+.duration-fields cds-text-input { min-inline-size: 0; }
+.duration[hidden] { display: none; }
+/* Its label and helper text, as Carbon's fields have them. */
+.duration > p { margin: 0; color: var(--cds-text-secondary); }
+.duration > p:last-child:not(:first-child) { margin-block-start: var(--cds-spacing-02); }
 /* The until lock's date and time, side by side as Carbon shows them. */
 .date-time { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--cds-spacing-05); }
 /* The time takes the room beside the date, so a message under it wraps there. */
 .date-time cds-time-picker { flex: 1 1 8rem; min-inline-size: 0; }
-@media (min-width: 42rem) { /* Carbon's md breakpoint */
+/* Carbon's md breakpoint up to its lg: one tile to a row, its actions beside its rows. From lg on there are two columns, and the actions go under the rows again. */
+@media (min-width: 42rem) and (max-width: 65.99rem) {
   .session-tile .body { flex-direction: row; align-items: flex-end; justify-content: space-between; }
   .session-tile .actions { flex: none; }
 }
@@ -150,6 +170,9 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 .setting p { color: var(--cds-text-secondary); }
 .setting .row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--cds-spacing-05); }
 .setting .row cds-password-input, .setting .row cds-text-input { flex: 1 1 14rem; }
+/* A duration's boxes share the room beside the button, so they sit side by side. */
+.setting .row .duration { flex: 1 1 18rem; }
+#delay-field { display: contents; }
 /* The Store apps of a target: the installed ones to tick, in a box that scrolls. */
 .app-picker { display: flex; flex-direction: column; gap: var(--cds-spacing-03); }
 .app-picker > .cds--type-label-01 { color: var(--cds-text-secondary); }
@@ -167,13 +190,29 @@ cds-link[inline] { display: inline-flex; }
    happening now under it; the edit button is the row's action. */
 .session-rows .row { display: grid; grid-template-columns: 5rem minmax(0, 1fr); gap: var(--cds-spacing-05); padding-inline-end: var(--cds-spacing-08); }
 .session-rows .row-label { color: var(--cds-text-secondary); }
-.session-rows .row-text { display: flex; flex-direction: column; gap: var(--cds-spacing-01); overflow-wrap: anywhere; }
-.session-rows .row-now { color: var(--cds-text-secondary); }
-.session-rows .row-now[hidden] { display: none; }
-/* A row's panel (a popover below its edit button): its controls and button spaced as a form's, with room around. */
+/* The row's icon sits on the middle of the first line, which is 24px high. */
+.session-rows cds-contained-list-item > [slot="icon"] { margin-block-start: var(--cds-spacing-01); }
+.session-rows .row-text { display: grid; grid-template-columns: minmax(0, 1fr); justify-items: start; row-gap: var(--cds-spacing-03); overflow-wrap: anywhere; }
+/* A dropdown sits in the line of the text, without making the row taller than the text would (20px: its 32px less 6px above and below). */
+.session-rows .row-text cds-dropdown { margin-block: -0.375rem; inline-size: 16rem; max-inline-size: 100%; }
+/* What is happening now is styled as the explanation above it. */
+.session-rows .row-now, .session-rows .row-extra { color: var(--cds-text-helper); }
+/* Text in the column starts where the letters in an inline dropdown do (its left padding, 1rem), so they line up from row to row. */
+.session-rows .row-now, .session-rows .row-extra, .session-rows .row-value { padding-inline-start: var(--cds-spacing-05); }
+.session-rows .row-value:empty { display: none; }
+/* The description beside or under a dropdown is quieter than the dropdown's own text; the target names in the Targets row are links and keep their colour. */
+.session-rows .row-text > cds-dropdown ~ .row-value { color: var(--cds-text-helper); }
+/* The first line of a row is one text line (1.25rem), so a row is as high as its button (3rem): Carbon pads the content by what a line of that height leaves. */
+.session-rows .row-label, .session-rows .row-text > .row-value:first-child { line-height: 1.25rem; }
+.session-rows .row-now[hidden], .session-rows .row-extra[hidden] { display: none; }
+/* A row's panel (in the dialog): its controls and button spaced as a form's, with room around. */
 .row-panel { display: flex; flex-direction: column; align-items: flex-start; gap: var(--cds-spacing-05); padding: var(--cds-spacing-05); }
-/* A plain list of choices fills its panel edge to edge, as Carbon's lists in a popover do. */
+/* A plain list of choices fills its panel edge to edge, as Carbon's lists do. */
 .row-panel:has(> cds-contained-list) { padding: 0; }
+.row-panel > cds-contained-list { align-self: stretch; }
+/* A button under the list, apart from it, with room as the dialog's form fields have. */
+.row-panel:has(> cds-contained-list) > cds-button { margin-inline: var(--cds-spacing-05); }
+.row-panel:has(> cds-button) { padding-block-end: var(--cds-spacing-05); }
 .row-panel .no-mark { inline-size: 1rem; }
 
 /* The state tag beside the title, wrapping under it when the name is long. */

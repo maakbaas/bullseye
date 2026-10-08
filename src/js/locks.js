@@ -1,7 +1,9 @@
 // The lock methods (`lock::Lock`), by `method`: their form in the dialog, the tile's line for a
 // session that is not running, and what starting a session with one asks first.
 
-import { durationText, el, invalid, invoke, localDate, overview, quoted, editHref, ref, t, tn, untilText, wordingOf } from "./core.js";
+import { durationText, el, invalid, invoke, overview, quoted, editHref, ref, t, tn, untilText, wordingOf } from "./core.js";
+import { timingFields } from "./timing.js";
+import { durationField } from "./duration.js";
 
 // A condition lock in words, the condition's name (`name`, a link to it) worded as its own line on a
 // tile does. Not running (`state` null): "Locks while …". Running: the state it is in now, with when it
@@ -31,68 +33,35 @@ const LOCKS = {
     describe: () => t("locks.none.describe"),
     confirm: async () => null,
   },
-  duration: {
-    label: t("locks.duration.label"),
+  timed: {
+    label: t("locks.timed.label"),
+    // For a while or until a date and a time (`timing.js`); the backend reads both, so a wrong or
+    // past time is said in its words.
     form: (session) => {
-      const input = el("cds-text-input", { label: t("locks.duration.field"), placeholder: t("locks.duration.placeholder"), "helper-text": t("locks.duration.helper") });
-      input.value = settingsOf(session, "duration").duration || "";
+      const fields = timingFields(["for", "until"], "lock");
+      const had = settingsOf(session, "timed");
+      fields.fill(had.kind ? had : null);
       return {
-        fields: [input],
+        fields: fields.nodes,
         read: async () => {
-          const duration = input.value.trim();
-          const fault = await invoke("describe_duration", { text: duration }).then(() => null, (e) => String(e));
-          return invalid(input, fault) ? null : { method: "duration", duration };
+          const timing = await fields.read();
+          return timing && { method: "timed", ...timing };
         },
       };
     },
-    describe: (lock) => t("locks.duration.describe", { duration: durationText(lock.duration) }),
+    describe: (lock) => (lock.kind === "until" ? t("locks.timed.describeUntil", { when: untilText(lock.value) }) : t("locks.timed.describeFor", { duration: durationText(lock.value) })),
     confirm: async (session) => {
-      const duration = await invoke("describe_duration", { text: session.lock.duration || "" }).catch(() => session.lock.duration);
+      const { kind, value } = session.lock;
+      if (kind === "until") {
+        // A time that has passed does not start; the service says so.
+        const end = await invoke("describe_until", { text: value || "" }).catch(() => null);
+        if (!end) return null;
+        const values = { name: quoted(session.name), when: end.when, left: end.left };
+        return { heading: t("locks.timed.untilConfirmHeading", values), body: t("locks.timed.untilConfirmBody", values), action: t("locks.timed.confirmAction", values) };
+      }
+      const duration = await invoke("describe_duration", { text: value || "" }).catch(() => value);
       const values = { name: quoted(session.name), duration };
-      return {
-        heading: t("locks.duration.confirmHeading", values),
-        body: t("locks.duration.confirmBody", values),
-        action: t("locks.duration.confirmAction", values),
-      };
-    },
-  },
-  until: {
-    label: t("locks.until.label"),
-    // Carbon's date picker and time picker side by side; the backend reads the two together
-    // (`describe_until`), so a wrong or past time is said in its words.
-    form: (session) => {
-      const [day, time] = (settingsOf(session, "until").until || "").split(" ");
-      const datePicker = el("cds-date-picker", { "date-format": "Y-m-d", "min-date": localDate(new Date()) });
-      const dateInput = el("cds-date-picker-input", { kind: "single", "label-text": t("locks.until.date"), placeholder: t("locks.until.datePlaceholder") });
-      datePicker.append(dateInput);
-      datePicker.value = day || "";
-      const timePicker = el("cds-time-picker", { "label-text": t("locks.until.time"), placeholder: t("locks.until.timePlaceholder"), "max-length": "5" });
-      timePicker.value = time || "";
-      const row = el("div", { class: "date-time" }, datePicker, timePicker);
-      return {
-        fields: [row],
-        read: async () => {
-          invalid(dateInput, null);
-          invalid(timePicker, null);
-          if (invalid(dateInput, datePicker.value ? null : t("locks.until.dateMissing"))) return null;
-          if (invalid(timePicker, timePicker.value.trim() ? null : t("locks.until.timeMissing"))) return null;
-          const until = `${datePicker.value} ${timePicker.value.trim()}`;
-          const fault = await invoke("describe_until", { text: until }).then(() => null, (e) => String(e));
-          return invalid(timePicker, fault) ? null : { method: "until", until };
-        },
-      };
-    },
-    describe: (lock) => t("locks.until.describe", { when: untilText(lock.until) }),
-    confirm: async (session) => {
-      // A time that has passed does not start; the service says so.
-      const end = await invoke("describe_until", { text: session.lock.until || "" }).catch(() => null);
-      if (!end) return null;
-      const values = { name: quoted(session.name), when: end.when, left: end.left };
-      return {
-        heading: t("locks.until.confirmHeading", values),
-        body: t("locks.until.confirmBody", values),
-        action: t("locks.until.confirmAction", values),
-      };
+      return { heading: t("locks.timed.forConfirmHeading", values), body: t("locks.timed.forConfirmBody", values), action: t("locks.timed.confirmAction", values) };
     },
   },
   until_restart: {
@@ -140,14 +109,14 @@ const LOCKS = {
     label: t("locks.delay.label"),
     // Like unlocking in Settings: stopping is asked for, counts down, and can be aborted.
     form: (session) => {
-      const input = el("cds-text-input", { label: t("locks.delay.field"), placeholder: t("locks.delay.placeholder"), "helper-text": t("locks.delay.helper") });
-      input.value = settingsOf(session, "delay").delay || "";
+      const input = durationField({ label: t("locks.delay.field"), helper: t("locks.delay.helper") });
+      input.set(settingsOf(session, "delay").delay || 0);
       return {
-        fields: [input],
+        fields: [input.node],
         read: async () => {
-          const delay = input.value.trim();
+          const delay = input.text();
           const fault = await invoke("describe_duration", { text: delay }).then(() => null, (e) => String(e));
-          return invalid(input, fault) ? null : { method: "delay", delay };
+          return input.error(fault) ? null : { method: "delay", delay };
         },
       };
     },

@@ -1,5 +1,5 @@
 //! Allowances: what lets a session go quiet for a while. A session has at most one, set on the session
-//! itself like its lock (`definitions::Definition::allowance`), never a list of its own. Two kinds
+//! itself like its lock (`definitions::Definition::allowance`), never a list of its own. Three kinds
 //! (`Terms`):
 //! - a **budget**: an allowed time of use, for the session as a whole or for each item of it (each
 //!   site, program, Store app or window title) on its own, that is used up while the item is in
@@ -7,7 +7,9 @@
 //!   condition becomes active);
 //! - a **Pomodoro**: a fixed cycle that blocks for a while and then allows everything for a while,
 //!   counted from the start of the session or from the clock (cycles from midnight, so a cycle that fits
-//!   a day evenly starts at the same times every day).
+//!   a day evenly starts at the same times every day);
+//! - a **delayed start**: nothing is enforced until a while after the session starts, or from a
+//!   date and time, and everything is from then on. The session is running, and locked, all along.
 //!
 //! What is allowed is decided by the service (`session.rs`), never by the app: an item with budget left
 //! is taken out of what the app closes and handed to it as something to watch, and the app says what
@@ -19,6 +21,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::datetime::DateTime;
 use crate::duration;
 #[cfg(test)]
 use crate::lists::Entries;
@@ -63,6 +66,16 @@ pub enum Anchor {
     Clock,
 }
 
+/// Whether a delayed start counts a while from the start of the session, or is a date and time.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DelayKind {
+    /// `value` is a duration (`30m`), counted from the session's start.
+    After,
+    /// `value` is a local date and time (`2026-10-06 18:00`, `datetime.rs`), read in the session's time zone.
+    From,
+}
+
 /// What an allowance is, tagged by `type`: a session's `allowance` in the file.
 ///
 /// **A new kind of allowance** is a variant here with what it means in `Run`, fields in the session
@@ -84,6 +97,13 @@ pub enum Terms {
     },
     /// Blocked for `blocked`, then everything allowed for `allowed`, over and over.
     Pomodoro { blocked: String, allowed: String, anchor: Anchor },
+    /// Nothing is enforced until `value` says (`kind`); from then on everything is, for good.
+    Delayed { kind: DelayKind, value: String },
+}
+
+/// A date and time already checked, as it is worded (`Tuesday 6 October 2026, 18:00`).
+fn moment(text: &str) -> String {
+    DateTime::parse(text).map_or_else(|_| text.to_string(), |at| at.to_string())
 }
 
 /// A duration typed as `30m`, in seconds; never none or zero.
@@ -101,6 +121,12 @@ impl Terms {
     /// clock that fits a day evenly. A budget that does not reset every so long has no `every`.
     pub fn checked(self) -> Result<Terms, String> {
         match &self {
+            Terms::Delayed { kind: DelayKind::After, value } => {
+                seconds(value, "how long to wait before enforcing")?;
+            }
+            Terms::Delayed { kind: DelayKind::From, value } => {
+                DateTime::parse(value)?;
+            }
             Terms::Budget { allowed, scope, reset, every, anchor } => {
                 seconds(allowed, "how long is allowed")?;
                 if *reset != Reset::Every {
@@ -116,7 +142,7 @@ impl Terms {
                 if *anchor == Anchor::Clock && !DAY.is_multiple_of(period) {
                     return Err(format!(
                         "On the clock the time has to be given back in a way that fits a day evenly, such as every hour or every day; every {} does not",
-                        duration::countdown(period)
+                        duration::period(period)
                     ));
                 }
             }
@@ -141,6 +167,10 @@ impl Terms {
     /// scope and a reset by condition stay; a cycle stays exactly as it is (any change moves where it is
     /// in its cycle). The error says what is wrong, for a person.
     pub fn tightened_by(&self, new: &Terms) -> Result<(), String> {
+        // The kind first: another kind is refused whatever its terms are.
+        if self.kind() != new.kind() {
+            return Err("The session is locked, so its allowance's type cannot change".into());
+        }
         let new = new.clone().checked()?;
         match (self, &new) {
             (
@@ -177,7 +207,31 @@ impl Terms {
                     Err("The session is locked, so its allowance's cycle cannot change".into())
                 }
             }
+            (Terms::Delayed { kind: old_kind, value: old }, Terms::Delayed { kind: new_kind, value: new }) => {
+                if old_kind != new_kind {
+                    return Err("The session is locked, so its start cannot change between after a while and from a time".into());
+                }
+                // Earlier is stricter: enforcing starts sooner.
+                let sooner = match new_kind {
+                    DelayKind::After => secs(new) <= secs(old),
+                    DelayKind::From => matches!((DateTime::parse(new), DateTime::parse(old)), (Ok(new), Ok(old)) if new <= old),
+                };
+                if sooner {
+                    Ok(())
+                } else {
+                    Err("The session is locked, so its start can come sooner but not later".into())
+                }
+            }
             _ => Err("The session is locked, so its allowance's type cannot change".into()),
+        }
+    }
+
+    /// The kind, as its `type` is written in the file: `budget`, `pomodoro` or `delayed`.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Terms::Budget { .. } => "budget",
+            Terms::Pomodoro { .. } => "pomodoro",
+            Terms::Delayed { .. } => "delayed",
         }
     }
 
@@ -185,11 +239,11 @@ impl Terms {
     pub fn scope(&self) -> Option<Scope> {
         match self {
             Terms::Budget { scope, .. } => Some(*scope),
-            Terms::Pomodoro { .. } => None,
+            Terms::Pomodoro { .. } | Terms::Delayed { .. } => None,
         }
     }
 
-    /// In words, for the window and the CLI: `30 minutes in total, reset every 1 day, on the clock`,
+    /// In words, for the window and the CLI: `30 minutes in total, reset every day, on the clock`,
     /// `Blocked for 50 minutes, then allowed for 10 minutes, from the start of the session`.
     pub fn describe(&self) -> String {
         match self {
@@ -202,14 +256,18 @@ impl Terms {
                     (Reset::Never, _) => "never reset".to_string(),
                     (Reset::Condition, _) => "reset each time its condition turns on".to_string(),
                     (Reset::Every, Anchor::Start) => {
-                        format!("reset every {}, from the start of the session", duration::countdown(secs(every)))
+                        format!("reset every {}, from the start of the session", duration::period(secs(every)))
                     }
                     (Reset::Every, Anchor::Clock) => {
-                        format!("reset every {}, on the clock, from midnight", duration::countdown(secs(every)))
+                        format!("reset every {}, on the clock, from midnight", duration::period(secs(every)))
                     }
                 };
                 format!("{} {scope}, {reset}", duration::countdown(secs(allowed)))
             }
+            Terms::Delayed { kind, value } => match kind {
+                DelayKind::After => format!("Nothing is enforced for the first {}", duration::countdown(secs(value))),
+                DelayKind::From => format!("Nothing is enforced until {}", moment(value)),
+            },
             Terms::Pomodoro { blocked, allowed, anchor } => {
                 let from = match anchor {
                     Anchor::Start => "from the start of the session",
@@ -235,21 +293,23 @@ pub struct Described {
 
 impl Terms {
     /// Short, as a line of a session's tile says it, like its other lines (`Always active`):
-    /// `Allowed 30 minutes every 1 day`, `Allowed 10 minutes every 2 hours per item`, `Allowed 10
+    /// `Allowed 30 minutes every day`, `Allowed 10 minutes every 2 hours per item`, `Allowed 10
     /// minutes after every 50 minutes`.
     pub fn label(&self) -> String {
         match self {
             Terms::Budget { allowed, scope, reset, every, .. } => {
                 let every = match reset {
                     Reset::Never => " in total".to_string(),
-                    Reset::Every => format!(" every {}", duration::countdown(secs(every))),
+                    Reset::Every => format!(" every {}", duration::period(secs(every))),
                     Reset::Condition => " each time active".to_string(),
                 };
                 let each = if *scope == Scope::Each { " per item" } else { "" };
                 format!("Allowed {}{every}{each}", duration::countdown(secs(allowed)))
             }
+            Terms::Delayed { kind: DelayKind::After, value } => format!("Enforced after {}", duration::countdown(secs(value))),
+            Terms::Delayed { kind: DelayKind::From, value } => format!("Enforced from {}", moment(value)),
             Terms::Pomodoro { blocked, allowed, .. } => {
-                format!("Allowed {} after every {}", duration::countdown(secs(allowed)), duration::countdown(secs(blocked)))
+                format!("Allowed {} after every {}", duration::countdown(secs(allowed)), duration::period(secs(blocked)))
             }
         }
     }
@@ -258,6 +318,18 @@ impl Terms {
     pub fn described(self) -> Result<Described, String> {
         let terms = self.checked()?;
         Ok(Described { words: terms.describe(), label: terms.label() })
+    }
+}
+
+/// Whether a locked session whose allowance is `old` may be set to the kind `to` (`none`, `budget`,
+/// `pomodoro` or `delayed`): taking it away, or the kind it has; asked before its terms are, so a
+/// change that cannot be made is not asked about (`tightened` then judges the terms).
+pub fn kind_allowed(old: Option<&Terms>, to: &str) -> Result<(), String> {
+    match (old, to) {
+        (_, "none") => Ok(()),
+        (None, _) => Err("The session is locked, so it cannot be given an allowance".into()),
+        (Some(old), to) if old.kind() == to => Ok(()),
+        _ => Err("The session is locked, so its allowance's type cannot change".into()),
     }
 }
 
@@ -364,7 +436,7 @@ impl Run {
     fn allowed_ms(&self) -> u64 {
         match &self.terms {
             Terms::Budget { allowed, .. } => secs(allowed).saturating_mul(1000),
-            Terms::Pomodoro { .. } => 0,
+            Terms::Pomodoro { .. } | Terms::Delayed { .. } => 0,
         }
     }
 
@@ -426,9 +498,15 @@ impl Run {
         *used = used.saturating_add(millis).min(cap);
     }
 
-    /// Where a Pomodoro cycle stands; `None` for a budget, or if the local time cannot be told (a
+    /// Where a Pomodoro cycle stands, or how long a delayed start has to go (`None` once it has begun); `None` for a budget, or if the local time cannot be told (a
     /// cycle on the clock), when it is blocked.
     pub fn phase(&self, zone: &Zone, now: SystemTime) -> Option<Phase> {
+        if let Terms::Delayed { kind, value } = &self.terms {
+            // Allowed until the start, for the time that is left; enforced after, or if the start
+            // cannot be told.
+            let left = self.delay_left(*kind, value, zone, now)?;
+            return (left > 0).then_some(Phase { allowed: true, change: left });
+        }
         let Terms::Pomodoro { blocked, allowed, anchor } = &self.terms else { return None };
         let (blocked, cycle) = (secs(blocked), secs(blocked) + secs(allowed));
         if cycle == 0 {
@@ -444,7 +522,17 @@ impl Run {
         Some(if at >= blocked { Phase { allowed: true, change: cycle - at } } else { Phase { allowed: false, change: blocked - at } })
     }
 
-    /// Whether everything is allowed now, by a Pomodoro cycle.
+    /// Seconds until a delayed start begins to enforce (0 once it has); `None` if that cannot be told
+    /// (the time, or a date the time zone cannot place).
+    fn delay_left(&self, kind: DelayKind, value: &str, zone: &Zone, now: SystemTime) -> Option<u64> {
+        let begins = match kind {
+            DelayKind::After => self.started.saturating_add(secs(value).saturating_mul(1000)),
+            DelayKind::From => state::to_unix(zone.instant(&DateTime::parse(value).ok()?)?)?,
+        };
+        Some(begins.saturating_sub(state::to_unix(now)?).div_ceil(1000))
+    }
+
+    /// Whether everything is allowed now, by a Pomodoro cycle or before a delayed start.
     pub fn everything_allowed(&self, zone: &Zone, now: SystemTime) -> bool {
         self.phase(zone, now).is_some_and(|phase| phase.allowed)
     }
@@ -468,7 +556,7 @@ impl Run {
         Status {
             terms: self.terms.clone(),
             open: match &self.terms {
-                Terms::Pomodoro { .. } => phase.is_some_and(|phase| phase.allowed),
+                Terms::Pomodoro { .. } | Terms::Delayed { .. } => phase.is_some_and(|phase| phase.allowed),
                 Terms::Budget { .. } => total.is_none_or(|left| left > 0),
             },
             change: phase.map(|phase| phase.change),
@@ -631,13 +719,13 @@ mod tests {
             (budget("30m", Scope::Total, Reset::Never), "30 minutes in total, never reset", "Allowed 30 minutes in total"),
             (
                 every("1h", Scope::Total, "1h", Anchor::Clock),
-                "1 hour in total, reset every 1 hour, on the clock, from midnight",
-                "Allowed 1 hour every 1 hour",
+                "1 hour in total, reset every hour, on the clock, from midnight",
+                "Allowed 1 hour every hour",
             ),
             (
                 every("30m", Scope::Total, "1d", Anchor::Clock),
-                "30 minutes in total, reset every 1 day, on the clock, from midnight",
-                "Allowed 30 minutes every 1 day",
+                "30 minutes in total, reset every day, on the clock, from midnight",
+                "Allowed 30 minutes every day",
             ),
             (
                 every("2h", Scope::Each, "36h", Anchor::Start),
@@ -657,7 +745,7 @@ mod tests {
             (
                 pomodoro("1h", "30m", Anchor::Clock),
                 "Blocked for 1 hour, then allowed for 30 minutes, on the clock, from midnight",
-                "Allowed 30 minutes after every 1 hour",
+                "Allowed 30 minutes after every hour",
             ),
         ];
         for (terms, words, label) in cases {
@@ -770,5 +858,129 @@ mod tests {
         let keys = item_keys(&entries);
         assert_eq!(keys, vec!["site:a.com", "program:game.exe"]);
         assert_eq!(key_text(&keys[1]), "game.exe");
+    }
+
+    fn after(value: &str) -> Terms {
+        Terms::Delayed { kind: DelayKind::After, value: value.into() }
+    }
+
+    fn from(value: &str) -> Terms {
+        Terms::Delayed { kind: DelayKind::From, value: value.into() }
+    }
+
+    #[test]
+    fn a_delayed_start_is_checked() {
+        assert_eq!(after("30m").checked(), Ok(after("30m")));
+        assert_eq!(from("2026-10-06 18:00").checked(), Ok(from("2026-10-06 18:00")));
+        assert!(after("").checked().unwrap_err().contains("how long to wait before enforcing"));
+        assert!(after("0m").checked().is_err());
+        assert!(after("soon").checked().is_err());
+        assert!(from("").checked().is_err());
+        assert!(from("tomorrow-ish").checked().is_err());
+    }
+
+    #[test]
+    fn a_delayed_start_is_written_out_in_full_and_short() {
+        let cases = [
+            (after("30m"), "Nothing is enforced for the first 30 minutes", "Enforced after 30 minutes"),
+            (after("1h"), "Nothing is enforced for the first 1 hour", "Enforced after 1 hour"),
+            (
+                from("1970-01-02 00:00"),
+                "Nothing is enforced until Friday 2 January 1970, 00:00",
+                "Enforced from Friday 2 January 1970, 00:00",
+            ),
+        ];
+        for (terms, words, label) in cases {
+            assert_eq!(terms.describe(), words);
+            assert_eq!(terms.label(), label);
+            assert_eq!(terms.clone().described(), Ok(Described { words: words.into(), label: label.into() }));
+            assert_eq!(terms.scope(), None);
+        }
+        // A date that cannot be read is worded as typed.
+        assert_eq!(moment("later"), "later");
+        assert!(after("0m").described().is_err());
+    }
+
+    #[test]
+    fn a_delayed_start_is_written_as_json_tagged_by_type_and_kind() {
+        let text = serde_json::to_string(&after("30m")).unwrap();
+        assert_eq!(text, r#"{"type":"delayed","kind":"after","value":"30m"}"#);
+        assert_eq!(serde_json::from_str::<Terms>(&text).unwrap(), after("30m"));
+        let text = serde_json::to_string(&from("2026-10-06 18:00")).unwrap();
+        assert_eq!(text, r#"{"type":"delayed","kind":"from","value":"2026-10-06 18:00"}"#);
+        assert_eq!(serde_json::from_str::<Terms>(&text).unwrap(), from("2026-10-06 18:00"));
+    }
+
+    #[test]
+    fn a_delayed_start_allows_everything_until_it_begins() {
+        let zone = Zone::fixed(0);
+        // After: counted from the start of the session, at 1000 seconds.
+        let run = Run::new(after("30m"), at(1000));
+        assert_eq!(run.phase(&zone, at(1000)), Some(Phase { allowed: true, change: 1800 }));
+        assert_eq!(run.phase(&zone, at(1000 + 1799)), Some(Phase { allowed: true, change: 1 }));
+        assert!(run.everything_allowed(&zone, at(1000 + 1799)));
+        // Once it has begun it enforces for good.
+        assert_eq!(run.phase(&zone, at(1000 + 1800)), None);
+        assert!(!run.everything_allowed(&zone, at(1000 + 1800)));
+        assert!(!run.everything_allowed(&zone, at(1000 + 99_999)));
+        let before = run.status(&zone, at(1000 + 600));
+        assert!(before.open);
+        assert_eq!((before.change, before.change_words.as_deref()), (Some(1200), Some("20 minutes")));
+        assert_eq!((before.left, before.reset_in), (None, None));
+        assert!(before.items.is_empty());
+        let begun = run.status(&zone, at(1000 + 1800));
+        assert!(!begun.open);
+        assert_eq!((begun.change, begun.change_words), (None, None));
+        // From: a local date and time, read in the session's zone.
+        let run = Run::new(from("1970-01-02 00:00"), at(1000));
+        assert_eq!(run.phase(&zone, at(1000)), Some(Phase { allowed: true, change: 86_400 - 1000 }));
+        assert!(!run.everything_allowed(&zone, at(86_400)));
+        // Two hours east of UTC, local midnight came two hours earlier.
+        let east = Zone::fixed(120);
+        assert_eq!(run.phase(&east, at(1000)), Some(Phase { allowed: true, change: 86_400 - 7200 - 1000 }));
+        assert_eq!(run.phase(&east, at(86_400 - 7200)), None);
+        // A start that cannot be told (a date nobody can read) is enforced.
+        let broken = Run::new(from("never"), at(0));
+        assert_eq!(broken.phase(&zone, at(0)), None);
+        assert!(!broken.everything_allowed(&zone, at(0)));
+        // Nothing to use up, and not given back.
+        assert!(!run.is_free(TOTAL));
+        let mut run = run;
+        run.advance(&zone, at(10), true);
+        run.charge(TOTAL, 1000);
+        assert!(!run.is_free(TOTAL));
+        assert_eq!(run.status(&zone, at(10)).reset_in, None);
+    }
+
+    #[test]
+    fn a_locked_session_can_only_start_enforcing_sooner() {
+        let old = after("1h");
+        assert_eq!(old.tightened_by(&after("1h")), Ok(()));
+        assert_eq!(old.tightened_by(&after("30m")), Ok(()));
+        assert_eq!(old.tightened_by(&after("2h")), Err("The session is locked, so its start can come sooner but not later".into()));
+        assert!(old.tightened_by(&after("")).is_err(), "unreadable terms are no stricter");
+        let kinds = old.tightened_by(&from("2026-10-06 18:00")).unwrap_err();
+        assert!(kinds.contains("between after a while and from a time"), "{kinds}");
+        let old = from("2026-10-06 18:00");
+        assert_eq!(old.tightened_by(&from("2026-10-06 18:00")), Ok(()));
+        assert_eq!(old.tightened_by(&from("2026-10-06 17:59")), Ok(()));
+        assert!(old.tightened_by(&from("2026-10-06 18:01")).unwrap_err().contains("sooner but not later"));
+        assert!(old.tightened_by(&after("1h")).is_err());
+        // An old date nobody can read is never beaten.
+        assert!(from("never").tightened_by(&from("2026-10-06 18:00")).unwrap_err().contains("sooner but not later"));
+        // Another type altogether.
+        assert!(old.tightened_by(&pomodoro("50m", "10m", Anchor::Start)).unwrap_err().contains("type cannot change"));
+        assert!(pomodoro("50m", "10m", Anchor::Start).tightened_by(&old).unwrap_err().contains("type cannot change"));
+        assert_eq!(tightened(Some(&after("1h")), Some(&after("10m"))), Ok(()));
+        assert!(tightened(Some(&after("1h")), Some(&after("2h"))).is_err());
+        assert!(tightened(None, Some(&after("1h"))).is_err());
+    }
+
+    #[test]
+    fn new_delayed_terms_keep_the_run() {
+        let run = Run::new(after("1h"), at(5));
+        let run = run.retermed(from("2026-10-06 18:00"));
+        assert_eq!(run.scope(), None);
+        assert_eq!(run.started, 5000);
     }
 }
