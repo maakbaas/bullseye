@@ -368,7 +368,7 @@ function matcherFields() {
 function webhookPicker() {
   const url = el("cds-text-input", { label: t("conditions.webhook.url"), placeholder: "https://example.com/state?room=1", "helper-text": t("conditions.webhook.urlHelper") });
   const method = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.webhook.method") });
-  for (const key of ["get", "post"]) method.append(el("cds-dropdown-item", { value: key }, key.toUpperCase()));
+  for (const key of ["get", "post"]) method.append(el("cds-dropdown-item", { value: key }, t(`conditions.webhook.methods.${key}`)));
   // No seconds: it is asked at most once a minute.
   const every = durationField({ label: t("conditions.webhook.every"), helper: t("conditions.webhook.everyHelper"), units: ["d", "h", "m"] });
   const fallback = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.webhook.fallback"), "helper-text": t("conditions.webhook.fallbackHelper") });

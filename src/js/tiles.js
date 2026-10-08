@@ -277,7 +277,7 @@ async function setLock(id, method) {
     // A lock that holds is asked first, and so is a held one being made stricter; no lock (nothing to
     // hold) is not.
     const now = running.locked
-      ? await confirmStricter(quoted(session.name), `${plain(LOCKS[method].describe(lock))}.`)
+      ? await confirmStricter(quoted(session.name), t("common.sentence", { text: plain(LOCKS[method].describe(lock)) }))
       : !question ||
         (await ask({ heading: t("sessions.lockNow.heading", { name: quoted(session.name) }), body: question.body, action: t("sessions.lockNow.action"), kind: "primary" }));
     if (now) {

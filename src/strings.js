@@ -50,6 +50,8 @@ window.STRINGS = {
     quoted: "“{name}”",
     // Between names in a list of them.
     separator: ", ",
+    // The service's words as a sentence of a question ({text}).
+    sentence: "{text}.",
     // Before the last of a list: a, b and c.
     and: " and ",
     serviceDown: "Bullseye service not responding",
@@ -84,8 +86,9 @@ window.STRINGS = {
       unless: "Allowance",
       lock: "Lock",
       allowanceSettings: "Allowance settings",
-      // A row's edit button, its tooltip and name. {what}: the row's label.
-      change: "Change {what}",
+      // A row's edit button, its tooltip and name.
+      changeBlock: "Change targets",
+      changeWhen: "Change condition",
       // The dialog of a row: {what}: the row ("Condition"), {name}: the session.
       panelHeading: "{what} of {name}",
       noAllowance: "No allowance",
@@ -400,6 +403,7 @@ window.STRINGS = {
       urlHelper: "One address, GET parameters can be part of it. No tokens or headers",
       urlWrong: "Enter an address starting with http:// or https://",
       method: "Method",
+      methods: { get: "GET", post: "POST" },
       every: "Ask every",
       everyHelper: "At least a minute",
       everyWrong: "Ask at most once a minute",

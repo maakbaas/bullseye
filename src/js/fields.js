@@ -91,7 +91,7 @@ function addRows(parts, id) {
     let edit;
     if (key === "block" || key === "when") {
       // A list to tick or choose from in the modal (`fillPanel`), filled each time it opens.
-      edit = button("edit", t("sessions.fields.change", { what: t(`sessions.fields.${key}`).toLowerCase() }), async () => {
+      edit = button("edit", t(`sessions.fields.${key === "block" ? "changeBlock" : "changeWhen"}`), async () => {
         const panel = el("div");
         fillPanel(parts, id, key, panel, dismiss);
         await ask({ heading: t("sessions.fields.panelHeading", { what: t(`sessions.fields.${key}`), name: quoted(current(id).name) }), fields: [panel] });
@@ -268,7 +268,7 @@ async function setAllowance(parts, id, type) {
   if (!terms) return refresh();
   // A locked session takes only a stricter one, which cannot be taken back: asked first.
   if (locked) {
-    const words = await invoke("describe_allowance", { terms }).then((described) => `${described.words}.`, () => "");
+    const words = await invoke("describe_allowance", { terms }).then((described) => t("common.sentence", { text: described.words }), () => "");
     parts.choosing = true;
     const sure = await confirmStricter(quoted(session.name), words);
     parts.choosing = false;
