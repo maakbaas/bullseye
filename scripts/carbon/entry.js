@@ -53,7 +53,7 @@ import '@carbon/web-components/es/components/modal/modal-footer-button.js';
 import '@carbon/web-components/es/components/inline-loading/inline-loading.js';
 
 // Carbon icons, as `carbonIcon(name)`: an <svg> element, 16 px unless another size is given.
-import { toSVG } from '@carbon/icon-helpers';
+import { getAttributes, toSVG } from '@carbon/icon-helpers';
 import add16 from '@carbon/icons/es/add/16.js';
 import checkmark16 from '@carbon/icons/es/checkmark/16.js';
 import close16 from '@carbon/icons/es/close/16.js';
@@ -105,7 +105,10 @@ const icons = {
 };
 
 window.carbonIcon = (name, slot) => {
-  const svg = toSVG(icons[name]);
+  // `toSVG` adds Carbon's default attributes (aria-hidden, preserveAspectRatio, …) but takes their
+  // values from the icon's own, so they came out "undefined": given them already merged, it sets them.
+  const icon = icons[name];
+  const svg = toSVG({ ...icon, attrs: getAttributes(icon.attrs) });
   if (slot) svg.setAttribute('slot', slot);
   return svg;
 };
