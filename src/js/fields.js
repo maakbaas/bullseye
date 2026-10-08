@@ -61,8 +61,13 @@ function addRows(parts, id) {
       // The focus to its first control, as a popover's content should have it (and Escape closes it
       // from there).
       await edit.updateComplete;
-      const first = panel.querySelector("cds-checkbox, cds-radio-button[checked], cds-radio-button");
-      if (first) first.focus();
+      // Carbon joins a tab-tip's button to its panel below it only; where the panel went above
+      // (no room below), the button joins it at its top instead (`.up`, app.css).
+      requestAnimationFrame(() => button.classList.toggle("up", panel.firstElementChild.getBoundingClientRect().bottom <= button.getBoundingClientRect().top + 1));
+      // A clickable list item is a button inside it; it does not hand on the focus itself.
+      const first = panel.querySelector("cds-checkbox, cds-contained-list-item[clickable]");
+      const inner = first && first.shadowRoot && first.shadowRoot.querySelector("button");
+      (inner || first)?.focus();
     });
     const row = el("cds-contained-list-item", {}, carbonIcon(icon, "icon"), el("span", { class: "row" }, label, el("span", { class: "row-text" }, value, now)), edit);
     list.append(row);
@@ -93,10 +98,9 @@ function renderRows(parts, session, lines) {
   }
 }
 
-// What a row's panel holds, Carbon's own controls under the row's name: the targets as checkboxes,
-// each tick saved at once and the panel staying open for the next; or one condition, allowance or
-// lock method as radio buttons, a choice closing the panel. Under them, making a new target or
-// condition, or the settings of the allowance or lock it has.
+// What a row's panel holds, under the row's name: the targets as Carbon checkboxes, each tick saved
+// at once and the panel staying open for the next, and a button to make a new one; or one condition,
+// allowance or lock method in a plain list to click (`choices`).
 function fillPanel(parts, id, key, panel, close) {
   const session = current(id);
   const button = (text, icon, act) => {
@@ -107,19 +111,25 @@ function fillPanel(parts, id, key, panel, close) {
     });
     return node;
   };
-  const choices = (options, chosen, choose) => {
-    const group = el(
-      "cds-radio-button-group",
-      { "legend-text": t(`sessions.fields.${key}`), name: `${key}-${id}`, orientation: "vertical" },
-      ...options.map(([value, text]) => el("cds-radio-button", { "label-text": text, value })),
+  // One of several: a plain list to click (Carbon's contained list, its kind for one in a popover),
+  // the one it has checked, the others keeping its room; a choice closes the panel. Making a new one
+  // or the settings of the one it has are the list's last rows, with their icons.
+  const choices = (options, chosen, choose, more = []) =>
+    el(
+      "cds-contained-list",
+      { kind: "disclosed", label: t(`sessions.fields.${key}`) },
+      ...options.map(([value, text]) =>
+        listItem(text, value === chosen ? carbonIcon("checkmark", "icon") : el("span", { slot: "icon", class: "no-mark" }), () => value !== chosen && choose(value)),
+      ),
+      ...more.map(([text, icon, act]) => listItem(text, carbonIcon(icon, "icon"), act)),
     );
-    group.value = chosen;
-    group.addEventListener("cds-radio-button-group-changed", () => {
-      if (group.value === chosen) return;
+  const listItem = (text, icon, act) => {
+    const item = el("cds-contained-list-item", { clickable: true }, icon, text);
+    item.addEventListener("cds-contained-list-item-click", () => {
       close();
-      choose(group.value);
+      act();
     });
-    return group;
+    return item;
   };
   let nodes;
   if (key === "block") {
@@ -146,22 +156,32 @@ function fillPanel(parts, id, key, panel, close) {
     nodes = [group, button(t("sessions.fields.newTarget"), "add", () => make(id, "targets", (made) => save(current(id), { targets: [...current(id).targets, made.id] })))];
   } else if (key === "when") {
     nodes = [
-      choices([[ALWAYS, t("sessions.fields.always")], ...overview.conditions.map((c) => [c.id, c.name])], session.condition || ALWAYS, (value) =>
-        save(current(id), { condition: value === ALWAYS ? null : value }),
+      choices(
+        [[ALWAYS, t("sessions.fields.always")], ...overview.conditions.map((c) => [c.id, c.name])],
+        session.condition || ALWAYS,
+        (value) => save(current(id), { condition: value === ALWAYS ? null : value }),
+        [[t("sessions.fields.newCondition"), "add", () => make(id, "conditions", (made) => save(current(id), { condition: made.id }))]],
       ),
-      button(t("sessions.fields.newCondition"), "add", () => make(id, "conditions", (made) => save(current(id), { condition: made.id }))),
     ];
   } else if (key === "unless") {
     const kind = session.allowance ? session.allowance.type : "none";
     nodes = [
-      choices([["none", t("sessions.fields.noAllowance")], ["budget", t("sessions.fields.budget")], ["pomodoro", t("sessions.fields.pomodoro")]], kind, (value) => setAllowance(parts, id, value)),
-      ...(kind !== "none" ? [button(t("sessions.fields.allowanceSettings"), "settings", () => setAllowance(parts, id, kind))] : []),
+      choices(
+        [["none", t("sessions.fields.noAllowance")], ["budget", t("sessions.fields.budget")], ["pomodoro", t("sessions.fields.pomodoro")]],
+        kind,
+        (value) => setAllowance(parts, id, value),
+        kind !== "none" ? [[t("sessions.fields.allowanceSettings"), "settings", () => setAllowance(parts, id, kind)]] : [],
+      ),
     ];
   } else {
     const method = session.lock.method;
     nodes = [
-      choices(Object.entries(LOCKS).map(([value, lock]) => [value, lock.label]), method, (value) => parts.setLock(value)),
-      ...(LOCKS[method] && LOCKS[method].form ? [button(t("sessions.lockSettings"), "settings", () => parts.setLock(method))] : []),
+      choices(
+        Object.entries(LOCKS).map(([value, lock]) => [value, lock.label]),
+        method,
+        (value) => parts.setLock(value),
+        LOCKS[method] && LOCKS[method].form ? [[t("sessions.lockSettings"), "settings", () => parts.setLock(method)]] : [],
+      ),
     ];
   }
   panel.replaceChildren(el("div", { class: "row-panel" }, ...nodes));

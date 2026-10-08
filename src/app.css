@@ -171,7 +171,16 @@ cds-link[inline] { display: inline-flex; }
 .session-rows .row-now { color: var(--cds-text-secondary); }
 .session-rows .row-now[hidden] { display: none; }
 /* A row's panel (a tab-tip popover): its controls and button spaced as a form's, with room around. */
-.row-panel { display: flex; flex-direction: column; align-items: flex-start; gap: var(--cds-spacing-05); padding: var(--cds-spacing-05); min-inline-size: 14rem; }
+.row-panel { display: flex; flex-direction: column; align-items: flex-start; gap: var(--cds-spacing-05); padding: var(--cds-spacing-05); }
+/* A plain list of choices fills its panel edge to edge, as Carbon's lists in a popover do. */
+.row-panel:has(> cds-contained-list) { padding: 0; }
+.row-panel .no-mark { inline-size: 1rem; }
+/* Carbon joins a tab-tip's button to its panel below it: a shadow under the button and a strip over
+   its bottom edge. It flips the panel above the button where there is no room below, but leaves
+   these at the bottom, so the seam shows. The button is ours (light DOM): where the panel went up
+   (`.up`, fields.js), the same two the other way round. */
+.row-action[open] > button.up { box-shadow: 0 calc(-1 * var(--cds-spacing-01)) var(--cds-spacing-01) var(--cds-shadow); }
+.row-action[open] > button.up:not(:focus)::after { inset-block: 0 auto; }
 /* The state tag beside the title, wrapping under it when the name is long. */
 .session-tile .heading { display: flex; flex-wrap: wrap; align-items: center; column-gap: var(--cds-spacing-04); min-inline-size: 0; }
 .session-tile .heading h2 { padding-top: 0; }
