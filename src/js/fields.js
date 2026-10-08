@@ -76,15 +76,14 @@ async function allowed(check, session) {
 
 // The rows of the session `id`, added to its tile's parts (`tiles.js`).
 function addRows(parts, id) {
-  // Carbon's small rows (2rem): an inline dropdown is as high as one.
-  const list = el("cds-contained-list", { class: "session-rows", size: "sm" });
+  const list = el("cds-contained-list", { class: "session-rows" });
   parts.rows = {};
   for (const { key, icon } of ROWS) {
     const label = el("span", { class: "row-label" }, t(`sessions.fields.${key}`));
     const value = el("span", { class: "row-value" });
     // The row's inline action: a ghost icon button, as Carbon's contained lists have them.
     const button = (symbol, tip, act) => {
-      const node = el("cds-icon-button", { kind: "ghost", size: "sm", align: "left" }, carbonIcon(symbol, "icon"), el("span", { slot: "tooltip-content" }, tip));
+      const node = el("cds-icon-button", { kind: "ghost", size: "lg", align: "left" }, carbonIcon(symbol, "icon"), el("span", { slot: "tooltip-content" }, tip));
       node.addEventListener("click", act);
       return node;
     };
