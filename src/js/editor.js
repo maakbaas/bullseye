@@ -1,4 +1,4 @@
-// The editor of a block, block list, condition or allowance: opening it (also on a detour, `detour.js`), its
+// The editor of a block, block list or condition: opening it (also on a detour, `detour.js`), its
 // breadcrumb, saving and deleting, and keeping what a running block uses read-only.
 
 import { $, el, notify, refresh, t } from "./core.js";
@@ -13,7 +13,7 @@ const forms = {};
 let editing = null; // { kind, item (as opened), isNew }
 
 // From the block editor: the block as it is now is kept, and gets the new item when it is saved.
-// `id`: an existing block list, condition or allowance to change, instead of a new one.
+// `id`: an existing block list or condition to change, instead of a new one.
 function detourFor({ kind, id }) {
   const draft = forms.blocks.read(editing.item);
   const back = location.hash || KINDS.blocks.path;
@@ -28,7 +28,6 @@ function detourFor({ kind, id }) {
       if (id) return;
       if (kind === "lists" && !draft.lists.includes(item.id)) draft.lists.push(item.id);
       if (kind === "conditions") draft.condition = item.id;
-      if (kind === "allowances") draft.allowance = item.id;
     },
   };
   location.hash = `${back}/${kind}/${id ? `edit/${encodeURIComponent(id)}` : "new"}`;
@@ -124,7 +123,7 @@ $("save").addEventListener("click", async () => {
 });
 $("delete").addEventListener("click", () => editing && confirmDelete(editing.kind, editing.item.id));
 
-// The block form's New block list, New condition and New allowance buttons (`forms.js`).
+// The block form's New block list and New condition buttons (`forms.js`).
 $("form").addEventListener("bullseye-make", (event) => detourFor(event.detail));
 
 // Leaving the editor (`main.js`).

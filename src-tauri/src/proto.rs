@@ -9,7 +9,6 @@ use std::io::{Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::allowance::Allowance;
 use crate::block::Running;
 use crate::definitions::{BlockList, Condition, Definition, Kind, Library};
 use crate::lists::Entries;
@@ -56,15 +55,9 @@ pub enum Request {
     /// Removes a condition, and takes it out of the blocks that use it. Refused while a running
     /// block uses it.
     DeleteCondition { id: String },
-    /// Adds an allowance, or replaces the one with its id. While a locked block uses it, only to be
-    /// stricter (`Terms::tightened_by`).
-    SaveAllowance { allowance: Allowance },
-    /// Removes an allowance, and takes it off the blocks that have it. Refused while a locked block
-    /// has it.
-    DeleteAllowance { id: String },
-    /// Copies a block, block list, condition or allowance as `new_id`, named after it with a number.
+    /// Copies a block, block list or condition as `new_id`, named after it with a number.
     Duplicate { kind: Kind, id: String, new_id: String },
-    /// Replaces every block list, condition, allowance and block with these, from a settings file (Import).
+    /// Replaces every block list, condition and block with these, from a settings file (Import).
     /// Refused while a block is locked; blocks that run unlocked end with it.
     Import { library: Library },
     /// Starts the block defined as `id`, as it is defined now.
@@ -152,8 +145,6 @@ pub struct Overview {
     /// Everything the user has defined, each kind in the order it was made (`definitions.rs`).
     pub lists: Vec<BlockList>,
     pub conditions: Vec<Condition>,
-    #[serde(default)]
-    pub allowances: Vec<Allowance>,
     pub blocks: Vec<Definition>,
     /// The blocks that run, as they were started (`Running::id` is the definition's).
     pub running: Vec<Running>,
@@ -168,7 +159,7 @@ impl Overview {
     /// What the user has defined, without what runs.
     #[cfg(test)]
     pub fn library(self) -> Library {
-        Library { lists: self.lists, conditions: self.conditions, allowances: self.allowances, blocks: self.blocks }
+        Library { lists: self.lists, conditions: self.conditions, blocks: self.blocks }
     }
 }
 
@@ -253,7 +244,6 @@ mod tests {
             Request::DeleteList { id: "l".into() },
             Request::DeleteCondition { id: "s".into() },
             Request::Report { used: vec![Used { block: "a".into(), key: "site:d.com".into() }] },
-            Request::DeleteAllowance { id: "p".into() },
         ];
         for request in requests {
             let mut wire = Vec::new();

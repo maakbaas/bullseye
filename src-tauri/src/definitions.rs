@@ -1,12 +1,11 @@
-//! What the user has defined, in four kinds, each a list of its own (`Library`):
+//! What the user has defined, in three kinds, each a list of its own (`Library`):
 //! - **block lists** (`BlockList`): what to block and how: sites, always-allowed sites, programs,
 //!   and the enforcers that act on them;
 //! - **conditions** (`Condition`): when, as a weekly schedule or while a flash drive is not
 //!   connected (`condition.rs`); "always" is built in and is no entry here;
-//! - **allowances** (`Allowance`): what lets a block go quiet for a while, a budget of time or a
-//!   Pomodoro cycle (`allowance.rs`);
 //! - **blocks** (`Definition`): one or more block lists, a condition (or always), an allowance
-//!   (or none) and a lock (`lock.rs`). A block is what is started and runs.
+//!   (or none: a budget of time or a Pomodoro cycle, `allowance.rs`, set on the block itself like
+//!   its lock) and a lock (`lock.rs`). A block is what is started and runs.
 //!
 //! All of it is kept by the service (`%ProgramData%\bullseye\blocks.json`), so it survives
 //! restarts, and is only a template: starting a block copies its lists and condition into a running
@@ -23,7 +22,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::allowance::{Allowance, Terms};
+use crate::allowance::Terms;
 use crate::condition::{Mode, Rule};
 use crate::lists::{Entries, Lists};
 use crate::lock::Lock;
@@ -66,7 +65,6 @@ pub enum Kind {
     Block,
     List,
     Condition,
-    Allowance,
 }
 
 /// A block: what is started. Its lists by id, its condition by id (`None`: always active) and its
@@ -79,9 +77,9 @@ pub struct Definition {
     pub lists: Vec<String>,
     /// The condition it is active by, by id; `None` is always.
     pub condition: Option<String>,
-    /// The allowance it has, by id; `None` is none (`allowance.rs`).
-    #[serde(default)]
-    pub allowance: Option<String>,
+    /// Its allowance, set on the block itself like its lock; `None` is none (`allowance.rs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowance: Option<Terms>,
     /// How it is kept from being stopped once started (`lock.rs`).
     pub lock: Lock,
     /// The last settings of each other lock method it has had (a duration, an end, a lock
@@ -96,8 +94,6 @@ pub struct Definition {
 pub struct Library {
     pub lists: Vec<BlockList>,
     pub conditions: Vec<Condition>,
-    #[serde(default)]
-    pub allowances: Vec<Allowance>,
     pub blocks: Vec<Definition>,
 }
 
@@ -196,22 +192,12 @@ impl Condition {
     }
 }
 
-impl Allowance {
-    /// The terms, checked (`Terms::checked`), and a name.
-    fn checked(mut self) -> Result<Allowance, String> {
-        check_name("allowance", &self.id, &self.name)?;
-        self.terms = self.terms.checked()?;
-        Ok(self)
-    }
-}
-
 impl Library {
     /// Block lists, conditions and blocks each by name, a to z regardless of case (the order every
     /// client shows them in).
     fn sort(&mut self) {
         self.lists.sort_by_cached_key(|l| l.name.to_lowercase());
         self.conditions.sort_by_cached_key(|c| c.name.to_lowercase());
-        self.allowances.sort_by_cached_key(|a| a.name.to_lowercase());
         self.blocks.sort_by_cached_key(|b| b.name.to_lowercase());
     }
 
@@ -232,24 +218,16 @@ impl Library {
         self.conditions.iter().find(|s| s.id == id)
     }
 
-    pub fn allowance(&self, id: &str) -> Option<&Allowance> {
-        self.allowances.iter().find(|a| a.id == id)
-    }
-
     pub fn block(&self, id: &str) -> Option<&Definition> {
         self.blocks.iter().find(|b| b.id == id)
     }
 
-    /// The blocks that use a block list, a condition or an allowance (as their condition or their
+    /// The blocks that use a block list or a condition (as their condition or their
     /// lock's, or through a combination that has it), with how, once for each way.
     pub fn usages(&self, part: &str) -> Vec<(&Definition, Via)> {
         let mut found = Vec::new();
         for block in &self.blocks {
-            if block.lists.iter().any(|l| l == part)
-                || block.condition.as_deref() == Some(part)
-                || block.lock.condition() == Some(part)
-                || block.allowance.as_deref() == Some(part)
-            {
+            if block.lists.iter().any(|l| l == part) || block.condition.as_deref() == Some(part) || block.lock.condition() == Some(part) {
                 found.push((block, Via::Directly));
             }
             for used in [block.condition.as_deref(), block.lock.condition()].into_iter().flatten() {
@@ -313,10 +291,7 @@ impl Library {
             block.lists.iter().map(|l| self.list(l).cloned().ok_or("A block list of this block is gone")).collect::<Result<Vec<_>, _>>()?;
         let condition = block.condition.as_deref().map(|c| self.rule_of(c)).transpose()?;
         let lock_condition = block.lock.condition().map(|c| self.rule_of(c)).transpose()?;
-        let allowance = match block.allowance.as_deref() {
-            Some(id) => Some(self.allowance(id).ok_or("The allowance of this block is gone")?.terms.clone().checked()?),
-            None => None,
-        };
+        let allowance = block.allowance.clone().map(Terms::checked).transpose()?;
         Ok(Resolved { block, lists, condition, lock_condition, allowance })
     }
 
@@ -330,7 +305,7 @@ impl Library {
             self.condition(condition).ok_or_else(|| format!("No condition with id {condition}"))?;
         }
         if let Some(allowance) = &block.allowance {
-            self.allowance(allowance).ok_or_else(|| format!("No allowance with id {allowance}"))?;
+            allowance.clone().checked()?;
         }
         block.lock.check()?;
         if let Some(condition) = block.lock.condition() {
@@ -363,7 +338,7 @@ macro_rules! named {
         }
     )*};
 }
-named!(BlockList, Condition, Allowance, Definition);
+named!(BlockList, Condition, Definition);
 
 /// A copy of the item `id` as `new_id`, at the end, named after it with the next number free among
 /// its kind (`copy_name`).
@@ -454,6 +429,7 @@ impl Definitions {
     /// without a new password, a password lock keeps the hash it has.
     pub fn save_block(&self, mut block: Definition) -> Result<(), String> {
         block.name = block.name.trim().to_string();
+        block.allowance = block.allowance.map(Terms::checked).transpose()?;
         self.change(|library| {
             let old = library.block(&block.id).cloned();
             if let Lock::Password { password, hash } = &mut block.lock {
@@ -553,39 +529,14 @@ impl Definitions {
         })
     }
 
-    pub fn save_allowance(&self, mut allowance: Allowance) -> Result<(), String> {
-        allowance.name = allowance.name.trim().to_string();
-        let allowance = allowance.checked()?;
-        self.change(|library| {
-            let id = allowance.id.clone();
-            put(&mut library.allowances, allowance, |a| a.id == id)
-        })
-    }
-
-    /// Deletes an allowance, and takes it off the blocks that have it: they have none from then on
-    /// (`Library::fallout`). Whether a locked block has it is the handler's to refuse.
-    pub fn delete_allowance(&self, id: &str) -> Result<(), String> {
-        self.change(|library| {
-            library.allowance(id).ok_or("No such allowance")?;
-            library.allowances.retain(|a| a.id != id);
-            for block in &mut library.blocks {
-                if block.allowance.as_deref() == Some(id) {
-                    block.allowance = None;
-                }
-            }
-            Ok(())
-        })
-    }
-
-    /// A copy of a block, block list, condition or allowance, as `new_id` (made by the client, as for anything
-    /// new), named after it with a number (`copy_name`). A block's copy has its lists, condition and
-    /// lock, a password lock's hash included, and the lock settings it kept.
+    /// A copy of a block, block list or condition, as `new_id` (made by the client, as for anything
+    /// new), named after it with a number (`copy_name`). A block's copy has its lists, condition,
+    /// allowance and lock, a password lock's hash included, and the lock settings it kept.
     pub fn duplicate(&self, kind: Kind, id: &str, new_id: &str) -> Result<(), String> {
         self.change(|library| match kind {
             Kind::Block => duplicate(&mut library.blocks, "block", id, new_id),
             Kind::List => duplicate(&mut library.lists, "block list", id, new_id),
             Kind::Condition => duplicate(&mut library.conditions, "condition", id, new_id),
-            Kind::Allowance => duplicate(&mut library.allowances, "allowance", id, new_id),
         })
     }
 
@@ -593,9 +544,7 @@ impl Definitions {
     /// one. A password lock comes without its password, so as no lock (`SettingsFile`); a lock
     /// settings kept for a password is dropped. Whether a block runs is the handler's to refuse.
     pub fn replace(&self, mut library: Library) -> Result<(), String> {
-        let too_many =
-            library.lists.len().max(library.conditions.len()).max(library.allowances.len()).max(library.blocks.len()) > MAX_ITEMS;
-        if too_many {
+        if library.lists.len().max(library.conditions.len()).max(library.blocks.len()) > MAX_ITEMS {
             return Err(format!("At most {MAX_ITEMS} of each"));
         }
         for list in &mut library.lists {
@@ -604,9 +553,9 @@ impl Definitions {
         }
         library.conditions = library.conditions.into_iter().map(Condition::checked).collect::<Result<_, _>>()?;
         library.check_combinations()?;
-        library.allowances = library.allowances.into_iter().map(Allowance::checked).collect::<Result<_, _>>()?;
         for block in &mut library.blocks {
             block.name = block.name.trim().to_string();
+            block.allowance = block.allowance.take().map(Terms::checked).transpose()?;
             // A password lock comes with its hash from the file, never a password; without a hash it
             // is no lock.
             if let Lock::Password { password, hash } = &mut block.lock {
@@ -628,7 +577,6 @@ impl Definitions {
         let unique = |ids: Vec<&str>| ids.iter().enumerate().all(|(at, id)| !ids[..at].contains(id));
         if !unique(library.lists.iter().map(|l| l.id.as_str()).collect())
             || !unique(library.conditions.iter().map(|c| c.id.as_str()).collect())
-            || !unique(library.allowances.iter().map(|a| a.id.as_str()).collect())
             || !unique(library.blocks.iter().map(|b| b.id.as_str()).collect())
         {
             return Err("Two items of one kind in the file have the same id".into());
@@ -672,8 +620,6 @@ pub struct Fallout {
     /// Combinations it is in that are left with one condition, and so are deleted too (and the
     /// blocks that used them are in `always` and `unlocked`).
     pub removed: Vec<String>,
-    /// Blocks it was the allowance of: no allowance from then on.
-    pub no_allowance: Vec<String>,
 }
 
 impl Library {
@@ -697,7 +643,6 @@ impl Library {
             unlocked: names(&|b| has(b.lock.condition())),
             shrinks: combinations(false),
             removed: combinations(true),
-            no_allowance: names(&|b| b.allowance.as_deref() == Some(id)),
         }
     }
 
@@ -733,7 +678,6 @@ struct SettingsFile {
 pub struct Contents {
     pub lists: usize,
     pub conditions: usize,
-    pub allowances: usize,
     pub blocks: usize,
     /// Blocks with a password lock but no hash in the file, which come without a lock.
     pub unlocked: Vec<String>,
@@ -762,7 +706,6 @@ impl Library {
         Contents {
             lists: self.lists.len(),
             conditions: self.conditions.len(),
-            allowances: self.allowances.len(),
             blocks: self.blocks.len(),
             unlocked: self.blocks.iter().filter(|b| matches!(b.lock, Lock::Password { hash: None, .. })).map(|b| b.name.clone()).collect(),
         }
@@ -1047,7 +990,7 @@ pub mod tests {
         let hash = here.library().block("p").unwrap().lock.password_hash().unwrap().to_string();
         assert!(text.contains(&hash) && !text.contains("secret"), "{text}");
         let read = Library::from_settings_text(&text).unwrap();
-        assert_eq!(read.contents(), Contents { lists: 1, conditions: 1, allowances: 0, blocks: 2, unlocked: vec![] });
+        assert_eq!(read.contents(), Contents { lists: 1, conditions: 1, blocks: 2, unlocked: vec![] });
 
         let there = Definitions::at(Some(path("import")));
         there.save_list(block_list("other", &["b.com"])).unwrap();

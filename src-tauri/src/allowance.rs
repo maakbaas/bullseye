@@ -1,5 +1,6 @@
-//! Allowances: what lets a block go quiet for a while. A block has at most one, chosen like its
-//! condition. Two kinds (`Terms`):
+//! Allowances: what lets a block go quiet for a while. A block has at most one, set on the block
+//! itself like its lock (`definitions::Definition::allowance`), never a list of its own. Two kinds
+//! (`Terms`):
 //! - a **budget**: an allowed time of use, for the block as a whole or for each item of it (each
 //!   site, program, Store app or window title) on its own, that is used up while the item is in
 //!   use and given back by a reset (never, every hour / day / week, or each time the block's
@@ -86,10 +87,11 @@ pub enum Anchor {
     Clock,
 }
 
-/// What an allowance is, tagged by `type` (the fields of an `Allowance` in the file).
+/// What an allowance is, tagged by `type`: a block's `allowance` in the file.
 ///
-/// **A new kind of allowance** is a variant here with what it means in `Run`, an editor in the
-/// window's `allowanceForm`, and an option in the CLI's `allowance new|edit`.
+/// **A new kind of allowance** is a variant here with what it means in `Run`, fields in the block
+/// editor's allowance section (`allowanceSection` in `src/js/forms.js`), and an option in the CLI's
+/// `new|edit --allowance`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Terms {
@@ -133,8 +135,8 @@ impl Terms {
         Ok(self)
     }
 
-    /// Whether `new` allows nothing this does not, which is all an allowance that a locked block uses
-    /// may be changed by: a budget may get smaller or reset less often, never the other way, and its
+    /// Whether `new` allows nothing this does not, which is all the allowance of a locked block may be
+    /// changed by: a budget may get smaller or reset less often, never the other way, and its
     /// scope and a reset by condition stay; a cycle stays exactly as it is (any change moves where it is
     /// in its cycle). The error says what is wrong, for a person.
     pub fn tightened_by(&self, new: &Terms) -> Result<(), String> {
@@ -145,10 +147,10 @@ impl Terms {
                 Terms::Budget { allowed: new_allowed, scope: new_scope, reset: new_reset },
             ) => {
                 if old_scope != new_scope {
-                    return Err("A locked block uses this allowance, so it cannot change between a total and each item".into());
+                    return Err("The block is locked, so its allowance cannot change between a total and each item".into());
                 }
                 if secs(new_allowed) > secs(old_allowed) {
-                    return Err("A locked block uses this allowance, so the allowed time can get shorter but not longer".into());
+                    return Err("The block is locked, so its allowed time can get shorter but not longer".into());
                 }
                 let rarer = match (old_reset.rank(), new_reset.rank()) {
                     (Some(old), Some(new)) => new >= old,
@@ -157,7 +159,7 @@ impl Terms {
                 if rarer {
                     Ok(())
                 } else {
-                    Err("A locked block uses this allowance, so it can be reset less often but not more often".into())
+                    Err("The block is locked, so its allowance can be reset less often but not more often".into())
                 }
             }
             (
@@ -167,10 +169,10 @@ impl Terms {
                 if secs(old_blocked) == secs(new_blocked) && secs(old_allowed) == secs(new_allowed) && old_anchor == new_anchor {
                     Ok(())
                 } else {
-                    Err("A locked block uses this allowance, so its cycle cannot change".into())
+                    Err("The block is locked, so its allowance's cycle cannot change".into())
                 }
             }
-            _ => Err("A locked block uses this allowance, so its type cannot change".into()),
+            _ => Err("The block is locked, so its allowance's type cannot change".into()),
         }
     }
 
@@ -215,13 +217,14 @@ impl Terms {
     }
 }
 
-/// An allowance as it is defined and named.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct Allowance {
-    pub id: String,
-    pub name: String,
-    #[serde(flatten)]
-    pub terms: Terms,
+/// Whether a locked block's allowance may go from `old` to `new`: taking it away is stricter, giving
+/// one is not, and terms may only get stricter (`Terms::tightened_by`).
+pub fn tightened(old: Option<&Terms>, new: Option<&Terms>) -> Result<(), String> {
+    match (old, new) {
+        (_, None) => Ok(()),
+        (None, Some(_)) => Err("The block is locked, so it cannot be given an allowance".into()),
+        (Some(old), Some(new)) => old.tightened_by(new),
+    }
 }
 
 /// The keys of the items of a block list's lists, which is what a budget for each item counts by:

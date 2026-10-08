@@ -1,6 +1,6 @@
 # Bullseye command line
 
-`bullseye-cli.exe` does everything the window does, from a terminal or a script: make, change and delete block lists, conditions, allowances and blocks, start and stop blocks, and and end them all by unlocking (a countdown you set, none to begin with). The installer puts it next to the app, in `C:\Program Files\Bullseye\`. To call it by name from anywhere, add that folder to your `PATH` (Settings > System > About > Advanced system settings > Environment Variables), or call it by its full path:
+`bullseye-cli.exe` does everything the window does, from a terminal or a script: make, change and delete block lists, conditions and blocks (with their allowances), start and stop blocks, and and end them all by unlocking (a countdown you set, none to begin with). The installer puts it next to the app, in `C:\Program Files\Bullseye\`. To call it by name from anywhere, add that folder to your `PATH` (Settings > System > About > Advanced system settings > Environment Variables), or call it by its full path:
 
 ```powershell
 & "C:\Program Files\Bullseye\bullseye-cli.exe" status
@@ -8,16 +8,15 @@
 
 It talks to the Bullseye service exactly as the window does (the same requests, through the same code), so the service checks everything done here as it checks the window, and what you do here shows up in the window within a second (and the other way round). If the service is installed but not running, the CLI starts it first, as the app would. It needs no administrator rights.
 
-A `<block>`, `<list>`, `<condition>` or `<allowance>` is its name (any case) or its id; `bullseye-cli status` lists the names, and `show` gives the id. When two have the same name, use the id.
+A `<block>`, `<list>` or `<condition>` is its name (any case) or its id; `bullseye-cli status` lists the names, and `show` gives the id. When two have the same name, use the id.
 
-## Four kinds of things
+## Three kinds of things
 
 As in the window, which has a page for each:
 
 - **Block lists**: what to block. Sites, always-allowed sites, programs, Store apps, window titles, and the enforcers that act on them.
 - **Conditions**: when. A weekly schedule (active at its times) or a flash drive (active while the drive is not connected, so the drive switches the block off while it is plugged in). A block without one is always active.
-- **Allowances**: what lets a block go quiet for a while. A **budget** of allowed use, or a **Pomodoro** cycle (see below).
-- **Blocks**: what you start. One or more block lists, a condition (or always), at most one allowance and a lock:
+- **Blocks**: what you start. One or more block lists, a condition (or always), at most one allowance (what lets it go quiet for a while: a **budget** of allowed use, or a **Pomodoro** cycle; set on the block itself, see below) and a lock:
   - `none`: not locked; it can be stopped at any time.
   - `duration`: locked for a while. It cannot be stopped, changed or deleted, and it ends by itself when the time is up.
   - `until`: the same, until a date and time (local time, read when the block starts).
@@ -56,11 +55,6 @@ A running block keeps what it was started with: while it runs, it cannot be chan
 | `bullseye-cli condition duplicate <condition>` | **Duplicate** a condition |
 | `bullseye-cli condition test <condition>` | **Test** in a webhook condition's editor: asks it once and shows the status, the start of the body and what the matchers make of it |
 | `bullseye-cli condition check <times>` | the schedule written out under the week grid in the condition editor |
-| `bullseye-cli allowance show [<allowance>]` | the Allowances page: every allowance in words, or one and the blocks that have it |
-| `bullseye-cli allowance new <name> [options]` | **New allowance**, of the type Budget or Pomodoro, then **Save** |
-| `bullseye-cli allowance edit <allowance> [--name <name>] [options]` | **Edit** an allowance, then **Save** |
-| `bullseye-cli allowance delete <allowance> [--yes]` | **Delete** an allowance |
-| `bullseye-cli allowance duplicate <allowance>` | **Duplicate** an allowance |
 | `bullseye-cli export <file>` | **Export** in Settings |
 | `bullseye-cli import <file> [--yes]` | **Import** in Settings |
 | `bullseye-cli drives [--json]` | the flash drives the **Flash drive** type of a condition offers, by name and serial number |
@@ -78,7 +72,8 @@ Exit codes: `0` done, `1` failed, refused or cancelled (the reason is printed), 
 |---|---|---|
 | `--list <list>` | A block list it enforces (repeatable). | none (it cannot start without one) |
 | `--condition <condition>` | When it is active: a condition, or `always`. | `always` |
-| `--allowance <allowance>` | Its allowance: an allowance, or `none`. A running block that is not locked takes the change at once; a locked one cannot change it. | `none` |
+| `--allowance <budget\|pomodoro\|none>` | Its allowance, with the options below (see [Allowances](#allowances---allowance-and-its-options)). | `none` |
+| `--allowed`, `--scope`, `--reset`, `--blocked`, `--anchor` | The allowance's terms. | |
 | `--lock-duration <duration>` | Lock: for this long once started. | |
 | `--lock-until <date time>` | Lock: until then, e.g. `"2026-10-06 18:00"` (local time). A time that has passed when the block starts is refused. | |
 | `--lock-until-restart` | Lock: until Windows restarts. | |
@@ -89,7 +84,7 @@ Exit codes: `0` done, `1` failed, refused or cancelled (the reason is printed), 
 | `--no-lock` | Not locked. | yes |
 | `--name <name>` | (`edit` only) A new name. | |
 
-With `edit`, an option replaces only what it names: `--list` replaces all its block lists with the ones given, and what is not named stays. `start` takes the lock options too: they set the block's lock before it starts, as the lock on its tile in the window does.
+With `edit`, an option replaces only what it names: `--list` replaces all its block lists with the ones given, and what is not named stays. A running block takes the change at once (its lock aside, which is for the next start); while it is locked, only its name and a stricter allowance. `start` takes the lock options too: they set the block's lock before it starts, as the lock on its tile in the window does.
 
 ### Block lists: `list new`, `list edit`
 
@@ -105,9 +100,9 @@ With `edit`, an option replaces only what it names: `--list` replaces all its bl
 | `--name <name>` | (`list edit` only) A new name. | |
 | `--clear <list>` | (`list edit` only) Empty a list: `sites`, `allowed`, `programs`, `store-apps` or `titles` (repeatable). | |
 
-### Allowances: `allowance new`, `allowance edit`
+### Allowances: `--allowance` and its options
 
-An allowance lets a block go quiet for a while. A block has at most one (`--allowance`). Two kinds:
+An allowance lets a block go quiet for a while. A block has at most one, set on the block itself with the options of `new` and `edit` (as in the window, where it is a section of the block's editor). Two kinds:
 
 - A **budget** is a time of use. It is for the block as a whole (`--scope total`) or for each of its items on its own (`--scope each`: each site, program, Store app and window title in its block lists). While time is left, what is covered is not closed; it is only watched, and the time it is in use is counted. When the time is used up it is closed again, until the budget is reset.
 - A **Pomodoro** is a fixed cycle: blocked for `--blocked`, then everything allowed for `--allowed`, over and over. While it allows, the block enforces nothing, Obsidian's web viewer included.
@@ -116,21 +111,22 @@ An allowance lets a block go quiet for a while. A block has at most one (`--allo
 
 | Option | Meaning | Default |
 |---|---|---|
-| `--type <budget\|pomodoro>` | Which kind. Without it, `--blocked` or `--anchor` make a Pomodoro and anything else a budget. | `budget` |
+| `--allowance <budget\|pomodoro\|none>` | Which kind, or `none` to take it away. Without it, `--blocked` or `--anchor` make a Pomodoro, `--scope` or `--reset` a budget, and `--allowed` alone keeps the kind the block has (a budget if none). Another kind starts from its defaults. | `budget` |
 | `--allowed <duration>` | Budget: the time allowed, e.g. `30m`. Pomodoro: how long everything is allowed each cycle. | required |
 | `--scope <total\|each>` | Budget: the block as a whole, or each item on its own. | `total` |
 | `--reset <never\|hour\|day\|week\|condition>` | Budget: when what was used is given back. `never` while the block runs, at the start of every `hour`, `day` (midnight) or `week` (Monday), in the time zone the block started in, or each time the block's `condition` turns it on (a time block of a schedule, a flash drive being unplugged; a block with no condition is always on, so never resets). | `never` |
 | `--blocked <duration>` | Pomodoro: how long it is blocked each cycle, e.g. `50m`. | required |
 | `--anchor <start\|clock>` | Pomodoro: counted from the start of the block (blocked first), or from midnight on the clock, so a cycle of an hour starts at every xx:00. On the clock a cycle (blocked plus allowed) has to fit a day evenly: 30 minutes, 1 hour, 2 hours. | `start` |
-| `--name <name>` | (`allowance edit` only) A new name. | |
 
-With `edit`, an option replaces only what it names. While a locked block has an allowance, it can only get stricter: a budget's time shorter or reset less often (never, week, day, hour, in that order; a reset by condition stays), its scope and a Pomodoro's cycle stay as they are. Deleting an allowance takes it off the blocks that have it, which have none from then on; the question says which. It is refused while a locked block has it.
+With `edit`, an option replaces only what it names. While the block is locked, its allowance can only get stricter: a budget's time shorter or reset less often (never, week, day, hour, in that order; a reset by condition stays), its scope and a Pomodoro's cycle stay as they are, and `--allowance none` takes it away; a block without one cannot be given one.
+
+Obsidian's web viewer enforcer has no items to count, so a budget (total or for each item) never lets it through: Obsidian is closed on web content all the time. Only a Pomodoro's allowed time lets it be.
 
 ```powershell
-bullseye-cli allowance new "Social time" --allowed 30m --scope total --reset day
-bullseye-cli allowance new "Each site 10 minutes" --allowed 10m --scope each --reset hour
-bullseye-cli allowance new "Pomodoro" --blocked 50m --allowed 10m --anchor clock
-bullseye-cli new "Focus" --list "Social media" --allowance "Social time"
+bullseye-cli new "Social time" --list "Social media" --allowance budget --allowed 30m --scope total --reset day
+bullseye-cli edit "Social time" --allowed 10m --scope each --reset hour
+bullseye-cli new "Focus" --list "Social media" --allowance pomodoro --blocked 50m --allowed 10m --anchor clock
+bullseye-cli edit "Focus" --allowance none
 ```
 
 ### Examples
@@ -180,25 +176,23 @@ Block lists:
   Games         used by Work, Evening
 Conditions:
   Work hours  Mon-Fri 08:00-17:00
-Allowances:
-  Social time  30 minutes in total, reset every day
 ```
 
 A running block with an allowance says what it is doing at the end of its line: `allowed for the next 4 minutes` or `blocked for the next 12 minutes` (a Pomodoro), `12 minutes left of 30 minutes, reset in 3 hours` (a budget for the block), or `10 minutes for each item, reset in 40 minutes (youtube.com 4 minutes left)`.
 
-`show <block>`, `list show <list>`, `condition show <condition>` and `allowance show <allowance>` give everything about one. With `--json`, `status` prints what the service says, for scripts: `lists`, `conditions`, `allowances` (each with a `type`, `"budget"` with `allowed`, `scope` and `reset`, or `"pomodoro"` with `blocked`, `allowed` and `anchor`) and `blocks` (a block's `allowance` is an allowance's id or `null`; a running one has `allowance` with what it is doing: `open`, `change_words`, `left_words`, `reset_words` and `items`) (as defined; a condition has a `type`, `"schedule"` with `days` (Monday first, each a list of `[start, end)` spans in minutes since midnight) or `"flash_drive"` with the drive's `serial` number and `drive` name; a block's `condition` is a condition's id or `null` for always, `kept_locks` the last settings of the other lock methods it has had (which the window starts from when one is chosen again; a password's only as `{"method":"password"}`), and its `lock` is `{"method":"none"}`, `{"method":"duration","duration":"2h 30m"}`, `{"method":"until","until":"2026-10-06 18:00"}`, `{"method":"until_restart"}`, `{"method":"condition","condition":"<id>"}` or `{"method":"password"}`; a password is never shown), `running` (each running block with its `lists` as started; `remaining`, the seconds left of a duration or until lock, and `remaining_words`; `until_restart`; `lock_condition`, the rule of its condition lock, and `lock_change` / `lock_change_words`, the time until a schedule locks or frees the block; `password`, whether it is locked with one; `locked`, whether it cannot be stopped right now; `condition`, its condition's rule; `enforcing`, whether it blocks anything right now; `condition_change`, the seconds until its schedule turns it on or off, and `condition_change_words`) and `clock_synced`.
+`show <block>` (its allowance in words too), `list show <list>` and `condition show <condition>` give everything about one. With `--json`, `status` prints what the service says, for scripts: `lists`, `conditions` and `blocks` (a block's `allowance` is `null` or has a `type`, `"budget"` with `allowed`, `scope` and `reset`, or `"pomodoro"` with `blocked`, `allowed` and `anchor`; a running one has `allowance` with what it is doing: `open`, `change_words`, `left_words`, `reset_words` and `items`) (as defined; a condition has a `type`, `"schedule"` with `days` (Monday first, each a list of `[start, end)` spans in minutes since midnight) or `"flash_drive"` with the drive's `serial` number and `drive` name; a block's `condition` is a condition's id or `null` for always, `kept_locks` the last settings of the other lock methods it has had (which the window starts from when one is chosen again; a password's only as `{"method":"password"}`), and its `lock` is `{"method":"none"}`, `{"method":"duration","duration":"2h 30m"}`, `{"method":"until","until":"2026-10-06 18:00"}`, `{"method":"until_restart"}`, `{"method":"condition","condition":"<id>"}` or `{"method":"password"}`; a password is never shown), `running` (each running block with its `lists` as started; `remaining`, the seconds left of a duration or until lock, and `remaining_words`; `until_restart`; `lock_condition`, the rule of its condition lock, and `lock_change` / `lock_change_words`, the time until a schedule locks or frees the block; `password`, whether it is locked with one; `locked`, whether it cannot be stopped right now; `condition`, its condition's rule; `enforcing`, whether it blocks anything right now; `condition_change`, the seconds until its schedule turns it on or off, and `condition_change_words`) and `clock_synced`.
 
 ### `stop`, `delete`, `list delete`, `condition delete`
 
 `stop <block>` stops a running block that is not locked right now; a locked one is refused, and the message says why and for how long. A block locked with a text is not stopped here: it is stopped in the window, by typing its text. A block locked with a password stops with it: give it with `--password`, or the CLI asks for it without showing it. Deleting asks first (`[y/N]`), or goes ahead with `--yes`, which is also needed when there is no terminal to ask in (a script). A running block, and a block list or condition that a running block uses, cannot be deleted; and while a locked block uses a block list or condition, `list edit` and `condition edit` only make it stricter (more sites, programs, apps or titles to block, fewer allowed sites, more enforcers; a schedule with more times, never fewer; a flash drive stays the same one); the question before deleting a block list or schedule says what it does to the blocks that use it.
 
-### `duplicate`, `list duplicate`, `condition duplicate`, `allowance duplicate`
+### `duplicate`, `list duplicate`, `condition duplicate`
 
-Make a copy, as **Duplicate** in a tile's menu does: named after the original with the next free number (a copy of `Work` or of `Work (2)` is `Work (2)`, or `Work (3)` when that is taken), with everything the original has. A block's copy uses the same block lists and condition and has the same lock, a password lock with the same password. The CLI can also copy a running block, or what one uses (the window hides the menu of those); the copy is not running.
+Make a copy, as **Duplicate** in a tile's menu does: named after the original with the next free number (a copy of `Work` or of `Work (2)` is `Work (2)`, or `Work (3)` when that is taken), with everything the original has. A block's copy uses the same block lists and condition and has the same allowance and lock, a password lock with the same password. The CLI can also copy a running block, or what one uses (the window hides the menu of those); the copy is not running.
 
 ### `export`, `import`
 
-To move to another computer: `export <file>` writes every block list, condition, allowance and block to a settings file (JSON), the same file the window's **Export** saves. `import <file>` replaces all of them with what is in such a file, after asking (or with `--yes`); it is refused while any block runs. A password lock is in the file with its hash (never the password), so keep the file private; a block whose file has no hash comes without a lock, and the question names them. The unlock delay is a setting of Bullseye itself, not of the file.
+To move to another computer: `export <file>` writes every block list, condition and block to a settings file (JSON), the same file the window's **Export** saves. `import <file>` replaces all of them with what is in such a file, after asking (or with `--yes`); it is refused while any block runs. A password lock is in the file with its hash (never the password), so keep the file private; a block whose file has no hash comes without a lock, and the question names them. The unlock delay is a setting of Bullseye itself, not of the file.
 
 ```powershell
 bullseye-cli export D:\bullseye.json

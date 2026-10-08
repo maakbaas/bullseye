@@ -36,7 +36,6 @@ mod wake;
 mod watchdog;
 mod webhook;
 
-use allowance::Allowance;
 use client::Remote;
 use definitions::{BlockList, Condition, Contents, Definition, Fallout, Kind, Library};
 use lock::Lock;
@@ -93,19 +92,7 @@ fn delete_condition(id: String, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::DeleteCondition { id })
 }
 
-/// Adds an allowance, or changes the one with its id; while a locked block has it, only to be stricter.
-#[tauri::command]
-fn save_allowance(allowance: Allowance, remote: State<Remote>) -> Result<(), String> {
-    remote.command(Request::SaveAllowance { allowance })
-}
-
-/// Takes it off the blocks that have it too; refused while a locked block has it.
-#[tauri::command]
-fn delete_allowance(id: String, remote: State<Remote>) -> Result<(), String> {
-    remote.command(Request::DeleteAllowance { id })
-}
-
-/// A copy of a block, block list, condition or allowance, as `new_id`, named after it with a number.
+/// A copy of a block, block list or condition, as `new_id`, named after it with a number.
 #[tauri::command]
 fn duplicate(kind: Kind, id: String, new_id: String, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::Duplicate { kind, id, new_id })
@@ -149,7 +136,7 @@ fn describe_schedule(week: Week) -> Result<String, String> {
 }
 
 /// An allowance's terms in words (`30 minutes in total, reset every day`), after checking them, for the
-/// allowance editor and the block's summary. Needs no service.
+/// block editor's allowance section and the block's summary. Needs no service.
 #[tauri::command]
 fn describe_allowance(terms: allowance::Terms) -> Result<String, String> {
     terms.checked().map(|terms| terms.describe())
@@ -186,7 +173,7 @@ async fn connected_drives() -> Result<Vec<drives::Drive>, String> {
     tauri::async_runtime::spawn_blocking(drives::connected).await.map_err(|e| e.to_string())?
 }
 
-/// What deleting the block list, condition or allowance `id` does to `blocks` and `conditions` (the window's copy of them),
+/// What deleting the block list or condition `id` does to `blocks` and `conditions` (the window's copy of them),
 /// for the question before it: the service's own rule, so what is asked is what happens.
 #[tauri::command]
 fn deletion_fallout(blocks: Vec<Definition>, conditions: Vec<Condition>, id: String) -> Fallout {
@@ -328,8 +315,6 @@ pub fn run() {
             delete_list,
             save_condition,
             delete_condition,
-            save_allowance,
-            delete_allowance,
             duplicate,
             start_block,
             stop_block,

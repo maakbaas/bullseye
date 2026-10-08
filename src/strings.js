@@ -23,7 +23,6 @@ window.STRINGS = {
     blocks: "Blocks",
     lists: "Block lists",
     conditions: "Conditions",
-    allowances: "Allowances",
     settings: "Settings",
   },
 
@@ -69,7 +68,7 @@ window.STRINGS = {
     emptyTitle: "No blocks yet",
     emptyText: "Make a block list first, then a block that uses it",
     editorDescription: "Enforces its block lists while its condition is active. The lock is set on the tile",
-    held: "Locked, so it cannot be changed until it can be stopped",
+    held: "Locked, so only its name and a stricter allowance can change until it can be stopped",
 
     // The editor.
     namePlaceholder: "e.g. Work hours",
@@ -88,14 +87,9 @@ window.STRINGS = {
     conditionLabel: "Condition",
     conditionHelper: "When the block is active once started",
     always: "Always",
-    // The allowance section of the block editor; made there and given to this block.
+    // The allowance section of the block editor (its fields: `allowance` below).
     allowanceTitle: "Allowance",
     allowanceText: "What lets this block go quiet for a while: a time budget or a Pomodoro cycle",
-    allowanceLabel: "Allowance",
-    allowanceHelper: "One at most, as long as the block runs",
-    noAllowance: "None",
-    newAllowance: "New allowance",
-    editAllowance: "Edit allowance",
 
     // A block's tile. A weekly schedule is named, never written out (its times are on the
     // Conditions page, and only there); {drive}: a flash drive's name, quoted; {name}: the
@@ -131,9 +125,8 @@ window.STRINGS = {
       activeSinceTrue: "Active since {name} is true",
       inactiveSinceFalse: "Inactive since {name} is false",
       conditionGone: "a condition",
-      // A block's allowance line. {name}: the allowance, a link; {words}: its terms in words.
+      // A block's allowance line. {name}: its type (`allowance.type`); {words}: its terms in words.
       allowance: "{name}: {words}",
-      allowanceGone: "An allowance",
       // Running, a cycle: {change}: the time until it turns.
       allowanceOpenFor: "{name}: allowed for the next {change}",
       allowanceBlockedFor: "{name}: blocked for the next {change}",
@@ -481,24 +474,15 @@ window.STRINGS = {
     },
   },
 
-  allowances: {
-    title: "Allowances",
-    noun: "allowance",
-    description: "What lets a block go quiet for a while: a time budget or a Pomodoro cycle",
-    autoName: "Allowance {n}",
-    newLabel: "New allowance",
-    editTitle: "Edit allowance",
-    emptyTitle: "No allowances yet",
-    emptyText: "Add a budget of time to use, or a cycle of work and breaks, and give it to a block",
-    editorDescription: "Running blocks follow changes made here; a locked one only accepts stricter ones",
-    // {names}: the locked blocks that have it, quoted.
-    limited: "{names} has it and is locked. A budget can get shorter or reset less often, a cycle cannot change. It cannot be deleted",
-    namePlaceholder: "e.g. Half an hour a day",
-    nameMissing: "Name the allowance",
-    notUsed: "Not used by a block",
+  // A block's allowance, set in the block editor.
+  allowance: {
     typeLabel: "Type",
-    typeBudget: "Time budget",
-    typeCycle: "Pomodoro",
+    typeHelper: "As long as the block runs. A running block takes changes at once; a locked one only stricter ones",
+    type: {
+      none: "None",
+      budget: "Time budget",
+      pomodoro: "Pomodoro",
+    },
     // A time budget.
     budget: {
       allowedLabel: "Time allowed",
@@ -528,22 +512,21 @@ window.STRINGS = {
       start: "The start of the block",
       clock: "The clock, from midnight",
     },
-    // Under the form: the terms in words, from the backend.
+    // Under the fields: the terms in words, from the backend.
     describing: "Checking",
   },
 
-  // Deleting a block, block list, condition or allowance. {noun}: the kind's noun above.
+  // Deleting a block, block list or condition. {noun}: the kind's noun above.
   delete: {
     heading: "Delete {name}?",
     body: "Deletes the {noun} for good",
-    // What it does to the blocks that use a block list, condition or allowance; {names}: those blocks, quoted.
+    // What it does to the blocks that use a block list or condition; {names}: those blocks, quoted.
     deletesToo: "Also deleted, no other block list: {names}",
     keepsOthers: "Keeps its other block lists: {names}",
     becomesAlways: "Always active from now: {names}",
     losesLock: "No lock from now: {names}",
     shrinksCombination: "Continues without it: {names}",
     removesCombination: "Also deleted, one condition left: {names}",
-    losesAllowance: "No allowance from now: {names}",
     stopsIt: "It is running and will be stopped",
     failed: "Could not delete the {noun}",
   },
@@ -558,7 +541,7 @@ window.STRINGS = {
     title: "Settings",
     description: "Unlocking, the unlock delay, and moving everything to another computer",
     unlockTitle: "Unlock",
-    unlockText: "Ends every running block, locked ones too. Blocks, block lists, conditions and allowances stay. The only way to end a locked block early. Request it, wait for the countdown, then unlock. Keep locked cancels it and keeps everything locked; once it is ready the button reads Lock again",
+    unlockText: "Ends every running block, locked ones too. Blocks, block lists and conditions stay. The only way to end a locked block early. Request it, wait for the countdown, then unlock. Keep locked cancels it and keeps everything locked; once it is ready the button reads Lock again",
     // No delay set: the state of a clean install.
     unlockFree: "Ends every running block, locked ones too. Blocks, block lists and conditions stay. Free right now: set an unlock delay below for a countdown",
     // {delay}: how long it takes; {left}: the time left, in words.
@@ -608,18 +591,17 @@ window.STRINGS = {
     delayFree: "Unlocking is free",
     delayFailed: "Delay not changed",
     transferTitle: "Move to another computer",
-    transferText: "Export saves all block lists, conditions, allowances and blocks to a file. Import replaces all of them with the file's contents. Password locks go with their hash, so keep the file private",
+    transferText: "Export saves all block lists, conditions and blocks to a file. Import replaces all of them with the file's contents. Password locks go with their hash, so keep the file private",
     export: "Export",
     import: "Import",
     // {file}: the file's name.
     exported: "Exported to {file}",
     exportFailed: "Not exported",
     importHeading: "Replace everything with this file?",
-    // {lists}, {conditions}, {allowances}, {blocks}: the counts below, as in the file.
-    importBody: "{lists}, {conditions}, {allowances} and {blocks} replace your current ones. This cannot be undone",
+    // {lists}, {conditions}, {blocks}: the counts below, as in the file.
+    importBody: "{lists}, {conditions} and {blocks} replace your current ones. This cannot be undone",
     importLists: { one: "{n} block list", other: "{n} block lists" },
     importConditions: { one: "{n} condition", other: "{n} conditions" },
-    importAllowances: { one: "{n} allowance", other: "{n} allowances" },
     importBlocks: { one: "{n} block", other: "{n} blocks" },
     // {names}: the blocks, quoted; {n}: how many.
     importUnlocked: {

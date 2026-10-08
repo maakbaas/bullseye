@@ -103,6 +103,9 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 .form section { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
 .form section > p { color: var(--cds-text-secondary); margin-top: calc(-1 * var(--cds-spacing-03)); }
 .form section + section { padding-top: var(--cds-spacing-07); border-top: 1px solid var(--cds-border-subtle-01); }
+/* The fields of one choice inside a section (a block's allowance type), spaced as the section's own. */
+.form .fields { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
+.form .fields[hidden] { display: none; }
 /* Carbon keeps a quarter of the width free at the end of an accordion's content (to hold text to a readable line); the lists here use the whole width, as without the accordion. */
 .form cds-accordion-item::part(content) { padding-inline-end: var(--cds-spacing-05); }
 .form cds-accordion-item > * + * { margin-block-start: var(--cds-spacing-05); }

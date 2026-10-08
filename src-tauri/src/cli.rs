@@ -15,7 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value};
 
-use crate::allowance::{Allowance, Anchor, Reset, Scope, Status as AllowanceStatus, Terms};
+use crate::allowance::{Anchor, Reset, Scope, Status as AllowanceStatus, Terms};
 use crate::block::Running;
 use crate::client::Remote;
 use crate::condition::{Mode, Rule};
@@ -31,8 +31,8 @@ use crate::webhook::{self, Hook, Match, Matcher, Method};
 
 /// Each command the window can invoke, and the CLI commands that do the same. Empty: it is about
 /// the window itself.
-pub const GUI_COMMANDS: [(&str, &[&str]); 32] = [
-    ("block_status", &["status", "show", "list show", "condition show", "allowance show"]),
+pub const GUI_COMMANDS: [(&str, &[&str]); 30] = [
+    ("block_status", &["status", "show", "list show", "condition show"]),
     ("save_block", &["new", "edit"]),
     ("delete_block", &["delete"]),
     ("save_list", &["list new", "list edit"]),
@@ -43,9 +43,7 @@ pub const GUI_COMMANDS: [(&str, &[&str]); 32] = [
     ("connected_drives", &["drives"]),
     ("save_condition", &["condition new", "condition edit"]),
     ("delete_condition", &["condition delete"]),
-    ("save_allowance", &["allowance new", "allowance edit"]),
-    ("delete_allowance", &["allowance delete"]),
-    ("duplicate", &["duplicate", "list duplicate", "condition duplicate", "allowance duplicate"]),
+    ("duplicate", &["duplicate", "list duplicate", "condition duplicate"]),
     ("start_block", &["start"]),
     ("stop_block", &["stop"]),
     ("request_stop", &["stop"]),
@@ -59,13 +57,13 @@ pub const GUI_COMMANDS: [(&str, &[&str]); 32] = [
     ("describe_schedule", &["condition check"]),
     // A webhook condition asked once, as the editor Test button does.
     ("test_webhook", &["condition test"]),
-    // An allowance's terms in words: what `allowance show` says.
-    ("describe_allowance", &["allowance show"]),
+    // A block's allowance in words: what `show` says of it.
+    ("describe_allowance", &["show"]),
     // A lock's length or end in words: what `show` and `start` say of a duration or until lock.
     ("describe_duration", &["show"]),
     ("describe_until", &["show", "start"]),
     // What the question before a deletion says.
-    ("deletion_fallout", &["list delete", "condition delete", "allowance delete"]),
+    ("deletion_fallout", &["list delete", "condition delete"]),
     ("export_settings", &["export"]),
     // A settings file's contents: what the question before importing it says.
     ("open_settings", &["import"]),
@@ -77,7 +75,7 @@ const HELP: &str = "\
 Bullseye command line: everything the window can do.
 
 Usage: bullseye-cli <command> [options]
-A <block>, <list>, <condition> or <allowance> is its name (any case) or its id.
+A <block>, <list> or <condition> is its name (any case) or its id.
 
 A block is what you start: one or more block lists (what to block), a condition (when it is
 active; 'always', a weekly schedule, or a flash drive that is not connected), at most one
@@ -90,7 +88,24 @@ Blocks:
   new <name> [options]     Make a block. Options:
       --list <list>            A block list it enforces (repeatable).
       --condition <condition>  When it is active: a condition's name, or 'always' (the default).
-      --allowance <allowance>  Its allowance: an allowance's name, or 'none' (the default).
+      --allowance <budget|pomodoro|none>
+                               What lets it go quiet for a while (none by default): a budget of
+                               use, or a Pomodoro cycle; use is what the app sees: a page shown
+                               in a tab, a window, a program that runs. Given with the options
+                               below, it can be left out (they say which); edit changes only
+                               what they name.
+      --allowed <duration>     Budget: the time allowed, e.g. 30m. Pomodoro: how long
+                               everything is allowed for each cycle.
+      --scope <total|each>     Budget: for the whole block (the default) or for each site,
+                               program, Store app and window title on its own.
+      --reset <never|hour|day|week|condition>
+                               Budget: when what was used is given back: never while the
+                               block runs (the default), every hour, day (midnight) or week
+                               (Monday), or each time the block's condition turns on.
+      --blocked <duration>     Pomodoro: how long it is blocked for before it allows.
+      --anchor <start|clock>   Pomodoro: counted from the block's start (the default), or from
+                               midnight on the clock, so a cycle of an hour starts at xx:00
+                               (the cycle must fit a day evenly).
       --lock-duration <duration>
                                Locked for this long once started, e.g. 2h 30m: it cannot be
                                stopped and ends by itself.
@@ -111,8 +126,11 @@ Blocks:
                                above an input that cannot be pasted into, and that is the only
                                place to stop such a block (or by unlocking).
       --no-lock                Not locked: it can be stopped at any time (the default).
-  edit <block> [options]   Change a block that is not running: the options of new, which replace
-                           what they name (--list replaces all its lists), and --name <name>.
+  edit <block> [options]   Change a block: the options of new, which replace what they name
+                           (--list replaces all its lists), and --name <name>. A running block
+                           takes the change at once (not its lock); while it is locked, only its
+                           name and a stricter allowance: a budget shorter or reset less often,
+                           or none; a cycle cannot change.
   delete <block> [--yes]   Delete a block that is not running. Asks first, unless --yes.
   duplicate <block>        Make a copy of a block, named after it with a number: \"Work (2)\".
   start <block> [--yes]    Start a block. The lock options of new set its lock first, as the lock
@@ -183,38 +201,11 @@ Conditions:
                                     body, and what the matchers make of it.
   condition check <times>           Check times and show them per day, as a schedule takes them.
 
-Allowances (what lets a block go quiet for a while; use is what the app sees: a page shown in a
-tab, a window, a program that runs):
-  allowance show [<allowance>]      Every allowance in words, or one, and the blocks that have it.
-  allowance new <name> [options]    Make an allowance: a budget of use, or a Pomodoro cycle.
-      --type <budget|pomodoro>     Which one (budget unless --blocked or --anchor is given).
-      --allowed <duration>         Budget: the time allowed, e.g. 30m. Pomodoro: how long
-                                   everything is allowed for each cycle.
-      --scope <total|each>         Budget: for the whole block (the default) or for each site,
-                                   program, Store app and window title on its own.
-      --reset <never|hour|day|week|condition>
-                                   Budget: when what was used is given back: never while the
-                                   block runs (the default), every hour, day (midnight) or week
-                                   (Monday), or each time the block's condition turns on.
-      --blocked <duration>         Pomodoro: how long it is blocked for before it allows.
-      --anchor <start|clock>       Pomodoro: counted from the block's start (the default), or from
-                                   midnight on the clock, so a cycle of an hour starts at xx:00
-                                   (the cycle must fit a day evenly).
-  allowance edit <allowance> [options]
-                                   Change an allowance: --name <name> and the options of allowance
-                                   new, which replace what they name. While a locked block has
-                                   it, a budget can only get shorter or reset less often, and a
-                                   cycle cannot change.
-  allowance delete <allowance> [--yes]
-                                   Delete an allowance that no locked block has; it is taken off
-                                   the blocks that have it.
-  allowance duplicate <allowance>   Make a copy of an allowance, named after it with a number.
-
 Moving to another computer:
-  export <file>            Write every block list, condition, allowance and block to a settings
+  export <file>            Write every block list, condition and block to a settings
                            file, as Export in Settings does. Password locks are in it without
                            their password.
-  import <file> [--yes]    Replace every block list, condition, allowance and block with those in a settings
+  import <file> [--yes]    Replace every block list, condition and block with those in a settings
                            file, as Import in Settings does; not while a block is locked, and
                            blocks that run unlocked end with it. A block with a password lock
                            comes without a lock. Asks first, unless --yes.
@@ -321,23 +312,6 @@ enum Command {
     ConditionTest {
         condition: String,
     },
-    /// One allowance, or every one.
-    AllowanceShow {
-        allowance: Option<String>,
-    },
-    AllowanceNew {
-        name: String,
-        changes: AllowanceChanges,
-    },
-    AllowanceEdit {
-        allowance: String,
-        name: Option<String>,
-        changes: AllowanceChanges,
-    },
-    AllowanceDelete {
-        allowance: String,
-        yes: bool,
-    },
     Export {
         file: String,
     },
@@ -385,16 +359,16 @@ struct BlockChanges {
     lists: Option<Vec<String>>,
     /// `Some(None)`: always.
     condition: Option<Option<String>>,
-    /// `Some(None)`: no allowance.
-    allowance: Option<Option<String>>,
+    /// What `--allowance` and its options set; `None`: they were not given.
+    allowance: Option<AllowanceChanges>,
     lock: Option<Lock>,
 }
 
-/// What `allowance new` and `allowance edit` set on an allowance's terms; `None` leaves it (with `new`,
-/// the default). Read when the command runs (`build_terms`).
+/// What `--allowance` and its options of `new` and `edit` set on a block's allowance; `None` leaves
+/// it (with no allowance yet, the default). Read when the command runs (`build_terms`).
 #[derive(Debug, PartialEq, Default)]
 struct AllowanceChanges {
-    /// `budget` or `pomodoro`.
+    /// `budget`, `pomodoro` or `none`.
     kind: Option<String>,
     allowed: Option<String>,
     scope: Option<Scope>,
@@ -468,10 +442,10 @@ pub fn main() -> i32 {
 
 fn parse(args: &[String]) -> Result<Command, String> {
     let Some((command, rest)) = args.split_first() else { return Ok(Command::Help) };
-    // `list`, `condition` and `allowance` take a second word.
+    // `list` and `condition` take a second word.
     let (command, rest) = match (command.as_str(), rest.split_first()) {
-        ("list" | "condition" | "allowance", Some((verb, rest))) => (format!("{command} {verb}"), rest),
-        ("list" | "condition" | "allowance", None) => {
+        ("list" | "condition", Some((verb, rest))) => (format!("{command} {verb}"), rest),
+        ("list" | "condition", None) => {
             return Err(format!(
                 "`{command}` needs show, new, edit, delete, duplicate{}",
                 if command == "condition" { " or check" } else { "" }
@@ -497,7 +471,6 @@ fn parse(args: &[String]) -> Result<Command, String> {
         "duplicate" => Command::Duplicate { kind: Kind::Block, item: named(&mut options, "block")? },
         "list duplicate" => Command::Duplicate { kind: Kind::List, item: named(&mut options, "block list")? },
         "condition duplicate" => Command::Duplicate { kind: Kind::Condition, item: named(&mut options, "condition")? },
-        "allowance duplicate" => Command::Duplicate { kind: Kind::Allowance, item: named(&mut options, "allowance")? },
         "start" => Command::Start { block: named(&mut options, "block")?, lock: parse_lock(&mut options)?, yes: options.flag("--yes") },
         "stop" => {
             Command::Stop { block: named(&mut options, "block")?, password: options.value("--password")?, abort: options.flag("--abort") }
@@ -529,17 +502,6 @@ fn parse(args: &[String]) -> Result<Command, String> {
         "condition check" => {
             Command::ConditionCheck { times: options.positional().ok_or("Give the times to check, e.g. \"Mon-Fri 08:00-17:00\"")? }
         }
-        "allowance show" => Command::AllowanceShow { allowance: options.positional() },
-        "allowance new" => {
-            let name = options.positional().ok_or("Give the new allowance a name")?;
-            Command::AllowanceNew { name, changes: parse_allowance_changes(&mut options)? }
-        }
-        "allowance edit" => Command::AllowanceEdit {
-            allowance: named(&mut options, "allowance")?,
-            name: options.value("--name")?,
-            changes: parse_allowance_changes(&mut options)?,
-        },
-        "allowance delete" => Command::AllowanceDelete { allowance: named(&mut options, "allowance")?, yes: options.flag("--yes") },
         "unlock" => Command::Unlock { abort: options.flag("--abort"), password: options.value("--password")? },
         "unlock-way" => Command::UnlockWay { way: parse_way(&mut options)? },
         "unlock-delay" => Command::UnlockDelay { delay: options.positional() },
@@ -603,18 +565,19 @@ fn parse_block_changes(options: &mut Options, editing: bool) -> Result<BlockChan
         name: if editing { options.value("--name")? } else { None },
         lists: (!lists.is_empty()).then_some(lists),
         condition: options.value("--condition")?.map(|c| (!c.eq_ignore_ascii_case("always")).then_some(c)),
-        allowance: options.value("--allowance")?.map(|a| (!a.eq_ignore_ascii_case("none")).then_some(a)),
+        allowance: parse_allowance_changes(options)?,
         lock: parse_lock(options)?,
     })
 }
 
-/// `--type`, `--allowed`, `--scope`, `--reset`, `--blocked` and `--anchor` of an allowance. The words are
-/// checked here; whether they make terms is `build_terms`'s to say when the command runs.
-fn parse_allowance_changes(options: &mut Options) -> Result<AllowanceChanges, String> {
-    let kind = options.value("--type")?.map(|kind| kind.to_lowercase());
+/// `--allowance`, `--allowed`, `--scope`, `--reset`, `--blocked` and `--anchor` of a block; `None` when
+/// none of them is given. The words are checked here; whether they make terms is `build_terms`'s to
+/// say when the command runs.
+fn parse_allowance_changes(options: &mut Options) -> Result<Option<AllowanceChanges>, String> {
+    let kind = options.value("--allowance")?.map(|kind| kind.to_lowercase());
     if let Some(kind) = &kind {
-        if kind != "budget" && kind != "pomodoro" {
-            return Err(format!("--type takes budget or pomodoro, not \"{kind}\""));
+        if !["budget", "pomodoro", "none"].contains(&kind.as_str()) {
+            return Err(format!("--allowance takes budget, pomodoro or none, not \"{kind}\""));
         }
     }
     let allowed = options.value("--allowed")?;
@@ -646,7 +609,19 @@ fn parse_allowance_changes(options: &mut Options) -> Result<AllowanceChanges, St
             other => Err(format!("--anchor takes start or clock, not \"{other}\"")),
         })
         .transpose()?;
-    Ok(AllowanceChanges { kind, allowed, scope, reset, blocked, anchor })
+    let changes = AllowanceChanges { kind, allowed, scope, reset, blocked, anchor };
+    if changes == AllowanceChanges::default() {
+        return Ok(None);
+    }
+    let terms_given = changes.allowed.is_some()
+        || changes.scope.is_some()
+        || changes.reset.is_some()
+        || changes.blocked.is_some()
+        || changes.anchor.is_some();
+    if changes.kind.as_deref() == Some("none") && terms_given {
+        return Err("--allowance none takes no other allowance options".into());
+    }
+    Ok(Some(changes))
 }
 
 /// An allowance's terms from what was given, over the ones it has (`old`, when editing): what is not
@@ -1089,63 +1064,18 @@ fn execute(command: Command) -> Result<(), Failure> {
             Some(week) => print!("{}", per_day(&week)),
             None => println!("Always active: a block without a condition"),
         },
-        Command::AllowanceShow { allowance } => {
-            let overview = overview()?;
-            match allowance {
-                Some(wanted) => {
-                    let allowance = find(&overview.allowances, &wanted, "allowance", |a| (&a.id, &a.name))?;
-                    println!("{}\n{}\nUsed by: {}", allowance.name, allowance.terms.describe(), users(&overview, &allowance.id));
-                }
-                None if overview.allowances.is_empty() => {
-                    println!("No allowance yet. Make one with: bullseye-cli allowance new <name> --allowed 30m");
-                }
-                None => {
-                    let rows: Vec<(String, String)> = overview.allowances.iter().map(|a| (a.name.clone(), a.terms.describe())).collect();
-                    print!("{}", table(&rows));
-                }
-            }
-        }
-        Command::AllowanceNew { name, changes } => {
-            let terms = build_terms(changes, None).map_err(failed)?;
-            send(Request::SaveAllowance { allowance: Allowance { id: new_id(), name: name.clone(), terms } })?;
-            println!("Made the allowance \"{name}\". Use it with: bullseye-cli new <block> --allowance \"{name}\"");
-        }
-        Command::AllowanceEdit { allowance, name, changes } => {
-            let overview = overview()?;
-            let mut allowance = find(&overview.allowances, &allowance, "allowance", |a| (&a.id, &a.name))?.clone();
-            if let Some(name) = name {
-                allowance.name = name;
-            }
-            allowance.terms = build_terms(changes, Some(&allowance.terms)).map_err(failed)?;
-            let name = allowance.name.clone();
-            send(Request::SaveAllowance { allowance })?;
-            println!("Saved the allowance \"{name}\".");
-        }
-        Command::AllowanceDelete { allowance, yes } => {
-            let overview = overview()?;
-            let allowance = find(&overview.allowances, &allowance, "allowance", |a| (&a.id, &a.name))?;
-            if !confirm(
-                &format!("Delete the allowance \"{}\"?{} This cannot be undone.", allowance.name, fallout(&overview, &allowance.id)),
-                yes,
-            )? {
-                return Err(failed("Not deleted."));
-            }
-            send(Request::DeleteAllowance { id: allowance.id.clone() })?;
-            println!("Deleted the allowance \"{}\".", allowance.name);
-        }
         Command::Export { file } => {
             definitions::write_settings(std::path::Path::new(&file), remote().library().map_err(failed)?).map_err(failed)?;
-            println!("Wrote every block list, condition, allowance and block to {file}.");
+            println!("Wrote every block list, condition and block to {file}.");
         }
         Command::Import { file, yes } => {
             let library = definitions::read_settings(std::path::Path::new(&file)).map_err(failed)?;
             let contents = library.contents();
             let count = |n: usize, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
             let mut question = format!(
-                "Replace every block list, condition, allowance and block with the {}, {}, {} and {} in {file}? This cannot be undone.",
+                "Replace every block list, condition and block with the {}, {} and {} in {file}? This cannot be undone.",
                 count(contents.lists, "block list"),
                 count(contents.conditions, "condition"),
-                count(contents.allowances, "allowance"),
                 count(contents.blocks, "block"),
             );
             if !contents.unlocked.is_empty() {
@@ -1165,14 +1095,12 @@ fn execute(command: Command) -> Result<(), Failure> {
                     Kind::Block => overview.blocks.iter().map(|b| (b.id.clone(), b.name.clone())).collect(),
                     Kind::List => overview.lists.iter().map(|l| (l.id.clone(), l.name.clone())).collect(),
                     Kind::Condition => overview.conditions.iter().map(|c| (c.id.clone(), c.name.clone())).collect(),
-                    Kind::Allowance => overview.allowances.iter().map(|a| (a.id.clone(), a.name.clone())).collect(),
                 }
             };
             let noun = match kind {
                 Kind::Block => "block",
                 Kind::List => "block list",
                 Kind::Condition => "condition",
-                Kind::Allowance => "allowance",
             };
             let items = names(&overview()?);
             let (id, name) = find(&items, &item, noun, |(id, name)| (id, name))?;
@@ -1352,7 +1280,8 @@ fn describe_rule(overview: &Overview, rule: &Rule) -> String {
     }
 }
 
-/// `new` and `edit`'s changes, with lists and the condition looked up by name or id.
+/// `new` and `edit`'s changes, with lists and the condition looked up by name or id, and the
+/// allowance's terms over the ones the block has.
 fn apply_block_changes(overview: &Overview, block: &mut Definition, changes: BlockChanges) -> Result<(), Failure> {
     if let Some(name) = changes.name {
         block.name = name;
@@ -1370,9 +1299,9 @@ fn apply_block_changes(overview: &Overview, block: &mut Definition, changes: Blo
         };
     }
     if let Some(allowance) = changes.allowance {
-        block.allowance = match allowance {
-            Some(a) => Some(find(&overview.allowances, &a, "allowance", |a| (&a.id, &a.name))?.id.clone()),
-            None => None,
+        block.allowance = match allowance.kind.as_deref() {
+            Some("none") => None,
+            _ => Some(build_terms(allowance, block.allowance.as_ref()).map_err(failed)?),
         };
     }
     if let Some(lock) = changes.lock {
@@ -1586,7 +1515,7 @@ fn users(overview: &Overview, id: &str) -> String {
     }
 }
 
-/// What deleting a block list, condition or allowance does to the blocks that use it, in sentences each with a
+/// What deleting a block list or condition does to the blocks that use it, in sentences each with a
 /// space in front, as the window's question says it; empty when no block uses it.
 fn fallout(overview: &Overview, id: &str) -> String {
     let library = Library { blocks: overview.blocks.clone(), conditions: overview.conditions.clone(), ..Library::default() };
@@ -1598,7 +1527,6 @@ fn fallout(overview: &Overview, id: &str) -> String {
         (&fallout.without_it, "keeps its other block lists"),
         (&fallout.always, "is always active from then on"),
         (&fallout.unlocked, "has no lock from then on"),
-        (&fallout.no_allowance, "has no allowance from then on"),
         (&fallout.shrinks, "goes on without it"),
         (&fallout.removed, "is deleted too, as only one condition is left in it"),
     ] {
@@ -1617,13 +1545,11 @@ fn describe_overview(overview: &Overview) -> String {
         overview.lists.iter().map(|l| (l.name.clone(), format!("used by {}", users(overview, &l.id)))).collect();
     let conditions: Vec<(String, String)> =
         overview.conditions.iter().map(|c| (c.name.clone(), describe_rule(overview, &c.rule))).collect();
-    let allowances: Vec<(String, String)> = overview.allowances.iter().map(|a| (a.name.clone(), a.terms.describe())).collect();
     let mut text = String::new();
     for (title, rows, empty) in [
         ("Blocks", blocks, "  None yet. Make one with: bullseye-cli new <name> --list <block list>\n"),
         ("Block lists", lists, "  None yet. Make one with: bullseye-cli list new <name> --site <site>\n"),
         ("Conditions", conditions, "  None (blocks without one are always active).\n"),
-        ("Allowances", allowances, "  None (blocks without one have no allowance).\n"),
     ] {
         text.push_str(&format!("{title}:\n"));
         text.push_str(&if rows.is_empty() { empty.to_string() } else { table(&rows) });
@@ -1660,13 +1586,7 @@ fn describe_block(overview: &Overview, block: &Definition, running: Option<&Runn
             None => "(gone)".into(),
         },
     };
-    let allowance = match &block.allowance {
-        None => "none".to_string(),
-        Some(id) => match overview.allowances.iter().find(|a| &a.id == id) {
-            Some(a) => format!("{}: {}", a.name, a.terms.describe()),
-            None => "(gone)".into(),
-        },
-    };
+    let allowance = block.allowance.as_ref().map_or("none".to_string(), Terms::describe);
     let lock = match &block.lock {
         Lock::None => "none: can be stopped at any time".to_string(),
         Lock::Duration { duration } => match block.lock.duration() {
@@ -1749,11 +1669,6 @@ mod tests {
         Overview {
             lists: vec![social],
             conditions: vec![work],
-            allowances: vec![Allowance {
-                id: "a1".into(),
-                name: "Breaks".into(),
-                terms: Terms::Pomodoro { blocked: "50m".into(), allowed: "10m".into(), anchor: Anchor::Clock },
-            }],
             blocks: vec![b],
             running: vec![],
             unlock: UnlockStatus::default(),
@@ -2040,7 +1955,6 @@ mod tests {
         let empty = Overview {
             lists: vec![],
             conditions: vec![],
-            allowances: vec![],
             blocks: vec![],
             running: vec![],
             unlock: UnlockStatus::default(),
@@ -2080,7 +1994,6 @@ mod tests {
         assert!(text.contains("  Work  Running · inactive for the next 1 hour · unlocked for the next 1 hour"), "{text}");
         assert!(text.contains("Block lists:\n  Social  used by Work"), "{text}");
         assert!(text.contains("Conditions:\n  Work hours  Mon-Fri 08:00-17:00"), "{text}");
-        assert!(text.contains("Allowances:\n  Breaks  Blocked for 50 minutes, then allowed for 10 minutes, on the clock"), "{text}");
         assert!(text.contains("Waiting for internet time"), "{text}");
 
         let block = describe_block(&overview, &overview.blocks[0], overview.running.first());
@@ -2095,88 +2008,67 @@ mod tests {
         assert!(list.contains("Block list:     youtube.com") && list.contains("Used by:        Work"), "{list}");
     }
 
-    #[test]
-    fn allowances_are_made_from_terms() {
-        let Ok(Command::AllowanceNew { name, changes }) =
-            parse(&args(&["allowance", "new", "Social time", "--allowed", "30m", "--scope", "each", "--reset=day"]))
-        else {
-            panic!("not a new allowance")
+    /// What `new` and `edit` say of the allowance, as terms over the ones the block has.
+    fn allowance_of(line: &[&str], old: Option<Terms>) -> Result<Option<Terms>, String> {
+        let changes = match parse(&args(line))? {
+            Command::New { changes, .. } | Command::Edit { changes, .. } => changes,
+            other => panic!("not new or edit: {other:?}"),
         };
-        assert_eq!(name, "Social time");
-        assert_eq!(build_terms(changes, None), Ok(Terms::Budget { allowed: "30m".into(), scope: Scope::Each, reset: Reset::Day }));
-        // The defaults: the whole block, never reset.
-        let Ok(Command::AllowanceNew { changes, .. }) = parse(&args(&["allowance", "new", "A", "--allowed", "1h"])) else {
-            panic!("not new")
-        };
-        assert_eq!(build_terms(changes, None), Ok(Terms::Budget { allowed: "1h".into(), scope: Scope::Total, reset: Reset::Never }));
-        // A cycle is told by its own options.
-        let Ok(Command::AllowanceNew { changes, .. }) =
-            parse(&args(&["allowance", "new", "P", "--blocked", "50m", "--allowed", "10m", "--anchor", "clock"]))
-        else {
-            panic!("not new")
-        };
-        assert_eq!(build_terms(changes, None), Ok(Terms::Pomodoro { blocked: "50m".into(), allowed: "10m".into(), anchor: Anchor::Clock }));
-        // Editing replaces what is named and keeps the rest.
-        let old = Terms::Pomodoro { blocked: "50m".into(), allowed: "10m".into(), anchor: Anchor::Start };
-        let Ok(Command::AllowanceEdit { allowance, name, changes }) =
-            parse(&args(&["allowance", "edit", "Breaks", "--name", "Pauses", "--allowed", "5m"]))
-        else {
-            panic!("not an edit")
-        };
-        assert_eq!((allowance.as_str(), name.as_deref()), ("Breaks", Some("Pauses")));
-        assert_eq!(
-            build_terms(changes, Some(&old)),
-            Ok(Terms::Pomodoro { blocked: "50m".into(), allowed: "5m".into(), anchor: Anchor::Start })
-        );
-        // What cannot be: no time, a cycle that does not fit the day on the clock, and words that are not options.
-        assert!(build_terms(AllowanceChanges::default(), None).is_err());
-        let Ok(Command::AllowanceNew { changes, .. }) =
-            parse(&args(&["allowance", "new", "P", "--blocked", "25m", "--allowed", "10m", "--anchor", "clock"]))
-        else {
-            panic!("not new")
-        };
-        assert!(build_terms(changes, None).is_err());
-        for bad in [
-            &["allowance"][..],
-            &["allowance", "new"],
-            &["allowance", "new", "A", "--type", "forever"],
-            &["allowance", "new", "A", "--scope", "some"],
-            &["allowance", "new", "A", "--reset", "monthly"],
-            &["allowance", "new", "A", "--anchor", "noon"],
-            &["allowance", "edit"],
-            &["allowance", "frob", "A"],
-        ] {
-            assert!(parse(&args(bad)).is_err(), "{bad:?}");
+        let mut b = library().blocks[0].clone();
+        b.allowance = old;
+        match apply_block_changes(&library(), &mut b, changes) {
+            Ok(()) => Ok(b.allowance),
+            Err(Failure::Failed(why) | Failure::Usage(why)) => Err(why),
         }
-        assert_eq!(parse(&args(&["allowance", "show"])), Ok(Command::AllowanceShow { allowance: None }));
-        assert_eq!(parse(&args(&["allowance", "show", "Breaks"])), Ok(Command::AllowanceShow { allowance: Some("Breaks".into()) }));
-        assert_eq!(
-            parse(&args(&["allowance", "delete", "Breaks", "--yes"])),
-            Ok(Command::AllowanceDelete { allowance: "Breaks".into(), yes: true })
-        );
-        assert_eq!(
-            parse(&args(&["allowance", "duplicate", "Breaks"])),
-            Ok(Command::Duplicate { kind: Kind::Allowance, item: "Breaks".into() })
-        );
     }
 
     #[test]
-    fn a_block_has_an_allowance_by_name() {
-        let Ok(Command::Edit { changes, .. }) = parse(&args(&["edit", "Work", "--allowance", "BREAKS"])) else { panic!("not edit") };
-        let mut b = library().blocks[0].clone();
-        assert!(apply_block_changes(&library(), &mut b, changes).is_ok());
-        assert_eq!(b.allowance, Some("a1".to_string()));
-        let Ok(Command::Edit { changes, .. }) = parse(&args(&["edit", "Work", "--allowance", "none"])) else { panic!("not edit") };
-        assert!(apply_block_changes(&library(), &mut b, changes).is_ok());
-        assert_eq!(b.allowance, None);
-        let Ok(Command::Edit { changes, .. }) = parse(&args(&["edit", "Work", "--allowance", "Nope"])) else { panic!("not edit") };
-        assert!(apply_block_changes(&library(), &mut b, changes).is_err());
+    fn a_block_has_its_allowance_set_by_its_options() {
+        let budget = |allowed: &str, scope, reset| Some(Terms::Budget { allowed: allowed.into(), scope, reset });
+        let cycle =
+            |blocked: &str, allowed: &str, anchor| Some(Terms::Pomodoro { blocked: blocked.into(), allowed: allowed.into(), anchor });
+        assert_eq!(
+            allowance_of(&["new", "Social", "--allowance", "budget", "--allowed", "30m", "--scope", "each", "--reset=day"], None),
+            Ok(budget("30m", Scope::Each, Reset::Day))
+        );
+        // The defaults: the whole block, never reset; the kind can be left out.
+        assert_eq!(allowance_of(&["new", "A", "--allowed", "1h"], None), Ok(budget("1h", Scope::Total, Reset::Never)));
+        // A cycle is told by its own options.
+        assert_eq!(
+            allowance_of(&["new", "P", "--blocked", "50m", "--allowed", "10m", "--anchor", "clock"], None),
+            Ok(cycle("50m", "10m", Anchor::Clock))
+        );
+        // Without its options the allowance stays as it is; editing replaces what is named and keeps the rest.
+        let old = cycle("50m", "10m", Anchor::Start);
+        assert_eq!(allowance_of(&["edit", "Work", "--name", "Pauses"], old.clone()), Ok(old.clone()));
+        assert_eq!(allowance_of(&["edit", "Work", "--allowed", "5m"], old.clone()), Ok(cycle("50m", "5m", Anchor::Start)));
+        // Another kind starts afresh, and none takes it away.
+        assert_eq!(
+            allowance_of(&["edit", "Work", "--allowance", "budget", "--allowed", "20m"], old.clone()),
+            Ok(budget("20m", Scope::Total, Reset::Never))
+        );
+        assert_eq!(allowance_of(&["edit", "Work", "--allowance", "NONE"], old.clone()), Ok(None));
+        // What cannot be: no time, a cycle that does not fit the day on the clock, and words that are not options.
+        assert!(allowance_of(&["new", "A", "--allowance", "budget"], None).is_err());
+        assert!(allowance_of(&["new", "P", "--blocked", "25m", "--allowed", "10m", "--anchor", "clock"], None).is_err());
+        for bad in [
+            &["new", "A", "--allowance", "forever"][..],
+            &["new", "A", "--scope", "some"],
+            &["new", "A", "--reset", "monthly"],
+            &["new", "A", "--anchor", "noon"],
+            &["new", "A", "--allowance", "none", "--allowed", "5m"],
+            &["allowance", "new", "A"],
+        ] {
+            assert!(parse(&args(bad)).is_err(), "{bad:?}");
+        }
+
         // It is shown on the block, and what it is doing with a running one.
         let mut overview = library();
-        overview.blocks[0].allowance = Some("a1".into());
+        overview.blocks[0].allowance = cycle("50m", "10m", Anchor::Clock);
         let shown = describe_block(&overview, &overview.blocks[0], None);
-        assert!(shown.contains("Allowance:   Breaks: Blocked for 50 minutes, then allowed for 10 minutes"), "{shown}");
-        let cycle = AllowanceStatus {
+        assert!(shown.contains("Allowance:   Blocked for 50 minutes, then allowed for 10 minutes, on the clock"), "{shown}");
+        assert!(describe_block(&library(), &library().blocks[0], None).contains("Allowance:   none\n"));
+        let status = AllowanceStatus {
             terms: Terms::Pomodoro { blocked: "50m".into(), allowed: "10m".into(), anchor: Anchor::Clock },
             open: true,
             change: Some(240),
@@ -2187,9 +2079,9 @@ mod tests {
             reset_words: None,
             items: vec![],
         };
-        assert_eq!(allowance_words(&cycle), "allowed for the next 4 minutes");
-        assert_eq!(allowance_words(&AllowanceStatus { open: false, ..cycle }), "blocked for the next 4 minutes");
-        let budget = AllowanceStatus {
+        assert_eq!(allowance_words(&status), "allowed for the next 4 minutes");
+        assert_eq!(allowance_words(&AllowanceStatus { open: false, ..status }), "blocked for the next 4 minutes");
+        let used = AllowanceStatus {
             terms: Terms::Budget { allowed: "30m".into(), scope: Scope::Total, reset: Reset::Day },
             open: true,
             change: None,
@@ -2200,9 +2092,7 @@ mod tests {
             reset_words: Some("3 hours".into()),
             items: vec![],
         };
-        assert_eq!(allowance_words(&budget), "12 minutes left of 30 minutes, reset in 3 hours");
-        // Deleting says what it does to the blocks that have it.
-        assert_eq!(fallout(&overview, "a1"), " \"Work\" has no allowance from then on.");
+        assert_eq!(allowance_words(&used), "12 minutes left of 30 minutes, reset in 3 hours");
     }
 
     #[test]
