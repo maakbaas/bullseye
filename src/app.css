@@ -132,9 +132,10 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 .session-tile .body:has(.status) { align-items: flex-end; }
 .session-tile .info:has(> .status) { align-items: flex-end; }
 @media (min-width: 42rem) { /* Carbon's md breakpoint: the status line beside Start / Stop */
-  .session-tile .body, .session-tile .body:has(.status) { flex-direction: row; align-items: center; justify-content: space-between; }
+  /* The status line at the bottom of the button, starting where the rows' icons do (the list's padding). */
+  .session-tile .body, .session-tile .body:has(.status) { flex-direction: row; align-items: flex-end; justify-content: space-between; }
   .session-tile .info:has(> .status) { align-items: flex-start; }
-  .session-tile .status { text-align: start; }
+  .session-tile .status { text-align: start; padding-inline-start: var(--cds-spacing-05); }
   .session-tile .actions { flex: none; }
 }
 .empty { display: flex; flex-direction: column; align-items: flex-start; gap: var(--cds-spacing-05); }
