@@ -116,10 +116,25 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 /* The time takes the room beside the date, so a message under it wraps there. */
 .date-time cds-time-picker { flex: 1 1 8rem; min-inline-size: 0; }
 /* The status line, quiet as a field's helper text. */
-.session-tile .status { color: var(--cds-text-helper); }
+/* The status line, quiet as a field's helper text. Start / Stop is always on the right; in a narrow window
+   the status line is above it, on the right too. */
+.session-tile .status { color: var(--cds-text-helper); text-align: end; }
 .session-tile .status[hidden] { display: none; }
+/* A link in it (a condition's name) in the line's type, not the larger body type: the link's own tokens. */
+.session-tile .status cds-link {
+  --cds-body-compact-01-font-size: var(--cds-helper-text-01-font-size, 0.75rem);
+  --cds-body-compact-01-line-height: var(--cds-helper-text-01-line-height, 1.33333);
+  --cds-body-compact-01-letter-spacing: var(--cds-helper-text-01-letter-spacing, 0.32px);
+  --cds-body-01-font-size: var(--cds-helper-text-01-font-size, 0.75rem);
+  --cds-body-01-line-height: var(--cds-helper-text-01-line-height, 1.33333);
+  --cds-body-01-letter-spacing: var(--cds-helper-text-01-letter-spacing, 0.32px);
+}
+.session-tile .body:has(.status) { align-items: flex-end; }
+.session-tile .info:has(> .status) { align-items: flex-end; }
 @media (min-width: 42rem) { /* Carbon's md breakpoint: the status line beside Start / Stop */
-  .session-tile .body { flex-direction: row; align-items: center; justify-content: space-between; }
+  .session-tile .body, .session-tile .body:has(.status) { flex-direction: row; align-items: center; justify-content: space-between; }
+  .session-tile .info:has(> .status) { align-items: flex-start; }
+  .session-tile .status { text-align: start; }
   .session-tile .actions { flex: none; }
 }
 .empty { display: flex; flex-direction: column; align-items: flex-start; gap: var(--cds-spacing-05); }

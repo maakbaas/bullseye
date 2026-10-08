@@ -118,7 +118,7 @@ function nowText(running) {
 
 // A session's status line, beside Start / Stop: running, what it does now and how its lock stands;
 // stopped, what it is set to (the condition's times, the allowance's and the lock's settings). Parts
-// of text (with links), or none.
+// of text (with links, in the line's own type), or none.
 function statusParts(item) {
   const running = runningOf(item.id);
   if (running) {
