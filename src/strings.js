@@ -117,6 +117,11 @@ window.STRINGS = {
       usedUp: "Blocking. Allowance used up",
       usedUpReset: "Blocking. Allowance back in {reset}",
       items: "Allowance left: {items}",
+      // A stopped session: when it would block ({name}: its condition), then its allowance and lock.
+      blocksAlways: "Blocks at all times",
+      blocksDuring: "Blocks during {name}",
+      blocksDrive: "Blocks while {name} is unplugged",
+      blocksTrue: "Blocks while {name} is true",
     },
 
     // A session's tile. A weekly schedule is named, never written out (its times are on the

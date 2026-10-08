@@ -117,7 +117,7 @@ function nowText(running) {
 }
 
 // A session's status line, beside Start / Stop: running, what it does now and how its lock stands;
-// stopped, what it is set to (the condition's times, the allowance's and the lock's settings). Parts
+// stopped, what it is set to (when it would block, its allowance and its lock), in the same short sentences. Parts
 // of text (with links, in the line's own type), or none.
 function statusParts(item) {
   const running = runningOf(item.id);
@@ -127,8 +127,13 @@ function statusParts(item) {
   }
   const condition = conditionOf(item);
   const lock = LOCKS[item.lock && item.lock.method];
+  // When it would block, worded as its condition is (during a schedule, while a drive is unplugged, while a
+  // combination or a webhook is true).
+  const blocks = condition
+    ? tn(`sessions.status.${{ drive: "blocksDrive", true: "blocksTrue", during: "blocksDuring" }[wordingOf(condition)]}`, { name: ref(condition.name, editHref("conditions", condition.id)) })
+    : t("sessions.status.blocksAlways");
   return [
-    condition ? plain(summaryOf("conditions", condition)[0]) : null,
+    blocks,
     item.allowance ? allowanceLabel(item.allowance) : null,
     item.lock.method === "none" ? null : lock ? lock.describe(item.lock) : t("sessions.tile.unknownLock"),
   ].filter(Boolean);
