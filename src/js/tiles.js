@@ -46,10 +46,11 @@ const runningRuleLine = (running, rule, condition) => {
 // day`, from the backend). Running: where it stands now, from the backend's words (`Running::allowance`):
 // a cycle is allowed for the next so long or allowed again in so long, a budget has so much left (and
 // when it is given back), a budget for each item says what the items that have been used have left.
+// Without one, it says so, as a block without a lock does.
 const allowanceLine = (running, allowance) => {
   const icon = "timer-16";
   const state = running && running.allowance;
-  if (!state) return allowance ? [icon, allowanceLabel(allowance)] : null;
+  if (!state) return [icon, allowance ? allowanceLabel(allowance) : t("blocks.tile.noAllowance")];
   if (state.terms.type === "pomodoro") {
     const key = state.open ? "allowanceOpen" : "allowanceBlocked";
     return [icon, state.change_words ? t(`blocks.tile.${key}For`, { change: state.change_words }) : t(`blocks.tile.${key}`)];
@@ -103,8 +104,7 @@ function summaryOf(kind, item) {
   if (!rule) parts.push(["rule-16", t("blocks.tile.always")]);
   else parts.push(running ? runningRuleLine(running, rule, condition) : ruleLine(rule, condition));
   // A running block's allowance is the one it runs with (its definition's, given to it when saved).
-  const allowance = allowanceLine(running, item.allowance);
-  if (allowance) parts.push(allowance);
+  parts.push(allowanceLine(running, item.allowance));
   if (!running) {
     const lock = LOCKS[item.lock && item.lock.method];
     parts.push([item.lock && item.lock.method !== "none" ? "locked" : "unlocked", lock ? lock.describe(item.lock) : t("blocks.tile.unknownLock")]);

@@ -113,6 +113,7 @@ window.STRINGS = {
       lockedRestart: "Locked until Windows restarts",
       lockedFor: "Locked for the next {left}",
       notLocked: "No active lock",
+      noAllowance: "No allowance",
       // A running block's condition line: its state now and why ({change}: when that changes, if known).
       // A schedule is "during" / "outside", a drive or a combination with one is "since …" (it is plugged
       // in or out by hand, so it has no time).
