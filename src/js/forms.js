@@ -2,7 +2,7 @@
 // a condition (with its week grid or its flash drive). Every form has `nodes`, `fill(item)`, `read(item)`,
 // `disable(off)`, `settle()` and `error()`.
 
-import { el, errorNote, invalid, invoke, lines, overview, t } from "./core.js";
+import { el, errorNote, infoNote, invalid, invoke, lines, overview, t } from "./core.js";
 import { durationField } from "./duration.js";
 import { timingFields } from "./timing.js";
 
@@ -575,7 +575,7 @@ function allowanceSection() {
   // Nothing enforced for a while after the start, or until a time (`timing.js`).
   const delayed = timingFields(["after", "from"], "delayed");
   const delayedPart = el("div", { class: "fields" }, ...delayed.nodes);
-  const summary = el("p", { class: "cds--type-body-01 week-summary" });
+  const summary = infoNote();
   const note = errorNote();
   let problem = null;
   // What is wrong is only said once a save was tried (or after, as it is changed).
@@ -607,8 +607,7 @@ function allowanceSection() {
     }
     if (mine !== asked) return;
     problem = wrong;
-    summary.textContent = wrong ? "" : words;
-    summary.hidden = !words;
+    summary.show(wrong ? null : words);
     note.show(tried && wrong);
   }
   const soon = () => {
@@ -620,8 +619,10 @@ function allowanceSection() {
     cyclePart.hidden = type.value !== "pomodoro";
     delayedPart.hidden = type.value !== "delayed";
     everyPart.hidden = reset.value !== "every";
-    summary.hidden = !terms() || !summary.textContent;
-    if (!terms()) note.show(null);
+    if (!terms()) {
+      summary.show(null);
+      note.show(null);
+    }
   };
   for (const field of [allowed, blocked, cycleAllowed, every, delayed]) field.onChange(soon);
   for (const field of [scope, anchor, resetAnchor]) field.addEventListener("cds-dropdown-selected", describe);
@@ -634,7 +635,7 @@ function allowanceSection() {
     describe();
   });
   return {
-    nodes: [type, budgetPart, cyclePart, delayedPart, summary, note.node],
+    nodes: [type, budgetPart, cyclePart, delayedPart, summary.node, note.node],
     // Both types' fields start from what the session has, else from an example of each.
     fill(allowance) {
       type.value = (allowance && allowance.type) || "none";
@@ -654,8 +655,7 @@ function allowanceSection() {
       show();
       tried = false;
       note.show(null);
-      summary.textContent = t("allowance.describing");
-      summary.hidden = !terms();
+      summary.show(terms() ? t("allowance.describing") : null);
       describe();
     },
     read: terms,
@@ -678,7 +678,7 @@ const SLOT = 30; // minutes per cell
 function weekEditor() {
   // What is marked, written out by the backend, below it (how to use it is its section's line).
   const grid = el("div", { class: "week", "aria-hidden": "true" });
-  const summary = el("p", { class: "cds--type-body-01 week-summary" });
+  const summary = infoNote();
   const note = errorNote();
   const cells = DAY_NAMES.map(() => []);
   let days = DAY_NAMES.map(() => []);
@@ -723,19 +723,17 @@ function weekEditor() {
     // saved like this.
     if (days.every((spans) => !spans.length)) {
       problem = t("conditions.nothingMarked");
-      summary.textContent = problem;
-      summary.hidden = false;
+      summary.show(problem);
       note.show(null);
       return;
     }
     try {
-      summary.textContent = t("conditions.active", { times: await invoke("describe_schedule", { week: { days } }) });
+      summary.show(t("conditions.active", { times: await invoke("describe_schedule", { week: { days } }) }));
       problem = null;
     } catch (e) {
       problem = String(e);
-      summary.textContent = "";
+      summary.show(null);
     }
-    summary.hidden = !!problem;
     note.show(problem);
   }
 
@@ -794,7 +792,7 @@ function weekEditor() {
   grid.addEventListener("pointercancel", finish);
 
   return {
-    nodes: [grid, summary, note.node],
+    nodes: [grid, summary.node, note.node],
     read: () => ({ days: days.map((spans) => spans.map((span) => [...span])) }),
     fill: (values) => {
       days = values.days.map((spans) => spans.map((span) => [...span]));
@@ -811,7 +809,7 @@ function weekEditor() {
     // On a save: nothing marked is said as what is wrong, under the grid.
     error() {
       if (problem) {
-        summary.hidden = true;
+        summary.show(null);
         note.show(problem);
       }
       return problem;

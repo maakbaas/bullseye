@@ -36,7 +36,8 @@ function renderSettings() {
   const locked = overview.running.some((running) => running.locked);
   $("unlock-text").textContent = t(free ? "settings.unlockFree" : "settings.unlockText");
   $("unlock-state").hidden = locked && free;
-  $("unlock-state").textContent = !locked
+  // What unlocking would do now, as the forms' notes say what their settings come to.
+  $("unlock-state").subtitle = !locked
     ? t("settings.unlockNothing")
     : !requested
       ? t("settings.unlockAsk", { delay: delayWords })
@@ -135,7 +136,7 @@ function renderWay() {
   const method = way ? way.method : "none";
   if (!choosingWay && wayMethod.value !== method) wayMethod.value = method;
   const key = { none: "stateNone", text: "stateText", password: "statePassword", condition: "stateCondition" }[method];
-  $("way-state").textContent = open ? t("settings.way.stateOpen") : t("settings.way." + key);
+  $("way-state").subtitle = open ? t("settings.way.stateOpen") : t("settings.way." + key);
 }
 
 // Setting it: the lock method's own form (worded for unlocking), then the service checks it. Cancel

@@ -53,9 +53,9 @@ main { padding-block: var(--cds-spacing-06); }
 .trail cds-breadcrumb-item { display: inline-flex; }
 .notices:empty { display: none; }
 .notices { margin-bottom: var(--cds-spacing-05); }
-.notices cds-inline-notification, .webhook-result cds-inline-notification, .form-error { max-width: none; }
-/* Why a form cannot be saved (`errorNote`): Carbon's notification keeps its margin otherwise. */
-.form-error { margin-block: 0; }
+.notices cds-inline-notification, .webhook-result cds-inline-notification, .form-note { max-width: none; }
+/* A form's note (`errorNote`, `infoNote`): Carbon's notification keeps its margin otherwise. */
+.form-note { margin-block: 0; }
 
 /* Sessions, targets and conditions, as tiles in the Carbon grid. */
 /* The tiles are columns of the page's grid itself (this wrapper only keeps them together), so
@@ -104,7 +104,7 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 /* Carbon's dropdown starts its title 2px lower than a text input its label: a hair up, so the two line up. */
 .duration > cds-dropdown { flex: 0 0 9rem; margin-block-start: -0.125rem; }
 .duration[hidden] { display: none; }
-.date-time-field > .form-error { margin-block-start: var(--cds-spacing-03); }
+.date-time-field > .form-note { margin-block-start: var(--cds-spacing-03); }
 .date-time-field[hidden] { display: none; }
 /* The until lock's date and time, side by side as Carbon shows them. */
 .date-time { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--cds-spacing-05); }
@@ -139,7 +139,6 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 .week .cell { background: var(--cds-layer-01); border-inline-start: 1px solid var(--cds-border-subtle-01); cursor: pointer; }
 .week .cell.hour-start { border-block-start: 1px solid var(--cds-border-subtle-01); }
 .week .cell.last { border-block-end: 1px solid var(--cds-border-subtle-01); }
-.week-summary { color: var(--cds-text-secondary); }
 .week .cell.on { background: var(--cds-interactive); }
 .week.disabled .cell { cursor: default; }
 .week.disabled .cell.on { background: var(--cds-border-disabled); }

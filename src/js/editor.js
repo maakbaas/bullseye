@@ -79,7 +79,7 @@ $("save").addEventListener("click", async () => {
   const problem = form.error();
   // What is wrong is said at its field (`error()` marks it): the first of them is brought into view.
   if (problem) {
-    const wrong = $("form").querySelector("[invalid], .form-error:not([hidden])");
+    const wrong = $("form").querySelector("[invalid], .form-note[kind='error']:not([hidden])");
     if (wrong) wrong.scrollIntoView({ block: "center", behavior: "smooth" });
     return;
   }

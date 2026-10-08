@@ -162,18 +162,23 @@ function invalid(field, why) {
   return !!why;
 }
 
-// Why a form cannot be saved, as Carbon says it: an error notification under the form's fields,
-// hidden while there is nothing wrong. `show(text or null)`.
-function errorNote() {
-  const node = el("cds-inline-notification", { class: "form-error", kind: "error", title: t("common.cannotSave"), "low-contrast": true, "hide-close-button": true, hidden: true });
+// A form's note, as Carbon says it: a low-contrast notification under the fields it is about, hidden
+// while there is nothing to say. `show(text or null)` sets its text (a subtitle, under `title`).
+function formNote(kind, title = "") {
+  const node = el("cds-inline-notification", { class: "form-note", kind, title, "low-contrast": true, "hide-close-button": true, hidden: true });
   return {
     node,
-    show(why) {
-      node.hidden = !why;
-      if (why) node.setAttribute("subtitle", why);
+    show(text) {
+      node.hidden = !text;
+      if (text) node.setAttribute("subtitle", text);
     },
   };
 }
+// Why a form cannot be saved: an error under its fields.
+const errorNote = () => formNote("error", t("common.cannotSave"));
+// What the form's settings come to (an allowance's terms, a schedule's times), as the webhook's test
+// answer is shown: information under them.
+const infoNote = () => formNote("info");
 
 // The one dialog: a question before anything that cannot be taken back, or a short form (a
 // lock's settings, a password). Resolves false for Cancel, the X or Escape; otherwise true,
@@ -246,4 +251,4 @@ function confirmStricter(names, what) {
   return ask({ heading: t("stricter.heading", { names }), body: t("stricter.body", { names, what }), action: t("stricter.action"), kind: "primary" });
 }
 
-export { invoke, $, t, tn, ref, joined, nodesOf, editHref, quoted, names, applyStrings, el, weekText, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, targetName, usersOf, wordingOf, lockedUsersOf, invalid, errorNote, ask, dismiss, confirmStricter };
+export { invoke, $, t, tn, ref, joined, nodesOf, editHref, quoted, names, applyStrings, el, weekText, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, targetName, usersOf, wordingOf, lockedUsersOf, invalid, errorNote, infoNote, ask, dismiss, confirmStricter };

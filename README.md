@@ -33,9 +33,7 @@ Each target also has **actions**: the ways things are closed. Blocked tabs in Ch
 - **Export and import** everything to move to another computer.
 - **A command line** that can do everything the window does: `bullseye status`, `bullseye start "Deep work"`, `bullseye target add "Social media" --sites tiktok.com`. See [CLI.md](CLI.md).
 
-| | |
-|---|---|
-| ![Changing a session's condition on its tile](docs/screenshots/session-tile.png) | ![A condition](docs/screenshots/condition-editor.png) |
+![A condition](docs/screenshots/condition-editor.png)
 
 ## Install
 
