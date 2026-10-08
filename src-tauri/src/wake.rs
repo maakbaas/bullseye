@@ -9,7 +9,7 @@
 //!   background changes no title: that one waits for the pass every second.) Out of context, so no code goes into other
 //!   processes; the hook's thread only checks the window's class and sets an event.
 //! - **From the service**, a program starting (`spawn_process_watch`) that a running session would
-//!   close: one in its program list, or Obsidian while its enforcer is on. WMI's process start
+//!   close: one in its program list, or Obsidian while its action is on. WMI's process start
 //!   trace needs administrator rights, which the app does not have, so the service listens and
 //!   sets a named event (`SERVICE_EVENT`) that the app waits on. Only SYSTEM can create or set it
 //!   (`SDDL`; creating anything in `Global\` also needs a privilege users do not have), so no one

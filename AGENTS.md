@@ -4,7 +4,7 @@ Bullseye is a Windows tray app (Tauri 2, Rust, a Carbon web page) that blocks di
 
 ## Concepts
 
-- **Target**: what to block. Lists of sites (with always-allowed sites), programs, Store apps and window titles (with always-allowed titles), plus **enforcers**: the ways it is closed (Chromium tabs, split view, app windows, Firefox tabs and split view, Obsidian's web viewer; titles closed or minimized).
+- **Target**: what to block. Lists of sites (with always-allowed sites), programs, Store apps and window titles (with always-allowed titles), plus **actions**: the ways it is closed (Chromium tabs, split view, app windows, Firefox tabs and split view, Obsidian's web viewer; titles closed or minimized).
 - **Condition**: when. A weekly schedule, a flash drive that is unplugged, a webhook, or a combination (any / all) of those. "Always" is built in.
 - **Session**: what is started. One or more targets, a condition, at most one **allowance** (a time budget or a Pomodoro cycle that lets it go quiet) and a **lock** (none, duration, until a time, until restart, while a condition is active, a delay, a text to type, a password). Sessions run side by side; outside its condition a session still runs and stays locked, but enforces nothing.
 - **Unlock** (Settings): ends every session. The escape hatch, behind an optional countdown and one optional other way (a condition, text or password).
@@ -26,7 +26,7 @@ Bullseye is a Windows tray app (Tauri 2, Rust, a Carbon web page) that blocks di
 | `service.rs`, `handler.rs`, `registration.rs`, `setup.rs`, `system_path.rs` | the service, what it does per request (the sharing rule lives here), its registration and lock-down, install / uninstall and `PATH` |
 | `pipe.rs`, `proto.rs`, `client.rs` | the pipe, its messages, the app's side (`Remote`) |
 | `definitions.rs` | the `Library` (targets, conditions, sessions), saving, duplicating, export / import, fallout of deletes |
-| `session.rs`, `state.rs` | running sessions (`Sessions`), what is active now (`Active`), locks and allowances at run time; the files on disk and `Enforcers` |
+| `session.rs`, `state.rs` | running sessions (`Sessions`), what is active now (`Active`), locks and allowances at run time; the files on disk and `Actions` |
 | `allowance.rs`, `lock.rs`, `condition.rs`, `schedule.rs`, `webhook.rs`, `drives.rs` | allowances, lock methods, condition rules, weekly times, webhook polling, flash drives by serial number |
 | `lists.rs`, `filters.rs`, `patterns.rs`, `programs.rs`, `store_apps.rs` | a target's lists: sites, `*` patterns, programs (with a protected list), Store apps by package family name |
 | `tab_closer.rs`, `wake.rs` | the closing worker (UI Automation) and what wakes it early |
@@ -62,7 +62,7 @@ Frontend (`src/`, no build step): `index.html`, `app.css` (layout only), `string
 
 The UI is built from tables, so these need no new markup:
 
-- **Enforcer**: a field in `state::Enforcers` and a line in `Enforcers::all`; an entry in a `SECTIONS` group (`forms.js`); a method on `session::Active` if it acts per session.
+- **Action**: a field in `state::Actions` and a line in `Actions::all`; an entry in a `SECTIONS` group (`forms.js`); a method on `session::Active` if it acts per session.
 - **List** in a target: a field of `lists::Entries` and `lists::Lists` (with `parse`, `entries`, `has`, `Entries::field`), a `Uses` variant and an `Active` method; an entry in `LISTS` and a `SECTIONS` group; a line in `cli::LIST_OPTIONS`.
 - **Condition kind**: a variant of `condition::Rule` (`active`, `next_change`, `tightened_by`), an editor in `conditionForm`, an option in `condition new|edit`.
 - **Lock method**: a variant of `lock::Lock`, its `StartLock` / `RunLock` and meaning in `Session::locked`; an entry in `LOCKS` (form, describe, confirm); an option in `cli::parse_lock`.

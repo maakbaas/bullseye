@@ -58,7 +58,7 @@ const KINDS = {
       name: freeName("targets", overview.targets),
       ...Object.fromEntries(Object.keys(LISTS).map((key) => [key, []])),
       // Every checkbox ticked; a choice (windows by title) at its first option, closing.
-      enforcers: Object.fromEntries(SECTIONS.flatMap((s) => s.enforcers.map((e) => [e.key, !s.choice]))),
+      actions: Object.fromEntries(SECTIONS.flatMap((s) => s.actions.map((e) => [e.key, !s.choice]))),
     }),
     save: (list) => invoke("save_target", { target: list }),
     remove: (id) => invoke("delete_target", { id }),

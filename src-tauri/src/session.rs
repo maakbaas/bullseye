@@ -1,4 +1,4 @@
-//! The running sessions: for each, its targets (each with its own enforcers), its condition
+//! The running sessions: for each, its targets (each with its own actions), its condition
 //! if it has one, and its lock (`lock.rs`): when a duration or until lock ends, the lock condition,
 //! the start of Windows a restart lock waits out, a password's hash. Each session is started from a
 //! definition (`definitions.rs`) and runs on its own: several can run at once, and what is enforced
@@ -25,7 +25,7 @@ use crate::datetime::DateTime;
 use crate::duration;
 use crate::lists::{Entries, Lists};
 use crate::localtime::Zone;
-use crate::state::{self, Enforcers, Store, Uses};
+use crate::state::{self, Actions, Store, Uses};
 use crate::sync::LockExt;
 use crate::unlock;
 
@@ -83,14 +83,14 @@ pub struct Free {
 #[derive(Clone)]
 pub struct Enforced {
     pub lists: Arc<Lists>,
-    pub enforcers: Enforcers,
+    pub actions: Actions,
     /// What its allowance lets through now, to be watched (usually nothing).
     pub free: Vec<Free>,
 }
 
 impl Enforced {
-    pub fn new(lists: Arc<Lists>, enforcers: Enforcers) -> Enforced {
-        Enforced { lists, enforcers, free: Vec::new() }
+    pub fn new(lists: Arc<Lists>, actions: Actions) -> Enforced {
+        Enforced { lists, actions, free: Vec::new() }
     }
 
     /// Whether a page is to be closed: on the target, and not on the list of allowed sites.
@@ -132,7 +132,7 @@ pub enum TitleAction {
     Minimize,
 }
 
-/// What is to be enforced right now: every running session's part, each with its own enforcers.
+/// What is to be enforced right now: every running session's part, each with its own actions.
 #[derive(Clone)]
 pub struct Active {
     pub sessions: Vec<Enforced>,
@@ -142,7 +142,7 @@ pub struct Active {
 
 impl Active {
     /// What the closing asks of every page, program and window: whether any session closes it
-    /// (`closes`, among those that are `on`: have the enforcer for it). If none does, what an
+    /// (`closes`, among those that are `on`: have the action for it). If none does, what an
     /// allowance lets through and that matches (`in_use`) is noted as in use, to be counted.
     fn judge(&self, on: impl Fn(&Enforced) -> bool, closes: impl Fn(&Enforced) -> bool, in_use: impl Fn(&Lists) -> bool) -> bool {
         if self.sessions.iter().any(|b| on(b) && closes(b)) {
@@ -165,7 +165,7 @@ impl Active {
     /// `split_view` for a window showing two pages, otherwise an ordinary tab.
     pub fn blocks_page(&self, url: &str, split_view: bool) -> bool {
         self.judge(
-            |b| if split_view { b.enforcers.chromium_split_view } else { b.enforcers.chromium_tabs },
+            |b| if split_view { b.actions.chromium_split_view } else { b.actions.chromium_tabs },
             |b| b.blocks_site(url),
             |lists| Active::site_in_use(lists, url),
         )
@@ -174,14 +174,14 @@ impl Active {
     /// Whether a page shown in an app window (a Chromium window with no tabs) is to be closed, with
     /// the window, by any session that closes those.
     pub fn blocks_app_window(&self, url: &str) -> bool {
-        self.judge(|b| b.enforcers.chromium_app_windows, |b| b.blocks_site(url), |lists| Active::site_in_use(lists, url))
+        self.judge(|b| b.actions.chromium_app_windows, |b| b.blocks_site(url), |lists| Active::site_in_use(lists, url))
     }
 
     /// Whether a page open in a Firefox tab is to be closed, by any session that closes those:
     /// `split_view` for a page in either half of a split view, otherwise an ordinary tab.
     pub fn blocks_firefox_page(&self, url: &str, split_view: bool) -> bool {
         self.judge(
-            |b| if split_view { b.enforcers.firefox_split_view } else { b.enforcers.firefox_tabs },
+            |b| if split_view { b.actions.firefox_split_view } else { b.actions.firefox_tabs },
             |b| b.blocks_site(url),
             |lists| Active::site_in_use(lists, url),
         )
@@ -192,20 +192,20 @@ impl Active {
     pub fn watches_sites(&self) -> bool {
         self.sessions
             .iter()
-            .any(|b| b.enforcers.uses(Uses::Sites) && (!b.lists.sites.is_empty() || b.free.iter().any(|f| !f.lists.sites.is_empty())))
+            .any(|b| b.actions.uses(Uses::Sites) && (!b.lists.sites.is_empty() || b.free.iter().any(|f| !f.lists.sites.is_empty())))
     }
 
     /// Whether any session closes programs and has some to close (or to see in use).
     pub fn closes_programs(&self) -> bool {
         self.sessions.iter().any(|b| {
-            b.enforcers.uses(Uses::Programs) && (!b.lists.programs.is_empty() || b.free.iter().any(|f| !f.lists.programs.is_empty()))
+            b.actions.uses(Uses::Programs) && (!b.lists.programs.is_empty() || b.free.iter().any(|f| !f.lists.programs.is_empty()))
         })
     }
 
     /// Whether a program (by file name) is closed by any session that closes programs.
     pub fn blocks_program(&self, file_name: &str) -> bool {
         self.judge(
-            |b| b.enforcers.uses(Uses::Programs),
+            |b| b.actions.uses(Uses::Programs),
             |b| b.lists.programs.is_blocked(file_name),
             |lists| lists.programs.is_blocked(file_name),
         )
@@ -214,7 +214,7 @@ impl Active {
     /// Whether any session closes Store apps and has some to close (or to see in use).
     pub fn closes_store_apps(&self) -> bool {
         self.sessions.iter().any(|b| {
-            b.enforcers.uses(Uses::StoreApps) && (!b.lists.store_apps.is_empty() || b.free.iter().any(|f| !f.lists.store_apps.is_empty()))
+            b.actions.uses(Uses::StoreApps) && (!b.lists.store_apps.is_empty() || b.free.iter().any(|f| !f.lists.store_apps.is_empty()))
         })
     }
 
@@ -223,7 +223,7 @@ impl Active {
     pub fn blocks_store_app(&self, family: &str) -> bool {
         !crate::store_apps::is_protected(family)
             && self.judge(
-                |b| b.enforcers.uses(Uses::StoreApps),
+                |b| b.actions.uses(Uses::StoreApps),
                 |b| b.lists.store_apps.is_match(family),
                 |lists| lists.store_apps.is_match(family),
             )
@@ -234,13 +234,13 @@ impl Active {
     pub fn watches_titles(&self) -> bool {
         self.sessions
             .iter()
-            .any(|b| b.enforcers.uses(Uses::Titles) && (!b.lists.titles.is_empty() || b.free.iter().any(|f| !f.lists.titles.is_empty())))
+            .any(|b| b.actions.uses(Uses::Titles) && (!b.lists.titles.is_empty() || b.free.iter().any(|f| !f.lists.titles.is_empty())))
     }
 
     /// Whether any session minimizes windows by their title, so any window coming up is worth a look
     /// at once (`wake::watch_every_window`).
     pub fn minimizes_windows(&self) -> bool {
-        self.sessions.iter().any(|b| b.enforcers.window_titles_minimize && !b.lists.titles.is_empty())
+        self.sessions.iter().any(|b| b.actions.window_titles_minimize && !b.lists.titles.is_empty())
     }
 
     /// What is done with a window of this title (`minimized`: whether it is down already), by the
@@ -250,8 +250,8 @@ impl Active {
     /// that matches is noted as in use: an open window for a session that closes, a window that is
     /// up for one that minimizes (a window down is not in use).
     pub fn title_action(&self, title: &str, minimized: bool) -> Option<TitleAction> {
-        let closes = |b: &&Enforced| !b.enforcers.window_titles_minimize;
-        let minimizes = |b: &&Enforced| b.enforcers.window_titles_minimize && !minimized;
+        let closes = |b: &&Enforced| !b.actions.window_titles_minimize;
+        let minimizes = |b: &&Enforced| b.actions.window_titles_minimize && !minimized;
         if self.sessions.iter().filter(closes).any(|b| b.lists.blocks_title(title)) {
             return Some(TitleAction::Close);
         }
@@ -268,21 +268,21 @@ impl Active {
 
     /// Whether any session closes Obsidian when it shows web pages.
     pub fn closes_obsidian(&self) -> bool {
-        self.sessions.iter().any(|b| b.enforcers.obsidian_web_viewer)
+        self.sessions.iter().any(|b| b.actions.obsidian_web_viewer)
     }
 }
 
-/// One target of a session, as it is started: its name, its lists and its enforcers.
+/// One target of a session, as it is started: its name, its lists and its actions.
 pub struct Part {
     pub name: String,
     pub lists: Lists,
-    pub enforcers: Enforcers,
+    pub actions: Actions,
 }
 
 impl Part {
-    /// Whether it has anything to do: an enforcer that is on and has its list (`Enforcers::can_run`).
+    /// Whether it has anything to do: an action that is on and has its list (`Actions::can_run`).
     pub fn can_run(&self) -> bool {
-        self.enforcers.can_run(|uses| self.lists.has(uses))
+        self.actions.can_run(|uses| self.lists.has(uses))
     }
 }
 
@@ -360,7 +360,7 @@ struct RunPart {
 }
 
 impl RunPart {
-    fn new(name: String, lists: Lists, enforcers: Enforcers) -> RunPart {
+    fn new(name: String, lists: Lists, actions: Actions) -> RunPart {
         let entries = lists.entries();
         let mut source = entries.clone();
         let mut items = Vec::new();
@@ -376,7 +376,7 @@ impl RunPart {
             }
         }
         let exceptions = Arc::new(Lists::parse(&Lists::exceptions(&entries)).unwrap_or_default());
-        RunPart { name, enforced: Enforced::new(Arc::new(lists), enforcers), items, exceptions, remaining: None }
+        RunPart { name, enforced: Enforced::new(Arc::new(lists), actions), items, exceptions, remaining: None }
     }
 
     /// Its lists without the items `free`, as long as it is the same ones (parsed once). If they cannot
@@ -406,7 +406,7 @@ struct Session {
     /// The definition it was started from.
     id: String,
     name: String,
-    /// One per target, each by its own enforcers and allowed sites.
+    /// One per target, each by its own actions and allowed sites.
     parts: Vec<RunPart>,
     lock: RunLock,
     /// When the session is active; `None` is always.
@@ -434,7 +434,7 @@ impl Session {
 
     /// What of it the app is to enforce at `now`, by its allowance: all of it with none; nothing while a
     /// cycle allows everything; with a budget, what has time left is not enforced but watched
-    /// (`Free`), so its use can be counted. Obsidian's enforcer has no list to watch, so it stays.
+    /// (`Free`), so its use can be counted. Obsidian's action has no list to watch, so it stays.
     fn enforced(&mut self, now: SystemTime) -> Vec<Enforced> {
         let Session { id, zone, allowance, parts, .. } = self;
         let Some(run) = allowance.as_ref() else { return parts.iter().map(|p| p.enforced.clone()).collect() };
@@ -446,7 +446,7 @@ impl Session {
                 .iter()
                 .map(|p| Enforced {
                     lists: p.exceptions.clone(),
-                    enforcers: p.enforced.enforcers,
+                    actions: p.enforced.actions,
                     free: vec![Free { session: id.clone(), key: TOTAL.to_string(), lists: p.enforced.lists.clone() }],
                 })
                 .collect(),
@@ -460,7 +460,7 @@ impl Session {
                         key: key.clone(),
                         lists: lists.clone(),
                     });
-                    Enforced { lists, enforcers: p.enforced.enforcers, free: watched.collect() }
+                    Enforced { lists, actions: p.enforced.actions, free: watched.collect() }
                 })
                 .collect(),
         }
@@ -580,7 +580,7 @@ pub struct RunningTarget {
     pub name: String,
     #[serde(flatten)]
     pub entries: Entries,
-    pub enforcers: Enforcers,
+    pub actions: Actions,
 }
 
 /// One running session, as the UI shows it.
@@ -698,7 +698,7 @@ impl Sessions {
             StartLock::Text(text) => RunLock::Text { text },
             StartLock::Password(hash) => RunLock::Password { hash },
         };
-        let parts = parts.into_iter().map(|p| RunPart::new(p.name, p.lists, p.enforcers)).collect();
+        let parts = parts.into_iter().map(|p| RunPart::new(p.name, p.lists, p.actions)).collect();
         let allowance = allowance.map(|terms| Run::new(terms, now));
         let new = Session { id: id.to_string(), name: name.to_string(), parts, lock, condition, zone, allowance };
         // Written before the session goes live, so a session cannot be missed after a restart. A
@@ -785,7 +785,7 @@ impl Sessions {
         for saved in saved {
             // A target we cannot read is dropped rather than resumed as something unknown.
             let parts: Result<Vec<RunPart>, String> =
-                saved.parts.into_iter().map(|p| Ok(RunPart::new(p.name, Lists::parse(&p.entries)?, p.enforcers))).collect();
+                saved.parts.into_iter().map(|p| Ok(RunPart::new(p.name, Lists::parse(&p.entries)?, p.actions))).collect();
             let condition = saved.condition.clone().map(Rule::checked).transpose();
             let (Ok(parts), Ok(condition)) = (parts, condition) else {
                 eprintln!("session: dropping an unreadable saved session");
@@ -913,7 +913,7 @@ impl Sessions {
         let now = self.clock.now();
         let Some(session) = inner.sessions.iter_mut().find(|b| b.id == id) else { return };
         session.name = name.to_string();
-        session.parts = parts.into_iter().map(|p| RunPart::new(p.name, p.lists, p.enforcers)).collect();
+        session.parts = parts.into_iter().map(|p| RunPart::new(p.name, p.lists, p.actions)).collect();
         session.condition = condition;
         // What is used of an allowance stays when it is changed; with another one added or taken
         // away it starts or ends.
@@ -978,7 +978,7 @@ impl Sessions {
                 targets: b
                     .parts
                     .iter()
-                    .map(|p| RunningTarget { name: p.name.clone(), entries: p.enforced.lists.entries(), enforcers: p.enforced.enforcers })
+                    .map(|p| RunningTarget { name: p.name.clone(), entries: p.enforced.lists.entries(), actions: p.enforced.actions })
                     .collect(),
                 remaining: b.remaining(now),
                 lock_condition: b.lock_rule().cloned(),
@@ -1043,11 +1043,7 @@ impl Sessions {
                 parts: b
                     .parts
                     .iter()
-                    .map(|p| state::SavedPart {
-                        name: p.name.clone(),
-                        entries: p.enforced.lists.entries(),
-                        enforcers: p.enforced.enforcers,
-                    })
+                    .map(|p| state::SavedPart { name: p.name.clone(), entries: p.enforced.lists.entries(), actions: p.enforced.actions })
                     .collect(),
                 seen,
                 lock: b.lock.clone(),
@@ -1112,15 +1108,15 @@ mod tests {
         list.start(
             id,
             &format!("Session {id}"),
-            vec![part(lists, Enforcers::default())],
+            vec![part(lists, Actions::default())],
             None,
             duration.map_or(StartLock::None, StartLock::For),
         )
     }
 
     /// One target of a session.
-    fn part(lists: Lists, enforcers: Enforcers) -> Part {
-        Part { name: "List".into(), lists, enforcers }
+    fn part(lists: Lists, actions: Actions) -> Part {
+        Part { name: "List".into(), lists, actions }
     }
 
     fn running(list: &Sessions, id: &str) -> Running {
@@ -1146,7 +1142,7 @@ mod tests {
     fn a_delay_lock_is_stopped_by_asking_and_waiting() {
         let list = sessions("delay");
         let begin =
-            || list.start("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, StartLock::Delay(Duration::from_secs(1)));
+            || list.start("a", "A", vec![part(sites(&["a.com"]), Actions::default())], None, StartLock::Delay(Duration::from_secs(1)));
         begin().unwrap();
         assert!(list.stop("a", false).is_err(), "not asked for");
         assert_eq!(running(&list, "a").stop_remaining, None);
@@ -1212,9 +1208,9 @@ mod tests {
     }
 
     #[test]
-    fn each_session_goes_by_its_own_enforcers_and_allowed_sites() {
+    fn each_session_goes_by_its_own_actions_and_allowed_sites() {
         let list = sessions("own-rules");
-        let tabs_only = Enforcers {
+        let tabs_only = Actions {
             chromium_tabs: true,
             chromium_split_view: false,
             obsidian_web_viewer: false,
@@ -1223,7 +1219,7 @@ mod tests {
             firefox_split_view: false,
             window_titles_minimize: false,
         };
-        let split_only = Enforcers {
+        let split_only = Actions {
             chromium_tabs: false,
             chromium_split_view: true,
             obsidian_web_viewer: false,
@@ -1291,7 +1287,7 @@ mod tests {
                 .join("state.json"),
         ));
         let lists = Lists { sites: FilterList::parse(blocked).unwrap(), allowed: FilterList::parse(allow).unwrap(), ..Lists::default() };
-        // `Enforcers::default()` has an enforcer that needs no list, so an empty target starts too.
+        // `Actions::default()` has an action that needs no list, so an empty target starts too.
         start(&list, "a", lists, None).unwrap();
         list.active().unwrap()
     }
@@ -1377,8 +1373,8 @@ mod tests {
     }
 
     #[test]
-    fn a_resumed_session_keeps_its_enforcers() {
-        let only_obsidian = Enforcers {
+    fn a_resumed_session_keeps_its_actions() {
+        let only_obsidian = Actions {
             chromium_tabs: false,
             chromium_split_view: false,
             obsidian_web_viewer: true,
@@ -1387,12 +1383,12 @@ mod tests {
             firefox_split_view: false,
             window_titles_minimize: false,
         };
-        let list = sessions("enforcers");
+        let list = sessions("actions");
         list.start("a", "A", vec![part(sites(&[]), only_obsidian)], None, StartLock::For(Duration::from_secs(3600))).unwrap();
-        let resumed = reopened("enforcers");
+        let resumed = reopened("actions");
         resumed.restore();
-        assert_eq!(resumed.active().map(|active| active.sessions[0].enforcers), Some(only_obsidian));
-        assert_eq!(running(&resumed, "a").targets[0].enforcers, only_obsidian);
+        assert_eq!(resumed.active().map(|active| active.sessions[0].actions), Some(only_obsidian));
+        assert_eq!(running(&resumed, "a").targets[0].actions, only_obsidian);
     }
 
     /// 2030-01-07 00:00:00 UTC, a Monday; the tests' time zone is UTC.
@@ -1412,7 +1408,7 @@ mod tests {
         list.start(
             "a",
             "A",
-            vec![part(sites(&["a.com"]), Enforcers::default())],
+            vec![part(sites(&["a.com"]), Actions::default())],
             office.clone(),
             StartLock::For(Duration::from_secs(2 * 3600)),
         )
@@ -1462,7 +1458,7 @@ mod tests {
         list.clock.at_least(monday(16 * 3600));
         let office = weekly("mon-fri 08:00-17:00");
         let locks = || StartLock::Condition(office.clone().unwrap());
-        list.start("a", "Work", vec![part(sites(&["a.com"]), Enforcers::default())], None, locks()).unwrap();
+        list.start("a", "Work", vec![part(sites(&["a.com"]), Actions::default())], None, locks()).unwrap();
         let why = list.stop("a", false).unwrap_err();
         assert!(why.contains("locked by its lock schedule for the next 1 hour") || why.contains("for the next 59 minutes"), "{why}");
         let a = running(&list, "a");
@@ -1480,7 +1476,7 @@ mod tests {
 
         // It survives a restart as it was.
         list.clock.at_least(monday(7 * 86400 + 9 * 3600));
-        list.start("a", "Work", vec![part(sites(&["a.com"]), Enforcers::default())], None, locks()).unwrap();
+        list.start("a", "Work", vec![part(sites(&["a.com"]), Actions::default())], None, locks()).unwrap();
         let resumed = reopened("lock-schedule");
         resumed.clock.at_least(monday(7 * 86400 + 9 * 3600));
         resumed.restore();
@@ -1491,7 +1487,7 @@ mod tests {
     fn a_password_lock_stops_only_with_its_password() {
         let list = sessions("password");
         let locks = StartLock::Password(unlock::new_hash("partner").unwrap());
-        list.start("a", "Games", vec![part(sites(&["a.com"]), Enforcers::default())], None, locks).unwrap();
+        list.start("a", "Games", vec![part(sites(&["a.com"]), Actions::default())], None, locks).unwrap();
         let why = list.stop("a", false).unwrap_err();
         assert!(why.contains("locked with a password"), "{why}");
         assert!(running(&list, "a").password && running(&list, "a").locked && list.locked().is_some());
@@ -1510,7 +1506,7 @@ mod tests {
     fn a_text_lock_stops_only_with_exactly_its_text() {
         let list = sessions("text");
         let locks = StartLock::Text("Write this\nout by hand".into());
-        list.start("a", "Games", vec![part(sites(&["a.com"]), Enforcers::default())], None, locks).unwrap();
+        list.start("a", "Games", vec![part(sites(&["a.com"]), Actions::default())], None, locks).unwrap();
         let why = list.stop("a", false).unwrap_err();
         assert!(why.contains("type its text in"), "{why}");
         let a = running(&list, "a");
@@ -1533,7 +1529,7 @@ mod tests {
     #[test]
     fn a_session_of_several_targets_enforces_each_by_its_own_rules() {
         let list = sessions("parts");
-        let tabs_only = Enforcers {
+        let tabs_only = Actions {
             chromium_tabs: true,
             chromium_split_view: false,
             obsidian_web_viewer: false,
@@ -1542,7 +1538,7 @@ mod tests {
             firefox_split_view: false,
             window_titles_minimize: false,
         };
-        let programs_only = Enforcers {
+        let programs_only = Actions {
             chromium_tabs: false,
             chromium_split_view: false,
             obsidian_web_viewer: false,
@@ -1552,11 +1548,11 @@ mod tests {
             window_titles_minimize: false,
         };
         let games = Lists { programs: ProgramList::parse(&["steam"]).unwrap(), ..Lists::default() };
-        let social = Part { name: "Social".into(), lists: sites(&["youtube.com"]), enforcers: tabs_only };
+        let social = Part { name: "Social".into(), lists: sites(&["youtube.com"]), actions: tabs_only };
         list.start(
             "a",
             "Evening",
-            vec![social, Part { name: "Games".into(), lists: games, enforcers: programs_only }],
+            vec![social, Part { name: "Games".into(), lists: games, actions: programs_only }],
             None,
             StartLock::None,
         )
@@ -1578,9 +1574,9 @@ mod tests {
         // Monday 16:00 UTC; the test zone is UTC, so 18:00 is two hours away.
         list.clock.at_least(monday(16 * 3600));
         let at = |text: &str| StartLock::Until(DateTime::parse(text).unwrap());
-        let why = list.start("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, at("2030-01-07 12:00")).unwrap_err();
+        let why = list.start("a", "A", vec![part(sites(&["a.com"]), Actions::default())], None, at("2030-01-07 12:00")).unwrap_err();
         assert!(why.contains("has passed"), "{why}");
-        list.start("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, at("2030-01-07 18:00")).unwrap();
+        list.start("a", "A", vec![part(sites(&["a.com"]), Actions::default())], None, at("2030-01-07 18:00")).unwrap();
         assert!(list.stop("a", false).is_err());
         assert!(running(&list, "a").remaining.is_some_and(|left| (7190..=7200).contains(&left)));
         list.clock.at_least(monday(18 * 3600 + 1));
@@ -1590,7 +1586,7 @@ mod tests {
     #[test]
     fn a_lock_until_restart_holds_until_windows_restarts() {
         let list = sessions("until-restart");
-        list.start("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, StartLock::UntilRestart).unwrap();
+        list.start("a", "A", vec![part(sites(&["a.com"]), Actions::default())], None, StartLock::UntilRestart).unwrap();
         let why = list.stop("a", false).unwrap_err();
         assert!(why.contains("until Windows restarts"), "{why}");
         assert!(running(&list, "a").until_restart && list.locked().is_some());
@@ -1610,7 +1606,7 @@ mod tests {
         let list = sessions("schedule-resume");
         list.clock.at_least(monday(12 * 3600));
         let weekend = weekly("weekends");
-        list.start("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], weekend.clone(), StartLock::None).unwrap();
+        list.start("a", "A", vec![part(sites(&["a.com"]), Actions::default())], weekend.clone(), StartLock::None).unwrap();
         assert!(list.is_running() && list.active().is_none(), "Monday is not in the weekend");
         let saved = list.store.clone().unwrap().load().remove(0);
         assert_eq!((saved.condition, saved.zone.as_str()), (weekend.clone(), "fixed:+0"));
@@ -1632,7 +1628,7 @@ mod tests {
         let part = state::SavedPart {
             name: "List".into(),
             entries: Entries { filters: vec!["a.com".into()], ..Entries::default() },
-            enforcers: Enforcers::default(),
+            actions: Actions::default(),
         };
         let saved = |id: &str, lock| Saved {
             id: id.into(),
@@ -1697,7 +1693,7 @@ mod tests {
         list.start_with(
             "a",
             "A",
-            vec![part(sites(&["a.com"]), Enforcers::default())],
+            vec![part(sites(&["a.com"]), Actions::default())],
             None,
             Some(budget("1s", Scope::Total)),
             StartLock::None,
@@ -1726,7 +1722,7 @@ mod tests {
         list.start_with(
             "a",
             "A",
-            vec![part(sites(&["a.com", "b.com"]), Enforcers::default())],
+            vec![part(sites(&["a.com", "b.com"]), Actions::default())],
             None,
             Some(budget("1s", Scope::Each)),
             StartLock::None,
@@ -1750,24 +1746,24 @@ mod tests {
     fn a_cycle_that_is_blocking_enforces_and_what_is_used_survives_a_restart() {
         let list = sessions("cycle");
         let cycle = Terms::Pomodoro { blocked: "1h".into(), allowed: "10m".into(), anchor: allowance::Anchor::Start };
-        list.start_with("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, Some(cycle), StartLock::None).unwrap();
+        list.start_with("a", "A", vec![part(sites(&["a.com"]), Actions::default())], None, Some(cycle), StartLock::None).unwrap();
         assert!(list.active().unwrap().blocks_page("https://a.com/", false), "blocked first");
         assert!(running(&list, "a").allowance.is_some_and(|status| !status.open && status.change.is_some()));
 
         let list = sessions("budget-kept");
         let each = budget("1m", Scope::Total);
-        list.start_with("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, Some(each), StartLock::None).unwrap();
+        list.start_with("a", "A", vec![part(sites(&["a.com"]), Actions::default())], None, Some(each), StartLock::None).unwrap();
         list.polled();
         std::thread::sleep(Duration::from_millis(1100));
         list.charge(&[("a".to_string(), TOTAL.to_string())]);
         // Written to disk with the next save, then read back as a second run finds it.
-        list.refresh("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, None, Some(budget("1m", Scope::Total)));
+        list.refresh("a", "A", vec![part(sites(&["a.com"]), Actions::default())], None, None, Some(budget("1m", Scope::Total)));
         let resumed = reopened("budget-kept");
         resumed.restore();
         let left = running(&resumed, "a").allowance.unwrap().left.unwrap();
         assert!(left < 60, "what was used is kept: {left}");
         // Taking the allowance away ends it.
-        resumed.refresh("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, None, None);
+        resumed.refresh("a", "A", vec![part(sites(&["a.com"]), Actions::default())], None, None, None);
         assert!(running(&resumed, "a").allowance.is_none());
     }
 
@@ -1780,10 +1776,10 @@ mod tests {
         entries.iter().map(|e| e.to_string()).collect()
     }
 
-    /// Only these enforcers (by `Enforcers::all`'s field names) turned on.
-    fn only(on: &[&str]) -> Enforcers {
-        let mut fields = serde_json::to_value(Enforcers::default()).unwrap();
-        assert!(on.iter().all(|name| fields.get(name).is_some()), "an unknown enforcer in {on:?}");
+    /// Only these actions (by `Actions::all`'s field names) turned on.
+    fn only(on: &[&str]) -> Actions {
+        let mut fields = serde_json::to_value(Actions::default()).unwrap();
+        assert!(on.iter().all(|name| fields.get(name).is_some()), "an unknown action in {on:?}");
         for (name, value) in fields.as_object_mut().unwrap() {
             *value = serde_json::Value::Bool(on.contains(&name.as_str()));
         }
@@ -1791,7 +1787,7 @@ mod tests {
     }
 
     #[test]
-    fn each_enforcer_answers_for_its_own_kind_of_window() {
+    fn each_action_answers_for_its_own_kind_of_window() {
         let list = sessions("kinds");
         let lists = lists_of(Entries {
             filters: strings(&["a.com"]),
@@ -1799,10 +1795,10 @@ mod tests {
             titles: strings(&["*Chat*"]),
             ..Entries::default()
         });
-        let enforcers = only(&["chromium_app_windows", "firefox_split_view"]);
-        list.start("a", "A", vec![part(lists, enforcers)], None, StartLock::None).unwrap();
+        let actions = only(&["chromium_app_windows", "firefox_split_view"]);
+        list.start("a", "A", vec![part(lists, actions)], None, StartLock::None).unwrap();
         let active = list.active().unwrap();
-        // Sites: only where an enforcer for it is on.
+        // Sites: only where an action for it is on.
         assert!(active.blocks_app_window("https://a.com/x") && !active.blocks_app_window("https://b.com/"));
         assert!(active.blocks_firefox_page("https://a.com/", true) && !active.blocks_firefox_page("https://a.com/", false));
         assert!(!active.blocks_page("https://a.com/", false) && !active.blocks_page("https://a.com/", true));
@@ -1822,14 +1818,14 @@ mod tests {
         assert!(!active.closes_programs() && !active.closes_obsidian() && !active.blocks_program("chat.exe"));
         assert!(active.used.take().is_empty());
 
-        // A list is its own switch: empty, it does nothing, whatever the enforcers say.
+        // A list is its own switch: empty, it does nothing, whatever the actions say.
         let list = sessions("kinds-off");
-        list.start("a", "A", vec![part(lists_of(Entries::default()), Enforcers::default())], None, StartLock::None).unwrap();
+        list.start("a", "A", vec![part(lists_of(Entries::default()), Actions::default())], None, StartLock::None).unwrap();
         let active = list.active().unwrap();
         assert!(!active.closes_store_apps() && !active.blocks_store_app("Microsoft.XboxApp_8wekyb3d8bbwe"));
         assert!(!active.watches_titles() && active.title_action("Team chat", false).is_none());
         assert!(!active.closes_programs() && !active.blocks_program("chat.exe") && active.closes_obsidian());
-        // With entries, it acts with no enforcer on at all.
+        // With entries, it acts with no action on at all.
         let list = sessions("kinds-on");
         let lists = lists_of(Entries {
             programs: strings(&["chat.exe"]),
@@ -1893,7 +1889,7 @@ mod tests {
             programs: strings(&["game.exe"]),
             ..Entries::default()
         });
-        list.start_with("a", "A", vec![part(lists, Enforcers::default())], None, Some(budget("1s", Scope::Each)), StartLock::None).unwrap();
+        list.start_with("a", "A", vec![part(lists, Actions::default())], None, Some(budget("1s", Scope::Each)), StartLock::None).unwrap();
         let active = list.active().unwrap();
         // Let through, and what is seen is noted under each item's key.
         assert!(active.closes_store_apps() && active.watches_titles() && active.closes_programs());
@@ -1971,18 +1967,11 @@ mod tests {
 
     #[test]
     fn a_budget_never_lets_obsidian_through_and_an_allowed_cycle_does() {
-        // Obsidian's enforcer has no list, so no item: a budget, total or for each item, leaves it on.
+        // Obsidian's action has no list, so no item: a budget, total or for each item, leaves it on.
         for scope in [Scope::Total, Scope::Each] {
             let list = sessions(&format!("obsidian-{scope:?}"));
-            list.start_with(
-                "a",
-                "A",
-                vec![part(sites(&["a.com"]), Enforcers::default())],
-                None,
-                Some(budget("1h", scope)),
-                StartLock::None,
-            )
-            .unwrap();
+            list.start_with("a", "A", vec![part(sites(&["a.com"]), Actions::default())], None, Some(budget("1h", scope)), StartLock::None)
+                .unwrap();
             let active = list.active().unwrap();
             assert!(!active.blocks_page("https://a.com/", false), "{scope:?}: the site is let through");
             assert!(active.closes_obsidian(), "{scope:?}: Obsidian is not");
@@ -1991,7 +1980,7 @@ mod tests {
         // While a cycle allows, the session enforces nothing at all, Obsidian included.
         let list = sessions("obsidian-cycle");
         let cycle = Terms::Pomodoro { blocked: "1s".into(), allowed: "1h".into(), anchor: allowance::Anchor::Start };
-        list.start_with("a", "A", vec![part(sites(&["a.com"]), Enforcers::default())], None, Some(cycle), StartLock::None).unwrap();
+        list.start_with("a", "A", vec![part(sites(&["a.com"]), Actions::default())], None, Some(cycle), StartLock::None).unwrap();
         assert!(list.active().unwrap().closes_obsidian(), "blocked first");
         list.clock.at_least(SystemTime::now() + Duration::from_secs(2));
         assert!(list.active().is_none(), "allowed: nothing to enforce");
@@ -2003,7 +1992,7 @@ mod tests {
         list.start_with(
             "a",
             "A",
-            vec![part(sites(&["*.reddit.com", "youtube.com", "*"]), Enforcers::default())],
+            vec![part(sites(&["*.reddit.com", "youtube.com", "*"]), Actions::default())],
             None,
             Some(budget("1s", Scope::Each)),
             StartLock::None,
@@ -2040,9 +2029,8 @@ mod tests {
     fn a_condition_lock_says_what_it_waits_for() {
         let list = sessions("lock-words");
         list.clock.at_least(monday(16 * 3600));
-        let start = |id: &str, rule: Rule| {
-            list.start(id, id, vec![part(sites(&["a.com"]), Enforcers::default())], None, StartLock::Condition(rule))
-        };
+        let start =
+            |id: &str, rule: Rule| list.start(id, id, vec![part(sites(&["a.com"]), Actions::default())], None, StartLock::Condition(rule));
         // A drive that is not connected (no drive has this serial number) holds the lock.
         start("Drive", Rule::FlashDrive { serial: "no-such-serial".into(), drive: "Key".into() }).unwrap();
         let why = |id: &str| list.stop(id, false).unwrap_err();
@@ -2077,7 +2065,7 @@ mod tests {
         list.start_with(
             "quiet",
             "Q",
-            vec![part(sites(&["b.com"]), Enforcers::default())],
+            vec![part(sites(&["b.com"]), Actions::default())],
             weekly("mon 08:00-17:00"),
             Some(budget("1s", Scope::Total)),
             StartLock::None,
@@ -2096,7 +2084,7 @@ mod tests {
         list.start_with(
             "a",
             "A",
-            vec![part(sites(&["a.com", "b.com"]), Enforcers::default())],
+            vec![part(sites(&["a.com", "b.com"]), Actions::default())],
             None,
             Some(budget("1s", Scope::Each)),
             StartLock::None,

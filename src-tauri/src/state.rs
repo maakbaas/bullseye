@@ -25,7 +25,7 @@ pub struct Saved {
     pub id: String,
     /// The definition's name when it started.
     pub name: String,
-    /// Its targets, each with its own enforcers.
+    /// Its targets, each with its own actions.
     pub parts: Vec<SavedPart>,
     /// The latest time the session was known to be running at, so the clock cannot start from an
     /// earlier one while offline (`clock::at_least`); milliseconds since the Unix epoch.
@@ -48,7 +48,7 @@ pub struct SavedPart {
     pub name: String,
     #[serde(flatten)]
     pub entries: Entries,
-    pub enforcers: Enforcers,
+    pub actions: Actions,
 }
 
 /// The ways a session is enforced, chosen when it starts and fixed while it runs, so turning one
@@ -57,7 +57,7 @@ pub struct SavedPart {
 /// (an empty list is "off"). The sites have one switch per browser and view, and Obsidian's web
 /// viewer, which has no list, has its own.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
-pub struct Enforcers {
+pub struct Actions {
     /// Closes a Chromium tab whose page is on the target (`tab_closer.rs`).
     pub chromium_tabs: bool,
     /// Closes a blocked page shown in either half of a Chromium split view.
@@ -70,14 +70,14 @@ pub struct Enforcers {
     /// Closes a blocked page shown in either half of a Firefox split view.
     pub firefox_split_view: bool,
     /// The windows whose title is on the list of titles are minimized instead of closed: nothing is
-    /// lost. Not an enforcer of its own but how that list is acted on.
+    /// lost. Not an action of its own but how that list is acted on.
     #[serde(default)]
     pub window_titles_minimize: bool,
     /// Closes Obsidian while it shows web content; not linked to the target.
     pub obsidian_web_viewer: bool,
 }
 
-/// What an enforcer needs to have something to do.
+/// What an action needs to have something to do.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Uses {
     /// No list: it does its work on its own (Obsidian's).
@@ -92,8 +92,8 @@ pub enum Uses {
     Titles,
 }
 
-impl Enforcers {
-    /// Every enforcer as (turned on, what it needs). **The one place to list a new enforcer**: add
+impl Actions {
+    /// Every action as (turned on, what it needs). **The one place to list a new action**: add
     /// its field above (if it has a switch) and a line here; what may start and what runs follow
     /// from it. (A new kind of list also needs a `Uses` variant and an arm in `lists::Lists::has`.)
     fn all(&self) -> Vec<(bool, Uses)> {
@@ -111,30 +111,30 @@ impl Enforcers {
         ]
     }
 
-    /// Whether `new` loosens these (for a locked session, that is a way out): an enforcer turned off,
+    /// Whether `new` loosens these (for a locked session, that is a way out): an action turned off,
     /// or windows by title minimized where they were closed (closing them where they were minimized
     /// is stricter).
-    pub fn turned_off_by(&self, new: &Enforcers) -> bool {
+    pub fn turned_off_by(&self, new: &Actions) -> bool {
         (new.window_titles_minimize && !self.window_titles_minimize)
             || self.all().iter().zip(new.all()).any(|(&(was, _), (now, _))| was && !now)
     }
 
-    /// Whether any enforcer that is turned on needs this kind of list.
+    /// Whether any action that is turned on needs this kind of list.
     pub fn uses(&self, list: Uses) -> bool {
         self.all().iter().any(|&(on, needs)| on && needs == list)
     }
 
-    /// Whether a session with these enforcers has anything to do, given which lists have entries
-    /// (`has_entries`): an enforcer that needs a list has nothing to do with an empty one, the
+    /// Whether a session with these actions has anything to do, given which lists have entries
+    /// (`has_entries`): an action that needs a list has nothing to do with an empty one, the
     /// others do not need one. A session that cannot do anything is not worth starting.
     pub fn can_run(&self, has_entries: impl Fn(Uses) -> bool) -> bool {
         self.all().iter().any(|&(on, needs)| on && has_entries(needs))
     }
 }
 
-impl Default for Enforcers {
-    fn default() -> Enforcers {
-        Enforcers {
+impl Default for Actions {
+    fn default() -> Actions {
+        Actions {
             chromium_tabs: true,
             chromium_split_view: true,
             obsidian_web_viewer: true,
@@ -268,7 +268,7 @@ mod tests {
         let part = SavedPart {
             name: "A".into(),
             entries: Entries { filters: vec!["tweakers.net".to_string()], ..Entries::default() },
-            enforcers: Enforcers::default(),
+            actions: Actions::default(),
         };
         Saved {
             id: "a".into(),
@@ -324,8 +324,8 @@ mod tests {
     }
 
     #[test]
-    fn what_can_run_depends_on_the_enforcers_and_the_lists() {
-        let only = |tabs, split, obsidian| Enforcers {
+    fn what_can_run_depends_on_the_actions_and_the_lists() {
+        let only = |tabs, split, obsidian| Actions {
             chromium_tabs: tabs,
             chromium_split_view: split,
             chromium_app_windows: false,
@@ -353,7 +353,7 @@ mod tests {
         assert!(only(false, false, false).can_run(lists(false, true)));
         assert!(only(false, false, false).uses(Uses::Programs) && only(false, false, false).uses(Uses::Titles));
         // Without any entries, only one that needs no list can run.
-        assert!(Enforcers::default().can_run(lists(false, false)));
+        assert!(Actions::default().can_run(lists(false, false)));
         assert!(!only(true, true, false).can_run(lists(false, false)));
         assert!(only(true, false, false).uses(Uses::Sites) && !only(false, false, false).uses(Uses::Sites));
     }
@@ -386,22 +386,22 @@ mod tests {
 
     #[test]
     fn windows_by_title_are_closed_unless_minimized_and_closing_is_stricter() {
-        let minimize = |on| Enforcers { window_titles_minimize: on, ..Enforcers::default() };
-        assert!(!Enforcers::default().window_titles_minimize, "a new target closes them");
-        // A locked session may go from minimizing to closing, never back; nor turn an enforcer off.
+        let minimize = |on| Actions { window_titles_minimize: on, ..Actions::default() };
+        assert!(!Actions::default().window_titles_minimize, "a new target closes them");
+        // A locked session may go from minimizing to closing, never back; nor turn an action off.
         assert!(!minimize(true).turned_off_by(&minimize(false)), "closing instead of minimizing is stricter");
         assert!(minimize(false).turned_off_by(&minimize(true)), "minimizing instead of closing is not");
         assert!(!minimize(false).turned_off_by(&minimize(false)));
-        assert!(Enforcers::default().turned_off_by(&Enforcers { firefox_tabs: false, ..Enforcers::default() }));
-        assert!(!Enforcers { firefox_tabs: false, ..Enforcers::default() }.turned_off_by(&Enforcers::default()));
+        assert!(Actions::default().turned_off_by(&Actions { firefox_tabs: false, ..Actions::default() }));
+        assert!(!Actions { firefox_tabs: false, ..Actions::default() }.turned_off_by(&Actions::default()));
         // A file from before has switches for the lists that no longer have one, and none for
         // minimizing: it reads, as closing.
-        let mut old = serde_json::to_value(Enforcers::default()).unwrap();
+        let mut old = serde_json::to_value(Actions::default()).unwrap();
         let fields = old.as_object_mut().unwrap();
         fields.remove("window_titles_minimize");
         for gone in ["exe_names", "store_apps", "window_titles"] {
             fields.insert(gone.into(), serde_json::Value::Bool(false));
         }
-        assert_eq!(serde_json::from_value::<Enforcers>(old).unwrap(), Enforcers::default());
+        assert_eq!(serde_json::from_value::<Actions>(old).unwrap(), Actions::default());
     }
 }

@@ -26,8 +26,8 @@ It sends the same requests to the Bullseye service as the window, so the service
 | `bullseye target apps [--json]` | the installed Store apps the editor offers to tick, by name and package family name |
 | `bullseye target new <name> [options]` | **New target**, then **Save** |
 | `bullseye target edit <target> [options]` | **Edit** a target, then **Save** |
-| `bullseye target add <target> [options]` | adding entries to a target (and ticking enforcers), then **Save** |
-| `bullseye target remove <target> [options]` | taking entries out of a target (and unticking enforcers), then **Save** |
+| `bullseye target add <target> [options]` | adding entries to a target (and ticking actions), then **Save** |
+| `bullseye target remove <target> [options]` | taking entries out of a target (and unticking actions), then **Save** |
 | `bullseye target delete <target> [--force]` | **Delete** a target |
 | `bullseye target duplicate <target>` | **Duplicate** a target |
 | `bullseye condition show <condition>` | a condition's tile and its editor |
@@ -50,7 +50,7 @@ It sends the same requests to the Bullseye service as the window, so the service
 
 Exit codes: `0` done, `1` failed, refused or cancelled (the reason is printed), `2` not understood. Every option can also be written as `--option=value`. The name or id comes right after the command.
 
-**Several items** (targets, sites, programs, titles, conditions of a combination, enforcers, lists to clear) are the words after their option, up to the next option, separated by spaces: `--sites youtube.com reddit.com`. An item with a space in it goes in double quotes, as the terminal has it: `--titles "Team chat" *YouTube*`. Each such option is given once.
+**Several items** (targets, sites, programs, titles, conditions of a combination, actions, lists to clear) are the words after their option, up to the next option, separated by spaces: `--sites youtube.com reddit.com`. An item with a space in it goes in double quotes, as the terminal has it: `--titles "Team chat" *YouTube*`. Each such option is given once.
 
 ### Sessions: `new`, `edit`, `start`
 
@@ -80,10 +80,10 @@ With `edit`, an option replaces only what it names: `--targets` replaces all its
 | `--allowed-sites <sites>` | Sites that are always allowed, also when this list's sites match them. | none |
 | `--programs <names>` | Programs to close, by exe name: `steam`, `steam*.exe`. | none |
 | `--store-apps <families>` | Store apps to close, by their exact package family names, as `target apps` shows the installed ones: `Microsoft.WindowsCalculator_8wekyb3d8bbwe`. No `*`, as in the window, where they are ticked. Windows' own apps are never closed. | none |
-| `--titles <titles>` | Windows to close, by their title, the whole title with `*` as a wildcard and letter case ignored: `*YouTube*`. The whole window closes, or is minimized (`--enforcers`), a browser's with all its tabs. A lone `*` matches every window but Bullseye's own and Windows' shell. | none |
+| `--titles <titles>` | Windows to close, by their title, the whole title with `*` as a wildcard and letter case ignored: `*YouTube*`. The whole window closes, or is minimized (`--actions`), a browser's with all its tabs. A lone `*` matches every window but Bullseye's own and Windows' shell. | none |
 | `--allowed-titles <titles>` | Window titles that are always left alone, also when this list's titles match them, written as in `--titles`: `*Visual Studio Code`. | none |
 | `--sites-file <file>`, `--allowed-sites-file <file>`, `--programs-file <file>`, `--store-apps-file <file>`, `--titles-file <file>`, `--allowed-titles-file <file>` | The same, one entry per line, from a text file. Can be combined with the options above. | |
-| `--enforcers <names>` | Which enforcers act on this list: `chromium_tabs` (close blocked tabs in Chrome, Edge, Brave), `chromium_split_view` (close blocked pages in split view), `chromium_app_windows` (close app windows of blocked pages, e.g. `chrome --app=<url>`), `firefox_tabs` (close blocked tabs in Firefox), `firefox_split_view` (close blocked pages in Firefox split view), `window_titles_minimize` (minimize the windows by title instead of closing them: nothing is lost, and a window that cannot be minimized is left alone), `obsidian_web_viewer` (close Obsidian when its web viewer is active), or `all` (every enforcer but minimizing windows, which goes instead of closing them). Programs, Store apps and windows by title need no enforcer: a list with entries acts, an empty one does nothing. `bullseye help` lists the current names. A locked session's list may go from minimizing to closing windows, not back. | `all` |
+| `--actions <names>` | Which actions this target takes: `chromium_tabs` (close blocked tabs in Chrome, Edge, Brave), `chromium_split_view` (close blocked pages in split view), `chromium_app_windows` (close app windows of blocked pages, e.g. `chrome --app=<url>`), `firefox_tabs` (close blocked tabs in Firefox), `firefox_split_view` (close blocked pages in Firefox split view), `window_titles_minimize` (minimize the windows by title instead of closing them: nothing is lost, and a window that cannot be minimized is left alone), `obsidian_web_viewer` (close Obsidian when its web viewer is active), or `all` (every action but minimizing windows, which goes instead of closing them). Programs, Store apps and windows by title need no action: a list with entries acts, an empty one does nothing. `bullseye help` lists the current names. A locked session's list may go from minimizing to closing windows, not back. | `all` |
 | `--name <name>` | (`target edit` only) A new name. | |
 | `--clear <lists>` | (`target edit` only) Empty lists: `sites`, `allowed-sites`, `programs`, `store-apps`, `titles`, `allowed-titles`, e.g. `--clear sites titles`. | |
 
@@ -107,7 +107,7 @@ An allowance lets a session go quiet for a while. A session has at most one, set
 
 With `edit`, an option replaces only what it names. While the session is locked, its allowance can only get stricter: a budget's time shorter or reset less often (every so long only longer and counted from the same point, or never; a reset by condition stays), its scope and a Pomodoro's cycle stay as they are, and `--allowance none` takes it away; a session without one cannot be given one.
 
-Obsidian's web viewer enforcer has no items to count, so a budget (total or for each item) never lets it through: Obsidian is closed on web content all the time. Only a Pomodoro's allowed time lets it be.
+Obsidian's web viewer action has no items to count, so a budget (total or for each item) never lets it through: Obsidian is closed on web content all the time. Only a Pomodoro's allowed time lets it be.
 
 ```powershell
 bullseye new "Social time" --targets "Social media" --allowance budget --allowed 30m --scope total --reset 1d --anchor clock
@@ -181,7 +181,7 @@ A running session with an allowance says what it is doing at the end of its line
 
 ### `add` and `remove`
 
-`edit` replaces a whole set (`edit Work --targets Games` leaves Games as its only target); `add` and `remove` change only the items named and keep the rest: a session's targets (`--targets`), a target's entries (its list options, `--sites`, `--programs`, …, and `--enforcers` to turn on or off) and a combination's conditions (`--conditions`). Adding what is there already changes nothing. Taking out what is not there is refused, as a typo, and then nothing is saved; an entry is found however it is written (`Steam` is `steam.exe`, `YouTube.com` is `youtube.com`). The service checks the result like any other save: while a locked session uses a target, adding entries to block goes through and taking them out is refused; a combination keeps at least two conditions, and a session at least one target.
+`edit` replaces a whole set (`edit Work --targets Games` leaves Games as its only target); `add` and `remove` change only the items named and keep the rest: a session's targets (`--targets`), a target's entries (its list options, `--sites`, `--programs`, …, and `--actions` to turn on or off) and a combination's conditions (`--conditions`). Adding what is there already changes nothing. Taking out what is not there is refused, as a typo, and then nothing is saved; an entry is found however it is written (`Steam` is `steam.exe`, `YouTube.com` is `youtube.com`). The service checks the result like any other save: while a locked session uses a target, adding entries to block goes through and taking them out is refused; a combination keeps at least two conditions, and a session at least one target.
 
 ### `duplicate`, `target duplicate`, `condition duplicate`
 

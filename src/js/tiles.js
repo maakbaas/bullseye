@@ -3,7 +3,7 @@
 
 import { $, allowanceLabel, ask, el, invalid, invoke, joined, targetName, newId, editHref, nodesOf, notify, overview, quoted, reachable, ref, refresh, runningOf, conditionOf, t, tn, usersOf, weekText, wordingOf } from "./core.js";
 import { LOCKS, conditionLockText } from "./locks.js";
-import { ENFORCERS, LISTS, SECTIONS } from "./forms.js";
+import { ACTIONS, LISTS, SECTIONS } from "./forms.js";
 import { KINDS } from "./kinds.js";
 import { detour } from "./detour.js";
 
@@ -72,8 +72,8 @@ function summaryOf(kind, item) {
   if (kind === "targets") {
     const parts = [];
     for (const [key, list] of Object.entries(LISTS)) if (item[key] && item[key].length) parts.push(list.count(item[key].length));
-    const on = ENFORCERS.filter((e) => item.enforcers && item.enforcers[e.key]);
-    for (const e of on.filter((e) => !SECTIONS.find((s) => s.enforcers.includes(e)).lists.length)) parts.push(e.short || e.label);
+    const on = ACTIONS.filter((e) => item.actions && item.actions[e.key]);
+    for (const e of on.filter((e) => !SECTIONS.find((s) => s.actions.includes(e)).lists.length)) parts.push(e.short || e.label);
     if (!parts.length) parts.push(t("targets.nothing"));
     const users = usersOf(item.id);
     parts.push(users.length ? usedBy(users) : t("targets.notUsed"));

@@ -113,7 +113,7 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 .form section { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
 /* Parts with a heading each, spaced as the Settings page's, without lines between them. */
 .form section > p { color: var(--cds-text-secondary); }
-#view-editor:not([data-kind="lists"]) #form, #form .form { gap: var(--cds-spacing-09); }
+#view-editor:not([data-kind="targets"]) #form, #form .form { gap: var(--cds-spacing-09); }
 /* The fields of one choice inside a section (a session's allowance type), spaced as the section's own. */
 .form .fields { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
 .form .fields[hidden] { display: none; }
@@ -142,7 +142,7 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 .week.disabled .cell { cursor: default; }
 .week.disabled .cell.on { background: var(--cds-border-disabled); }
 /* A line above the buttons, as the target editor has by its last section (the accordion's own). */
-#view-editor:not([data-kind="lists"]) .form-actions { border-block-start: 1px solid var(--cds-border-subtle-01); padding-block-start: var(--cds-spacing-07); }
+#view-editor:not([data-kind="targets"]) .form-actions { border-block-start: 1px solid var(--cds-border-subtle-01); padding-block-start: var(--cds-spacing-07); }
 .form-actions { display: flex; flex-wrap: wrap; gap: var(--cds-spacing-05); justify-content: space-between; }
 .form-actions .end { display: flex; flex-wrap: wrap; gap: var(--cds-spacing-05); margin-left: auto; }
 

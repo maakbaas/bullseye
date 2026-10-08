@@ -85,7 +85,7 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
                 .into_iter()
                 .map(|session| Policy {
                     entries: session.lists.entries(),
-                    enforcers: session.enforcers,
+                    actions: session.actions,
                     // What an allowance lets through: the always-allowed sites and titles are the policy's own.
                     free: session
                         .free
@@ -301,9 +301,9 @@ fn edit_shared(context: &Context, proposed: Proposed) -> Result<(), String> {
     refresh_running(context, &users)
 }
 
-/// What a running session enforces of its targets: each with its own lists and enforcers.
+/// What a running session enforces of its targets: each with its own lists and actions.
 fn parts_of(lists: &[Target]) -> Result<Vec<Part>, String> {
-    lists.iter().map(|list| Ok(Part { name: list.name.clone(), lists: list.lists()?, enforcers: list.enforcers })).collect()
+    lists.iter().map(|list| Ok(Part { name: list.name.clone(), lists: list.lists()?, actions: list.actions })).collect()
 }
 
 /// Starts a session as it is defined now, with its targets and condition, checked again where it
@@ -323,10 +323,10 @@ fn start(context: &Context, id: &str) -> Result<(), String> {
         Lock::Password { .. } => StartLock::Password(lock.password_hash().ok_or("Set a password for the password lock")?.to_string()),
     };
     let parts = parts_of(&resolved.lists)?;
-    // An enforcer has nothing to do with an empty list of its own kind, while one that needs no
+    // An action has nothing to do with an empty list of its own kind, while one that needs no
     // list (Obsidian's) always does. What matters is that something can run.
     if !parts.iter().any(Part::can_run) {
-        return Err("Nothing to block: add a site or program to its targets, or turn on an enforcer that needs no list".into());
+        return Err("Nothing to block: add a site or program to its targets, or turn on an action that needs no list".into());
     }
     context.sessions.start_with(id, &resolved.session.name, parts, resolved.condition, resolved.allowance, lock)
 }
@@ -424,7 +424,7 @@ mod tests {
     use super::*;
     use crate::definitions::tests::{session, target, weekly};
     use crate::definitions::{Condition, Definition, Kind, Target};
-    use crate::state::{Enforcers, Store};
+    use crate::state::{Actions, Store};
     use std::fs;
     use std::time::Duration;
 
@@ -445,8 +445,8 @@ mod tests {
     }
 
     impl One {
-        fn enforcers(mut self, enforcers: Enforcers) -> One {
-            self.list.enforcers = enforcers;
+        fn actions(mut self, actions: Actions) -> One {
+            self.list.actions = actions;
             self
         }
         fn allowed(mut self, allowed: &[&str]) -> One {
@@ -469,7 +469,7 @@ mod tests {
         }
     }
 
-    /// A session of one list with these sites and every enforcer, always active, not locked.
+    /// A session of one list with these sites and every action, always active, not locked.
     fn definition(id: &str, filters: &[&str]) -> One {
         One { list: target(id, filters), session: session(id, &[id]), condition: None }
     }
@@ -510,8 +510,8 @@ mod tests {
     #[test]
     fn requests_are_checked_again_by_the_service() {
         let context = context("checked");
-        // An empty list with only enforcers that go by it, and nothing chosen.
-        let only_the_list = Enforcers {
+        // An empty list with only actions that go by it, and nothing chosen.
+        let only_the_list = Actions {
             chromium_tabs: true,
             chromium_split_view: true,
             obsidian_web_viewer: false,
@@ -520,7 +520,7 @@ mod tests {
             firefox_split_view: false,
             window_titles_minimize: false,
         };
-        let none = Enforcers {
+        let none = Actions {
             chromium_tabs: false,
             chromium_split_view: false,
             obsidian_web_viewer: false,
@@ -529,7 +529,7 @@ mod tests {
             firefox_split_view: false,
             window_titles_minimize: false,
         };
-        for one in [definition("a", &[]).enforcers(only_the_list), definition("b", &["a.com"]).enforcers(none)] {
+        for one in [definition("a", &[]).actions(only_the_list), definition("b", &["a.com"]).actions(none)] {
             assert!(failed(run(&context, one)));
         }
         // A bad duration, and an address that cannot match, are not even saved.
@@ -545,9 +545,9 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_list_starts_a_session_when_an_enforcer_without_the_list_is_on() {
+    fn an_empty_list_starts_a_session_when_an_action_without_the_list_is_on() {
         let context = context("empty-list");
-        let obsidian_only = Enforcers {
+        let obsidian_only = Actions {
             chromium_tabs: false,
             chromium_split_view: false,
             obsidian_web_viewer: true,
@@ -556,13 +556,13 @@ mod tests {
             firefox_split_view: false,
             window_titles_minimize: false,
         };
-        assert_eq!(run(&context, definition("a", &[]).enforcers(obsidian_only)), Response::Done);
-        // The session keeps what it was started with: no entries, and Obsidian's enforcer only.
+        assert_eq!(run(&context, definition("a", &[]).actions(obsidian_only)), Response::Done);
+        // The session keeps what it was started with: no entries, and Obsidian's action only.
         let policy = &policies(&context)[0];
         assert!(policy.entries.filters.is_empty());
-        assert_eq!(policy.enforcers, obsidian_only);
+        assert_eq!(policy.actions, obsidian_only);
 
-        // With all enforcers on (the default), an empty list is fine too: Obsidian's can run.
+        // With all actions on (the default), an empty list is fine too: Obsidian's can run.
         assert_eq!(run(&context, definition("b", &[])), Response::Done);
     }
 
@@ -686,11 +686,11 @@ mod tests {
         assert_eq!(handle(&context, 0, Request::SaveSession { session: work }).0, Response::Done);
         assert_eq!(handle(&context, 0, Request::Start { id: "work".into() }).0, Response::Done);
 
-        // Less to block, another site instead, an enforcer off, an allowed site added: all refused.
+        // Less to block, another site instead, an action off, an allowed site added: all refused.
         assert!(failed(handle(&context, 0, Request::SaveTarget { target: target("social", &[]) }).0));
         assert!(failed(handle(&context, 0, Request::SaveTarget { target: target("social", &["reddit.com"]) }).0));
         let mut loose = target("social", &["youtube.com"]);
-        loose.enforcers.chromium_tabs = false;
+        loose.actions.chromium_tabs = false;
         assert!(failed(handle(&context, 0, Request::SaveTarget { target: loose }).0));
         let mut allow = target("social", &["youtube.com"]);
         allow.entries.allowed = vec!["google.com".into()];
@@ -879,7 +879,7 @@ mod tests {
 
     #[test]
     fn programs_alone_can_start_a_session_and_what_windows_needs_is_refused() {
-        let programs_only = Enforcers {
+        let programs_only = Actions {
             chromium_tabs: false,
             chromium_split_view: false,
             obsidian_web_viewer: false,
@@ -888,10 +888,10 @@ mod tests {
             firefox_split_view: false,
             window_titles_minimize: false,
         };
-        let one = |programs: &[&str]| timed("p", &[], "1h").enforcers(programs_only).programs(programs);
+        let one = |programs: &[&str]| timed("p", &[], "1h").actions(programs_only).programs(programs);
         let context = context("programs");
 
-        // The programs enforcer alone, with nothing listed, has nothing to do.
+        // The programs action alone, with nothing listed, has nothing to do.
         assert!(failed(run(&context, one(&[]))));
         // Entries that would close what Windows or this app needs, or are not names.
         for bad in ["*", "explorer.exe", "s*", r"C:\Games\game.exe"] {
@@ -905,7 +905,7 @@ mod tests {
         let policy = &policies(&context)[0];
         assert_eq!(policy.entries.programs, vec!["game.exe", "steam*.exe"]);
         assert!(policy.entries.filters.is_empty());
-        assert_eq!(policy.enforcers, programs_only);
+        assert_eq!(policy.actions, programs_only);
     }
 
     #[test]
@@ -926,8 +926,8 @@ mod tests {
     #[test]
     fn allowed_sites_alone_are_not_something_to_block() {
         let context = context("allowed-alone");
-        // Only the tab enforcers, no sites to block and only an allowed one: nothing to do.
-        let tabs_only = Enforcers {
+        // Only the tab actions, no sites to block and only an allowed one: nothing to do.
+        let tabs_only = Actions {
             chromium_tabs: true,
             chromium_split_view: true,
             obsidian_web_viewer: false,
@@ -936,7 +936,7 @@ mod tests {
             firefox_split_view: false,
             window_titles_minimize: false,
         };
-        assert!(failed(run(&context, timed("a", &[], "1h").allowed(&["google.com"]).enforcers(tabs_only))));
+        assert!(failed(run(&context, timed("a", &[], "1h").allowed(&["google.com"]).actions(tabs_only))));
         assert!(policies(&context).is_empty());
     }
 

@@ -14,9 +14,9 @@
 //! App windows (`chrome --app=<url>`, popups) have no tab strip and an address bar with no room
 //! on screen, but their page's document still carries its URL; the window is closed whole.
 //!
-//! Each of these is an enforcer a session can turn on or off (`state::Enforcers`): blocked
+//! Each of these is an action a session can turn on or off (`state::Actions`): blocked
 //! tabs, blocked pages in a split view (a window showing two pages), blocked app windows, and Obsidian. With several
-//! sessions running, each goes by its own enforcers and lists (`session::Active`).
+//! sessions running, each goes by its own actions and lists (`session::Active`).
 
 use std::collections::{HashMap, HashSet};
 use std::thread;
@@ -1054,11 +1054,11 @@ mod tests {
     use crate::lists::Lists;
     use crate::programs::ProgramList;
     use crate::session::Enforced;
-    use crate::state::Enforcers;
+    use crate::state::Actions;
     use std::process::{Child, Command, Stdio};
     use std::sync::Arc;
 
-    /// One session with these sites and programs, and every enforcer on.
+    /// One session with these sites and programs, and every action on.
     fn active(sites: &[&str], programs: &[&str]) -> Active {
         Active {
             sessions: vec![Enforced::new(
@@ -1067,7 +1067,7 @@ mod tests {
                     programs: ProgramList::parse(programs).unwrap(),
                     ..Lists::default()
                 }),
-                Enforcers::default(),
+                Actions::default(),
             )],
             used: Default::default(),
         }

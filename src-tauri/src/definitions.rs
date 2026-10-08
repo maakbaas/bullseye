@@ -1,6 +1,6 @@
 //! What the user has defined, in three kinds, each a list of its own (`Library`):
 //! - **targets** (`Target`): what to block and how: sites, always-allowed sites, programs,
-//!   and the enforcers that act on them;
+//!   and the actions that act on them;
 //! - **conditions** (`Condition`): when, as a weekly schedule or while a flash drive is not
 //!   connected (`condition.rs`); "always" is built in and is no entry here;
 //! - **sessions** (`Definition`): one or more targets, a condition (or always), an allowance
@@ -26,7 +26,7 @@ use crate::allowance::Terms;
 use crate::condition::{Mode, Rule};
 use crate::lists::{Entries, Lists};
 use crate::lock::Lock;
-use crate::state::{self, Enforcers};
+use crate::state::{self, Actions};
 use crate::sync::LockExt;
 use crate::unlock;
 
@@ -44,7 +44,7 @@ pub struct Target {
     /// What it blocks: its lists, one entry per line as typed (fields of the list in the file).
     #[serde(flatten)]
     pub entries: Entries,
-    pub enforcers: Enforcers,
+    pub actions: Actions,
 }
 
 /// When a session is active, and what a condition lock locks by, with a name: a weekly schedule or a
@@ -143,7 +143,7 @@ impl Target {
 
     /// Whether `new` blocks everything this does and more, which is all a target a locked session
     /// uses may be changed by: entries may be added to what is blocked, taken out of what is
-    /// allowed, and enforcers turned on, never the other way. Lists are compared as they are read
+    /// allowed, and actions turned on, never the other way. Lists are compared as they are read
     /// (`Lists::entries`), so case and a missing `.exe` make no difference. The error says what is
     /// wrong, for a person.
     pub fn tightened_by(&self, new: &Target) -> Result<(), String> {
@@ -169,8 +169,8 @@ impl Target {
                 return Err(format!("A locked session uses this target, so {what} can be taken out but not added: {added}"));
             }
         }
-        if self.enforcers.turned_off_by(&new.enforcers) {
-            return Err("A locked session uses this target, so enforcers can be turned on but not off".into());
+        if self.actions.turned_off_by(&new.actions) {
+            return Err("A locked session uses this target, so actions can be turned on but not off".into());
         }
         Ok(())
     }
@@ -794,13 +794,13 @@ pub mod tests {
     use super::*;
     use crate::schedule::Week;
 
-    /// A target with these sites and the default enforcers.
+    /// A target with these sites and the default actions.
     pub fn target(id: &str, filters: &[&str]) -> Target {
         Target {
             id: id.into(),
             name: format!("List {id}"),
             entries: Entries { filters: filters.iter().map(|f| f.to_string()).collect(), ..Entries::default() },
-            enforcers: Enforcers::default(),
+            actions: Actions::default(),
         }
     }
 

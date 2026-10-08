@@ -19,7 +19,7 @@ Two more ideas complete the picture:
 - **Lock**: how hard a running session is to stop. None, for a duration, until a date and time, until Windows restarts, while a condition is active (a USB stick can be the key: locked while it is unplugged), after a delay you have to wait out, after typing a text you cannot paste, or with a password someone else keeps.
 - **Allowance**: a way for a session to go quiet for a while. A time budget (say 30 minutes a day, for the whole session or per site) or a Pomodoro cycle (50 minutes blocked, 10 minutes free).
 
-Each target also has **enforcers**: the ways things are closed. Blocked tabs in Chrome, Edge, Brave and Firefox (split view and app windows too), programs by name, Store apps, windows by title (closed or minimized), and Obsidian's web viewer.
+Each target also has **actions**: the ways things are closed. Blocked tabs in Chrome, Edge, Brave and Firefox (split view and app windows too), programs by name, Store apps, windows by title (closed or minimized), and Obsidian's web viewer.
 
 ![A target](docs/screenshots/target-editor.png)
 
@@ -66,7 +66,7 @@ npm run build    # the installer, in src-tauri\target\release\bundle\nsis\
 Everyone gets distracted differently, so Bullseye is meant to be forked and bent to fit. You do not need to know Rust or Windows internals to do that with an AI coding assistant:
 
 1. **Fork the repository** and open it in an AI coding tool such as Claude Code. [AGENTS.md](AGENTS.md) (read by Claude Code through `CLAUDE.md`) explains the architecture, the rules and how each kind of extension is added, so the assistant starts with the context it needs.
-2. **Ask for what you want in plain words**: "add a condition that is active while Spotify plays", "add a lock that needs a friend's approval by email", "close Discord when it shows a voice channel". New conditions, locks, allowances, enforcers and lists each follow a recipe in AGENTS.md (one table entry in the window, one type in Rust, one CLI option).
+2. **Ask for what you want in plain words**: "add a condition that is active while Spotify plays", "add a lock that needs a friend's approval by email", "close Discord when it shows a voice channel". New conditions, locks, allowances, actions and lists each follow a recipe in AGENTS.md (one table entry in the window, one type in Rust, one CLI option).
 3. **Let it test**: the project expects every change to come with tests, and they run on Linux and Windows. Ask the assistant to run them and to check the window in a browser before you install.
 4. **Develop with `npm run dev`**, which you can end at any time, and install only what you have tried there.
 

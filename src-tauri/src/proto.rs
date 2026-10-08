@@ -13,7 +13,7 @@ use crate::definitions::{Condition, Definition, Kind, Library, Target};
 use crate::lists::Entries;
 use crate::lock::Lock;
 use crate::session::Running;
-use crate::state::Enforcers;
+use crate::state::Actions;
 
 /// The pipe the service listens on.
 pub const PIPE: &str = r"\\.\pipe\bullseye";
@@ -168,7 +168,7 @@ impl Overview {
 pub struct Policy {
     #[serde(flatten)]
     pub entries: Entries,
-    pub enforcers: Enforcers,
+    pub actions: Actions,
     /// What the session's allowance lets through now: not enforced, but to be reported when it is in use.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub free: Vec<FreeEntries>,
@@ -177,8 +177,8 @@ pub struct Policy {
 impl Policy {
     /// A policy that lets nothing through.
     #[cfg(test)]
-    pub fn new(entries: Entries, enforcers: Enforcers) -> Policy {
-        Policy { entries, enforcers, free: Vec::new() }
+    pub fn new(entries: Entries, actions: Actions) -> Policy {
+        Policy { entries, actions, free: Vec::new() }
     }
 }
 
@@ -267,7 +267,7 @@ mod tests {
                 titles: vec!["*c*".into()],
                 allowed_titles: vec!["*cd*".into()],
             },
-            enforcers: Enforcers::default(),
+            actions: Actions::default(),
             free: vec![FreeEntries {
                 session: "a".into(),
                 key: "site:d.com".into(),

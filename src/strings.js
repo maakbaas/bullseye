@@ -74,7 +74,7 @@ window.STRINGS = {
     namePlaceholder: "e.g. Work hours",
     nameMissing: "Name the session",
     whatTitle: "What",
-    whatText: "Targets to enforce, each with its own enforcers and allowed sites",
+    whatText: "Targets to enforce, each with its own actions and allowed sites",
     targetsLegend: "Targets",
     noTargets: "A session needs at least one target",
     // Under the targets and the condition in the session editor: made there, added to this session.
@@ -295,14 +295,14 @@ window.STRINGS = {
     emptyText: "Add sites, programs or apps to close, and how to close them",
     editorDescription: "Running sessions follow changes made here; a locked one only accepts stricter ones",
     // {names}: the locked sessions that use it, quoted.
-    limited: "{names} uses it and is locked. You can add blocked entries, remove always allowed ones and turn enforcers on, nothing else. It cannot be deleted",
+    limited: "{names} uses it and is locked. You can add blocked entries, remove always allowed ones and turn actions on, nothing else. It cannot be deleted",
     namePlaceholder: "e.g. Social media",
     nameMissing: "Name the target",
     nothing: "Nothing to block",
     notUsed: "Not used by a session",
     // Above an editor section's checkboxes: with lists, and without.
     howLegend: "How",
-    enforcersLegend: "Enforcers",
+    actionsLegend: "Actions",
 
     // The lists of a target. `count` is the tile's line.
     filters: {
@@ -347,8 +347,8 @@ window.STRINGS = {
       count: { one: "{n} title always allowed", other: "{n} titles always allowed" },
     },
 
-    // The editor's sections, with the enforcers in each. `short` is the tile's line for an
-    // enforcer that needs no list.
+    // The editor's sections, with the actions in each. `short` is the tile's line for an
+    // action that needs no list.
     sections: {
       websites: {
         title: "Websites",
@@ -370,13 +370,13 @@ window.STRINGS = {
         title: "Other",
       },
     },
-    enforcers: {
+    actions: {
       chromium_tabs: { label: "Close blocked tabs in Chromium" },
       chromium_split_view: { label: "Close blocked pages in Chromium split view" },
       chromium_app_windows: { label: "Close blocked app windows in Chromium" },
       firefox_tabs: { label: "Close blocked tabs in Firefox" },
       firefox_split_view: { label: "Close blocked pages in Firefox split view" },
-      // The window title section's choice: closing (`close`, no enforcer of its own) or minimizing.
+      // The window title section's choice: closing (`close`, no action of its own) or minimizing.
       close: "Close these windows",
       window_titles_minimize: { label: "Minimize these windows" },
       obsidian_web_viewer: { label: "Close Obsidian when web viewer is active", short: "Closes Obsidian's web viewer" },

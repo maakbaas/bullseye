@@ -5,8 +5,8 @@
 //!
 //! **Keep it level with the window.** Every command the window can invoke (the list in
 //! `generate_handler!` in `lib.rs`) is in `GUI_COMMANDS` with the CLI commands that do the same, and
-//! a test fails when one is missing, or missing from `HELP` or `CLI.md`. Enforcer names come from
-//! `Enforcers` itself, so a new enforcer is here without any change. A new list, condition kind or
+//! a test fails when one is missing, or missing from `HELP` or `CLI.md`. Action names come from
+//! `Actions` itself, so a new action is here without any change. A new list, condition kind or
 //! lock method needs an option here, a line in `HELP` and in `CLI.md`.
 
 use std::collections::BTreeMap;
@@ -26,7 +26,7 @@ use crate::lock::Lock;
 use crate::proto::{Overview, Request, UnlockStatus};
 use crate::schedule::Week;
 use crate::session::Running;
-use crate::state::Enforcers;
+use crate::state::Actions;
 use crate::webhook::{self, Hook, Match, Matcher, Method};
 
 /// Each command the window can invoke, and the CLI commands that do the same. Empty: it is about
@@ -173,22 +173,22 @@ Targets:
       --sites-file <file>      Sites to block, one per line. Likewise --allowed-sites-file,
                                --programs-file, --store-apps-file, --titles-file and
                                --allowed-titles-file.
-      --enforcers <names>      The enforcers, or 'all' (the default). Names:
-                               {enforcers}
+      --actions <names>        The actions, or 'all' (the default). Names:
+                               {actions}
   target edit <target> [options]
                               Change a target: the options of target new, which replace what
                               they name, --name <name> and --clear <lists>, the lists to empty:
                               sites, allowed-sites, programs, store-apps, titles,
                               allowed-titles. While a locked session uses it, only stricter: more
-                              to block, fewer allowed, more enforcers.
+                              to block, fewer allowed, more actions.
   target add <target> [options]
                               Add entries to the lists of a target, keeping what it has: the
                               list options of target new (--sites, --programs, …), and
-                              --enforcers to turn on. While a locked session uses it, adding
+                              --actions to turn on. While a locked session uses it, adding
                               entries to block is allowed.
   target remove <target> [options]
                               Take entries out of a target, however they are written
-                              (Steam is steam.exe), and turn --enforcers off. One that is not
+                              (Steam is steam.exe), and turn --actions off. One that is not
                               in it is refused, as a typo.
   target delete <target> [--force]
                               Delete a target that no running session uses; it is taken out of
@@ -327,11 +327,11 @@ enum Command {
         add: bool,
     },
     /// `target add` / `target remove`: entries of a target's lists, by their field of `Entries`,
-    /// and enforcers.
+    /// and actions.
     TargetItems {
         target: String,
         entries: BTreeMap<&'static str, Vec<String>>,
-        enforcers: Vec<String>,
+        actions: Vec<String>,
         add: bool,
     },
     /// `condition add` / `condition remove`: the conditions of a combination.
@@ -435,7 +435,7 @@ struct TargetChanges {
     name: Option<String>,
     /// The lists to set, by their field of `Entries`.
     lists: BTreeMap<&'static str, Vec<String>>,
-    enforcers: Option<Enforcers>,
+    actions: Option<Actions>,
 }
 
 /// The options that set a list, one per list: the option (its items; `<option>-file` reads them
@@ -460,8 +460,8 @@ impl TargetChanges {
                 *field = entries;
             }
         }
-        if let Some(enforcers) = self.enforcers {
-            list.enforcers = enforcers;
+        if let Some(actions) = self.actions {
+            list.actions = actions;
         }
     }
 }
@@ -556,11 +556,11 @@ fn parse(args: &[String]) -> Result<Command, String> {
         "target add" | "target remove" => {
             let list = named(&mut options, "target")?;
             let entries = parse_list_entries(&mut options, &[])?;
-            let enforcers = options.items("--enforcers")?.unwrap_or_default();
-            if entries.is_empty() && enforcers.is_empty() {
-                return Err(format!("Give what to {}: --sites, --programs, --titles, … or --enforcers", &command[7..]));
+            let actions = options.items("--actions")?.unwrap_or_default();
+            if entries.is_empty() && actions.is_empty() {
+                return Err(format!("Give what to {}: --sites, --programs, --titles, … or --actions", &command[7..]));
             }
-            Command::TargetItems { target: list, entries, enforcers, add: command == "target add" }
+            Command::TargetItems { target: list, entries, actions, add: command == "target add" }
         }
         "target delete" => Command::TargetDelete { target: named(&mut options, "target")?, force: options.flag("--force") },
         "condition show" => Command::ConditionShow { condition: named(&mut options, "condition")? },
@@ -818,10 +818,10 @@ fn parse_target_changes(options: &mut Options, editing: bool) -> Result<TargetCh
     if editing {
         changes.name = options.value("--name")?;
     }
-    changes.enforcers = match options.items("--enforcers")? {
-        Some(names) => Some(parse_enforcers(&names)?),
+    changes.actions = match options.items("--actions")? {
+        Some(names) => Some(parse_actions(&names)?),
         None if editing => None,
-        None => Some(parse_enforcers(&["all".to_string()])?),
+        None => Some(parse_actions(&["all".to_string()])?),
     };
     Ok(changes)
 }
@@ -845,23 +845,23 @@ fn parse_list_entries(options: &mut Options, cleared: &[String]) -> Result<BTree
     Ok(lists)
 }
 
-/// The names of the enforcers, as `Enforcers` calls its fields: a new enforcer is known here
+/// The names of the actions, as `Actions` calls its fields: a new action is known here
 /// without a change.
-fn enforcer_names() -> Vec<String> {
-    match serde_json::to_value(Enforcers::default()) {
+fn action_names() -> Vec<String> {
+    match serde_json::to_value(Actions::default()) {
         Ok(Value::Object(fields)) => fields.keys().cloned().collect(),
         _ => Vec::new(),
     }
 }
 
-/// The enforcers named (`chromium_tabs firefox_tabs`), or `all`: every enforcer as a new target has them (windows by
+/// The actions named (`chromium_tabs firefox_tabs`), or `all`: every action as a new target has them (windows by
 /// title closed, not minimized: `window_titles_minimize` says to minimize them).
-fn parse_enforcers(given: &[String]) -> Result<Enforcers, String> {
-    let names = enforcer_names();
+fn parse_actions(given: &[String]) -> Result<Actions, String> {
+    let names = action_names();
     let mut chosen: Map<String, Value> = names.iter().map(|name| (name.clone(), Value::Bool(false))).collect();
     for name in given.iter().map(String::as_str) {
         if name == "all" {
-            if let Ok(Value::Object(all)) = serde_json::to_value(Enforcers::default()) {
+            if let Ok(Value::Object(all)) = serde_json::to_value(Actions::default()) {
                 for (name, on) in all.into_iter().filter(|(_, on)| *on == Value::Bool(true)) {
                     chosen.insert(name, on);
                 }
@@ -869,7 +869,7 @@ fn parse_enforcers(given: &[String]) -> Result<Enforcers, String> {
         } else if let Some(on) = chosen.get_mut(name) {
             *on = Value::Bool(true);
         } else {
-            return Err(format!("Unknown enforcer \"{name}\"; the enforcers are {}", names.join(", ")));
+            return Err(format!("Unknown action \"{name}\"; the actions are {}", names.join(", ")));
         }
     }
     serde_json::from_value(Value::Object(chosen)).map_err(|e| e.to_string())
@@ -962,7 +962,7 @@ impl Options {
 
 fn execute(command: Command) -> Result<(), Failure> {
     match command {
-        Command::Help => say!("{}", HELP.replace("{enforcers}", &enforcer_names().join(", "))),
+        Command::Help => say!("{}", HELP.replace("{actions}", &action_names().join(", "))),
         Command::Version => say!("bullseye {}", env!("CARGO_PKG_VERSION")),
         Command::Status { json } => {
             let overview = overview()?;
@@ -1111,7 +1111,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             }
         }
         Command::TargetNew { name, changes } => {
-            let mut list = Target { id: new_id(), name, entries: Entries::default(), enforcers: Enforcers::default() };
+            let mut list = Target { id: new_id(), name, entries: Entries::default(), actions: Actions::default() };
             changes.apply(&mut list);
             let name = list.name.clone();
             send(Request::SaveTarget { target: list })?;
@@ -1182,7 +1182,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             send(Request::SaveSession { session })?;
             say!("Saved the session \"{name}\".");
         }
-        Command::TargetItems { target: list, entries, enforcers, add } => {
+        Command::TargetItems { target: list, entries, actions, add } => {
             let overview = overview()?;
             let mut list = find(&overview.targets, &list, "target", |l| (&l.id, &l.name))?.clone();
             for (key, given) in entries {
@@ -1202,8 +1202,8 @@ fn execute(command: Command) -> Result<(), Failure> {
                 }
                 *field = typed;
             }
-            if !enforcers.is_empty() {
-                list.enforcers = switched(list.enforcers, &enforcers, add).map_err(Failure::Usage)?;
+            if !actions.is_empty() {
+                list.actions = switched(list.actions, &actions, add).map_err(Failure::Usage)?;
             }
             let name = list.name.clone();
             send(Request::SaveTarget { target: list })?;
@@ -1537,10 +1537,10 @@ fn entry_key(field: &str, entry: &str) -> String {
     read.unwrap_or_else(|| entry.trim().to_string()).to_lowercase()
 }
 
-/// `enforcers` with those named (or `all`) turned on, or off.
-fn switched(enforcers: Enforcers, names: &[String], on: bool) -> Result<Enforcers, String> {
-    let named = serde_json::to_value(parse_enforcers(names)?).map_err(|e| e.to_string())?;
-    let mut fields = serde_json::to_value(enforcers).map_err(|e| e.to_string())?;
+/// `actions` with those named (or `all`) turned on, or off.
+fn switched(actions: Actions, names: &[String], on: bool) -> Result<Actions, String> {
+    let named = serde_json::to_value(parse_actions(names)?).map_err(|e| e.to_string())?;
+    let mut fields = serde_json::to_value(actions).map_err(|e| e.to_string())?;
     if let (Value::Object(named), Value::Object(fields)) = (named, &mut fields) {
         for (name, _) in named.into_iter().filter(|(_, is)| *is == Value::Bool(true)) {
             fields.insert(name, Value::Bool(on));
@@ -1821,8 +1821,8 @@ fn entries(entries: &[String]) -> String {
     }
 }
 
-fn enforcers_on(enforcers: Enforcers) -> Vec<String> {
-    match serde_json::to_value(enforcers) {
+fn actions_on(actions: Actions) -> Vec<String> {
+    match serde_json::to_value(actions) {
         Ok(Value::Object(fields)) => fields.iter().filter(|(_, on)| **on == Value::Bool(true)).map(|(name, _)| name.clone()).collect(),
         _ => Vec::new(),
     }
@@ -1874,7 +1874,7 @@ fn describe_session(overview: &Overview, session: &Definition, running: Option<&
 /// One target, everything about it.
 fn describe_target(overview: &Overview, list: &Target) -> String {
     format!(
-        "Name:           {}\nId:             {}\nSites:          {}\nAlways allowed: {}\nPrograms:       {}\nStore apps:     {}\nWindow titles:  {}\nAllowed titles: {}\nEnforcers:      {}\nUsed by:        {}\n",
+        "Name:           {}\nId:             {}\nSites:          {}\nAlways allowed: {}\nPrograms:       {}\nStore apps:     {}\nWindow titles:  {}\nAllowed titles: {}\nActions:        {}\nUsed by:        {}\n",
         list.name,
         list.id,
         entries(&list.entries.filters),
@@ -1883,7 +1883,7 @@ fn describe_target(overview: &Overview, list: &Target) -> String {
         entries(&list.entries.store_apps),
         entries(&list.entries.titles),
         entries(&list.entries.allowed_titles),
-        entries(&enforcers_on(list.enforcers)),
+        entries(&actions_on(list.actions)),
         users(overview, &list.id),
     )
 }
@@ -2032,7 +2032,7 @@ mod tests {
     #[test]
     fn items_are_added_and_removed() {
         serve("add-remove");
-        ok(&["target", "new", "Social", "--sites", "youtube.com", "reddit.com", "--programs", "Steam", "--enforcers", "chromium_tabs"]);
+        ok(&["target", "new", "Social", "--sites", "youtube.com", "reddit.com", "--programs", "Steam", "--actions", "chromium_tabs"]);
         ok(&["target", "new", "Games", "--programs", "game.exe"]);
         ok(&["target", "new", "News", "--sites", "nu.nl"]);
         let list = |name: &str| ok(&["target", "show", name]);
@@ -2040,18 +2040,7 @@ mod tests {
         // A target: entries added as typed (the service keeps them in order), and taken out however they are
         // written, as the list reads them (Steam is steam.exe); what is there already stays once.
         assert_eq!(
-            ok(&[
-                "target",
-                "add",
-                "Social",
-                "--sites",
-                "x.com",
-                "YouTube.com",
-                "--titles",
-                "Inbox, 3 unread",
-                "--enforcers",
-                "firefox_tabs"
-            ]),
+            ok(&["target", "add", "Social", "--sites", "x.com", "YouTube.com", "--titles", "Inbox, 3 unread", "--actions", "firefox_tabs"]),
             "Saved the target \"Social\".\n"
         );
         let shown = list("Social");
@@ -2060,7 +2049,7 @@ mod tests {
             shown.contains("Window titles:  Inbox, 3 unread") && shown.contains("firefox_tabs") && shown.contains("chromium_tabs"),
             "{shown}"
         );
-        ok(&["target", "remove", "Social", "--sites", "Reddit.com", "--programs", "steam.exe", "--enforcers", "chromium_tabs"]);
+        ok(&["target", "remove", "Social", "--sites", "Reddit.com", "--programs", "steam.exe", "--actions", "chromium_tabs"]);
         let shown = list("Social");
         assert!(shown.contains("Sites:          x.com, youtube.com") && shown.contains("Programs:       (none)"), "{shown}");
         assert!(!shown.contains("chromium_tabs") && shown.contains("firefox_tabs"), "{shown}");
@@ -2074,13 +2063,13 @@ mod tests {
             refused(&["target", "remove", "Social", "--allowed-titles", "Notes"]),
             "\"Notes\" is not in the allowed titles of \"Social\""
         );
-        assert!(refused(&["target", "add", "Social", "--enforcers", "lasers"]).starts_with("Unknown enforcer \"lasers\""));
-        assert_eq!(refused(&["target", "add", "Social"]), "Give what to add: --sites, --programs, --titles, … or --enforcers");
-        // All the enforcers, on and off.
-        ok(&["target", "add", "Social", "--enforcers", "all"]);
+        assert!(refused(&["target", "add", "Social", "--actions", "lasers"]).starts_with("Unknown action \"lasers\""));
+        assert_eq!(refused(&["target", "add", "Social"]), "Give what to add: --sites, --programs, --titles, … or --actions");
+        // All the actions, on and off.
+        ok(&["target", "add", "Social", "--actions", "all"]);
         assert!(list("Social").contains("chromium_tabs"));
-        ok(&["target", "remove", "Social", "--enforcers", "all"]);
-        assert!(list("Social").contains("Enforcers:      (none)"), "{}", list("Social"));
+        ok(&["target", "remove", "Social", "--actions", "all"]);
+        assert!(list("Social").contains("Actions:        (none)"), "{}", list("Social"));
 
         // A session's targets.
         ok(&["new", "Work", "--targets", "Social"]);
@@ -2457,7 +2446,7 @@ mod tests {
     #[test]
     fn help_and_version_need_no_service() {
         let help = cli(&["help"]).unwrap();
-        assert!(help.starts_with("Bullseye command line") && help.contains("chromium_tabs") && !help.contains("{enforcers}"));
+        assert!(help.starts_with("Bullseye command line") && help.contains("chromium_tabs") && !help.contains("{actions}"));
         assert_eq!(cli(&["version"]).unwrap(), format!("bullseye {}\n", env!("CARGO_PKG_VERSION")));
     }
 
@@ -2501,31 +2490,31 @@ mod tests {
         }
     }
 
-    /// The page's enforcer checkboxes are the CLI's enforcer names.
+    /// The page's action checkboxes are the CLI's action names.
     #[test]
-    fn the_enforcers_are_the_same_as_in_the_window() {
-        let names = enforcer_names();
+    fn the_actions_are_the_same_as_in_the_window() {
+        let names = action_names();
         assert!(!names.is_empty());
         let page = include_str!("../../src/js/forms.js");
         let strings = include_str!("../../src/strings.js");
         for name in names {
-            assert!(page.contains(&format!("enforcer(\"{name}\")")), "{name} is not on the page");
+            assert!(page.contains(&format!("action(\"{name}\")")), "{name} is not on the page");
             assert!(strings.contains(&format!("{name}: {{")), "{name} has no text in strings.js");
         }
     }
 
     #[test]
     fn windows_by_title_are_closed_unless_minimized() {
-        let parse_enforcers = |names: &str| parse_enforcers(&names.split(' ').map(str::to_string).collect::<Vec<_>>());
-        let all = parse_enforcers("all").unwrap();
-        assert_eq!(all, Enforcers::default(), "all is every enforcer as a new target has them: closing windows by title");
+        let parse_actions = |names: &str| parse_actions(&names.split(' ').map(str::to_string).collect::<Vec<_>>());
+        let all = parse_actions("all").unwrap();
+        assert_eq!(all, Actions::default(), "all is every action as a new target has them: closing windows by title");
         assert!(!all.window_titles_minimize);
-        let down = parse_enforcers("chromium_tabs window_titles_minimize").unwrap();
+        let down = parse_actions("chromium_tabs window_titles_minimize").unwrap();
         assert!(down.window_titles_minimize && down.chromium_tabs && !down.firefox_tabs);
-        assert!(parse_enforcers("all window_titles_minimize").unwrap().window_titles_minimize);
+        assert!(parse_actions("all window_titles_minimize").unwrap().window_titles_minimize);
         // The lists with one way to act on them have no switch: their entries are it.
         for gone in ["exe_names", "store_apps", "window_titles", "window_titles_close"] {
-            assert!(parse_enforcers(gone).unwrap_err().starts_with("Unknown enforcer"), "{gone}");
+            assert!(parse_actions(gone).unwrap_err().starts_with("Unknown action"), "{gone}");
         }
     }
 
@@ -2548,7 +2537,7 @@ mod tests {
             "*YouTube*",
             "--allowed-titles",
             "*Visual Studio Code",
-            "--enforcers",
+            "--actions",
             "chromium_tabs",
             "window_titles_minimize",
         ]);
@@ -2563,8 +2552,8 @@ mod tests {
         assert_eq!(list.entries.titles, vec!["*YouTube*"]);
         assert_eq!(list.entries.allowed_titles, vec!["*Visual Studio Code"]);
         assert_eq!(
-            list.enforcers,
-            Enforcers {
+            list.actions,
+            Actions {
                 chromium_tabs: true,
                 chromium_split_view: false,
                 obsidian_web_viewer: false,
@@ -2702,7 +2691,7 @@ mod tests {
             &["target"],
             &["target", "new"],
             &["target", "new", "A", "--sites"],
-            &["target", "new", "A", "--enforcers", "chromium_tabs,lasers"],
+            &["target", "new", "A", "--actions", "chromium_tabs,lasers"],
             &["target", "new", "A", "--clear", "sites"],
             &["target", "edit", "A", "--clear", "everything"],
             &["target", "frob", "A"],
@@ -2830,7 +2819,7 @@ mod tests {
             targets: vec![RunningTarget {
                 name: "Social".into(),
                 entries: Entries { filters: vec!["youtube.com".into()], ..Entries::default() },
-                enforcers: Enforcers::default(),
+                actions: Actions::default(),
             }],
             remaining: None,
             lock_condition: Week::parse("mon-fri 8-17").unwrap().map(|week| Rule::Schedule { week }),

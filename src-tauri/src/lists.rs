@@ -6,7 +6,7 @@
 //! - `Lists`: the same, read and checked, ready to match with (`session::Enforced` holds one).
 //!
 //! **A new list** is a field of both, a line in `Lists::parse`, `Lists::entries` and
-//! `Lists::has`, an arm in `Entries::field`, a `state::Uses` variant for the enforcer that needs
+//! `Lists::has`, an arm in `Entries::field`, a `state::Uses` variant for the action that needs
 //! it, an entry in the window's `LISTS` and its key in a `SECTIONS` group, and an option in
 //! `cli::LIST_OPTIONS`.
 
@@ -65,7 +65,7 @@ impl Entries {
 pub struct Lists {
     pub sites: FilterList,
     /// The sites that are always allowed, which win over `sites`. They are not something an
-    /// enforcer needs on its own (`Uses::Sites` is about the target), they only make
+    /// action needs on its own (`Uses::Sites` is about the target), they only make
     /// exceptions to it.
     pub allowed: FilterList,
     pub programs: ProgramList,
@@ -114,7 +114,7 @@ impl Lists {
         Entries { allowed: entries.allowed.clone(), allowed_titles: entries.allowed_titles.clone(), ..Entries::default() }
     }
 
-    /// Whether the list an enforcer needs has an entry (`Enforcers::can_run`).
+    /// Whether the list an action needs has an entry (`Actions::can_run`).
     pub fn has(&self, uses: Uses) -> bool {
         match uses {
             Uses::Nothing => true,
@@ -153,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn an_enforcer_has_something_to_do_when_its_list_has_entries() {
+    fn an_action_has_something_to_do_when_its_list_has_entries() {
         let empty = Lists::default();
         assert!(empty.has(Uses::Nothing));
         assert!(!empty.has(Uses::Sites) && !empty.has(Uses::Programs) && !empty.has(Uses::StoreApps) && !empty.has(Uses::Titles));

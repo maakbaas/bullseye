@@ -1,5 +1,5 @@
 //! A weekly schedule: one kind of condition (`condition::Rule::Schedule`) for when a session is
-//! active. The condition is part of the session, like its lists and enforcers: copied when the session
+//! active. The condition is part of the session, like its lists and actions: copied when the session
 //! starts and fixed while it runs. Outside the schedule the session keeps running (and stays locked, `lock.rs`) but enforces
 //! nothing, so a session started at 16:00 with a 2-hour lock and a schedule of 08:00-17:00 blocks
 //! until 17:00, and from then on nothing until the lock has ended the session at 18:00.

@@ -7,7 +7,7 @@ import { el, invalid, invoke, lines, overview, t } from "./core.js";
 // ---- What things are made of. Three kinds, each a list of its own: targets (what to
 // session), conditions (when) and sessions (one or more targets, a condition, an allowance and a
 // lock: what is started; the allowance and the lock are set on the session itself). The editors, tiles and summaries are built from these tables, so a new kind of
-// list, enforcer or lock method is an entry here (plus its backend side, see AGENTS.md).
+// list, action or lock method is an entry here (plus its backend side, see AGENTS.md).
 
 // The lists a target can have (`definitions::Target`), by field name.
 const LISTS = Object.fromEntries(
@@ -24,20 +24,20 @@ const LISTS = Object.fromEntries(
   ]),
 );
 
-// The enforcers (`state::Enforcers`), grouped into the target editor's sections with the
+// The actions (`state::Actions`), grouped into the target editor's sections with the
 // lists they use. Programs, Store apps and windows by title have none to switch on: a list acts
 // when it has entries.
-const enforcer = (key) => ({ key, label: t(`targets.enforcers.${key}.label`), short: window.STRINGS.targets.enforcers[key].short });
+const action = (key) => ({ key, label: t(`targets.actions.${key}.label`), short: window.STRINGS.targets.actions[key].short });
 const SECTIONS = [
-  { key: "websites", lists: ["filters", "allowed"], enforcers: [enforcer("chromium_tabs"), enforcer("chromium_split_view"), enforcer("chromium_app_windows"), enforcer("firefox_tabs"), enforcer("firefox_split_view")] },
-  { key: "programs", lists: ["programs"], enforcers: [] },
-  { key: "store", lists: ["store_apps"], enforcers: [] },
+  { key: "websites", lists: ["filters", "allowed"], actions: [action("chromium_tabs"), action("chromium_split_view"), action("chromium_app_windows"), action("firefox_tabs"), action("firefox_split_view")] },
+  { key: "programs", lists: ["programs"], actions: [] },
+  { key: "store", lists: ["store_apps"], actions: [] },
   // Closing (`choice`, the default: off) or minimizing: radio buttons, not a checkbox.
-  { key: "titles", lists: ["titles", "allowed_titles"], choice: "close", enforcers: [enforcer("window_titles_minimize")] },
-  { key: "other", lists: [], enforcers: [enforcer("obsidian_web_viewer")] },
+  { key: "titles", lists: ["titles", "allowed_titles"], choice: "close", actions: [action("window_titles_minimize")] },
+  { key: "other", lists: [], actions: [action("obsidian_web_viewer")] },
 ].map((section) => ({ ...section, title: t(`targets.sections.${section.key}.title`), description: window.STRINGS.targets.sections[section.key].description && t(`targets.sections.${section.key}.description`) }));
 
-const ENFORCERS = SECTIONS.flatMap((section) => section.enforcers);
+const ACTIONS = SECTIONS.flatMap((section) => section.actions);
 
 // ---- The editors. Each kind's form is built once and reused; every form has `nodes`,
 // `fill(item)`, `read(item)` (the item with the form's values), `disable(off)`, `settle()`
@@ -237,24 +237,24 @@ function appPicker(list) {
   return picker;
 }
 
-// A section whose enforcers exclude each other: radio buttons, the first for all of them off
-// (`section.choice`, its label in `targets.enforcers`). Each enforcer gets a stand-in for its
+// A section whose actions exclude each other: radio buttons, the first for all of them off
+// (`section.choice`, its label in `targets.actions`). Each action gets a stand-in for its
 // checkbox in `checks` (`checked`, `disabled`), so the form reads and fills them as the others.
 function choiceOf(section, legend, checks) {
-  const group = el("cds-radio-button-group", { "legend-text": legend, name: `enforcers-${section.key}`, orientation: "vertical" });
+  const group = el("cds-radio-button-group", { "legend-text": legend, name: `actions-${section.key}`, orientation: "vertical" });
   group.append(
-    el("cds-radio-button", { "label-text": t(`targets.enforcers.${section.choice}`), value: "off" }),
-    ...section.enforcers.map((enforcer) => el("cds-radio-button", { "label-text": enforcer.label, value: enforcer.key })),
+    el("cds-radio-button", { "label-text": t(`targets.actions.${section.choice}`), value: "off" }),
+    ...section.actions.map((action) => el("cds-radio-button", { "label-text": action.label, value: action.key })),
   );
   group.value = "off";
-  for (const enforcer of section.enforcers) {
-    checks[enforcer.key] = {
+  for (const action of section.actions) {
+    checks[action.key] = {
       get checked() {
-        return group.value === enforcer.key;
+        return group.value === action.key;
       },
       set checked(on) {
-        if (on) group.value = enforcer.key;
-        else if (group.value === enforcer.key) group.value = "off";
+        if (on) group.value = action.key;
+        else if (group.value === action.key) group.value = "off";
       },
       set disabled(off) {
         group.disabled = off;
@@ -270,7 +270,7 @@ function targetForm() {
   const checks = {};
   // The sections are an accordion: each opens and closes, and the ones with content are open when
   // the editor opens (`fill`): a section with a list when it has entries (the websites also in a new
-  // target), one with only enforcers ("other") when one is ticked, which a new target has.
+  // target), one with only actions ("other") when one is ticked, which a new target has.
   const accordion = el("cds-accordion", {});
   const items = [];
   const nodes = [nameSection(name), accordion];
@@ -282,12 +282,12 @@ function targetForm() {
       lists.append(areas[key]);
     }
     sameHeight(section.lists.map((key) => areas[key]));
-    const legend = t(section.lists.length ? "targets.howLegend" : "targets.enforcersLegend");
-    const group = section.choice ? choiceOf(section, legend, checks) : section.enforcers.length ? el("cds-checkbox-group", { "legend-text": legend }) : null;
+    const legend = t(section.lists.length ? "targets.howLegend" : "targets.actionsLegend");
+    const group = section.choice ? choiceOf(section, legend, checks) : section.actions.length ? el("cds-checkbox-group", { "legend-text": legend }) : null;
     if (!section.choice && group) {
-      for (const enforcer of section.enforcers) {
-        checks[enforcer.key] = el("cds-checkbox", { "label-text": enforcer.label });
-        group.append(checks[enforcer.key]);
+      for (const action of section.actions) {
+        checks[action.key] = el("cds-checkbox", { "label-text": action.label });
+        group.append(checks[action.key]);
       }
     }
     const item = el(
@@ -306,18 +306,18 @@ function targetForm() {
     fill(list, isNew = false) {
       name.value = list.name;
       for (const [key, area] of Object.entries(areas)) area.value = (list[key] || []).join("\n");
-      for (const [key, box] of Object.entries(checks)) box.checked = !!(list.enforcers && list.enforcers[key]);
+      for (const [key, box] of Object.entries(checks)) box.checked = !!(list.actions && list.actions[key]);
       for (const [section, item] of items) {
         const entries = section.lists.some((key) => (list[key] || []).length > 0);
-        const ticked = section.enforcers.some((e) => list.enforcers && list.enforcers[e.key]);
+        const ticked = section.actions.some((e) => list.actions && list.actions[e.key]);
         // A new target has the websites open too, to start typing in.
         item.open = section.lists.length ? entries || (isNew && section.key === "websites") : ticked;
       }
     },
     read(list) {
-      const out = { ...list, name: name.value.trim(), enforcers: { ...list.enforcers } };
+      const out = { ...list, name: name.value.trim(), actions: { ...list.actions } };
       for (const [key, area] of Object.entries(areas)) out[key] = lines(area.value);
-      for (const [key, box] of Object.entries(checks)) out.enforcers[key] = box.checked;
+      for (const [key, box] of Object.entries(checks)) out.actions[key] = box.checked;
       return out;
     },
     disable(off) {
@@ -867,4 +867,4 @@ function weekEditor() {
   };
 }
 
-export { LISTS, SECTIONS, ENFORCERS, ALWAYS, sessionForm, targetForm, conditionForm };
+export { LISTS, SECTIONS, ACTIONS, ALWAYS, sessionForm, targetForm, conditionForm };

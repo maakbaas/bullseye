@@ -211,7 +211,7 @@ fn parse(policy: &Policy) -> Option<Enforced> {
             Some(Free { session: free.session.clone(), key: free.key.clone(), lists: Arc::new(Lists::parse(&entries).ok()?) })
         })
         .collect::<Option<Vec<Free>>>()?;
-    Some(Enforced { lists: Arc::new(Lists::parse(&policy.entries).ok()?), enforcers: policy.enforcers, free })
+    Some(Enforced { lists: Arc::new(Lists::parse(&policy.entries).ok()?), actions: policy.actions, free })
 }
 
 #[cfg(test)]
@@ -219,10 +219,10 @@ mod tests {
     use super::*;
     use crate::lists::Entries;
     use crate::service;
-    use crate::state::Enforcers;
+    use crate::state::Actions;
 
     fn policy(filters: &[&str]) -> Policy {
-        Policy::new(Entries { filters: filters.iter().map(|f| f.to_string()).collect(), ..Entries::default() }, Enforcers::default())
+        Policy::new(Entries { filters: filters.iter().map(|f| f.to_string()).collect(), ..Entries::default() }, Actions::default())
     }
 
     fn current(remote: &Remote) -> Option<Active> {
@@ -254,12 +254,12 @@ mod tests {
     #[test]
     fn the_programs_come_along_and_are_parsed_with_the_policy() {
         let remote = Remote::new();
-        let with_programs = Policy::new(Entries { programs: vec!["Steam*".into()], ..Entries::default() }, Enforcers::default());
+        let with_programs = Policy::new(Entries { programs: vec!["Steam*".into()], ..Entries::default() }, Actions::default());
         remote.apply(vec![with_programs]);
         let active = current(&remote).unwrap();
         assert!(active.blocks_program("steamwebhelper.exe") && !active.blocks_program("chrome.exe"));
         // A list that cannot be read leaves what is being enforced as it was.
-        let wrong = Policy::new(Entries { programs: vec!["*".into()], ..Entries::default() }, Enforcers::default());
+        let wrong = Policy::new(Entries { programs: vec!["*".into()], ..Entries::default() }, Actions::default());
         remote.apply(vec![wrong]);
         assert!(current(&remote).unwrap().blocks_program("steamwebhelper.exe"));
     }

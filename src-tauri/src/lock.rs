@@ -1,5 +1,5 @@
 //! Lock methods: what keeps a running session from being stopped. A session is three layers: what it
-//! enforces (lists and enforcers, `lists::Lists`, `state::Enforcers`), when it is active (its
+//! enforces (lists and actions, `lists::Lists`, `state::Actions`), when it is active (its
 //! condition, `condition.rs`), and how it is locked (this).
 //!
 //! **A new lock method goes here**, as a variant, together with what it means in `Sessions`
