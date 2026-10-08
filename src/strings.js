@@ -219,7 +219,8 @@ window.STRINGS = {
     shared: "These changes only make what it uses stricter.",
   },
   // The units of a duration field (`duration.js`).
-  duration: { d: "Days", h: "Hours", m: "Minutes", s: "Seconds" },
+  // A duration: a number and its unit (`duration.js`).
+  duration: { unit: "Unit", d: "Days", h: "Hours", m: "Minutes", s: "Seconds" },
   // A time given as how long or as when (`timing.js`), for a timed lock and a delayed start.
   timing: {
     date: "Date",

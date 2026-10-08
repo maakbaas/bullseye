@@ -103,16 +103,13 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 #confirm cds-modal-body { padding-block-end: var(--cds-spacing-06); }
 /* A list to choose from fills the dialog from edge to edge, as the lists on a tile do. */
 #confirm.list cds-modal-body { padding-inline: 0; padding-block-end: 0; }
-/* A duration: its units in one row that shares the width of its container, each as narrow as it needs to be to fit, with the usual gap between them. */
-.duration-fields { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: var(--cds-spacing-05); margin-block-start: var(--cds-spacing-03); }
-.duration-fields cds-text-input { min-inline-size: 0; }
+/* A duration: its number and its unit side by side, the number taking the room the unit leaves. */
+.duration { display: flex; align-items: flex-start; gap: var(--cds-spacing-05); }
+.duration > cds-text-input { flex: 1 1 6rem; min-inline-size: 0; }
+/* Carbon's dropdown starts its title 2px lower than a text input its label: a hair up, so the two line up. */
+.duration > cds-dropdown { flex: 0 0 9rem; margin-block-start: -0.125rem; }
 .duration[hidden] { display: none; }
-/* Its label and helper text, as Carbon's fields have them. */
-.duration > p { margin: 0; color: var(--cds-text-secondary); }
-.duration > p.cds--type-helper-text-01 { margin-block-start: var(--cds-spacing-02); }
-.duration > p[hidden] { display: none; }
-/* Why it cannot be used, under it where its helper was. */
-.duration > .form-error, .date-time-field > .form-error { margin-block-start: var(--cds-spacing-03); }
+.date-time-field > .form-error { margin-block-start: var(--cds-spacing-03); }
 .date-time-field[hidden] { display: none; }
 /* The until lock's date and time, side by side as Carbon shows them. */
 .date-time { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--cds-spacing-05); }
@@ -168,7 +165,7 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 .setting p { color: var(--cds-text-secondary); }
 .setting .row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--cds-spacing-05); }
 .setting .row cds-password-input, .setting .row cds-text-input { flex: 1 1 14rem; }
-/* A duration's boxes share the room beside the button, so they sit side by side. */
+/* A duration shares the room beside the button. */
 .setting .row .duration { flex: 1 1 18rem; }
 #delay-field { display: contents; }
 /* The Store apps of a target: the installed ones to tick, in a box that scrolls. */

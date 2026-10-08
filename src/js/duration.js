@@ -1,9 +1,9 @@
-// A duration as Carbon text inputs for numbers, one per unit (days, hours, minutes, seconds), in place of a
-// text field to type `2h 30m` in. The service still takes and keeps the text (`text()` writes it the
-// way `duration.rs` reads it), so nothing but this field changes. Which units show is up to where it
-// is used: a field with no days takes `36` hours.
+// A duration as one Carbon text input for a number and a dropdown for its unit (days, hours, minutes,
+// and seconds where they make sense), in place of a text field to type `2h 30m` in: an hour and a half
+// is 90 minutes. The service still takes and keeps the text (`text()` writes it the way `duration.rs`
+// reads it), so nothing but this field changes.
 
-import { el, errorNote, invalid, t } from "./core.js";
+import { el, invalid, t } from "./core.js";
 
 const SECONDS = { d: 86400, h: 3600, m: 60, s: 1 };
 const ALL = ["d", "h", "m", "s"];
@@ -16,66 +16,45 @@ function secondsOf(text) {
   return total;
 }
 
-// `label` and `helper` as a text field has them; `units`: those that show, largest first.
+// `label` and `helper` as a text field has them; `units`: those the dropdown offers, largest first.
 export function durationField({ label, helper = "", units = ALL }) {
-  const title = el("p", { class: "cds--type-label-01" }, label);
-  const inputs = units.map((unit) => {
-    // Not Carbon's number input: its field has a width of its own that is too wide for four in a
-    // row. Digits only; a unit that runs over its next one up (90 minutes) is carried by `text()`.
-    const input = el("cds-text-input", { label: t(`duration.${unit}`), inputmode: "numeric", value: "0" });
-    input.addEventListener("input", () => {
-      const digits = String(input.value).replace(/\D/g, "").slice(0, 4);
-      if (digits !== input.value) input.value = digits;
-    });
-    return input;
+  // Not Carbon's number input: its stepper buttons make the row busy. Digits only.
+  const input = el("cds-text-input", { label, "helper-text": helper, inputmode: "numeric", value: "0" });
+  input.addEventListener("input", () => {
+    const digits = String(input.value).replace(/\D/g, "").slice(0, 6);
+    if (digits !== input.value) input.value = digits;
   });
-  const row = el("div", { class: "duration-fields" }, ...inputs);
-  const node = el("div", { class: "duration" }, title, row);
-  const help = helper ? el("p", { class: "cds--type-helper-text-01" }, helper) : null;
-  if (help) node.append(help);
-  // What is wrong goes under the whole field, not under its last box: its boxes are marked, the
-  // reason is a notification in the helper's place.
-  const note = errorNote();
-  node.append(note.node);
+  const unit = el("cds-dropdown", { autoalign: true, "title-text": t("duration.unit") });
+  for (const u of units) unit.append(el("cds-dropdown-item", { value: u }, t(`duration.${u}`)));
+  unit.value = units.includes("m") ? "m" : units[units.length - 1];
+  const node = el("div", { class: "duration" }, input, unit);
 
-  const seconds = () =>
-    inputs.reduce((total, input, at) => total + Math.max(0, Math.floor(Number(input.value) || 0)) * SECONDS[units[at]], 0);
+  const seconds = () => Math.max(0, Math.floor(Number(input.value) || 0)) * SECONDS[unit.value];
   return {
     node,
     seconds,
-    // In seconds, split over the units that show, the largest taking what it can.
+    // In seconds: in the largest unit it is a whole number of (a new one, zero, keeps the unit shown).
     set(value) {
-      let rest = typeof value === "number" ? value : secondsOf(value);
-      inputs.forEach((input, at) => {
-        const whole = Math.floor(rest / SECONDS[units[at]]);
-        rest -= whole * SECONDS[units[at]];
-        input.value = String(whole);
-      });
+      const total = typeof value === "number" ? value : secondsOf(value);
+      if (total) unit.value = units.find((u) => total % SECONDS[u] === 0) || units[units.length - 1];
+      input.value = String(Math.floor(total / SECONDS[unit.value]));
     },
-    // `2h 30m`, written the way the service reads it; empty for none.
+    // `90m`, written the way the service reads it; empty for none.
     text() {
-      let rest = seconds();
-      return units
-        .map((unit) => {
-          const whole = Math.floor(rest / SECONDS[unit]);
-          rest -= whole * SECONDS[unit];
-          return whole ? `${whole}${unit}` : "";
-        })
-        .filter(Boolean)
-        .join(" ");
+      const n = Math.max(0, Math.floor(Number(input.value) || 0));
+      return n ? `${n}${unit.value}` : "";
     },
     // The reason it cannot be used, on the field (null clears it); true when there is one.
     error(why) {
-      for (const input of inputs) invalid(input, why ? " " : null);
-      if (help) help.hidden = !!why;
-      note.show(why);
-      return !!why;
+      return invalid(input, why);
     },
     onChange(handler) {
-      node.addEventListener("input", handler);
+      input.addEventListener("input", handler);
+      unit.addEventListener("cds-dropdown-selected", handler);
     },
     disable(off) {
-      for (const input of inputs) input.disabled = off;
+      input.disabled = off;
+      unit.disabled = off;
     },
   };
 }
