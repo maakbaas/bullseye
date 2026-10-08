@@ -60,85 +60,6 @@ function nameSection(input, ...more) {
 const section = (title, text, ...content) =>
   el("section", {}, el("h2", { class: "cds--type-productive-heading-03" }, title), el("p", { class: "cds--type-body-01" }, text), ...content);
 
-// The condition select's choice for no condition (an empty value reads as nothing chosen).
-const ALWAYS = "always";
-function sessionForm() {
-  const name = nameField(t("sessions.namePlaceholder"));
-  const lists = el("cds-checkbox-group", { "legend-text": t("sessions.targetsLegend") });
-  const noTargets = el("p", { class: "cds--type-body-01" }, t("sessions.noTargets"));
-  const condition = el("cds-dropdown", { autoalign: true, "title-text": t("sessions.conditionLabel"), "helper-text": t("sessions.conditionHelper") });
-  // Made here and added to this session: the editor comes back with it.
-  const newTarget = el("cds-button", { kind: "tertiary", size: "md" }, t("sessions.newTarget"), carbonIcon("add", "icon"));
-  const newCondition = el("cds-button", { kind: "tertiary", size: "md" }, t("sessions.newCondition"), carbonIcon("add", "icon"));
-  // The editor makes it (`editor.js`, the `bullseye-make` event).
-  const make = (kind, id = null) => () => newTarget.dispatchEvent(new CustomEvent("bullseye-make", { detail: { kind, id }, bubbles: true }));
-  newTarget.addEventListener("click", make("targets"));
-  newCondition.addEventListener("click", make("conditions"));
-  // Changing one that exists: the same detour, to its editor.
-  const editCondition = el("cds-button", { kind: "tertiary", size: "md" }, t("sessions.editCondition"), carbonIcon("edit", "icon"));
-  editCondition.addEventListener("click", () => condition.value && condition.value !== ALWAYS && make("conditions", condition.value)());
-  // The allowance, set here on the session like its lock is on the tile (`allowanceSection`).
-  const allowance = allowanceSection();
-  let off = false;
-  const syncEdit = () => {
-    editCondition.disabled = off || !condition.value || condition.value === ALWAYS;
-  };
-  condition.addEventListener("cds-dropdown-selected", syncEdit);
-  let boxes = {};
-  let edits = [];
-  return {
-    nodes: [
-      nameSection(name),
-      section(t("sessions.whatTitle"), t("sessions.whatText"), lists, noTargets, el("div", { class: "inline-action" }, newTarget)),
-      section(t("sessions.whenTitle"), t("sessions.whenText"), condition, el("div", { class: "inline-action" }, newCondition, editCondition)),
-      section(t("sessions.allowanceTitle"), t("sessions.allowanceText"), ...allowance.nodes),
-    ],
-    fill(session, isNew = false) {
-      name.value = session.name;
-      boxes = {};
-      edits = [];
-      lists.replaceChildren(
-        ...overview.targets.map((list) => {
-          const box = el("cds-checkbox", { "label-text": list.name });
-          box.checked = session.targets.includes(list.id);
-          boxes[list.id] = box;
-          const edit = el("cds-icon-button", { kind: "ghost", size: "sm", align: "right" }, carbonIcon("edit"), el("span", { slot: "tooltip-content" }, t("sessions.editTarget")));
-          edit.addEventListener("click", make("targets", list.id));
-          edits.push(edit);
-          edit.disabled = off;
-          return el("div", { class: "list-row" }, box, edit);
-        }),
-      );
-      lists.hidden = !overview.targets.length;
-      noTargets.hidden = !!overview.targets.length;
-      condition.replaceChildren(
-        el("cds-dropdown-item", { value: ALWAYS }, t("sessions.always")),
-        ...overview.conditions.map((s) => el("cds-dropdown-item", { value: s.id }, s.name)),
-      );
-      condition.value = session.condition || ALWAYS;
-      allowance.fill(session.allowance);
-      syncEdit();
-    },
-    read: (session) => ({
-      ...session,
-      name: name.value.trim(),
-      targets: overview.targets.filter((l) => boxes[l.id] && boxes[l.id].checked).map((l) => l.id),
-      condition: condition.value && condition.value !== ALWAYS ? condition.value : null,
-      allowance: allowance.read(),
-    }),
-    // A locked session: only its name and its allowance stay open, as the service takes a new name and a
-    // stricter allowance from it (and judges which is stricter).
-    disable(value) {
-      off = value;
-      for (const control of [condition, newTarget, newCondition, ...edits, ...Object.values(boxes)]) control.disabled = off;
-      syncEdit();
-    },
-    settle: () => allowance.settle(),
-    error: () => (name.value.trim() ? allowance.error() : t("sessions.nameMissing")),
-    name,
-  };
-}
-
 // Text areas side by side (the sites to block and the allowed ones) keep one height: dragging
 // one's resize handle sizes the others in its row too. Carbon's textarea has no attribute or
 // part for its height, so this sets the same inline height on the others' own <textarea> that
@@ -867,4 +788,4 @@ function weekEditor() {
   };
 }
 
-export { LISTS, SECTIONS, ACTIONS, ALWAYS, sessionForm, targetForm, conditionForm };
+export { LISTS, SECTIONS, ACTIONS, targetForm, conditionForm, allowanceSection };

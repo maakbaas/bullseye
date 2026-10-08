@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::allowance;
-use crate::definitions::{Condition, Definition, Definitions, Library, Target, Via};
+use crate::definitions::{Condition, Definition, Definitions, Library, Resolved, Target, Via};
 use crate::duration;
 use crate::lists::Entries;
 use crate::localtime::Zone;
@@ -126,6 +126,7 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
         }
         Request::Import { library } => (done(import(context, library)), None),
         Request::Start { id } => (done(start(context, &id)), None),
+        Request::Lock { id, lock } => (done(lock_running(context, &id, lock)), None),
         // A password lock stops with its own password, a text lock with its text typed in; the
         // others take none.
         Request::Stop { id, password, text } => {
@@ -202,8 +203,8 @@ fn delete_shared(context: &Context, id: &str, delete: impl FnOnce(&Definitions) 
 
 /// Saving a session. One that runs can be changed (its name, targets, condition and allowance)
 /// unless it is locked right now (then only its name, and its allowance only to be stricter:
-/// `allowance::tightened`), and the running session follows; its lock stays as it is, as a lock cannot
-/// be added to or changed on a session that already runs, only chosen for the next start.
+/// `allowance::tightened`), and the running session follows; its lock stays as it is: a running
+/// session that is not locked is given another lock by `lock_running` (`Request::Lock`), never by saving.
 fn edit_session(context: &Context, session: Definition) -> Result<(), String> {
     let _editing = context.editing.locked();
     if !context.sessions.running_ids().contains(&session.id) {
@@ -224,7 +225,7 @@ fn edit_session(context: &Context, session: Definition) -> Result<(), String> {
         return refresh_running(context, &[id]);
     }
     if session.lock != old.lock {
-        return Err("The lock of a running session cannot be changed: stop it first, or change the lock for its next start".into());
+        return Err("The lock of a running session is not changed by saving it: lock it now instead, or stop it first".into());
     }
     if session.targets.is_empty() {
         return Err("A running session needs at least one target".into());
@@ -311,8 +312,47 @@ fn parts_of(lists: &[Target]) -> Result<Vec<Part>, String> {
 fn start(context: &Context, id: &str) -> Result<(), String> {
     let _editing = context.editing.locked();
     let resolved = context.definitions.library().resolve(id)?;
+    let lock = start_lock(&resolved)?;
+    let parts = parts_of(&resolved.lists)?;
+    // An action has nothing to do with an empty list of its own kind, while one that needs no
+    // list (Obsidian's) always does. What matters is that something can run.
+    if !parts.iter().any(Part::can_run) {
+        return Err("Nothing to block: add a site or program to its targets, or turn on an action that needs no list".into());
+    }
+    context.sessions.start_with(id, &resolved.session.name, parts, resolved.condition, resolved.allowance, lock)
+}
+
+/// Locks a running session that is not locked: the lock is saved as the session's (so it is what
+/// the next start has too, a password hashed as always) and the session runs with it from now on,
+/// as if it started with it now (`Sessions::relock`). A session that is locked keeps its lock: this
+/// is refused before anything is saved.
+fn lock_running(context: &Context, id: &str, lock: Lock) -> Result<(), String> {
+    let _editing = context.editing.locked();
+    if !context.sessions.running_ids().iter().any(|running| running == id) {
+        return Err("This session is not running: choose its lock for the next start instead".into());
+    }
+    if context.sessions.locked_ids().iter().any(|locked| locked == id) {
+        return Err("This session is locked, so its lock cannot be changed until it can be stopped".into());
+    }
+    let old = context.definitions.library().session(id).ok_or("No such session")?.clone();
+    context.definitions.save_session(Definition { lock, ..old.clone() })?;
+    let applied = context
+        .definitions
+        .library()
+        .resolve(id)
+        .and_then(|resolved| start_lock(&resolved))
+        .and_then(|lock| context.sessions.relock(id, lock));
+    if applied.is_err() {
+        // Not given to the session, so not kept as its lock either.
+        context.definitions.save_session(old)?;
+    }
+    applied
+}
+
+/// What a session's lock, as defined, starts as.
+fn start_lock(resolved: &Resolved) -> Result<StartLock, String> {
     let lock = &resolved.session.lock;
-    let lock = match lock {
+    Ok(match lock {
         Lock::None => StartLock::None,
         Lock::Duration { .. } => StartLock::For(lock.duration()?.ok_or("No duration for the lock")?),
         Lock::Until { .. } => StartLock::Until(lock.until()?.ok_or("No end for the lock")?),
@@ -321,14 +361,7 @@ fn start(context: &Context, id: &str) -> Result<(), String> {
         Lock::Delay { .. } => StartLock::Delay(lock.delay()?.ok_or("No delay for the lock")?),
         Lock::Text { text } => StartLock::Text(text.clone()),
         Lock::Password { .. } => StartLock::Password(lock.password_hash().ok_or("Set a password for the password lock")?.to_string()),
-    };
-    let parts = parts_of(&resolved.lists)?;
-    // An action has nothing to do with an empty list of its own kind, while one that needs no
-    // list (Obsidian's) always does. What matters is that something can run.
-    if !parts.iter().any(Part::can_run) {
-        return Err("Nothing to block: add a site or program to its targets, or turn on an action that needs no list".into());
-    }
-    context.sessions.start_with(id, &resolved.session.name, parts, resolved.condition, resolved.allowance, lock)
+    })
 }
 
 /// Where unlocking stands now.
@@ -765,7 +798,7 @@ mod tests {
     }
 
     #[test]
-    fn a_running_session_that_is_not_locked_can_be_changed_but_not_given_a_lock() {
+    fn a_running_session_that_is_not_locked_can_be_changed_but_not_given_a_lock_by_saving() {
         let context = context("edit-running");
         assert_eq!(run(&context, definition("a", &["a.com"])), Response::Done);
         assert_eq!(handle(&context, 0, Request::SaveTarget { target: target("b", &["b.com"]) }).0, Response::Done);
@@ -776,7 +809,8 @@ mod tests {
         let running = &overview(&context).running[0];
         assert_eq!(running.name, "Renamed");
         assert_eq!(running.targets[0].entries.filters, vec!["b.com".to_string()]);
-        // A lock is not added to a session that runs, and it cannot be left with nothing to block.
+        // A lock is not given to a session that runs by saving it (`Request::Lock` does that), and it
+        // cannot be left with nothing to block.
         let mut locked = session("a", &["b"]);
         locked.lock = Lock::Duration { duration: "1h".into() };
         assert!(failed(handle(&context, 0, Request::SaveSession { session: locked }).0));
@@ -784,6 +818,61 @@ mod tests {
         // Deleting it ends it.
         assert_eq!(handle(&context, 0, Request::DeleteSession { id: "a".into() }).0, Response::Done);
         assert!(overview(&context).running.is_empty() && overview(&context).sessions.is_empty());
+    }
+
+    #[test]
+    fn a_running_session_that_is_not_locked_can_be_locked_now() {
+        let context = context("lock-now");
+        let lock = |id: &str, lock: Lock| handle(&context, 0, Request::Lock { id: id.into(), lock }).0;
+        let hour = || Lock::Duration { duration: "1h".into() };
+        // Only a session that runs: one that does not has its lock chosen for its next start.
+        assert_eq!(save(&context, definition("a", &["a.com"])), Response::Done);
+        assert_eq!(lock("a", hour()), Response::Failed("This session is not running: choose its lock for the next start instead".into()));
+        assert_eq!(handle(&context, 0, Request::Start { id: "a".into() }).0, Response::Done);
+        // A lock that does not read is refused, and nothing changes.
+        assert!(failed(lock("a", Lock::Duration { duration: "soon".into() })));
+        assert_eq!(overview(&context).sessions[0].lock, Lock::None);
+        // A date that has passed: refused, and the session keeps the lock it had, also as defined.
+        assert!(failed(lock("a", Lock::Until { until: "2000-01-01 00:00".into() })));
+        assert_eq!(overview(&context).sessions[0].lock, Lock::None);
+        assert!(!overview(&context).running[0].locked);
+        // Locked now, for an hour from now, and that is its lock for the next start too.
+        assert_eq!(lock("a", hour()), Response::Done);
+        let status = overview(&context);
+        assert!(status.running[0].locked && status.running[0].remaining.is_some_and(|left| (3595..=3600).contains(&left)));
+        assert_eq!(status.sessions[0].lock, hour());
+        assert!(failed(handle(&context, 0, Request::Stop { id: "a".into(), password: None, text: None }).0));
+        // Locked, so its lock stays.
+        assert_eq!(
+            lock("a", Lock::None),
+            Response::Failed("This session is locked, so its lock cannot be changed until it can be stopped".into())
+        );
+        assert_eq!(overview(&context).sessions[0].lock, hour());
+    }
+
+    #[test]
+    fn a_password_lock_given_to_a_running_session_is_hashed_and_stops_it() {
+        let context = context("lock-now-password");
+        assert_eq!(run(&context, definition("a", &["a.com"])), Response::Done);
+        let password = Lock::Password { password: Some("open sesame".into()), hash: None };
+        assert_eq!(handle(&context, 0, Request::Lock { id: "a".into(), lock: password }).0, Response::Done);
+        let status = overview(&context);
+        assert!(status.running[0].locked && status.running[0].password);
+        // Never sent back.
+        assert_eq!(status.sessions[0].lock, Lock::Password { password: None, hash: None });
+        let stop = |password: &str| handle(&context, 0, Request::Stop { id: "a".into(), password: Some(password.into()), text: None }).0;
+        assert!(failed(stop("wrong")));
+        assert_eq!(stop("open sesame"), Response::Done);
+    }
+
+    #[test]
+    fn a_session_whose_lock_condition_is_off_can_take_another_lock() {
+        let context = context("lock-now-free");
+        run_free(&context);
+        // Off, so it could be stopped and started again with any lock: none too.
+        assert_eq!(handle(&context, 0, Request::Lock { id: "w".into(), lock: Lock::None }).0, Response::Done);
+        assert_eq!(overview(&context).sessions[0].lock, Lock::None);
+        assert_eq!(handle(&context, 0, Request::Stop { id: "w".into(), password: None, text: None }).0, Response::Done);
     }
 
     /// A schedule that is not on right now by the clock the target goes by (UTC): one span of ten

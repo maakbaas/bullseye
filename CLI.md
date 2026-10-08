@@ -13,14 +13,15 @@ It sends the same requests to the Bullseye service as the window, so the service
 | Command | Does what the window does with |
 |---|---|
 | `bullseye status [--json]` | the three pages: every session (running or not, active or not, locked or not), every target, every condition |
-| `bullseye show <session> [--json]` | a session's tile and its editor |
-| `bullseye new <name> [options]` | **New session**, then **Save** |
-| `bullseye edit <session> [options]` | **Edit**, then **Save** |
-| `bullseye add <session> --targets <targets>` | ticking more targets in a session's editor, then **Save** |
-| `bullseye remove <session> --targets <targets>` | unticking targets in a session's editor, then **Save** |
+| `bullseye show <session> [--json]` | a session's tile, expanded |
+| `bullseye new <name> [options]` | **New session**, then **Save**, then its fields |
+| `bullseye edit <session> [options]` | the fields on a session's tile, and **Rename** in its menu |
+| `bullseye add <session> --targets <targets>` | ticking more targets in a session's Block field |
+| `bullseye remove <session> --targets <targets>` | unticking targets in a session's Block field |
 | `bullseye delete <session> [--force]` | **Delete** (asks first, unless `--force`) |
 | `bullseye duplicate <session>` | **Duplicate** |
-| `bullseye start <session> [lock option] [--force]` | the lock on the session's tile, then **Start** (a locked session asks first, unless `--force`) |
+| `bullseye start <session> [lock option] [--force]` | the Lock field on the session's tile, then **Start** (a locked session asks first, unless `--force`) |
+| `bullseye lock <session> <lock option> [--force]` | the Lock field of a running session that is not locked: it is locked from now on, and that is its lock for the next start too (asks first, unless `--force`) |
 | `bullseye stop <session> [--password <pw>] [--abort]` | **Stop** (a session locked with a password asks for it, as the window does; one locked with a delay is asked to stop first, `--abort` ends the wait) |
 | `bullseye target show <target> [--json]` | a target's tile and its editor |
 | `bullseye target apps [--json]` | the installed Store apps the editor offers to tick, by name and package family name |
@@ -70,7 +71,7 @@ Exit codes: `0` done, `1` failed, refused or cancelled (the reason is printed), 
 | `--no-lock` | Not locked. | yes |
 | `--name <name>` | (`edit` only) A new name. | |
 
-With `edit`, an option replaces only what it names: `--targets` replaces all its targets with the ones given, and what is not named stays. A running session takes the change at once (its lock aside, which is for the next start); while it is locked, only its name and a stricter allowance. `start` takes the lock options too: they set the session's lock before it starts, as the lock on its tile in the window does.
+With `edit`, an option replaces only what it names: `--targets` replaces all its targets with the ones given, and what is not named stays. A running session takes the change at once (its lock aside: `lock` gives a running session that is not locked a lock); while it is locked, only its name and a stricter allowance. `start` takes the lock options too: they set the session's lock before it starts, as the Lock field on its tile in the window does.
 
 ### Targets: `target new`, `target edit`
 
@@ -89,7 +90,7 @@ With `edit`, an option replaces only what it names: `--targets` replaces all its
 
 ### Allowances: `--allowance` and its options
 
-An allowance lets a session go quiet for a while. A session has at most one, set on the session itself with the options of `new` and `edit` (as in the window, where it is a section of the session's editor). Two kinds:
+An allowance lets a session go quiet for a while. A session has at most one, set on the session itself with the options of `new` and `edit` (as in the window, where it is the Unless field on the session's tile). Two kinds:
 
 - A **budget** is a time of use. It is for the session as a whole (`--scope total`) or for each of its items on its own (`--scope each`: each site, program, Store app and window title in its targets). While time is left, what is covered is not closed; it is only watched, and the time it is in use is counted. When the time is used up it is closed again, until the budget is reset.
 - A **Pomodoro** is a fixed cycle: blocked for `--blocked`, then everything allowed for `--allowed`, over and over. While it allows, the session enforces nothing, Obsidian's web viewer included.
@@ -145,6 +146,7 @@ bullseye start Work --force
 bullseye start Evening --lock-duration 2h
 bullseye start Evening --lock-until "2026-10-06 18:00"
 bullseye start Evening --lock-until-restart
+bullseye lock Evening --lock-duration 1h --force
 
 # Changing one thing at a time: add and remove keep the rest.
 bullseye target add "Social media" --sites x.com tiktok.com
@@ -174,6 +176,10 @@ Conditions:
 A running session with an allowance says what it is doing at the end of its line: `allowed for the next 4 minutes` or `blocked for the next 12 minutes` (a Pomodoro), `12 minutes left of 30 minutes, reset in 3 hours` (a budget for the session), or `10 minutes for each item, reset in 40 minutes (youtube.com 4 minutes left)`.
 
 `show <session>`, `target show <target>` and `condition show <condition>` give everything about one. With `--json`, `status`, `show` and `target show` print what the service says, for scripts: the same fields as the export file, plus `running` with each running session's state (`locked`, `enforcing`, the times left in seconds and in words).
+
+### `lock`
+
+`lock <session>` with a lock option gives a running session that is not locked right now that lock, from now on, as if it started with it now (`--lock-duration 1h` is locked for the next hour); it is also the lock its next start has. A lock that holds asks first (`[y/N]`), unless `--force`. A locked session keeps its lock; `--no-lock` takes the lock away from one that is not locked (a condition lock while its condition is inactive).
 
 ### `stop`, `delete`, `target delete`, `condition delete`
 

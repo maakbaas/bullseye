@@ -679,8 +679,25 @@ impl Sessions {
         }
         let zone = self.zone.clone().unwrap_or_else(Zone::current);
         let now = self.clock.now();
+        let lock = self.run_lock(lock, &zone, now)?;
+        let parts = parts.into_iter().map(|p| RunPart::new(p.name, p.lists, p.actions)).collect();
+        let allowance = allowance.map(|terms| Run::new(terms, now));
+        let new = Session { id: id.to_string(), name: name.to_string(), parts, lock, condition, zone, allowance };
+        // Written before the session goes live, so a session cannot be missed after a restart. A
+        // session that cannot be written would not survive the service ending, so it does not start.
+        let mut all: Vec<&Session> = inner.sessions.iter().collect();
+        all.push(&new);
+        self.save(&all).map_err(|e| format!("Cannot save the session, so it would not survive a restart: {e}"))?;
+        inner.sessions.push(new);
+        inner.saved_at = Instant::now();
+        Ok(())
+    }
+
+    /// What a lock asked for runs as, from `now` in `zone`: a duration or a date becomes the moment
+    /// it ends, a restart this start of Windows.
+    fn run_lock(&self, lock: StartLock, zone: &Zone, now: SystemTime) -> Result<RunLock, String> {
         let ends = |end: SystemTime| state::to_unix(end).map(|at| RunLock::Ends { at }).ok_or("Cannot tell the time");
-        let lock = match lock {
+        Ok(match lock {
             StartLock::None => RunLock::None,
             StartLock::For(length) => ends(now + length)?,
             StartLock::Until(at) => {
@@ -697,16 +714,28 @@ impl Sessions {
             StartLock::Delay(wait) => RunLock::Delay { delay: wait.as_secs(), asked: None },
             StartLock::Text(text) => RunLock::Text { text },
             StartLock::Password(hash) => RunLock::Password { hash },
-        };
-        let parts = parts.into_iter().map(|p| RunPart::new(p.name, p.lists, p.actions)).collect();
-        let allowance = allowance.map(|terms| Run::new(terms, now));
-        let new = Session { id: id.to_string(), name: name.to_string(), parts, lock, condition, zone, allowance };
-        // Written before the session goes live, so a session cannot be missed after a restart. A
-        // session that cannot be written would not survive the service ending, so it does not start.
-        let mut all: Vec<&Session> = inner.sessions.iter().collect();
-        all.push(&new);
-        self.save(&all).map_err(|e| format!("Cannot save the session, so it would not survive a restart: {e}"))?;
-        inner.sessions.push(new);
+        })
+    }
+
+    /// Gives the running session `id` another lock, as if it started with it now (in the time zone
+    /// it runs in). Only while it is not locked: it could be stopped and started again with that
+    /// lock anyway, so this loosens nothing; a locked one keeps its lock.
+    pub fn relock(&self, id: &str, lock: StartLock) -> Result<(), String> {
+        let mut inner = self.inner.locked();
+        self.expire(&mut inner);
+        let now = self.clock.now();
+        let session = inner.sessions.iter().find(|b| b.id == id).ok_or("This session is not running")?;
+        if session.locked(now).is_some() {
+            return Err("This session is locked, so its lock cannot be changed until it can be stopped".into());
+        }
+        let lock = self.run_lock(lock, &session.zone, now)?;
+        let at = inner.sessions.iter().position(|b| b.id == id).expect("found above");
+        let old = std::mem::replace(&mut inner.sessions[at].lock, lock);
+        // Written at once, as starting is: a lock that cannot be kept over a restart is not given.
+        if let Err(e) = self.save(&inner.sessions.iter().collect::<Vec<_>>()) {
+            inner.sessions[at].lock = old;
+            return Err(format!("Cannot save the session, so it would not survive a restart: {e}"));
+        }
         inner.saved_at = Instant::now();
         Ok(())
     }
@@ -1257,6 +1286,45 @@ mod tests {
         };
         assert!(start(&list, "a", sites(&["a.com"]), Some(Duration::from_secs(60))).is_err());
         assert!(!list.is_running());
+    }
+
+    #[test]
+    fn a_running_session_that_is_not_locked_takes_a_lock_as_if_it_started_now() {
+        let list = sessions("relock");
+        assert!(list.relock("a", StartLock::For(Duration::from_secs(60))).unwrap_err().contains("not running"));
+        start(&list, "a", sites(&["a.com"]), None).unwrap();
+        list.relock("a", StartLock::For(Duration::from_secs(3600))).unwrap();
+        assert!(running(&list, "a").remaining.is_some_and(|left| (3595..=3600).contains(&left)));
+        assert!(list.stop("a", false).is_err());
+        // Locked now, so it keeps the lock it has.
+        let refused = list.relock("a", StartLock::None).unwrap_err();
+        assert_eq!(refused, "This session is locked, so its lock cannot be changed until it can be stopped");
+        // The lock is kept over a restart, as a lock it started with is.
+        let resumed = reopened("relock");
+        resumed.restore();
+        assert!(running(&resumed, "a").remaining.is_some_and(|left| (3595..=3600).contains(&left)));
+        assert!(resumed.stop("a", false).is_err());
+        // A lock that cannot be given (a date that has passed) leaves the session as it was.
+        start(&list, "b", sites(&["b.com"]), None).unwrap();
+        let passed = list.relock("b", StartLock::Until(DateTime::parse("2000-01-01 00:00").unwrap())).unwrap_err();
+        assert!(passed.contains("has passed"), "{passed}");
+        assert!(list.stop("b", false).is_ok());
+    }
+
+    #[test]
+    fn a_lock_that_cannot_be_saved_is_not_given() {
+        let dir = std::env::temp_dir().join(format!("session-{}-relock-unsaved", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("not-a-folder"), "").unwrap();
+        let list =
+            Sessions { inner: Arc::default(), clock: test_clock(), zone: Some(Zone::fixed(0)), store: None, boot: Some("boot".into()) };
+        start(&list, "a", sites(&["a.com"]), None).unwrap();
+        // The same sessions, now with a state file that can never be written.
+        let unsaved =
+            Sessions { store: Some(Arc::new(Store::new(dir.join("not-a-folder").join("state.json")))), inner: list.inner.clone(), ..list };
+        assert!(unsaved.relock("a", StartLock::For(Duration::from_secs(60))).unwrap_err().contains("would not survive a restart"));
+        assert!(unsaved.stop("a", false).is_ok());
     }
 
     #[test]

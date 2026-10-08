@@ -1,9 +1,9 @@
-// The three kinds the user makes, each with a page of tiles and an editor: sessions, targets and
-// conditions. Pages, tiles and the editor are the same code for all, by this table. (A session's
-// allowance and lock are set on the session itself.)
+// The three kinds the user makes, each with a page of tiles: sessions, targets and conditions;
+// targets and conditions also with an editor. Pages, tiles and the editor are the same code for
+// all, by this table. (A session is set up on its tile, `fields.js`: no editor of its own.)
 
 import { invoke, lockedUsersOf, names, newId, overview, runningOf, t } from "./core.js";
-import { LISTS, SECTIONS, sessionForm, conditionForm, targetForm } from "./forms.js";
+import { LISTS, SECTIONS, conditionForm, targetForm } from "./forms.js";
 
 // The first free automatic name of a kind: "Session 1", "Session 2", … (`<kind>.autoName`), ignoring case.
 function freeName(kind, items) {
@@ -17,35 +17,30 @@ function freeName(kind, items) {
 // ---- The three kinds. Each has a page of tiles and an editor.
 
 // A kind's texts in strings.js: its page, its editor and its empty state.
-const kindTexts = (kind) => ({
+const kindTexts = (kind, editor = true) => ({
   title: t(`${kind}.title`),
   noun: t(`${kind}.noun`),
   description: t(`${kind}.description`),
   newLabel: t(`${kind}.newLabel`),
-  editTitle: t(`${kind}.editTitle`),
   empty: [t(`${kind}.emptyTitle`), t(`${kind}.emptyText`)],
-  editorDescription: t(`${kind}.editorDescription`),
+  ...(editor ? { editTitle: t(`${kind}.editTitle`), editorDescription: t(`${kind}.editorDescription`) } : {}),
 });
 
 const KINDS = {
   sessions: {
     path: "#/",
+    // A link to a session opens its tile (`main.js`); a new one is asked in the modal (`newSession`).
     editPath: "#/edit/",
-    newPath: "#/new",
-    ...kindTexts("sessions"),
+    ...kindTexts("sessions", false),
     items: () => overview.sessions,
-    create: () => ({ id: newId(), name: freeName("sessions", overview.sessions), targets: [], condition: null, allowance: null, lock: { method: "none" } }),
-    save: (session) => invoke("save_session", { session }),
     remove: (id) => invoke("delete_session", { id }),
     duplicate: (id, copyId) => invoke("duplicate", { kind: "session", id, newId: copyId }),
-    // Why it cannot be changed now, or null.
-    // A running session can be changed, its lock aside, unless it is locked; it cannot be deleted.
-    held: (session) => (runningOf(session.id) && runningOf(session.id).locked ? t("sessions.held") : null),
+    // Set up on its tile, which keeps what a locked session may not change read-only (`fields.js`).
+    held: () => null,
     limited: () => null,
     // Whether something locked stands in the way of deleting it (a running session that is not locked
     // ends with it).
     inUse: (session) => !!(runningOf(session.id) && runningOf(session.id).locked),
-    form: () => sessionForm(),
   },
   targets: {
     path: "#/targets",
@@ -98,4 +93,4 @@ const KINDS = {
   },
 };
 
-export { KINDS };
+export { KINDS, freeName };

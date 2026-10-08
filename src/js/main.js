@@ -3,7 +3,8 @@
 import { $, applyStrings, ask, el, invalid, invoke, joined, notify, overview, quoted, refresh, t, whenRefreshed } from "./core.js";
 import { LOCKS } from "./locks.js";
 import { KINDS } from "./kinds.js";
-import { askText, renderTiles, tiles } from "./tiles.js";
+import { askText, renderTiles, showSession, tiles } from "./tiles.js";
+import { newSession } from "./fields.js";
 import { closeEditor, openEditor, renderEditorLock } from "./editor.js";
 import { detour } from "./detour.js";
 
@@ -282,31 +283,33 @@ function route() {
   let view = "list";
   let kind = "sessions";
   let edit = null;
-  // A target or condition made on a detour (`detour`): from the session editor, or for a
-  // lock. Without its detour (the page was reloaded), back to where it came from.
-  const nested = hash.match(/^#\/((?:new|edit\/[^/]+|lock\/[^/]+))\/(targets|conditions)\/(?:new|edit\/([^/]+))$/);
+  // A target or condition made on a detour from a session's tile (`detour`). Without its detour
+  // (the page was reloaded), back to the sessions.
+  const nested = hash.match(/^#\/session\/[^/]+\/(targets|conditions)\/new$/);
   if (nested) {
-    const back = nested[1].startsWith("lock/") ? KINDS.sessions.path : `#/${nested[1]}`;
-    if (!detour.current || detour.current.back !== back) {
-      location.hash = back;
+    if (!detour.current) {
+      location.hash = KINDS.sessions.path;
       return;
     }
-    page = nested[2];
+    page = nested[1];
     showView("editor");
     // Still within the session it is made for.
     markPage("sessions");
-    openEditor(nested[2], nested[3] ? decodeURIComponent(nested[3]) : null, { via: detour.current });
+    openEditor(nested[1], null, { via: detour.current });
     $("scroller").scrollTo(0, 0);
     return;
   }
-  // Back from a detour: the session as it was being edited, with what was made on it.
-  const resumed = detour.current && detour.current.back === hash ? detour.current.draft : null;
   detour.current = null;
+  // A session has no page of its own: a link to one opens its tile on the sessions page.
+  let shown = null;
   const match = hash.match(/^#\/(?:(targets|conditions)(?:\/|$))?(new|edit\/(.+))?$/);
   if (hash === "#/settings") view = "settings";
   else if (match) {
     kind = match[1] || "sessions";
-    if (match[2]) {
+    if (match[2] && kind === "sessions") {
+      if (match[3]) shown = decodeURIComponent(match[3]);
+      history.replaceState(null, "", KINDS.sessions.path);
+    } else if (match[2]) {
       view = "editor";
       edit = match[3] ? decodeURIComponent(match[3]) : "";
     }
@@ -329,7 +332,7 @@ function route() {
     tiles.clear();
     renderTiles(kind);
   }
-  if (view === "editor") openEditor(kind, edit || null, { draft: kind === "sessions" ? resumed : null });
+  if (view === "editor") openEditor(kind, edit || null);
   else closeEditor();
   if (view === "settings") {
     $("delay").value = typedDelay(overview.unlock.delay);
@@ -338,9 +341,11 @@ function route() {
     notify("settings-notices");
   }
   $("scroller").scrollTo(0, 0);
+  if (shown) showSession(shown);
 }
 window.addEventListener("hashchange", route);
-$("new-item").addEventListener("click", () => (location.hash = KINDS[page].newPath));
+// A new session is asked in the modal (its name and targets), and its tile opens for the rest.
+$("new-item").addEventListener("click", () => (page === "sessions" ? newSession(showSession) : (location.hash = KINDS[page].newPath)));
 const PAGES = { sessions: "#/", targets: "#/targets", conditions: "#/conditions", settings: "#/settings" };
 // Below Carbon's md breakpoint (672 px) the tabs are icons only, each with its label as tooltip.
 const narrow = matchMedia("(max-width: 41.99rem)");

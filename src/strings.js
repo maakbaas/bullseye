@@ -64,32 +64,31 @@ window.STRINGS = {
     // A new one is named by the first free number.
     autoName: "Session {n}",
     newLabel: "New session",
-    editTitle: "Edit session",
     emptyTitle: "No sessions yet",
     emptyText: "Make a target first, then a session that uses it",
-    editorDescription: "Enforces its targets while its condition is active. The lock is set on the tile",
-    held: "Locked, so only its name and a stricter allowance can change until it can be stopped",
-
-    // The editor.
-    namePlaceholder: "e.g. Work hours",
     nameMissing: "Name the session",
-    whatTitle: "What",
-    whatText: "Targets to enforce, each with its own actions and allowed sites",
-    targetsLegend: "Targets",
     noTargets: "A session needs at least one target",
-    // Under the targets and the condition in the session editor: made there, added to this session.
-    newTarget: "New target",
-    newCondition: "New condition",
-    editTarget: "Edit",
-    editCondition: "Edit condition",
-    whenTitle: "When",
-    whenText: "A session enforces nothing while its condition is inactive",
-    conditionLabel: "Condition",
-    conditionHelper: "When the session is active once started",
-    always: "Always",
-    // The allowance section of the session editor (its fields: `allowance` below).
-    allowanceTitle: "Allowance",
-    allowanceText: "What lets this session go quiet for a while: a time budget or a Pomodoro cycle",
+
+    // A session is set up on its tile: its fields, shown when the tile is expanded, and the modal
+    // of a new session. {name}: the session's name, quoted.
+    fields: {
+      block: "Block",
+      targets: "Targets",
+      chooseTargets: "Choose targets",
+      newTarget: "New target",
+      when: "When",
+      always: "Always",
+      newCondition: "New condition",
+      unless: "Unless",
+      noAllowance: "No allowance",
+      budget: "Time budget…",
+      pomodoro: "Pomodoro cycle…",
+      budgetHeading: "Time budget of {name}",
+      pomodoroHeading: "Pomodoro cycle of {name}",
+      saveFailed: "Could not save {name}",
+      rename: "Rename",
+      renameHeading: "Rename {name}",
+    },
 
     // A session's tile. A weekly schedule is named, never written out (its times are on the
     // Conditions page, and only there); {drive}: a flash drive's name, quoted; {name}: the
@@ -161,6 +160,10 @@ window.STRINGS = {
     // The dialog with a lock's settings. {method}: the lock's name below (locks.*.label).
     lockHeading: "{method} lock for {name}",
     lockFailed: "Could not set the lock of {name}",
+    lockNow: {
+      heading: "Lock {name} now?",
+      action: "Lock now",
+    },
     startFailed: "Could not start {name}",
     stopFailed: "Could not stop {name}",
     // Stopping a session locked with a password.
@@ -490,7 +493,7 @@ window.STRINGS = {
     },
   },
 
-  // A session's allowance, set in the session editor.
+  // A session's allowance, set on its tile (its settings in the modal).
   allowance: {
     typeLabel: "Type",
     typeHelper: "As long as the session runs. A running session takes changes at once; a locked one only stricter ones",

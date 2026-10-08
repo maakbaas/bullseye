@@ -106,6 +106,13 @@ fn start_session(id: String, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::Start { id })
 }
 
+/// Locks a running session that is not locked, from now on, with this lock (also its lock for the
+/// next start).
+#[tauri::command]
+fn lock_session(id: String, lock: Lock, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::Lock { id, lock })
+}
+
 #[tauri::command]
 fn stop_session(id: String, password: Option<String>, text: Option<String>, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::Stop { id, password, text })
@@ -336,6 +343,7 @@ pub fn run() {
             delete_condition,
             duplicate,
             start_session,
+            lock_session,
             stop_session,
             request_stop,
             abort_stop,

@@ -82,20 +82,25 @@ main { padding-block: var(--cds-spacing-06); }
 /* The link centres the icon in its line box, which reads high next to the letters: a hair lower, and a hair closer. */
 .session-tile .title-edit { margin-block-start: calc(var(--cds-spacing-02) + var(--cds-spacing-01)); margin-inline-start: calc(-1 * var(--cds-spacing-02)); fill: var(--cds-icon-secondary); opacity: 0; transition: opacity var(--cds-duration-fast-01, 70ms); }
 .session-tile h2 cds-link:hover .title-edit, .session-tile h2 cds-link:focus-within .title-edit { opacity: 1; }
+/* A session's fields (`fields.js`), Block / When / Unless / Lock: one per row, full width, below md;
+   two by two from md (four in a row was too cramped). */
+.session-tile .session-fields { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--cds-spacing-05); padding-block: var(--cds-spacing-07); }
+@media (min-width: 42rem) { .session-tile .session-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.session-tile .session-fields .lock-controls, .session-tile .session-fields .lock-method { display: block; inline-size: 100%; }
 .session-tile .summary { display: flex; flex-direction: column; gap: var(--cds-spacing-02); color: var(--cds-text-secondary); }
 /* An icon in front of a session's line, level with its first line of text. */
 .session-tile .summary .line { display: flex; align-items: flex-start; gap: var(--cds-spacing-03); }
 .session-tile .summary .line svg { flex: none; fill: var(--cds-icon-secondary); margin-block-start: var(--cds-spacing-01); }
 .session-tile .actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--cds-spacing-04); }
-/* A session's lock, next to Start: the method; its settings are in the modal. */
-.session-tile .lock-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--cds-spacing-04); }
-.session-tile .lock-method { inline-size: 12rem; }
 /* The dropdown of the other way to unlock, in Settings: as wide as the lock dropdown on a tile. */
 .way-method { inline-size: 12rem; }
 /* A dropdown's list shows all its items where there is room (Carbon stops it at five and a half and scrolls),
    through the list's own part; where there is not, it still scrolls. */
 cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 .modal-fields { display: flex; flex-direction: column; gap: var(--cds-spacing-06); }
+/* An allowance's form in the modal, its groups spaced as its fields. */
+.modal-fields .fields { display: flex; flex-direction: column; gap: var(--cds-spacing-06); }
+.modal-fields .fields[hidden] { display: none; }
 /* Carbon leaves 3rem under a modal's content, which looks high under a form field or a sentence: 1.5rem, the same everywhere. */
 #confirm cds-modal-body { padding-block-end: var(--cds-spacing-06); }
 /* The until lock's date and time, side by side as Carbon shows them. */
@@ -165,3 +170,15 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
    is dropped, so "a, b and c" has its underlines under the names only. */
 cds-link[inline] { display: inline-flex; }
 
+/* The targets and condition fields, each with its + icon button beside it, level with it. */
+.session-tile .with-action { display: flex; align-items: flex-end; gap: var(--cds-spacing-03); min-inline-size: 0; }
+.session-tile .with-action cds-multi-select, .session-tile .with-action cds-dropdown { flex: 1; min-inline-size: 0; }
+/* A session's tile is Carbon's expandable tile: its own width is 100% (beside the grid's margins),
+   so it is sized by the grid; its two parts are laid out as the plain tile's content. */
+.session-tile.expandable { display: block; inline-size: auto; }
+/* Start / Stop beside the chevron (Carbon's, in the tile's bottom corner), never under it. */
+@media (min-width: 42rem) { .session-tile.expandable .actions { margin-inline-end: var(--cds-spacing-07); } }
+.session-tile cds-tile-above-the-fold-content { display: flex; flex-direction: column; gap: var(--cds-spacing-03); }
+/* The state tag beside the title, wrapping under it when the name is long. */
+.session-tile .heading { display: flex; flex-wrap: wrap; align-items: center; column-gap: var(--cds-spacing-04); min-inline-size: 0; }
+.session-tile .heading h2 { padding-top: 0; }

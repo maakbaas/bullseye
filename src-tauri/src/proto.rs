@@ -62,6 +62,9 @@ pub enum Request {
     Import { library: Library },
     /// Starts the session defined as `id`, as it is defined now.
     Start { id: String },
+    /// Gives the running session `id` this lock, as if it started with it now, and saves it as the
+    /// session's lock. Only while the session is not locked.
+    Lock { id: String, lock: Lock },
     /// Stops the running session `id`, unless it is locked right now. `password`: the password of its
     /// password lock, which stops that one; `text`: the text of its text lock, likewise.
     Stop {
@@ -240,6 +243,7 @@ mod tests {
             Request::SaveCondition { condition: weekly("s", "mon-fri 8-17") },
             Request::SaveSession { session: session("a", &["l"]) },
             Request::Start { id: "a".into() },
+            Request::Lock { id: "a".into(), lock: Lock::Duration { duration: "2h".into() } },
             Request::DeleteSession { id: "a".into() },
             Request::DeleteTarget { id: "l".into() },
             Request::DeleteCondition { id: "s".into() },

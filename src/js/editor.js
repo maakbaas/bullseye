@@ -1,37 +1,16 @@
-// The editor of a session, target or condition: opening it (also on a detour, `detour.js`), its
-// breadcrumb, saving and deleting, and keeping what a running session uses read-only.
+// The editor of a target or condition: opening it (also on a detour from a session's tile,
+// `detour.js`), its breadcrumb, saving and deleting, and keeping what a locked session uses to
+// stricter changes.
 
 import { $, el, notify, refresh, t } from "./core.js";
 import { KINDS } from "./kinds.js";
 import { confirmDelete } from "./tiles.js";
-import { detour } from "./detour.js";
 
 // The form of the kind being edited, built anew each time the editor opens. A reused one would
 // put Carbon's text areas back into the page after they had been taken out of it, and Carbon
 // then no longer measures an empty one, whose helper text stays squeezed to zero width.
 const forms = {};
 let editing = null; // { kind, item (as opened), isNew }
-
-// From the session editor: the session as it is now is kept, and gets the new item when it is saved.
-// `id`: an existing target or condition to change, instead of a new one.
-function detourFor({ kind, id }) {
-  const draft = forms.sessions.read(editing.item);
-  const back = location.hash || KINDS.sessions.path;
-  detour.current = {
-    back,
-    draft,
-    crumbs: [
-      { label: KINDS.sessions.title, href: KINDS.sessions.path },
-      { label: draft.name || (editing.isNew ? KINDS.sessions.newLabel : editing.item.name), href: back },
-    ],
-    onSaved: async (item) => {
-      if (id) return;
-      if (kind === "targets" && !draft.targets.includes(item.id)) draft.targets.push(item.id);
-      if (kind === "conditions") draft.condition = item.id;
-    },
-  };
-  location.hash = `${back}/${kind}/${id ? `edit/${encodeURIComponent(id)}` : "new"}`;
-}
 
 // The breadcrumb: links up to the last, which is this page.
 function setCrumbs(crumbs) {
@@ -42,10 +21,10 @@ function setCrumbs(crumbs) {
   );
 }
 
-// `via`: the detour this item is made on; `draft`: a session as it was being edited before one.
-function openEditor(kind, id, { via = null, draft = null } = {}) {
+// `via`: the detour this item is made on.
+function openEditor(kind, id, { via = null } = {}) {
   const kindOf = KINDS[kind];
-  const item = draft || (id ? kindOf.items().find((i) => i.id === id) : kindOf.create());
+  const item = id ? kindOf.items().find((i) => i.id === id) : kindOf.create();
   if (!item) {
     location.hash = kindOf.path;
     return;
@@ -122,9 +101,6 @@ $("save").addEventListener("click", async () => {
   await refresh();
 });
 $("delete").addEventListener("click", () => editing && confirmDelete(editing.kind, editing.item.id));
-
-// The session form's New target and New condition buttons (`forms.js`).
-$("form").addEventListener("bullseye-make", (event) => detourFor(event.detail));
 
 // Leaving the editor (`main.js`).
 function closeEditor() {

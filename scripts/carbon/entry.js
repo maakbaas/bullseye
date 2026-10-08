@@ -21,6 +21,8 @@ import '@carbon/web-components/es/components/icon-button/icon-button.js';
 import '@carbon/web-components/es/components/accordion/accordion.js';
 import '@carbon/web-components/es/components/accordion/accordion-item.js';
 import '@carbon/web-components/es/components/tile/tile.js';
+// PROTOTYPE: a session's tile, collapsed to its summary or expanded to its fields.
+import '@carbon/web-components/es/components/tile/expandable-tile.js';
 import '@carbon/web-components/es/components/tag/tag.js';
 import '@carbon/web-components/es/components/overflow-menu/overflow-menu.js';
 import '@carbon/web-components/es/components/overflow-menu/overflow-menu-body.js';
@@ -35,6 +37,8 @@ import '@carbon/web-components/es/components/radio-button/radio-button.js';
 import '@carbon/web-components/es/components/radio-button/radio-button-group.js';
 import '@carbon/web-components/es/components/dropdown/dropdown.js';
 import '@carbon/web-components/es/components/dropdown/dropdown-item.js';
+import '@carbon/web-components/es/components/multi-select/multi-select.js';
+import '@carbon/web-components/es/components/multi-select/multi-select-item.js';
 import '@carbon/web-components/es/components/select/select.js';
 import '@carbon/web-components/es/components/select/select-item.js';
 // The until lock's end: a date and a time of day.

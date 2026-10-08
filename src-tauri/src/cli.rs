@@ -31,7 +31,7 @@ use crate::webhook::{self, Hook, Match, Matcher, Method};
 
 /// Each command the window can invoke, and the CLI commands that do the same. Empty: it is about
 /// the window itself.
-pub const GUI_COMMANDS: [(&str, &[&str]); 30] = [
+pub const GUI_COMMANDS: [(&str, &[&str]); 31] = [
     ("status", &["status", "show", "target show", "condition show"]),
     ("save_session", &["new", "edit"]),
     ("delete_session", &["delete"]),
@@ -45,6 +45,7 @@ pub const GUI_COMMANDS: [(&str, &[&str]); 30] = [
     ("delete_condition", &["condition delete"]),
     ("duplicate", &["duplicate", "target duplicate", "condition duplicate"]),
     ("start_session", &["start"]),
+    ("lock_session", &["lock"]),
     ("stop_session", &["stop"]),
     ("request_stop", &["stop"]),
     ("abort_stop", &["stop"]),
@@ -144,6 +145,10 @@ Sessions:
                            Start a session. The lock options of new set its lock first, as the
                            lock on its tile in the window does. A locked session asks first,
                            unless --force.
+  lock <session> <lock option> [--force]
+                           Lock a running session that is not locked right now, from now on,
+                           with one of the lock options of new (--no-lock takes its lock away). It
+                           is also the lock its next start has. Asks first, unless --force.
   stop <session> [--password <pw>]
                            Stop a running session that is not locked right now; one locked with
                            a password with its password (asked for when not given). One locked
@@ -291,6 +296,11 @@ enum Command {
     Start {
         session: String,
         lock: Option<Lock>,
+        force: bool,
+    },
+    Lock {
+        session: String,
+        lock: Lock,
         force: bool,
     },
     Stop {
@@ -540,6 +550,11 @@ fn parse(args: &[String]) -> Result<Command, String> {
         "start" => {
             Command::Start { session: named(&mut options, "session")?, lock: parse_lock(&mut options)?, force: options.flag("--force") }
         }
+        "lock" => Command::Lock {
+            session: named(&mut options, "session")?,
+            lock: parse_lock(&mut options)?.ok_or("Give the lock, with one of the lock options of new: --lock-duration 2h")?,
+            force: options.flag("--force"),
+        },
         "stop" => Command::Stop {
             session: named(&mut options, "session")?,
             password: options.value("--password")?,
@@ -1034,6 +1049,24 @@ fn execute(command: Command) -> Result<(), Failure> {
             }
             send(Request::Start { id: session.id.clone() })?;
             say!("Started \"{}\".", session.name);
+        }
+        Command::Lock { session, lock, force } => {
+            let overview = overview()?;
+            let mut session = find(&overview.sessions, &session, "session", |b| (&b.id, &b.name))?.clone();
+            session.lock = resolve_lock(&overview, lock)?;
+            // As in the window: a lock that holds is only given after a second yes.
+            if let Some(how) = lock_warning(&overview, &session) {
+                let question = format!("Lock \"{}\" now? {how} Only unlocking ends it early.", session.name);
+                if !confirm(&question, force)? {
+                    return Err(failed("Not locked."));
+                }
+            }
+            send(Request::Lock { id: session.id.clone(), lock: session.lock.clone() })?;
+            if session.lock == Lock::None {
+                say!("\"{}\" runs on without a lock.", session.name);
+            } else {
+                say!("Locked \"{}\" now.", session.name);
+            }
         }
         Command::Stop { session, password, abort } => {
             let overview = overview()?;
@@ -2165,6 +2198,14 @@ mod tests {
         assert!(ok(&["status"]).contains("Pw       Running · active · locked with a password"));
         assert!(cli(&["stop", "Pw", "--password", "wrong"]).is_err());
         assert_eq!(ok(&["stop", "Pw", "--password", "secret"]), "Stopped \"Pw\".\n");
+        // A running session that is not locked is locked now; one that is keeps its lock.
+        assert_eq!(ok(&["start", "Pw", "--no-lock"]), "Started \"Pw\".\n");
+        assert_eq!(ok(&["lock", "Pw", "--no-lock"]), "\"Pw\" runs on without a lock.\n");
+        assert!(refused(&["lock", "Pw", "--lock-duration", "1h"]).contains("No terminal to ask in; add --force"));
+        assert_eq!(ok(&["lock", "Pw", "--lock-duration", "1h", "--force"]), "Locked \"Pw\" now.\n");
+        assert!(ok(&["status"]).contains("Pw       Running · active · locked for the next"));
+        assert_eq!(refused(&["lock", "Pw", "--no-lock"]), "This session is locked, so its lock cannot be changed until it can be stopped");
+        assert!(refused(&["lock", "Pw"]).starts_with("Give the lock"));
         // Without a delay, unlocking is free and ends them all.
         assert_eq!(ok(&["unlock"]), "Unlocked: every session has ended.\n");
         assert!(!ok(&["status"]).contains("Running"));
@@ -2595,6 +2636,11 @@ mod tests {
             Ok(Command::Start { session: "Work".into(), lock: Some(Lock::Condition { condition: "Work hours".into() }), force: true })
         );
         assert_eq!(parse(&args(&["start", "Work"])), Ok(Command::Start { session: "Work".into(), lock: None, force: false }));
+        assert_eq!(
+            parse(&args(&["lock", "Work", "--lock-duration", "2h", "--force"])),
+            Ok(Command::Lock { session: "Work".into(), lock: Lock::Duration { duration: "2h".into() }, force: true })
+        );
+        assert!(parse(&args(&["lock", "Work"])).is_err());
         assert_eq!(
             parse(&args(&["start", "Work", "--lock-until", "2026-10-06 18:00"])),
             Ok(Command::Start { session: "Work".into(), lock: Some(Lock::Until { until: "2026-10-06 18:00".into() }), force: false })
