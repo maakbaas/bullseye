@@ -19,9 +19,6 @@
 //! app that was suspended, or whose closing thread hangs or is suspended, stops asking, and the
 //! service ends it and starts a new one (`AppSlot::supervise`).
 //!
-//! What this does not stop: the app is still a process of the user it protects against. Someone
-//! who can inject code into it can keep it asking while it enforces nothing.
-//!
 //! Nothing here is hidden or protected beyond that, on purpose: the service is named
 //! `bullseye` in the services list, the app runs under its own name in Task Manager, and
 //! uninstalling the app (Settings > Apps) removes the service. The mechanism is here to add

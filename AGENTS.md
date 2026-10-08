@@ -44,7 +44,7 @@ Frontend (`src/`, no build step): `index.html`, `app.css` (layout only), `string
 - **Faults open the hatch, never close it.** A broken `unlock.json` means no unlock delay; an unconfigured app can always unlock. The unlock tests are many on purpose; keep them passing.
 - **Err towards blocking elsewhere**: a condition that cannot be told (an unreadable drive, no webhook answer) counts as its fallback or as active.
 - **Only today's file formats are read.** Bullseye is installed on clean machines: no update path, no migration code.
-- **Nothing is hidden.** The service, app and logs (`%ProgramData%\bullseye\service.log`, `%LOCALAPPDATA%\bullseye\app.log`) go by their own names. The mechanism is friction, not secrecy; an administrator can get around it (a SYSTEM shell, offline registry edits). Never claim otherwise in the UI.
+- **Nothing is hidden.** The service, app and logs (`%ProgramData%\bullseye\service.log`, `%LOCALAPPDATA%\bullseye\app.log`) go by their own names. The mechanism is friction, not secrecy.
 - **Naming**: the product is "Bullseye"; everything a process or the system goes by is lowercase `bullseye` (service, pipe, data folders, CLI `bullseye.exe`). The app is `bullseye-app.exe` and so is the Cargo package: Tauri takes the binary named like the package as the main one.
 
 ## User decisions (do not undo without asking)
@@ -91,17 +91,9 @@ All UI is IBM's Carbon design system through `@carbon/web-components`; a missing
 - Anything that cannot be undone asks first in the one `cds-modal` (`ask()`), which also holds short forms (lock settings, passwords). A session's lock is chosen on its tile, next to Start.
 - The weekly schedule is the one hand-made control (`weekEditor`): Carbon has no time grid.
 
-## Install and recovery
+## Install
 
-`npm run build` makes a per-machine NSIS installer that installs to `C:\Program Files\Bullseye`, registers and locks down the service and puts the folder on `PATH`. Uninstalling is refused while a session is locked. Test installs in a VM with a snapshot. If a test locks you out, as an administrator open a SYSTEM shell (`psexec -s -i cmd`, or a one-off SYSTEM task in Task Scheduler) and run:
-
-```bat
-sc delete bullseye
-taskkill /f /im bullseye-app.exe
-reg delete "HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Minimal\bullseye" /f
-reg delete "HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Network\bullseye" /f
-rmdir /s /q "%ProgramData%\bullseye"
-```
+`npm run build` makes a per-machine NSIS installer that installs to `C:\Program Files\Bullseye`, registers and locks down the service and puts the folder on `PATH`. Uninstalling is refused while a session is locked. **Develop with `npm run dev`**, which can always be ended; an installed Bullseye is ended only through Unlock in Settings, whose delay is at most 24 hours.
 
 ## Constraints
 

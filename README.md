@@ -29,7 +29,7 @@ Each target also has **enforcers**: the ways things are closed. Blocked tabs in 
 - **Conditions** by weekly schedule (drawn on a week grid), USB flash drive, webhook (any URL that answers, so you can hook up a home automation or a calendar), or any / all of those combined.
 - **Locks that hold**: the rules live in a Windows service that runs as SYSTEM, so ending the app in Task Manager does not help, times are measured on internet time so changing the clock does not either, and sessions survive a restart. A locked session's targets and conditions can only be made stricter.
 - **A way out you choose**: Unlock in Settings ends every session, behind a countdown you set (none by default) and optionally another way, such as a password or the USB key.
-- **Nothing hidden**: the service and app go by their own names and log what they do. It is friction, not spyware; an administrator who knows how can always get around it.
+- **Nothing hidden**: the service and app go by their own names and log what they do. It is friction, not spyware.
 - **Export and import** everything to move to another computer.
 - **A command line** that can do everything the window does: `bullseye status`, `bullseye start "Deep work"`, `bullseye target add "Social media" --sites tiktok.com`. See [CLI.md](CLI.md).
 
@@ -68,7 +68,7 @@ Everyone gets distracted differently, so Bullseye is meant to be forked and bent
 1. **Fork the repository** and open it in an AI coding tool such as Claude Code. [AGENTS.md](AGENTS.md) (read by Claude Code through `CLAUDE.md`) explains the architecture, the rules and how each kind of extension is added, so the assistant starts with the context it needs.
 2. **Ask for what you want in plain words**: "add a condition that is active while Spotify plays", "add a lock that needs a friend's approval by email", "close Discord when it shows a voice channel". New conditions, locks, allowances, enforcers and lists each follow a recipe in AGENTS.md (one table entry in the window, one type in Rust, one CLI option).
 3. **Let it test**: the project expects every change to come with tests, and they run on Linux and Windows. Ask the assistant to run them and to check the window in a browser before you install.
-4. **Try it in a virtual machine** (or with short locks) before you rely on it, and keep the recovery steps in AGENTS.md at hand.
+4. **Develop with `npm run dev`**, which you can end at any time, and install only what you have tried there.
 
 Changes that would be useful to others are welcome back as pull requests.
 

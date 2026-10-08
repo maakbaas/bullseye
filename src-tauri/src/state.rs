@@ -4,7 +4,7 @@
 //!
 //! The end time is a timestamp in internet time (`clock.rs`) rather than a running stopwatch,
 //! because a stopwatch cannot be carried across a restart. Moving the Windows clock does not
-//! change it; deleting the file still ends the session, as an administrator can.
+//! change it.
 
 use std::fs;
 use std::path::PathBuf;
