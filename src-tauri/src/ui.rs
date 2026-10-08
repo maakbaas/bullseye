@@ -20,10 +20,10 @@ const LABEL: &str = "main";
 /// The page is responsive (Carbon's grid), so the window can be any size from the minimum up.
 const WIDTH: f64 = 760.0;
 const HEIGHT: f64 = 720.0;
-/// Wide enough for an editor's Delete, Cancel and Save to stay on one row (they wrap below 436 px
-/// with a 15 px scrollbar, measured; Windows' is 17), the scrollbar's room included
-/// (`scrollbar-gutter: stable`).
-const MIN_WIDTH: f64 = 440.0;
+/// Wide enough for an editor's Delete, Cancel and Save to stay on one row (they wrap below 452 px
+/// with a 15 px scrollbar, measured; Windows' is 17), the scrollbar's room on both sides included
+/// (`scrollbar-gutter: stable both-edges`).
+const MIN_WIDTH: f64 = 456.0;
 const MIN_HEIGHT: f64 = 480.0;
 
 /// How long a dismissed window is kept before it is destroyed.

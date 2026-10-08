@@ -20,11 +20,12 @@ body:not(.ready) { visibility: hidden; }
 .pinned { flex: none; z-index: 100; background: var(--cds-layer-01); padding-block-start: var(--cds-spacing-07); }
 .tabbar { margin-block-start: var(--cds-spacing-06); border-block: 1px solid var(--cds-border-subtle); }
 /* The scrollbar's room is kept whether or not it is shown, so the content does not shift sideways
-   between pages that scroll and pages that do not; it is on the grey page, so it does not show. */
-#scroller { flex: 1; min-block-size: 0; overflow-y: auto; scrollbar-gutter: stable; }
-/* The fixed section's content keeps the same room at its right (`--gutter`, measured by main.js),
+   between pages that scroll and pages that do not, and on both sides, so the content is centred in
+   the window; it is on the grey page, so it does not show. */
+#scroller { flex: 1; min-block-size: 0; overflow-y: auto; scrollbar-gutter: stable both-edges; }
+/* The fixed section's content keeps the same room at both sides (`--gutter`, measured by main.js),
    so it lines up with the content under it, while its white and its lines go to the edge. */
-.lane { padding-inline-end: var(--gutter, 0px); }
+.lane { padding-inline: var(--gutter, 0px); }
 .pinned .cds--css-grid, main { max-inline-size: 66rem; margin-inline: auto; }
 main { padding-block: var(--cds-spacing-06); }
 /* An icon before a tab's label, as Carbon's tabs with icons. */

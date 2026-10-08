@@ -357,11 +357,12 @@ const iconsOnly = () => {
 };
 iconsOnly();
 narrow.addEventListener("change", iconsOnly);
-// The scrollbar's room beside the content (kept whether or not it is shown), which the fixed
-// section keeps too, so both line up (`.lane`); measured again when zooming changes it.
+// The scrollbar's room on each side of the content (kept whether or not it is shown, on both sides
+// so the content is centred), which the fixed section keeps too, so both line up (`.lane`);
+// measured again when zooming changes it.
 const gutter = () => {
   const scroller = $("scroller");
-  document.documentElement.style.setProperty("--gutter", `${scroller.offsetWidth - scroller.clientWidth}px`);
+  document.documentElement.style.setProperty("--gutter", `${(scroller.offsetWidth - scroller.clientWidth) / 2}px`);
 };
 gutter();
 window.addEventListener("resize", gutter);
