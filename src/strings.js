@@ -73,6 +73,8 @@ window.STRINGS = {
     // each opening a menu, and the modal of a new session. {name}: the session's name, quoted.
     fields: {
       block: "Targets",
+      // The Targets row's label: as many as it has.
+      blockCount: { one: "Target", other: "Targets" },
       targets: "Targets",
       chooseTargets: "Choose targets",
       newTarget: "New target",

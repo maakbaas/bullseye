@@ -172,6 +172,9 @@ cds-link[inline] { display: inline-flex; }
 .session-rows .row-text { display: flex; flex-direction: column; gap: var(--cds-spacing-01); overflow-wrap: anywhere; }
 .session-rows .row-now { color: var(--cds-text-secondary); }
 .session-rows .row-now[hidden] { display: none; }
+/* A row's panel (Carbon's tab-tip popover): wide enough for its longest choice. */
+.session-rows .row-action cds-popover-content { min-inline-size: 16rem; }
+.session-rows .row-action .no-mark { inline-size: 1rem; }
 /* The state tag beside the title, wrapping under it when the name is long. */
 .session-tile .heading { display: flex; flex-wrap: wrap; align-items: center; column-gap: var(--cds-spacing-04); min-inline-size: 0; }
 .session-tile .heading h2 { padding-top: 0; }
