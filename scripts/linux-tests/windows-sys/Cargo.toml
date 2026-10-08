@@ -1,0 +1,11 @@
+# Just enough of windows-sys for the platform-free modules to build on Linux: the types they
+# name, and calls that all fail (so the time zone is a fixed offset, as in the tests).
+[package]
+name = "windows-sys"
+version = "0.61.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "windows_sys"
+path = "src/lib.rs"

@@ -11,6 +11,8 @@
 //! Apps Windows itself is made of (the shell, Settings, the lock screen, runtimes) are never
 //! closed, whatever the list says (`PROTECTED`), and are not offered.
 
+// Windows only, so that the tests of the platform-free code build elsewhere too (`scripts/linux-tests`).
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
@@ -72,11 +74,11 @@ pub fn family_of(exe: &Path) -> Option<String> {
 
 /// The installed apps that can be blocked, by name. Asks PowerShell, which takes a second or two.
 pub fn installed() -> Result<Vec<StoreApp>, String> {
-    let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map_err(|e| format!("Cannot ask PowerShell for the installed apps: {e}"))?;
+    let mut command = Command::new("powershell.exe");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT]);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command.output().map_err(|e| format!("Cannot ask PowerShell for the installed apps: {e}"))?;
     if !output.status.success() {
         return Err(format!("PowerShell could not list the installed apps: {}", String::from_utf8_lossy(&output.stderr).trim()));
     }
