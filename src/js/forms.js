@@ -644,7 +644,7 @@ function allowanceSection() {
       delayed.fill(delay);
       allowed.set(budget.allowed || 0);
       scope.value = budget.scope || "total";
-      reset.value = budget.reset || "every";
+      reset.value = budget.reset || "never";
       every.set(budget.every || 0);
       resetAnchor.value = budget.reset === "every" ? budget.anchor : "clock";
       // A new cycle is the classic one; the rest start empty.
