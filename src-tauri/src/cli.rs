@@ -76,8 +76,8 @@ Bullseye command line: everything the window can do.
 
 Usage: bullseye <command> [options]
 A <block>, <list> or <condition> is its name (any case) or its id. An option that takes several
-items takes them separated by commas, e.g. --sites youtube.com,reddit.com; an item with a comma
-in it goes in double quotes: --titles '\"Inbox, 3 unread\",*YouTube*'.
+items takes them separated by commas, e.g. --sites youtube.com,reddit.com; a comma in an item
+is written \\, as in --titles \"Inbox\\, 3 unread,*YouTube*\".
 
 A block is what you start: one or more block lists (what to block), a condition (when it is
 active; 'always', a weekly schedule, or a flash drive that is not connected), at most one
@@ -806,44 +806,21 @@ struct Options {
 }
 
 /// One value of a list option as its items: split at commas (`a,b` and `a, b` alike), each
-/// trimmed, empty ones left out. Quotes are only needed for an item with a comma in it: one in
-/// double quotes keeps its commas and spaces (`"Inbox, 3 unread"`), and `""` inside it is a quote,
-/// as in a CSV file.
-fn split_items(value: &str) -> Result<Vec<String>, String> {
+/// trimmed, empty ones left out. A comma in an item is written `\,` (`Inbox\, 3 unread`); every
+/// other backslash is kept as it is, as window titles and paths have them.
+fn split_items(value: &str) -> Vec<String> {
     let mut items = Vec::new();
+    let mut item = String::new();
     let mut chars = value.chars().peekable();
-    loop {
-        while chars.next_if(|c| c.is_whitespace()).is_some() {}
-        let Some(&first) = chars.peek() else { break };
-        let item = if first == '"' {
-            chars.next();
-            let mut item = String::new();
-            loop {
-                match chars.next() {
-                    None => return Err(format!("A quote is not closed in \"{value}\"")),
-                    Some('"') if chars.next_if_eq(&'"').is_some() => item.push('"'),
-                    Some('"') => break,
-                    Some(c) => item.push(c),
-                }
-            }
-            while chars.next_if(|c| c.is_whitespace()).is_some() {}
-            if chars.peek().is_some_and(|&c| c != ',') {
-                return Err(format!("Put a comma after a quoted item in \"{value}\""));
-            }
-            item
-        } else {
-            let mut item = String::new();
-            while let Some(c) = chars.next_if(|&c| c != ',') {
-                item.push(c);
-            }
-            item.trim().to_string()
-        };
-        chars.next_if_eq(&',');
-        if !item.trim().is_empty() {
-            items.push(item);
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if chars.next_if_eq(&',').is_some() => item.push(','),
+            ',' => items.push(std::mem::take(&mut item)),
+            c => item.push(c),
         }
     }
-    Ok(items)
+    items.push(item);
+    items.into_iter().map(|item| item.trim().to_string()).filter(|item| !item.is_empty()).collect()
 }
 
 impl Options {
@@ -893,7 +870,7 @@ impl Options {
         if self.args.iter().any(|arg| arg == name || arg.starts_with(&format!("{name}="))) {
             return Err(format!("{name} is given more than once; give all its items at once, separated by commas"));
         }
-        let items: Vec<String> = values.iter().map(|value| split_items(value)).collect::<Result<Vec<_>, _>>()?.concat();
+        let items: Vec<String> = values.iter().flat_map(|value| split_items(value)).collect();
         if items.is_empty() {
             return Err(format!("{name} needs one or more items, separated by commas"));
         }
@@ -2428,18 +2405,14 @@ mod tests {
 
     #[test]
     fn several_items_are_separated_by_commas() {
-        let split = |value: &str| split_items(value).unwrap();
-        assert_eq!(split("a.com,b.com"), vec!["a.com", "b.com"]);
+        assert_eq!(split_items("a.com,b.com"), vec!["a.com", "b.com"]);
         // Spaces around items and empty items do not count.
-        assert_eq!(split(" a.com , ,b.com, "), vec!["a.com", "b.com"]);
-        // Quotes keep commas and spaces, and two quotes in them are one.
-        assert_eq!(split(r#""Inbox, 3 unread",*YouTube*"#), vec!["Inbox, 3 unread", "*YouTube*"]);
-        assert_eq!(split(r#" " padded " , "say ""hi""" "#), vec![" padded ", r#"say "hi""#]);
-        assert_eq!(split(r#""""#), Vec::<String>::new(), "an empty item in quotes is no item");
-        assert_eq!(split_items(r#""open,b"#), Err(r#"A quote is not closed in ""open,b""#.into()));
-        assert_eq!(split_items(r#""a" b,c"#), Err(r#"Put a comma after a quoted item in ""a" b,c""#.into()));
-        // Quotes are only needed for a comma: inside an item they are kept.
-        assert_eq!(split(r#"say "hi", b"#), vec![r#"say "hi""#, "b"]);
+        assert_eq!(split_items(" a.com , ,b.com, "), vec!["a.com", "b.com"]);
+        // A comma in an item is \, ; other backslashes and quotes are kept as typed.
+        assert_eq!(split_items(r"Inbox\, 3 unread,*YouTube*"), vec!["Inbox, 3 unread", "*YouTube*"]);
+        assert_eq!(split_items(r#"C:\Users\notes.txt - Notepad, say "hi""#), vec![r"C:\Users\notes.txt - Notepad", r#"say "hi""#]);
+        assert_eq!(split_items(r"ends with \"), vec![r"ends with \"]);
+        assert!(split_items(" , ").is_empty());
 
         let items = |line: &[&str], name: &str| Options::new(&args(line)).items(name);
         // With a comma, with spaces between (as PowerShell passes a,b), with =, and all of them.
@@ -2458,7 +2431,7 @@ mod tests {
         assert_eq!(options.value("--name"), Ok(Some("Either".into())));
         assert_eq!(options.finish(), Ok(()));
         // The commands take them so.
-        let Ok(Command::ListNew { changes, .. }) = parse(&args(&["list", "new", "A", "--titles", r#""Inbox, 3 unread",*Chat*"#])) else {
+        let Ok(Command::ListNew { changes, .. }) = parse(&args(&["list", "new", "A", "--titles", r"Inbox\, 3 unread,*Chat*"])) else {
             panic!("not new")
         };
         assert_eq!(changes.lists.get("titles"), Some(&vec!["Inbox, 3 unread".to_string(), "*Chat*".into()]));

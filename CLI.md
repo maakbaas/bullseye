@@ -66,7 +66,7 @@ A running block keeps what it was started with: while it runs, it cannot be chan
 
 Exit codes: `0` done, `1` failed, refused or cancelled (the reason is printed), `2` not understood. Every option can also be written as `--option=value`. The name or id comes right after the command.
 
-**Several items** (block lists, sites, programs, titles, conditions of a combination, enforcers, lists to clear) are given once, after their option, separated by commas: `--sites youtube.com,reddit.com` or `--sites "youtube.com, reddit.com"` (spaces after a comma do not matter). Quotes around an item are only needed when it has a comma in it, such as a window title: `--titles '"Inbox, 3 unread",*YouTube*'` in PowerShell 7, `--titles "\"Inbox, 3 unread\",*YouTube*"` in cmd; two quotes inside a quoted item are one, as in a CSV file. Items separated by spaces instead (`--sites youtube.com reddit.com`, which is also how PowerShell passes an unquoted `a,b`) are taken too, up to the next option.
+**Several items** (block lists, sites, programs, titles, conditions of a combination, enforcers, lists to clear) are given once, after their option, separated by commas: `--sites youtube.com,reddit.com`. Spaces after a comma do not matter, but then the shell needs the whole value in quotes: `--sites "youtube.com, reddit.com"`. A comma inside an item is written `\,`: `--titles "Inbox\, 3 unread,*YouTube*"` (every other backslash stays as typed, as in `C:\Users\notes.txt - Notepad`). Items separated by spaces instead (`--sites youtube.com reddit.com`, which is also how PowerShell passes an unquoted `a,b`) are taken too, up to the next option. In PowerShell, quote a value with `\,` in it, as PowerShell splits it at the comma otherwise.
 
 ### Blocks: `new`, `edit`, `start`
 
