@@ -872,9 +872,10 @@ pub mod tests {
             assert!(definitions.save_session(b.clone()).is_err(), "{b:?}");
         }
         assert!(definitions.library().sessions.is_empty());
-        // Half done is fine to save: no lists yet. It is checked when it starts.
+        // Half done is fine to save: no targets yet. It resolves to nothing; starting it is refused
+        // (`handler::start`).
         definitions.save_session(session("b", &[])).unwrap();
-        assert!(definitions.library().resolve("b").is_err());
+        assert!(definitions.library().resolve("b").unwrap().lists.is_empty());
     }
 
     #[test]

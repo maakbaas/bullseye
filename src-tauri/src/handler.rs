@@ -228,6 +228,14 @@ fn edit_session(context: &Context, session: Definition) -> Result<(), String> {
     if session.lock != old.lock {
         return Err("The lock of a running session is not changed by saving it: lock it now instead, or stop it first".into());
     }
+    // Its targets as they would be: a running session keeps something to block.
+    let library = context.definitions.library();
+    let lists = session
+        .targets
+        .iter()
+        .map(|l| library.target(l).cloned().ok_or("A target of this session is gone"))
+        .collect::<Result<Vec<_>, _>>()?;
+    something_to_block(&parts_of(&lists)?)?;
     let id = session.id.clone();
     context.definitions.save_session(session)?;
     refresh_running(context, &[id])
@@ -356,6 +364,16 @@ fn parts_of(lists: &[Target]) -> Result<Vec<Part>, String> {
     lists.iter().map(|list| Ok(Part { name: list.name.clone(), lists: list.lists()?, actions: list.actions })).collect()
 }
 
+/// Refused when nothing in `parts` can run: a session is not started, nor left running, with nothing
+/// to block. An action has nothing to do with an empty list of its own kind, while one that needs no
+/// list (Obsidian's) always does.
+fn something_to_block(parts: &[Part]) -> Result<(), String> {
+    if parts.iter().any(Part::can_run) {
+        return Ok(());
+    }
+    Err("Nothing to block: add a site or program to its targets, or turn on an action that needs no list".into())
+}
+
 /// Starts a session as it is defined now, with its targets and condition, checked again where it
 /// counts.
 fn start(context: &Context, id: &str) -> Result<(), String> {
@@ -363,11 +381,7 @@ fn start(context: &Context, id: &str) -> Result<(), String> {
     let resolved = context.definitions.library().resolve(id)?;
     let lock = start_lock(&resolved)?;
     let parts = parts_of(&resolved.lists)?;
-    // An action has nothing to do with an empty list of its own kind, while one that needs no
-    // list (Obsidian's) always does. What matters is that something can run.
-    if !parts.iter().any(Part::can_run) {
-        return Err("Nothing to block: add a site or program to its targets, or turn on an action that needs no list".into());
-    }
+    something_to_block(&parts)?;
     context.sessions.start_with(id, &resolved.session.name, parts, resolved.condition, resolved.allowance, lock)
 }
 
