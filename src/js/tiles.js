@@ -203,8 +203,6 @@ function makeTile(kind, id) {
         ? el("cds-overflow-menu-item", { "data-action": "rename" }, t("sessions.fields.rename"))
         : el("cds-overflow-menu-item", { "data-action": "edit" }, t("common.edit")),
       el("cds-overflow-menu-item", { "data-action": "duplicate" }, t("common.duplicate")),
-      // A session's lock settings (a timer's length, …); the method is the tile's select.
-      kind === "sessions" ? el("cds-overflow-menu-item", { "data-action": "lock" }, t("sessions.lockSettings")) : null,
       el("cds-overflow-menu-item", { "data-action": "delete", danger: true }, t("common.delete")),
     ),
   );
@@ -234,11 +232,10 @@ function makeTile(kind, id) {
       if (item.dataset.action === "rename") renameSession(id);
       if (item.dataset.action === "edit") location.hash = KINDS[kind].editPath + encodeURIComponent(id);
       if (item.dataset.action === "duplicate") duplicate(kind, id);
-      if (item.dataset.action === "lock") setLock(id, overview.sessions.find((b) => b.id === id).lock.method);
       if (item.dataset.action === "delete") confirmDelete(kind, id);
     });
   }
-  const parts = { tile, top, name, tag, summary, actions, menu, lock, lockItem: menu.querySelector('[data-action="lock"]'), deleteItem: menu.querySelector('[data-action="delete"]') };
+  const parts = { tile, top, name, tag, summary, actions, menu, lock, deleteItem: menu.querySelector('[data-action="delete"]') };
   if (kind === "sessions") {
     addSessionControls(parts, id);
     addRows(parts, id);
@@ -388,8 +385,6 @@ function renderSessionControls(parts, session) {
   parts.tag.hidden = false;
   parts.tag.setAttribute("type", running ? (quiet ? "cool-gray" : running.locked ? "green" : "blue") : "gray");
   parts.tag.textContent = t(`sessions.state.${running ? (quiet ? "inactive" : running.locked ? "runningLocked" : "running") : "notRunning"}`);
-  // Settings to change (in the menu): all locks but No lock.
-  parts.lockItem.hidden = !!(running && running.locked) || !LOCKS[session.lock.method] || !LOCKS[session.lock.method].form;
   const busy = parts.toggle.dataset.busy === "1";
   // A session locked with a delay is asked to stop first, then waited out.
   const asking = running && running.stop_delay && running.stop_remaining === null;

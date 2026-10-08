@@ -1,8 +1,8 @@
-// A session is set up on its own tile, never in an editor page: a row each for Block (its
-// targets), When (its condition), Unless (its allowance) and Lock, each opening a menu. Each
-// choice is saved as it is made. An allowance's settings, a new session and a new name are asked
-// in the modal. New target and New condition (in their menus) go to that kind's editor and come
-// back with it chosen (`detour`).
+// A session is set up on its own tile, never in an editor page: a row each for its Targets,
+// Condition, Allowance and Lock, each with an edit button opening a panel of what it can be. Each
+// choice is saved as it is made. An allowance's settings, a lock's settings, a new session and a
+// new name are asked in the modal. New target and New condition (in their panels) go to that
+// kind's editor and come back with it chosen (`detour`).
 
 import { ask, el, invalid, invoke, newId, notify, overview, quoted, refresh, runningOf, t } from "./core.js";
 import { LOCKS } from "./locks.js";
@@ -10,7 +10,7 @@ import { allowanceSection } from "./forms.js";
 import { KINDS, freeName } from "./kinds.js";
 import { detour } from "./detour.js";
 
-// The condition menu's choice for no condition.
+// The condition panel's choice for no condition.
 const ALWAYS = "always";
 
 // Saves a session with `change` applied; a refusal (a locked session, no target) is shown on the page.
@@ -24,11 +24,12 @@ async function save(session, change) {
   await refresh();
 }
 
-// ---- A session's rows: Block, When, Unless and Lock, a `cds-contained-list` on its tile. A row
-// that can be changed opens Carbon's menu of what it can be: the targets to tick, one condition,
-// allowance or lock method to choose, and making a new target or condition, or the settings of
-// the allowance or lock it has. A locked session's targets, condition and lock stay as they are
-// (no menu); its allowance may still get stricter, which is for the service to judge.
+// ---- A session's rows: Targets, Condition, Allowance and Lock (keys `block`, `when`, `unless`,
+// `lock`), a `cds-contained-list` on its tile. A row that can be changed has an edit button that
+// opens a panel of what it can be: the targets to tick, one condition, allowance or lock method to
+// choose, and making a new target or condition, or the settings of the allowance or lock it has.
+// A locked session's targets, condition and lock stay as they are (no edit button); its allowance
+// may still get stricter, which is for the service to judge.
 
 const ROWS = [
   { key: "block", icon: "target-16" },
@@ -36,7 +37,6 @@ const ROWS = [
   { key: "unless", icon: "pause-16" },
   { key: "lock", icon: "locked" },
 ];
-
 
 // The rows of the session `id`, added to its tile's parts (`tiles.js`).
 function addRows(parts, id) {
@@ -103,9 +103,10 @@ function renderRows(parts, session, lines) {
   }
 }
 
-// What a row's panel holds, with no heading of its own (the row says what it is): the targets as Carbon checkboxes, each tick saved
-// at once and the panel staying open for the next, and a button to make a new one; or one condition,
-// allowance or lock method in a plain list to click (`choices`).
+// What a row's panel holds, with no heading of its own (the row says what it is): the targets as
+// Carbon checkboxes, each tick saved at once and the panel staying open for the next, and a button
+// to make a new one; or one condition, allowance or lock method in a plain list to click
+// (`choices`).
 function fillPanel(parts, id, key, panel, close) {
   const session = current(id);
   const button = (text, icon, act) => {
@@ -210,7 +211,7 @@ async function setAllowance(parts, id, type) {
   if (type === "none") return save(session, { allowance: null });
   const form = allowanceSection();
   form.fill(session.allowance && session.allowance.type === type ? session.allowance : { type });
-  // Its type is what was chosen in the dropdown.
+  // Its type is what was chosen in the panel.
   form.nodes[0].hidden = true;
   parts.choosing = true;
   const terms = await ask({
@@ -228,9 +229,9 @@ async function setAllowance(parts, id, type) {
   else await refresh();
 }
 
-// A new session: its name and its targets, in the modal; the rest is set on its tile, which
-// opens expanded.
-async function newSession(expand) {
+// A new session: its name and its targets, in the modal; the rest is set on its tile, which is
+// brought into view (`show`).
+async function newSession(show) {
   const name = el("cds-text-input", { label: t("common.name"), value: freeName("sessions", overview.sessions) });
   const targets = el("cds-multi-select", {
     "title-text": t("sessions.fields.targets"),
@@ -253,10 +254,8 @@ async function newSession(expand) {
     },
   });
   if (!made) return;
-  // Open from the start, and in view once its tile is there.
-  expand(made.id);
   await save(made, {});
-  expand(made.id);
+  show(made.id);
 }
 
 // A new name, in the modal.
