@@ -158,8 +158,8 @@ function renderRows(parts, session, lines) {
       }
       const chosen = chosenOf(key, session);
       if (select.value !== chosen) select.value = chosen;
-      // Fixed while locked; the allowance only stricter.
-      select.disabled = locked && key !== "unless";
+      // Fixed while locked; the allowance only stricter, so none stays none (`allowance::kind_allowed`).
+      select.disabled = locked && (key !== "unless" || !session.allowance);
     }
     // The button: targets and the condition's page, the settings of the allowance or lock it has. A
     // locked session's targets cannot change; its lock settings only to end later or wait longer.
