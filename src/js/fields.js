@@ -98,7 +98,7 @@ function renderRows(parts, session, lines) {
   }
 }
 
-// What a row's panel holds, under the row's name: the targets as Carbon checkboxes, each tick saved
+// What a row's panel holds, with no heading of its own (the row says what it is): the targets as Carbon checkboxes, each tick saved
 // at once and the panel staying open for the next, and a button to make a new one; or one condition,
 // allowance or lock method in a plain list to click (`choices`).
 function fillPanel(parts, id, key, panel, close) {
@@ -117,7 +117,7 @@ function fillPanel(parts, id, key, panel, close) {
   const choices = (options, chosen, choose, more = []) =>
     el(
       "cds-contained-list",
-      { kind: "disclosed", label: t(`sessions.fields.${key}`) },
+      { kind: "disclosed", "aria-label": t(`sessions.fields.${key}`) },
       ...options.map(([value, text]) =>
         listItem(text, value === chosen ? carbonIcon("checkmark", "icon") : el("span", { slot: "icon", class: "no-mark" }), () => value !== chosen && choose(value)),
       ),
@@ -136,7 +136,7 @@ function fillPanel(parts, id, key, panel, close) {
     // What is ticked while it is open: each tick builds on the last, also before the last one's
     // save has come back.
     const chosen = new Set(session.targets);
-    const group = el("cds-checkbox-group", { "legend-text": t("sessions.fields.block") });
+    const group = el("cds-checkbox-group", { "aria-label": t("sessions.fields.block") });
     for (const target of overview.targets) {
       const box = el("cds-checkbox", { "label-text": target.name });
       box.checked = chosen.has(target.id);
