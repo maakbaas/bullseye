@@ -202,22 +202,38 @@ async fn export_settings(app: tauri::AppHandle, remote: State<'_, Remote>) -> Re
 async fn open_settings(app: tauri::AppHandle) -> Result<Option<Opened>, String> {
     let chosen = app.dialog().file().add_filter(SETTINGS_FILTER.0, SETTINGS_FILTER.1).blocking_pick_file();
     let Some(path) = chosen.map(|path| path.into_path().map_err(|e| e.to_string())).transpose()? else { return Ok(None) };
-    let contents = definitions::read_settings(&path)?.contents();
-    Ok(Some(Opened { path: path.to_string_lossy().into_owned(), contents }))
+    let library = definitions::read_settings(&path)?;
+    let contents = library.contents();
+    let installed = if library.has_store_apps() { installed_families().await } else { Some(Vec::new()) };
+    let apps_checked = installed.is_some();
+    let (_, left_out) = library.without_missing_apps(installed.as_deref());
+    Ok(Some(Opened { path: path.to_string_lossy().into_owned(), contents, left_out, apps_checked }))
 }
 
-/// A settings file and what is in it (`open_settings`).
+/// The installed Store apps' family names, asked of PowerShell off the main thread; `None` if it
+/// cannot say.
+async fn installed_families() -> Option<Vec<String>> {
+    tauri::async_runtime::spawn_blocking(store_apps::installed_families).await.ok().flatten()
+}
+
+/// A settings file and what is in it (`open_settings`): what it holds, and the Store apps in it
+/// that are not installed here, which Import leaves out (`apps_checked`: whether that could be told).
 #[derive(serde::Serialize)]
 struct Opened {
     path: String,
     contents: Contents,
+    left_out: Vec<definitions::LeftOut>,
+    apps_checked: bool,
 }
 
 /// Import: replaces every block list, condition and block with those in the settings file at
-/// `path`. Refused while a block is locked; blocks that run unlocked end with it.
+/// `path`, without the Store apps not installed here (`Library::without_missing_apps`). Refused
+/// while a block is locked; blocks that run unlocked end with it.
 #[tauri::command]
-fn import_settings(path: String, remote: State<Remote>) -> Result<(), String> {
+async fn import_settings(path: String, remote: State<'_, Remote>) -> Result<(), String> {
     let library = definitions::read_settings(std::path::Path::new(&path))?;
+    let installed = if library.has_store_apps() { installed_families().await } else { None };
+    let (library, _) = library.without_missing_apps(installed.as_deref());
     remote.command(Request::Import { library })
 }
 

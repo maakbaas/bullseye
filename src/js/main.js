@@ -241,10 +241,14 @@ $("import").addEventListener("click", async () => {
     ];
     if (overview.running.length) body.push(t("settings.importStops"));
     if (unlocked.length) body.push(t("settings.importUnlocked", { n: unlocked.length, names: joined(unlocked.map(quoted)).join("") }));
+    // Store apps not installed here are left out (the backend tells which: `Library::without_missing_apps`).
+    const apps = opened.left_out.map((app) => t("settings.importAppIn", { app: quoted(app.name), list: quoted(app.list) }));
+    const leftOut = !opened.apps_checked ? t("settings.importAppsUnknown") : apps.length ? t("settings.importAppsLeftOut", { n: apps.length, apps: joined(apps).join("") }) : "";
+    if (leftOut) body.push(leftOut);
     const sure = await ask({ heading: t("settings.importHeading"), body: body.join(" "), action: t("settings.importAction"), kind: "danger" });
     if (!sure) return;
     await invoke("import_settings", { path: opened.path });
-    notify("transfer-notices", "success", t("settings.imported"));
+    notify("transfer-notices", "success", t("settings.imported"), leftOut);
     await refresh();
   } catch (e) {
     notify("transfer-notices", "error", t("settings.importFailed"), String(e));

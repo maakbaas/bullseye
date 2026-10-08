@@ -113,6 +113,12 @@ pub fn installed() -> Result<Vec<StoreApp>, String> {
     parse(&String::from_utf8_lossy(&output.stdout))
 }
 
+/// The family names of the installed apps, Windows' own included, for Import to tell which of a
+/// file's are here (`definitions::Library::without_missing_apps`); `None` if PowerShell cannot say.
+pub fn installed_families() -> Option<Vec<String>> {
+    installed().ok().map(|apps| apps.into_iter().map(|app| app.family).collect())
+}
+
 /// What the script printed: nothing, one app (an object) or several (an array).
 fn parse(output: &str) -> Result<Vec<StoreApp>, String> {
     let output = output.trim().trim_start_matches('\u{feff}');

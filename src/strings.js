@@ -610,6 +610,15 @@ window.STRINGS = {
       one: "{names} has a password lock without its hash in the file and imports without a lock",
       other: "{names} have password locks without their hash in the file and import without a lock",
     },
+    // Store apps in the file that are not installed on this PC, which are left out: a Store app is one
+    // exact package, and this PC may have the app as another one, or not at all. {apps}: each as
+    // importAppIn, {app} its name and {list} its block list, quoted.
+    importAppsLeftOut: {
+      one: "Left out, not installed on this PC: {apps}",
+      other: "Left out, not installed on this PC: {apps}",
+    },
+    importAppIn: "{app} in {list}",
+    importAppsUnknown: "Could not tell which Store apps are installed here, so all are kept",
     // Said too when a block runs without being locked: it ends.
     importStops: "Running blocks without a lock are stopped",
     importAction: "Import",

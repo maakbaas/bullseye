@@ -192,7 +192,7 @@ Make a copy, as **Duplicate** in a tile's menu does: named after the original wi
 
 ### `export`, `import`
 
-To move to another computer: `export <file>` writes every block list, condition and block to a settings file (JSON), the same file the window's **Export** saves. `import <file>` replaces all of them with what is in such a file, after asking (or with `--yes`); it is refused while any block runs. A password lock is in the file with its hash (never the password), so keep the file private; a block whose file has no hash comes without a lock, and the question names them. The unlock delay is a setting of Bullseye itself, not of the file.
+To move to another computer: `export <file>` writes every block list, condition and block to a settings file (JSON), the same file the window's **Export** saves. `import <file>` replaces all of them with what is in such a file, after asking (or with `--yes`); it is refused while any block runs. A password lock is in the file with its hash (never the password), so keep the file private; a block whose file has no hash comes without a lock, and the question names them. A Store app in the file that is not installed on this PC (by its exact package family name: the same app can be another package on another PC) is left out, and the question and the output say which. The unlock delay is a setting of Bullseye itself, not of the file.
 
 ```powershell
 bullseye-cli export D:\bullseye.json

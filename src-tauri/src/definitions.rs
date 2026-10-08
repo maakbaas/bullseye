@@ -712,6 +712,42 @@ impl Library {
     }
 }
 
+/// A Store app of a settings file that this computer has not installed: left out on Import, as a
+/// family name is one exact package (`store_apps.rs`) and another computer may have the app as
+/// another package, or not at all.
+#[derive(Serialize, Debug, PartialEq, Clone)]
+pub struct LeftOut {
+    /// The block list it was in.
+    pub list: String,
+    pub family: String,
+    /// What its family name calls it (`store_apps::readable`).
+    pub name: String,
+}
+
+impl Library {
+    /// Whether any of its block lists has a Store app.
+    pub fn has_store_apps(&self) -> bool {
+        self.lists.iter().any(|list| !list.entries.store_apps.is_empty())
+    }
+
+    /// Without the Store apps that are not among `installed` (family names, letter case aside), and
+    /// what was left out. `None`: what is installed is not known, so everything stays.
+    pub fn without_missing_apps(mut self, installed: Option<&[String]>) -> (Library, Vec<LeftOut>) {
+        let Some(installed) = installed else { return (self, Vec::new()) };
+        let mut left_out = Vec::new();
+        for list in &mut self.lists {
+            list.entries.store_apps.retain(|family| {
+                let here = installed.iter().any(|i| i.eq_ignore_ascii_case(family.trim()));
+                if !here {
+                    left_out.push(LeftOut { list: list.name.clone(), family: family.clone(), name: crate::store_apps::readable(family) });
+                }
+                here
+            });
+        }
+        (self, left_out)
+    }
+}
+
 /// Writes the settings file of `library` (Export).
 pub fn write_settings(path: &std::path::Path, library: Library) -> Result<(), String> {
     fs::write(path, library.settings_text()?).map_err(|e| format!("Cannot write {}: {e}", path.display()))
@@ -1045,6 +1081,26 @@ pub mod tests {
             Some(Terms::Budget { allowed: "soon".into(), scope: crate::allowance::Scope::Total, reset: crate::allowance::Reset::Day });
         let bad = Library { lists: vec![block_list("l", &[])], blocks: vec![budget], ..Library::default() };
         assert!(definitions.replace(bad).is_err());
+    }
+
+    #[test]
+    fn a_store_app_this_computer_has_not_installed_is_left_out() {
+        let mut claude = block_list("c", &["claude.ai"]);
+        claude.name = "Claude".into();
+        claude.entries.store_apps = vec!["AnthropicPBC.Claude_fnn82j28hfe8t".into(), "SpotifyAB.SpotifyMusic_zpdnekdrzrea0".into()];
+        let library = Library { lists: vec![claude], ..Library::default() };
+        let installed = vec!["spotifyab.spotifymusic_zpdnekdrzrea0".to_string(), "Claude_pzs8sxrjxfjjc".to_string()];
+        let (kept, left_out) = library.clone().without_missing_apps(Some(&installed));
+        assert_eq!(kept.lists[0].entries.store_apps, vec!["SpotifyAB.SpotifyMusic_zpdnekdrzrea0"], "letter case aside");
+        assert_eq!(
+            left_out,
+            vec![LeftOut { list: "Claude".into(), family: "AnthropicPBC.Claude_fnn82j28hfe8t".into(), name: "Claude".into() }],
+            "another package of the same app is not a match"
+        );
+        assert_eq!(kept.lists[0].entries.filters, vec!["claude.ai"], "the rest of the list stays");
+        // Not known what is installed: everything stays.
+        assert!(library.has_store_apps() && !Library::default().has_store_apps());
+        assert_eq!(library.clone().without_missing_apps(None), (library, Vec::new()));
     }
 
     #[test]

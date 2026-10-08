@@ -1078,6 +1078,10 @@ fn execute(command: Command) -> Result<(), Failure> {
         Command::Import { file, yes } => {
             let library = definitions::read_settings(std::path::Path::new(&file)).map_err(failed)?;
             let contents = library.contents();
+            // A Store app this computer has not installed is left out, as the window does.
+            let installed = crate::store_apps::installed_families();
+            let checked = installed.is_some() || !library.has_store_apps();
+            let (library, left_out) = library.without_missing_apps(installed.as_deref());
             let count = |n: usize, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
             let mut question = format!(
                 "Replace every block list, condition and block with the {}, {} and {} in {file}? This cannot be undone.",
@@ -1089,11 +1093,18 @@ fn execute(command: Command) -> Result<(), Failure> {
                 let names = contents.unlocked.iter().map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ");
                 question.push_str(&format!(" {names} had a password lock, which is not in the file: no lock once imported."));
             }
+            let apps = left_out_words(&left_out, checked);
+            if !apps.is_empty() {
+                question.push_str(&format!(" {apps}"));
+            }
             if !confirm(&question, yes)? {
                 return Err(failed("Not imported."));
             }
             send(Request::Import { library })?;
             say!("Imported {file}.");
+            if !apps.is_empty() {
+                say!("{apps}");
+            }
         }
         Command::Duplicate { kind, item } => {
             // The item's id and name, then the copy's name, which the service gives it.
@@ -1177,6 +1188,19 @@ fn execute(command: Command) -> Result<(), Failure> {
         },
     }
     Ok(())
+}
+
+/// The Store apps an import leaves out, as they are not installed here, in a sentence; empty for none.
+/// `checked`: whether what is installed could be told at all (else everything is kept).
+fn left_out_words(left_out: &[definitions::LeftOut], checked: bool) -> String {
+    if !checked {
+        return "Which Store apps are installed here cannot be told, so all of them are kept.".into();
+    }
+    if left_out.is_empty() {
+        return String::new();
+    }
+    let apps: Vec<String> = left_out.iter().map(|app| format!("\"{}\" in \"{}\" ({})", app.name, app.list, app.family)).collect();
+    format!("Left out, as not installed on this PC: {}.", apps.join(", "))
 }
 
 /// The other way to unlock, in words.
@@ -1906,6 +1930,7 @@ mod tests {
         ok(&["new", "B", "--list", "L", "--lock-password", "secret", "--allowance", "pomodoro", "--blocked", "50m", "--allowed", "10m"]);
         assert_eq!(ok(&["export", &path]), format!("Wrote every block list, condition and block to {path}.\n"));
         serve("import");
+        // (The file has no Store apps, so none are left out and nothing is said of them.)
         assert_eq!(ok(&["import", &path, "--yes"]), format!("Imported {path}.\n"));
         let shown = ok(&["show", "B"]);
         assert!(shown.contains("Lock:        password") && shown.contains("Allowance:   Blocked for 50 minutes"), "{shown}");
@@ -2113,6 +2138,18 @@ mod tests {
             describe_webhook(&hook),
             "GET https://x.io every 1 minute: active on HTTP 200 and body \"on\", not active on (not set), otherwise active"
         );
+    }
+
+    #[test]
+    fn an_import_says_which_store_apps_it_leaves_out() {
+        let claude =
+            definitions::LeftOut { list: "Claude".into(), family: "AnthropicPBC.Claude_fnn82j28hfe8t".into(), name: "Claude".into() };
+        assert_eq!(
+            left_out_words(std::slice::from_ref(&claude), true),
+            "Left out, as not installed on this PC: \"Claude\" in \"Claude\" (AnthropicPBC.Claude_fnn82j28hfe8t)."
+        );
+        assert_eq!(left_out_words(&[], true), "");
+        assert!(left_out_words(&[claude], false).ends_with("so all of them are kept."));
     }
 
     #[test]
