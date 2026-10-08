@@ -30,6 +30,8 @@ window.STRINGS = {
     cancel: "Cancel",
     // The title of a refusal shown in a dialog, above the reason.
     notSaved: "Could not be saved",
+    // The title of what is wrong in a form, above the reason, while it is being filled in.
+    cannotSave: "Cannot be saved",
     // The button of a list page: short, so it fits at any width.
     new: "New",
     save: "Save",

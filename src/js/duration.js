@@ -3,7 +3,7 @@
 // way `duration.rs` reads it), so nothing but this field changes. Which units show is up to where it
 // is used: a field with no days takes `36` hours.
 
-import { el, invalid, t } from "./core.js";
+import { el, errorNote, invalid, t } from "./core.js";
 
 const SECONDS = { d: 86400, h: 3600, m: 60, s: 1 };
 const ALL = ["d", "h", "m", "s"];
@@ -31,7 +31,12 @@ export function durationField({ label, helper = "", units = ALL }) {
   });
   const row = el("div", { class: "duration-fields" }, ...inputs);
   const node = el("div", { class: "duration" }, title, row);
-  if (helper) node.append(el("p", { class: "cds--type-helper-text-01" }, helper));
+  const help = helper ? el("p", { class: "cds--type-helper-text-01" }, helper) : null;
+  if (help) node.append(help);
+  // What is wrong goes under the whole field, not under its last box: its boxes are marked, the
+  // reason is a notification in the helper's place.
+  const note = errorNote();
+  node.append(note.node);
 
   const seconds = () =>
     inputs.reduce((total, input, at) => total + Math.max(0, Math.floor(Number(input.value) || 0)) * SECONDS[units[at]], 0);
@@ -61,7 +66,9 @@ export function durationField({ label, helper = "", units = ALL }) {
     },
     // The reason it cannot be used, on the field (null clears it); true when there is one.
     error(why) {
-      inputs.forEach((input, at) => invalid(input, at === inputs.length - 1 ? why : why ? " " : null));
+      for (const input of inputs) invalid(input, why ? " " : null);
+      if (help) help.hidden = !!why;
+      note.show(why);
       return !!why;
     },
     onChange(handler) {

@@ -108,7 +108,7 @@ function notify(slot, kind, title, subtitle = "", { closable = true, scroll = tr
   // An error must not appear out of sight (a tile far down a long page, a form scrolled past its top).
   // Only once the notification has drawn: before that the box is empty and has no height to scroll to.
   if (kind === "error" && scroll) {
-    const show = () => requestAnimationFrame(() => note.isConnected && note.scrollIntoView({ session: "center", behavior: "smooth" }));
+    const show = () => requestAnimationFrame(() => note.isConnected && note.scrollIntoView({ block: "center", behavior: "smooth" }));
     if (note.updateComplete) note.updateComplete.then(show);
     else show();
   }
@@ -162,6 +162,19 @@ function invalid(field, why) {
   field.toggleAttribute("invalid", !!why);
   if (why) field.setAttribute("invalid-text", why);
   return !!why;
+}
+
+// Why a form cannot be saved, as Carbon says it: an error notification under the form's fields,
+// hidden while there is nothing wrong. `show(text or null)`.
+function errorNote() {
+  const node = el("cds-inline-notification", { class: "form-error", kind: "error", title: t("common.cannotSave"), "low-contrast": true, "hide-close-button": true, hidden: true });
+  return {
+    node,
+    show(why) {
+      node.hidden = !why;
+      if (why) node.setAttribute("subtitle", why);
+    },
+  };
 }
 
 // The one dialog: a question before anything that cannot be taken back, or a short form (a
@@ -235,4 +248,4 @@ function confirmStricter(names, what) {
   return ask({ heading: t("stricter.heading", { names }), body: t("stricter.body", { names, what }), action: t("stricter.action"), kind: "primary" });
 }
 
-export { invoke, $, t, tn, ref, joined, nodesOf, editHref, quoted, names, applyStrings, el, described, weekText, allowanceLabel, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, targetName, usersOf, wordingOf, holdersOf, lockedUsersOf, invalid, ask, dismiss, confirmStricter };
+export { invoke, $, t, tn, ref, joined, nodesOf, editHref, quoted, names, applyStrings, el, described, weekText, allowanceLabel, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, targetName, usersOf, wordingOf, holdersOf, lockedUsersOf, invalid, errorNote, ask, dismiss, confirmStricter };

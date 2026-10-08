@@ -250,20 +250,8 @@ function makeTile(kind, id) {
   return parts;
 }
 
-// Tiles go in two columns from Carbon's lg breakpoint on, each tile in the column of its place (the
-// first, third … on the left, the second, fourth … on the right), so the columns are staggered: a tile
-// that grows moves only the ones under it. Below it they are all in the first column, which is laid out
-// as if it were not there (`app.css`).
-const wide = matchMedia("(min-width: 66rem)");
-let listed = null;
-wide.addEventListener("change", () => listed && renderTiles(listed));
-
 function renderTiles(kind) {
-  listed = kind;
   const container = $("tiles");
-  if (container.children.length !== 2) container.replaceChildren(el("div", { class: "tile-column" }), el("div", { class: "tile-column" }));
-  const [left, right] = container.children;
-  const last = new Map();
   const kindOf = KINDS[kind];
   const shown = kindOf.items();
   const wanted = new Set(shown.map((item) => `${kind}:${item.id}`));
@@ -275,12 +263,7 @@ function renderTiles(kind) {
   }
   shown.forEach((item, index) => {
     const parts = tiles.get(`${kind}:${item.id}`) || makeTile(kind, item.id);
-    const column = wide.matches && index % 2 ? right : left;
-    const before = last.get(column) || null;
-    if (parts.tile.parentElement !== column || parts.tile.previousElementSibling !== before) {
-      column.insertBefore(parts.tile, before ? before.nextElementSibling : column.firstElementChild);
-    }
-    last.set(column, parts.tile);
+    if (container.children[index] !== parts.tile) container.insertBefore(parts.tile, container.children[index] || null);
     parts.name.textContent = item.name;
     // A line is its text, or [icon, text].
     const summary = summaryOf(kind, item);

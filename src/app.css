@@ -53,7 +53,9 @@ main { padding-block: var(--cds-spacing-06); }
 .trail cds-breadcrumb-item { display: inline-flex; }
 .notices:empty { display: none; }
 .notices { margin-bottom: var(--cds-spacing-05); }
-.notices cds-inline-notification, .webhook-result cds-inline-notification { max-width: none; }
+.notices cds-inline-notification, .webhook-result cds-inline-notification, .form-error { max-width: none; }
+/* Why a form cannot be saved (`errorNote`): Carbon's notification keeps its margin otherwise. */
+.form-error { margin-block: 0; }
 
 /* The sessions, as tiles in the Carbon grid. */
 /* The tiles are columns of the page's grid itself (this wrapper only keeps them together), so
@@ -61,15 +63,6 @@ main { padding-block: var(--cds-spacing-06); }
 #tiles { display: contents; }
 /* One session per row, full width. On wider windows its actions move to the right of the row. */
 .session-tile.cds--css-grid-column { display: flex; flex-direction: column; gap: var(--cds-spacing-03); margin-bottom: var(--cds-spacing-05); }
-/* From Carbon's lg breakpoint on the tiles are in two columns, each stacking its own tiles, so a taller tile
-   leaves the one beside it as it is (staggered). The columns are laid out as if they were not there
-   below it. The list's outer edge is kept as the grid's columns have it (its margins). */
-.tile-column { display: contents; }
-@media (min-width: 66rem) {
-  #tiles { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; column-gap: var(--cds-spacing-06); margin-inline: var(--cds-grid-gutter-start) var(--cds-grid-gutter-end); }
-  .tile-column { display: flex; flex-direction: column; gap: var(--cds-spacing-06); min-inline-size: 0; }
-  .tile-column .session-tile.cds--css-grid-column { margin: 0; }
-}
 .session-tile .body { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
 .session-tile .info { display: flex; flex-direction: column; align-items: flex-start; gap: var(--cds-spacing-05); }
 .session-tile .top { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--cds-spacing-03); }
@@ -116,13 +109,15 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 .duration[hidden] { display: none; }
 /* Its label and helper text, as Carbon's fields have them. */
 .duration > p { margin: 0; color: var(--cds-text-secondary); }
-.duration > p:last-child:not(:first-child) { margin-block-start: var(--cds-spacing-02); }
+.duration > p.cds--type-helper-text-01 { margin-block-start: var(--cds-spacing-02); }
+.duration > p[hidden] { display: none; }
+/* Why it cannot be used, under it where its helper was. */
+.duration > .form-error { margin-block-start: var(--cds-spacing-03); }
 /* The until lock's date and time, side by side as Carbon shows them. */
 .date-time { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--cds-spacing-05); }
 /* The time takes the room beside the date, so a message under it wraps there. */
 .date-time cds-time-picker { flex: 1 1 8rem; min-inline-size: 0; }
-/* Carbon's md breakpoint up to its lg: one tile to a row, its actions beside its rows. From lg on there are two columns, and the actions go under the rows again. */
-@media (min-width: 42rem) and (max-width: 65.99rem) {
+@media (min-width: 42rem) { /* Carbon's md breakpoint */
   .session-tile .body { flex-direction: row; align-items: flex-end; justify-content: space-between; }
   .session-tile .actions { flex: none; }
 }
@@ -155,7 +150,6 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 .week .cell.hour-start { border-block-start: 1px solid var(--cds-border-subtle-01); }
 .week .cell.last { border-block-end: 1px solid var(--cds-border-subtle-01); }
 .week-summary { color: var(--cds-text-secondary); }
-.week-summary.problem { color: var(--cds-text-error); }
 .week .cell.on { background: var(--cds-interactive); }
 .week.disabled .cell { cursor: default; }
 .week.disabled .cell.on { background: var(--cds-border-disabled); }
