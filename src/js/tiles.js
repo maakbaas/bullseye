@@ -43,29 +43,6 @@ const runningRuleLine = (running, rule, condition) => {
   return ["rule-16", tn(`sessions.tile.${on ? "activeDuring" : "inactiveOutside"}${change ? "For" : ""}`, { name, change })];
 };
 
-// A session's allowance line, short like its other lines. Not running: the terms (`Allowed 30 minutes a
-// day`, from the backend). Running: where it stands now, from the backend's words (`Running::allowance`):
-// a cycle is allowed for the next so long or allowed again in so long, a budget has so much left (and
-// when it is given back), a budget for each item says what the items that have been used have left.
-// Without one, it says so, as a session without a lock does.
-const allowanceLine = (running, allowance) => {
-  const icon = "pause-16";
-  const state = running && running.allowance;
-  if (!state) return [icon, allowance ? allowanceLabel(allowance) : t("sessions.tile.noAllowance")];
-  if (state.terms.type === "delayed") return [icon, state.open && state.change_words ? t("sessions.tile.delayedWaiting", { change: state.change_words }) : t("sessions.tile.delayedBegun")];
-  if (state.terms.type === "pomodoro") {
-    const key = state.open ? "allowanceOpen" : "allowanceBlocked";
-    return [icon, state.change_words ? t(`sessions.tile.${key}For`, { change: state.change_words }) : t(`sessions.tile.${key}`)];
-  }
-  if (state.left !== null) {
-    const key = `${state.left === 0 ? "allowanceUsedUp" : "allowanceLeft"}${state.reset_words ? "Reset" : ""}`;
-    return [icon, t(`sessions.tile.${key}`, { left: state.left_words, reset: state.reset_words })];
-  }
-  const items = state.items.map((item) => (item.left === 0 ? t("sessions.tile.allowanceItemUsedUp", { item: item.item }) : t("sessions.tile.allowanceItem", { item: item.item, left: item.left_words })));
-  if (!items.length) return [icon, allowanceLabel(state.terms)];
-  return [icon, t("sessions.tile.allowanceItems", { items: items.join(t("common.separator")) })];
-};
-
 // The sessions that use an item, as links.
 const usedBy = (users) => ({ text: tn("common.usedBy", { n: users.length, names: joined(users.map((b) => ref(b.name, editHref("sessions", b.id)))) }) });
 
@@ -101,34 +78,60 @@ function summaryOf(kind, item) {
 // opens a menu.
 const plain = (text) => el("span", {}, ...nodesOf(typeof text === "object" && !Array.isArray(text) && text.text ? text.text : text)).textContent;
 
-// What a session's rows say (`fields.js`): per row its value, as defined, and for a running session
-// how it stands now (the lines its tile used to have, `runningRuleLine`, `allowanceLine`,
-// `lockLines`), or nothing.
+// What a session's rows say (`fields.js`): the targets' names and the condition's, each a link to
+// its editor. The allowance and lock rows are their dropdowns; their settings are in the status line.
 function sessionLines(item) {
   const running = runningOf(item.id);
-  // The targets are links to their editors, as the condition's name is in its line.
   const names = item.targets.map((id) => (overview.targets.some((l) => l.id === id) ? ref(targetName(id), editHref("targets", id)) : targetName(id)));
   const condition = conditionOf(item);
   const rule = running ? running.condition : condition;
-  const lock = LOCKS[item.lock && item.lock.method];
   return {
-    block: [names.length ? joined(names) : t("sessions.tile.noTargets"), null],
-    // Running: whether it enforces now, and until when if the condition can say.
-    when: [
-      // The condition, a link to its editor, and what it is in words (its tile's line: the times, the drive, the web address).
-      // Its name, a link to its editor (the Targets row's names are); under it what it is in words,
-      // and while the session runs what is happening instead.
-      condition ? ref(condition.name, editHref("conditions", condition.id)) : rule ? plain(ruleLine(rule, null)[1]) : t("sessions.fields.always"),
-      running && rule ? t(`sessions.fields.${running.enforcing === false ? "inactive" : "active"}${running.condition_change_words ? "For" : ""}`, { change: running.condition_change_words }) : running ? t("sessions.fields.active") : null,
-      condition ? plain(summaryOf("conditions", condition)[0]) : t("sessions.fields.explain_when"),
-    ],
-    unless: [item.allowance ? allowanceLabel(item.allowance) : t("sessions.fields.noAllowance"), running && item.allowance ? plain(allowanceLine(running, item.allowance)[1]) : null],
-    lock: [
-      item.lock.method === "none" ? LOCKS.none.label : lock ? plain(lock.describe(item.lock)) : t("sessions.tile.unknownLock"),
-      // Running: how its lock stands, unless it has none.
-      running && !(item.lock.method === "none" && !running.locked) ? plain(lockLines(item, running)[0][1]) : null,
-    ],
+    block: names.length ? joined(names) : t("sessions.tile.noTargets"),
+    when: condition ? ref(condition.name, editHref("conditions", condition.id)) : rule ? plain(ruleLine(rule, null)[1]) : t("sessions.fields.always"),
   };
+}
+
+// What a running session does now, in a few words: blocking or not, and until when. Of the condition
+// and the allowance, whichever changes first says when.
+function nowText(running) {
+  const state = running.allowance;
+  const change = running.condition_change_words;
+  if (!running.enforcing) return t(`sessions.status.idle${change ? "For" : ""}`, { change });
+  const type = state && state.terms.type;
+  if (type === "delayed" && state.open && state.change_words) return t("sessions.status.delayed", { change: state.change_words });
+  if (type === "pomodoro") {
+    if (state.open) return t(`sessions.status.allowed${state.change_words ? "For" : ""}`, { change: state.change_words });
+    const conditionFirst = running.condition_change !== null && (state.change === null || running.condition_change < state.change);
+    if (state.change_words && !conditionFirst) return t("sessions.status.blockingUntilAllowed", { change: state.change_words });
+  }
+  if (type === "budget") {
+    if (state.left !== null) {
+      const key = `${state.left === 0 ? "usedUp" : "left"}${state.reset_words ? "Reset" : ""}`;
+      return t(`sessions.status.${key}`, { left: state.left_words, reset: state.reset_words });
+    }
+    // Each item its own budget: what each has left, or the terms while nothing was used.
+    const items = state.items.map((i) => (i.left === 0 ? t("sessions.tile.allowanceItemUsedUp", { item: i.item }) : t("sessions.tile.allowanceItem", { item: i.item, left: i.left_words })));
+    return items.length ? t("sessions.status.items", { items: items.join(t("common.separator")) }) : allowanceLabel(state.terms);
+  }
+  return t(`sessions.status.blocking${change ? "For" : ""}`, { change });
+}
+
+// A session's status line, beside Start / Stop: running, what it does now and how its lock stands;
+// stopped, what it is set to (the condition's times, the allowance's and the lock's settings). Parts
+// of text (with links), or none.
+function statusParts(item) {
+  const running = runningOf(item.id);
+  if (running) {
+    const [icon, lock] = lockLines(item, running)[0];
+    return [nowText(running), icon === "locked" || item.lock.method !== "none" ? lock : null].filter(Boolean);
+  }
+  const condition = conditionOf(item);
+  const lock = LOCKS[item.lock && item.lock.method];
+  return [
+    condition ? plain(summaryOf("conditions", condition)[0]) : null,
+    item.allowance ? allowanceLabel(item.allowance) : null,
+    item.lock.method === "none" ? null : lock ? lock.describe(item.lock) : t("sessions.tile.unknownLock"),
+  ].filter(Boolean);
 }
 
 // A session's lock line: the lock it will start with, or how its running lock stands.
@@ -227,7 +230,7 @@ function makeTile(kind, id) {
   // The state tag beside the title, which saves a row.
   const top = el("div", { class: "top" }, el("div", { class: "heading" }, title, tag), menu, lock);
   // A session's lines are its rows (`fields.js`), between its head and Start / Stop.
-  // A running session's status line: how its condition, allowance and lock stand now, beside Start / Stop.
+  // A session's status line (`statusParts`), beside Start / Stop.
   const status = el("p", { class: "status cds--type-helper-text-01" });
   const body = el("div", { class: "body" }, el("div", { class: "info" }, kind === "sessions" ? status : summary), actions);
   const tile = el("cds-tile", { class: columns }, top, body);
@@ -288,12 +291,15 @@ function renderTiles(kind) {
     parts.editIcon.classList.toggle("unavailable", !!held);
     if (kind === "sessions") {
       renderSessionControls(parts, item);
-      const lines = sessionLines(item);
-      renderRows(parts, item, lines);
-      // What is happening now, in one line for the tile: the condition, the allowance, the lock.
-      const now = ["when", "unless", "lock"].map((key) => lines[key][1]).filter(Boolean).join(" · ");
-      if (parts.status.textContent !== now) parts.status.textContent = now;
-      parts.status.hidden = !now;
+      renderRows(parts, item, sessionLines(item));
+      // One line for the tile, only redrawn when it changed (it has links in it).
+      const status = statusParts(item);
+      const shown = JSON.stringify(status);
+      if (parts.status.dataset.shown !== shown) {
+        parts.status.dataset.shown = shown;
+        parts.status.replaceChildren(...status.flatMap((part, at) => [at ? " · " : null, ...nodesOf(part)]).filter(Boolean));
+      }
+      parts.status.hidden = !status.length;
     }
     else {
       // Tagged while a locked session uses it (it can then only get stricter); a running session

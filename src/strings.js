@@ -87,19 +87,8 @@ window.STRINGS = {
       allowanceSettings: "Allowance settings",
       // A row's edit button, its tooltip and name. {what}: the row's label.
       change: "Change {what}",
-      // A running session's status where there is no condition or allowance to report on.
-      enforcing: "Enforcing",
-      // What a row explains when it has nothing set.
-      explain_when: "Active at all times",
-      explain_unless: "Nothing pauses it",
-      explain_lock: "Can be stopped at any time",
       // The dialog of a row: {what}: the row ("Condition"), {name}: the session.
       panelHeading: "{what} of {name}",
-      // Under a running session's condition. {change}: how long, in words.
-      active: "Active now",
-      activeFor: "Active for the next {change}",
-      inactive: "Inactive now",
-      inactiveFor: "Inactive for the next {change}",
       noAllowance: "No allowance",
       budget: "Time budget",
       pomodoro: "Pomodoro cycle",
@@ -110,6 +99,24 @@ window.STRINGS = {
       saveFailed: "Could not save {name}",
       rename: "Rename",
       renameHeading: "Rename {name}",
+    },
+
+    // A running session's status line: what it does now ({change}: until when, in words; {left} and
+    // {reset}: an allowance's time left and when it is given back). Its lock follows (`tile.locked*`).
+    status: {
+      blocking: "Blocking",
+      blockingFor: "Blocking for the next {change}",
+      blockingUntilAllowed: "Blocking, allowed again in {change}",
+      idle: "Not blocking now",
+      idleFor: "Not blocking for the next {change}",
+      delayed: "Not blocking yet, starts in {change}",
+      allowed: "Allowed now",
+      allowedFor: "Allowed for the next {change}",
+      left: "{left} of allowance left",
+      leftReset: "{left} of allowance left, refilled in {reset}",
+      usedUp: "Blocking, allowance used up",
+      usedUpReset: "Blocking, allowance back in {reset}",
+      items: "Allowance left: {items}",
     },
 
     // A session's tile. A weekly schedule is named, never written out (its times are on the
