@@ -55,6 +55,11 @@ function nameSection(input, ...more) {
   return el("section", {}, input, ...more);
 }
 
+// A part of an editor below its name: a heading and a line on what it is for, as each part of the
+// Settings page has, with space between parts and no line (only the buttons have one above them).
+const section = (title, text, ...content) =>
+  el("section", {}, el("h2", { class: "cds--type-productive-heading-03" }, title), el("p", { class: "cds--type-body-01" }, text), ...content);
+
 // The condition select's choice for no condition (an empty value reads as nothing chosen).
 const ALWAYS = "always";
 function blockForm() {
@@ -81,8 +86,6 @@ function blockForm() {
   condition.addEventListener("cds-dropdown-selected", syncEdit);
   let boxes = {};
   let edits = [];
-  const section = (title, text, ...content) =>
-    el("section", {}, el("h2", { class: "cds--type-productive-heading-03" }, title), el("p", { class: "cds--type-body-01" }, text), ...content);
   return {
     nodes: [
       nameSection(name),
@@ -451,8 +454,6 @@ function webhookPicker() {
   const result = el("div", { class: "webhook-result" });
   const show = (kind, title, subtitle = "") => result.replaceChildren(el("cds-inline-notification", { kind, title, subtitle, "low-contrast": true, "hide-close-button": true }));
   // Headings as in a block's editor: what is asked, when it is active, when not, and otherwise.
-  const part = (title, text, ...content) =>
-    el("section", {}, el("h2", { class: "cds--type-productive-heading-03" }, title), el("p", { class: "cds--type-body-01" }, text), ...content);
   const test = el("cds-button", { kind: "tertiary", size: "md" }, t("conditions.webhook.test"), carbonIcon("play", "icon"));
   const read = () => ({
     url: url.value.trim(),
@@ -494,11 +495,11 @@ function webhookPicker() {
   });
   return {
     nodes: [
-      part(t("conditions.webhook.requestTitle"), t("conditions.webhook.requestText"), url, method, every),
-      part(t("conditions.webhook.activeTitle"), t("conditions.webhook.activeText"), ...whenTrue.nodes),
-      part(t("conditions.webhook.inactiveTitle"), t("conditions.webhook.inactiveText"), ...whenFalse.nodes),
-      part(t("conditions.webhook.otherwiseTitle"), t("conditions.webhook.otherwiseText"), fallback),
-      part(t("conditions.webhook.testTitle"), t("conditions.webhook.testText"), el("div", { class: "inline-action" }, test), result),
+      section(t("conditions.webhook.requestTitle"), t("conditions.webhook.requestText"), url, method, every),
+      section(t("conditions.webhook.activeTitle"), t("conditions.webhook.activeText"), ...whenTrue.nodes),
+      section(t("conditions.webhook.inactiveTitle"), t("conditions.webhook.inactiveText"), ...whenFalse.nodes),
+      section(t("conditions.webhook.otherwiseTitle"), t("conditions.webhook.otherwiseText"), fallback),
+      section(t("conditions.webhook.testTitle"), t("conditions.webhook.testText"), el("div", { class: "inline-action" }, test), result),
     ],
     fill(condition) {
       const hook = condition.type === "webhook" ? condition : {};
@@ -571,11 +572,11 @@ function conditionForm() {
   // Its own sections, with their headings, so a div here (a section in a section would be drawn as a divided one).
   const hookPart = el("div", { class: "form" }, ...hook.nodes);
   const week = weekEditor();
-  const weekPart = el("section", {}, ...week.nodes);
+  const weekPart = section(t("conditions.weekTitle"), t("conditions.gridHelp"), ...week.nodes);
   const picker = drivePicker();
-  const drivePart = el("section", {}, ...picker.nodes);
+  const drivePart = section(t("conditions.drive.title"), t("conditions.drive.text"), ...picker.nodes);
   const combine = combinePicker();
-  const combinePart = el("section", {}, ...combine.nodes);
+  const combinePart = section(t("conditions.combine.title"), t("conditions.combine.text"), ...combine.nodes);
   const show = () => {
     weekPart.hidden = type.value !== "schedule";
     drivePart.hidden = type.value !== "flash_drive";
@@ -731,8 +732,7 @@ const DAY_NAMES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"].map((day) =>
 const SLOT = 30; // minutes per cell
 
 function weekEditor() {
-  // How to use it above, and what is marked, written out by the backend, below.
-  const help = el("p", { class: "cds--type-body-01 week-help" }, t("conditions.gridHelp"));
+  // What is marked, written out by the backend, below it (how to use it is its section's line).
   const grid = el("div", { class: "week", "aria-hidden": "true" });
   const summary = el("p", { class: "cds--type-body-01 week-summary" });
   const cells = DAY_NAMES.map(() => []);
@@ -847,7 +847,7 @@ function weekEditor() {
   grid.addEventListener("pointercancel", finish);
 
   return {
-    nodes: [help, grid, summary],
+    nodes: [grid, summary],
     read: () => ({ days: days.map((spans) => spans.map((span) => [...span])) }),
     fill: (values) => {
       days = values.days.map((spans) => spans.map((span) => [...span]));

@@ -110,8 +110,9 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 /* The editor: sections stacked, lists side by side where there is room. */
 .form { display: flex; flex-direction: column; gap: var(--cds-spacing-07); }
 .form section { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
-.form section > p { color: var(--cds-text-secondary); margin-top: calc(-1 * var(--cds-spacing-03)); }
-.form section + section { padding-top: var(--cds-spacing-07); border-top: 1px solid var(--cds-border-subtle-01); }
+/* Parts with a heading each, spaced as the Settings page's, without lines between them. */
+.form section > p { color: var(--cds-text-secondary); }
+#view-editor:not([data-kind="lists"]) #form, #form .form { gap: var(--cds-spacing-09); }
 /* The fields of one choice inside a section (a block's allowance type), spaced as the section's own. */
 .form .fields { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
 .form .fields[hidden] { display: none; }
@@ -134,7 +135,7 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 .week .cell { background: var(--cds-layer-01); border-inline-start: 1px solid var(--cds-border-subtle-01); cursor: pointer; }
 .week .cell.hour-start { border-block-start: 1px solid var(--cds-border-subtle-01); }
 .week .cell.last { border-block-end: 1px solid var(--cds-border-subtle-01); }
-.week-help, .week-summary { color: var(--cds-text-secondary); }
+.week-summary { color: var(--cds-text-secondary); }
 .week-summary.problem { color: var(--cds-text-error); }
 .week .cell.on { background: var(--cds-interactive); }
 .week.disabled .cell { cursor: default; }

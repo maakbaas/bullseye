@@ -450,6 +450,8 @@ window.STRINGS = {
     activeAll: "Active when all of {names} are true",
     // A combination: which conditions, and whether any or all of them make it active. Never of other combinations.
     combine: {
+      title: "Combination",
+      text: "Two or more other conditions, of which any or all must be active",
       modeLabel: "Active when",
       modeHelper: "Any needs one, all needs every one",
       any: "Any is active",
@@ -464,12 +466,16 @@ window.STRINGS = {
     notUsed: "Not used by a block",
     // Above the week grid.
     nothingMarked: "Mark when blocks are active",
+    // The heading of a weekly schedule's grid; its line is `gridHelp`.
+    weekTitle: "Week",
     gridHelp: "Drag over the week to mark active times, start on a marked time to clear it",
     // The week grid's column heads, Monday first.
     days: { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" },
     // A flash drive condition: the drive is the key. The connected drives are looked up when the
     // editor opens and on "Scan again".
     drive: {
+      title: "Drive",
+      text: "The drive that is the key: the condition is active while it is unplugged",
       field: "Flash drive",
       helper: "Active while unplugged. Plugging it in switches blocks off and opens its lock. Drives without a serial number are not listed",
       choose: "Choose a flash drive",
