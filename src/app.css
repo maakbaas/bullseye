@@ -172,6 +172,19 @@ cds-link[inline] { display: inline-flex; }
 .session-rows .row-text { display: flex; flex-direction: column; gap: var(--cds-spacing-01); overflow-wrap: anywhere; }
 .session-rows .row-now { color: var(--cds-text-secondary); }
 .session-rows .row-now[hidden] { display: none; }
+/* A row's menu: wide enough for a target's name, with a checkmark (or an icon) before each choice,
+   the others keeping its room. */
+cds-overflow-menu-body.row-menu { inline-size: 16rem; }
+.menu-choice { display: inline-flex; align-items: center; gap: var(--cds-spacing-03); }
+.menu-choice svg { flex: none; fill: currentColor; }
+.menu-choice .no-mark { inline-size: 1rem; flex: none; }
 /* The state tag beside the title, wrapping under it when the name is long. */
 .session-tile .heading { display: flex; flex-wrap: wrap; align-items: center; column-gap: var(--cds-spacing-04); min-inline-size: 0; }
 .session-tile .heading h2 { padding-top: 0; }
+/* Carbon's overflow menu joins its open button with a strip over the seam (its `::after`), sized and
+   placed by rules for its CSS class that the web component's host does not match, so the strip is
+   there without a size and the menu's shadow shows across the seam. Carbon's own values, for a
+   menu that opens downwards or (no room below, `openTowardsRoom`) upwards. */
+cds-overflow-menu-body[open]::after { block-size: 0.1875rem; inline-size: var(--cds-layout-size-height-local); inset-block-start: -0.1875rem; inset-inline-start: 0; }
+cds-overflow-menu-body[open][direction="top"]::after { block-size: 0.5rem; inset-block: auto -0.5rem; }
+cds-overflow-menu-body[open][flipped]::after { inset-inline: auto 0; }

@@ -6,7 +6,7 @@ import { LOCKS, conditionLockText } from "./locks.js";
 import { ACTIONS, LISTS, SECTIONS } from "./forms.js";
 import { KINDS } from "./kinds.js";
 import { detour } from "./detour.js";
-import { addRows, renderRows, renameSession } from "./fields.js";
+import { addRows, renderRows, renameSession, openTowardsRoom } from "./fields.js";
 
 // A condition's line on a session's tile, with its name when the session's definition still has it.
 // "Active during <name>", for a drive "Active while <name> is unplugged", for a combination with a
@@ -214,6 +214,9 @@ function makeTile(kind, id) {
   // A session's lines are its rows (`fields.js`), between its head and Start / Stop.
   const body = el("div", { class: "body" }, el("div", { class: "info" }, kind === "sessions" ? null : summary), actions);
   const tile = el("cds-tile", { class: columns }, top, body);
+  // Below its button, or above it where there is no room (as a row's menu, `fields.js`).
+  const menuBody = menu.querySelector("cds-overflow-menu-body");
+  menu.addEventListener("click", () => !menu.open && openTowardsRoom(menu, menuBody), true);
   // On the items themselves: Carbon moves the open menu out of the tile.
   for (const item of menu.querySelectorAll("[data-action]")) {
     item.addEventListener("click", () => {
