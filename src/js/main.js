@@ -139,13 +139,11 @@ for (const key of WAYS) wayMethod.append(el("cds-dropdown-item", { value: key },
 $("way-controls").append(wayMethod);
 let choosingWay = false;
 
-// What it is now, in a line.
+// The way chosen now, in its dropdown.
 function renderWay() {
-  const { way, way_open: open } = overview.unlock;
+  const { way } = overview.unlock;
   const method = way ? way.method : "none";
   if (!choosingWay && wayMethod.value !== method) wayMethod.value = method;
-  const key = { none: "stateNone", text: "stateText", password: "statePassword", condition: "stateCondition" }[method];
-  $("way-state").subtitle = open ? t("settings.way.stateOpen") : t("settings.way." + key);
 }
 
 // Setting it: the lock method's own form (worded for unlocking), then the service checks it. Cancel
