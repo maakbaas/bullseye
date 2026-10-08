@@ -48,7 +48,7 @@ const runningRuleLine = (running, rule, condition) => {
 // when it is given back), a budget for each item says what the items that have been used have left.
 // Without one, it says so, as a block without a lock does.
 const allowanceLine = (running, allowance) => {
-  const icon = "timer-16";
+  const icon = "pause-16";
   const state = running && running.allowance;
   if (!state) return [icon, allowance ? allowanceLabel(allowance) : t("blocks.tile.noAllowance")];
   if (state.terms.type === "pomodoro") {

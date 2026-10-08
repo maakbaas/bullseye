@@ -71,7 +71,7 @@ import listChecked16 from '@carbon/icons/es/list--checked/16.js';
 import settings16 from '@carbon/icons/es/settings/16.js';
 import stop16 from '@carbon/icons/es/stop/16.js';
 import time16 from '@carbon/icons/es/time/16.js';
-import timer16 from '@carbon/icons/es/timer/16.js';
+import pause16 from '@carbon/icons/es/pause/16.js';
 import trashCan16 from '@carbon/icons/es/trash-can/16.js';
 import unlocked16 from '@carbon/icons/es/unlocked/16.js';
 
@@ -99,7 +99,7 @@ const icons = {
   stop: stop16,
   time: time16,
   // The Allowances tab, and an allowance's line on a block's tile.
-  'timer-16': timer16,
+  'pause-16': pause16,
   'trash-can': trashCan16,
   unlocked: unlocked16,
 };
