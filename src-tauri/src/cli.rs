@@ -1912,6 +1912,209 @@ mod tests {
     }
 
     #[test]
+    fn a_webhook_is_read_from_its_options() {
+        let line = [
+            "condition",
+            "new",
+            "H",
+            "--webhook",
+            "https://x.io/a?b=1",
+            "--method",
+            "POST",
+            "--every",
+            "10m",
+            "--true-status",
+            "200",
+            "--true-body",
+            "on",
+            "--false-status",
+            "503",
+            "--fallback",
+            "active",
+        ];
+        let Ok(Command::ConditionNew { rule: RuleChoice::Webhook(hook), .. }) = parse(&args(&line)) else { panic!("not a webhook") };
+        assert_eq!((hook.method, hook.interval, hook.fallback), (Method::Post, 600, true));
+        assert_eq!(hook.when_true, Matcher { on: Match::Both, status: Some(200), body: Some("on".into()) });
+        assert_eq!(hook.when_false, Matcher { on: Match::Status, status: Some(503), body: None });
+        let base = ["condition", "new", "H", "--webhook", "https://x.io/a", "--true-status", "200", "--false-status", "404"];
+        for (extra, why) in [
+            (&["--method", "put"][..], "--method is get or post"),
+            (&["--fallback", "maybe"], "--fallback is active or inactive"),
+            (&["--every", "soon"], ""),
+            (&["--every", "30s"], "at most once a minute"),
+        ] {
+            let error = parse(&args(&[&base[..], extra].concat())).err().unwrap_or_else(|| panic!("{extra:?} worked"));
+            assert!(error.contains(why), "{extra:?}: {error}");
+        }
+        assert!(parse(&args(&base[..base.len() - 2])).unwrap_err().starts_with("Give --false-status and/or --false-body"));
+        assert!(parse(&args(&["condition", "new", "H", "--webhook", "https://x.io/a", "--true-status", "OK"]))
+            .unwrap_err()
+            .contains("is a number"));
+        // An option given twice is a mistake, not a choice.
+        assert!(parse(&args(&["new", "X", "--condition", "A", "--condition", "B"])).unwrap_err().contains("more than once"));
+    }
+
+    #[test]
+    fn a_combination_of_all_and_a_list_renamed() {
+        serve("all");
+        ok(&["list", "new", "L", "--site", "a.com"]);
+        assert_eq!(ok(&["list", "edit", "L", "--name", "Media"]), "Saved the block list \"Media\".\n");
+        ok(&["condition", "new", "Work", "--times", "Mon-Fri 08:00-17:00"]);
+        ok(&["condition", "new", "Late", "--times", "Mon-Sun 16:00-18:00"]);
+        ok(&["condition", "new", "Both", "--all", "Work", "--all", "Late"]);
+        assert!(ok(&["condition", "show", "Both"]).contains("all of \"Work\", \"Late\""));
+        // A lock until a date and time asks first, with the time it ends.
+        ok(&["new", "Later", "--list", "Media", "--lock-until", "2099-01-01 00:00"]);
+        assert_eq!(ok(&["start", "Later", "--yes"]), "Started \"Later\".\n");
+        assert!(ok(&["status"]).contains("Later  Running · active · locked for the next"));
+    }
+
+    #[test]
+    fn a_file_with_a_password_lock_but_no_hash_imports_without_a_lock() {
+        let dir = serve("import-unlocked");
+        let file = dir.join("old.json");
+        let mut locked = block("b", &["l"]);
+        locked.lock = Lock::Password { password: None, hash: None };
+        let library = Library { lists: vec![block_list("l", &["a.com"])], blocks: vec![locked], ..Library::default() };
+        std::fs::create_dir_all(&dir).unwrap();
+        definitions::write_settings(&file, library).unwrap();
+        ok(&["import", &file.to_string_lossy(), "--yes"]);
+        assert!(ok(&["show", "Block b"]).contains("Lock:        none"));
+    }
+
+    #[test]
+    fn the_way_to_unlock_in_words() {
+        let with = |way: Lock, open: bool, left: Option<&str>| {
+            describe_unlock_way(&UnlockStatus {
+                way: Some(way),
+                way_open: open,
+                way_left_words: left.map(str::to_string),
+                ..UnlockStatus::default()
+            })
+        };
+        let condition = || Lock::Condition { condition: "c".into() };
+        assert_eq!(with(condition(), true, None), "Unlocking is open: its condition is not active.");
+        assert_eq!(with(condition(), false, Some("2 hours")), "Unlocking is locked while its condition is active (in 2 hours)");
+        assert_eq!(with(Lock::Duration { duration: "1h".into() }, false, None), "Only the delay unlocks.");
+    }
+
+    /// A running block as the status gives it, always active and not locked.
+    fn a_running(id: &str) -> Running {
+        Running {
+            id: id.into(),
+            name: id.into(),
+            lists: vec![],
+            remaining: None,
+            lock_condition: None,
+            until_restart: false,
+            lock_text: None,
+            stop_delay: None,
+            stop_delay_words: None,
+            stop_remaining: None,
+            stop_remaining_words: None,
+            password: false,
+            locked: false,
+            condition: None,
+            enforcing: true,
+            condition_change: None,
+            remaining_words: None,
+            condition_change_words: None,
+            lock_change: None,
+            lock_change_words: None,
+            allowance: None,
+        }
+    }
+
+    #[test]
+    fn a_running_block_reads_like_its_tile() {
+        let drive = Some(Rule::FlashDrive { serial: "x".into(), drive: "Key".into() });
+        let locked = Running { locked: true, lock_condition: drive.clone(), ..a_running("a") };
+        assert_eq!(state(Some(&locked)), "Running · active · locked until the flash drive \"Key\" is connected");
+        let open = Running { lock_condition: drive, ..a_running("a") };
+        assert_eq!(state(Some(&open)), "Running · active · unlocked while the flash drive \"Key\" is connected");
+        let schedule = weekly("s", "mon 8-9").rule;
+        let timed =
+            Running { locked: true, lock_condition: Some(schedule.clone()), lock_change_words: Some("1 hour".into()), ..a_running("a") };
+        assert_eq!(state(Some(&timed)), "Running · active · locked for the next 1 hour");
+        let free = Running { lock_condition: Some(schedule.clone()), ..a_running("a") };
+        assert_eq!(state(Some(&free)), "Running · active · unlocked");
+        let quiet = Running { enforcing: false, locked: true, lock_condition: Some(schedule), ..a_running("a") };
+        assert_eq!(state(Some(&quiet)), "Running · inactive · locked");
+        assert_eq!(state(Some(&a_running("a"))), "Running · active · no active lock");
+        assert_eq!(state(None), "Not running");
+        // An allowance at the end: a cycle with no time to tell, a budget for each item.
+        let cycle = AllowanceStatus {
+            terms: Terms::Pomodoro { blocked: "50m".into(), allowed: "10m".into(), anchor: Anchor::Start },
+            open: true,
+            change: None,
+            change_words: None,
+            left: None,
+            left_words: None,
+            reset_in: None,
+            reset_words: None,
+            items: vec![],
+        };
+        assert_eq!(allowance_words(&cycle), "allowed");
+        assert_eq!(allowance_words(&AllowanceStatus { open: false, ..cycle.clone() }), "blocked");
+        let each = AllowanceStatus {
+            terms: Terms::Budget { allowed: "10m".into(), scope: Scope::Each, reset: Reset::Hour },
+            reset_words: Some("40 minutes".into()),
+            items: vec![crate::allowance::ItemLeft { item: "youtube.com".into(), left: 240, left_words: "4 minutes".into() }],
+            ..cycle.clone()
+        };
+        assert_eq!(allowance_words(&each), "10 minutes for each item, reset in 40 minutes (youtube.com 4 minutes left)");
+        assert_eq!(allowance_words(&AllowanceStatus { items: vec![], reset_words: None, ..each }), "10 minutes for each item");
+        let with = Running { allowance: Some(cycle), ..a_running("a") };
+        assert_eq!(state(Some(&with)), "Running · active · no active lock · allowed");
+    }
+
+    #[test]
+    fn a_block_with_parts_gone_or_unreadable_is_still_shown() {
+        let mut overview = library();
+        let mut b = block("b2", &["gone"]);
+        b.condition = Some("gone".into());
+        let lock_of = |lock: Lock| {
+            let shown = describe_block(&overview, &Definition { lock, ..b.clone() }, None);
+            shown.lines().find(|l| l.starts_with("Lock:")).unwrap_or_default().to_string()
+        };
+        assert_eq!(lock_of(Lock::Duration { duration: "soon".into() }), "Lock:        duration, soon");
+        assert_eq!(lock_of(Lock::Until { until: "someday".into() }), "Lock:        until someday");
+        assert_eq!(lock_of(Lock::Delay { delay: "a while".into() }), "Lock:        delay, a while");
+        assert_eq!(lock_of(Lock::Condition { condition: "gone".into() }), "Lock:        condition: (condition gone)");
+        assert_eq!(lock_of(Lock::Password { password: None, hash: None }), "Lock:        password: can only be stopped with its password");
+        let shown = describe_block(&overview, &b, None);
+        assert!(shown.contains("Block lists: (gone)\nCondition:   (gone)\n"), "{shown}");
+        // A flash drive, as a lock's condition and as a condition.
+        let drive =
+            Condition { id: "d".into(), name: "Key".into(), rule: Rule::FlashDrive { serial: "x".into(), drive: "Kingston".into() } };
+        overview.conditions.push(drive.clone());
+        let shown = describe_block(&overview, &Definition { lock: Lock::Condition { condition: "d".into() }, ..b.clone() }, None);
+        assert!(shown.contains("cannot be stopped while \"Key\" is active (the flash drive \"Kingston\" is not connected)"), "{shown}");
+        assert_eq!(describe_rule(&overview, &drive.rule), "while the flash drive \"Kingston\" is not connected");
+        assert_eq!(
+            lock_warning(&overview, &Definition { lock: Lock::Condition { condition: "d".into() }, ..b.clone() }).unwrap(),
+            "It cannot be stopped while its lock condition \"Key\" is active (the flash drive \"Kingston\" is not connected)."
+        );
+        assert_eq!(lock_warning(&overview, &Definition { lock: Lock::Until { until: "2001-01-01 00:00".into() }, ..b.clone() }), None);
+        // A combination with one of its conditions gone.
+        let combined = Rule::Combined { mode: Mode::Any, members: vec!["s1".into(), "gone".into()], rules: vec![] };
+        assert_eq!(describe_rule(&overview, &combined), "any of \"Work hours\", (gone)");
+        // A webhook matcher not set (as saved by hand).
+        let hook = Hook {
+            url: "https://x.io".into(),
+            method: Method::Get,
+            interval: 60,
+            fallback: true,
+            when_true: Matcher { on: Match::Both, status: Some(200), body: Some("on".into()) },
+            when_false: Matcher { on: Match::Status, status: None, body: None },
+        };
+        assert_eq!(
+            describe_webhook(&hook),
+            "GET https://x.io every 1 minute: active on HTTP 200 and body \"on\", not active on (not set), otherwise active"
+        );
+    }
+
+    #[test]
     fn help_and_version_need_no_service() {
         let help = cli(&["help"]).unwrap();
         assert!(help.starts_with("Bullseye command line") && help.contains("chromium_tabs") && !help.contains("{enforcers}"));

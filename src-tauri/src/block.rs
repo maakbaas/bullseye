@@ -1931,6 +1931,78 @@ mod tests {
     }
 
     #[test]
+    fn a_report_counts_only_against_a_budget_and_only_while_active() {
+        let list = blocklist("report-ignored");
+        start(&list, "plain", sites(&["a.com"]), None).unwrap();
+        // 1970-01-05 was a Monday; the block's condition is office hours, so 20:00 is outside it.
+        list.clock.at_least(monday(20 * 3600));
+        list.start_with(
+            "quiet",
+            "Q",
+            vec![part(sites(&["b.com"]), Enforcers::default())],
+            weekly("mon 08:00-17:00"),
+            Some(budget("1s", Scope::Total)),
+            StartLock::None,
+        )
+        .unwrap();
+        list.polled();
+        std::thread::sleep(Duration::from_millis(1100));
+        list.charge(&[("plain".to_string(), TOTAL.to_string()), ("quiet".to_string(), TOTAL.to_string())]);
+        assert!(running(&list, "plain").allowance.is_none());
+        assert_eq!(running(&list, "quiet").allowance.unwrap().left, Some(1), "not counted while the condition is off");
+    }
+
+    #[test]
+    fn a_budget_for_each_item_works_out_what_is_left_once_for_each_set_of_items() {
+        let list = blocklist("remainder");
+        list.start_with(
+            "a",
+            "A",
+            vec![part(sites(&["a.com", "b.com"]), Enforcers::default())],
+            None,
+            Some(budget("1s", Scope::Each)),
+            StartLock::None,
+        )
+        .unwrap();
+        // The same items free twice: the same lists, worked out once.
+        let first = list.active().unwrap();
+        let again = list.active().unwrap();
+        assert!(Arc::ptr_eq(&first.blocks[0].lists, &again.blocks[0].lists));
+        // Every item used up: all of it enforced, as started.
+        list.polled();
+        std::thread::sleep(Duration::from_millis(1100));
+        list.charge(&[("a".to_string(), "site:a.com".to_string()), ("a".to_string(), "site:b.com".to_string())]);
+        let active = list.active().unwrap();
+        assert!(active.blocks_page("https://a.com/", false) && active.blocks_page("https://b.com/", false));
+        assert!(active.blocks[0].free.is_empty());
+    }
+
+    #[test]
+    fn a_saved_block_that_cannot_be_read_any_more_is_dropped() {
+        let list = blocklist("unreadable");
+        start(&list, "a", sites(&["a.com"]), None).unwrap();
+        start(&list, "b", sites(&["b.com"]), None).unwrap();
+        // Block "a" now names a program that is never closed, which its list cannot be read with.
+        let path = list.store.as_ref().unwrap().path().to_path_buf();
+        let mut saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        fn spoil(value: &mut serde_json::Value) {
+            match value {
+                serde_json::Value::Object(fields) if fields.get("filters").is_some_and(|f| f == &serde_json::json!(["a.com"])) => {
+                    fields.insert("programs".into(), serde_json::json!(["explorer.exe"]));
+                }
+                serde_json::Value::Object(fields) => fields.values_mut().for_each(spoil),
+                serde_json::Value::Array(items) => items.iter_mut().for_each(spoil),
+                _ => {}
+            }
+        }
+        spoil(&mut saved);
+        std::fs::write(&path, saved.to_string()).unwrap();
+        let resumed = reopened("unreadable");
+        resumed.restore();
+        assert!(!resumed.runs("a") && resumed.runs("b"));
+    }
+
+    #[test]
     fn without_a_store_a_block_still_works_for_this_run() {
         let dir = std::env::temp_dir().join(format!("block-nostore-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
