@@ -186,10 +186,20 @@ const infoNote = () => formNote("info");
 // fields then say what is wrong) or `read` throws (what it says is shown in the dialog).
 let answer = null;
 let reader = null;
+// Carbon's modal gives focus back to what opened it when it closes, so a keyboard goes on from there.
+// Opened with a pointer, that focus only shows the button's tooltip: it is let go once the dialog has
+// closed. `pointer`: whether the last input was a pointer's (it is what opened the dialog).
+let pointer = false;
+let openedByPointer = false;
+document.addEventListener("pointerdown", () => (pointer = true), true);
+document.addEventListener("keydown", () => (pointer = false), true);
+// Once the dialog has closed and Carbon has given the focus back: let it go, if a pointer opened it.
+const letGo = () => openedByPointer && setTimeout(() => !$("confirm").open && document.activeElement && document.activeElement.blur());
 // Without an `action` it has no buttons: a list to choose from, closed by `dismiss` (a choice
 // made), by the X, Escape or a click outside it.
 function ask({ heading, body = "", action, kind, fields = [], read = null }) {
   if (answer) answer(false);
+  if (!$("confirm").open) openedByPointer = pointer;
   $("confirm-heading").textContent = heading;
   $("confirm-body").textContent = body;
   $("confirm-body").hidden = !body;
@@ -234,15 +244,19 @@ $("confirm-action").addEventListener("click", async () => {
   }
   if (value === null || value === undefined) return;
   $("confirm").open = false;
+  letGo();
   answered(value);
 });
 // Closes the dialog from inside it, as a choice in a list does. (Opened again at once, it stays.)
 function dismiss(value = false) {
   $("confirm").open = false;
+  letGo();
   answered(value);
 }
 $("confirm").addEventListener("cds-modal-closed", () => {
-  if (!$("confirm").open) answered(false);
+  if ($("confirm").open) return;
+  answered(false);
+  letGo();
 });
 
 // Asked before a locked session is made stricter, in whatever way: as when it is started locked, it

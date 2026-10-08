@@ -96,7 +96,7 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 .modal-fields .fields[hidden] { display: none; }
 /* Carbon leaves 3rem under a modal's content, which looks high under a form field or a sentence: 1.5rem, the same everywhere. */
 #confirm cds-modal-body { padding-block-end: var(--cds-spacing-06); }
-/* A list to choose from fills the dialog from edge to edge, as the lists on a tile do. */
+/* A list to choose from: its panel (`.row-panel`) gives it its room. */
 #confirm.list cds-modal-body { padding-inline: 0; padding-block-end: 0; }
 /* A duration: its number and its unit side by side, the number taking the room the unit leaves. */
 .duration { display: flex; align-items: flex-start; gap: var(--cds-spacing-05); }
@@ -185,12 +185,9 @@ cds-link[inline] { display: inline-flex; }
 .tile-rows .row-label, .tile-rows .row-text > .row-value:first-child { line-height: 1.25rem; }
 /* A row's panel (in the dialog): its controls and button spaced as a form's, with room around. */
 .row-panel { display: flex; flex-direction: column; align-items: flex-start; gap: var(--cds-spacing-05); padding: var(--cds-spacing-05); }
-/* A plain list of choices fills its panel edge to edge, as Carbon's lists do. */
-.row-panel:has(> cds-contained-list) { padding: 0; }
+/* A list of choices with the same room on its sides as the button under it, right under the heading. */
+.row-panel:has(> cds-contained-list) { padding-block-start: 0; }
 .row-panel > cds-contained-list { align-self: stretch; }
-/* A button under the list, apart from it, with room as the dialog's form fields have. */
-.row-panel:has(> cds-contained-list) > cds-button { margin-inline: var(--cds-spacing-05); }
-.row-panel:has(> cds-button) { padding-block-end: var(--cds-spacing-05); }
 .row-panel .no-mark { inline-size: 1rem; }
 
 /* The state tag beside the title, wrapping under it when the name is long. */
