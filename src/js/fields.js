@@ -54,6 +54,8 @@ function addRows(parts, id) {
     const button = el("cds-icon-button", { kind: "ghost", size: "lg", align: "left" }, carbonIcon("edit", "icon"), el("span", { slot: "tooltip-content" }, what));
     const panel = el("cds-popover-content", {});
     const edit = el("cds-popover", { slot: "action", align: "bottom-end", class: "row-action" }, button, panel);
+    // No caret: it would notch the row's separator line (Carbon drops it from popovers in v12).
+    edit.caret = false;
     const close = () => (edit.open = false);
     button.addEventListener("click", async () => {
       if (!edit.open) fillPanel(parts, id, key, panel, close);
