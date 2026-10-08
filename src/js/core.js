@@ -79,7 +79,6 @@ function described(command, args, standIn) {
 }
 const weekText = (days) => described("describe_schedule", { week: { days } }, t("common.weeklyStandIn"));
 // A session's allowance (its terms) as a tile's line says it, short (`Allowed 30 minutes a day`).
-const allowanceLabel = (terms) => (described("describe_allowance", { terms }, null) || { label: "" }).label;
 const durationText = (text) => described("describe_duration", { text: text || "" }, text || "");
 // An until lock's end written out (`Tuesday 6 October 2026, 18:00`); as typed until then, or
 // once it has passed.
@@ -247,4 +246,4 @@ function confirmStricter(names, what) {
   return ask({ heading: t("stricter.heading", { names }), body: t("stricter.body", { names, what }), action: t("stricter.action"), kind: "primary" });
 }
 
-export { invoke, $, t, tn, ref, joined, nodesOf, editHref, quoted, names, applyStrings, el, described, weekText, allowanceLabel, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, targetName, usersOf, wordingOf, lockedUsersOf, invalid, errorNote, ask, dismiss, confirmStricter };
+export { invoke, $, t, tn, ref, joined, nodesOf, editHref, quoted, names, applyStrings, el, weekText, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, targetName, usersOf, wordingOf, lockedUsersOf, invalid, errorNote, ask, dismiss, confirmStricter };

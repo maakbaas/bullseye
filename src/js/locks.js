@@ -5,16 +5,12 @@ import { durationText, el, invalid, invoke, overview, quoted, editHref, ref, t, 
 import { timingFields } from "./timing.js";
 import { durationField } from "./duration.js";
 
-// A condition lock in words, the condition's name (`name`, a link to it) worded as its own line on a
-// tile does. Not running (`state` null): "Locks while …". Running: the state it is in now, with when it
-// changes if that is known: "Locked during …" / "Unlocked outside …" for a schedule, "Locked since … is unplugged" for a drive.
-function conditionLockText(wording, name, state) {
+// A condition lock in words, the condition's name (`name`, a link to it) worded as the condition is:
+// "Locks during …", "Locks while … is unplugged" for a drive, "Locks while … is true" for a combination
+// or webhook (`wordingOf`).
+function conditionLockText(wording, name) {
   const kind = { drive: "Drive", true: "Combined", during: "" }[wording];
-  if (!state) return tn(`locks.condition.describe${kind}`, { name });
-  const { locked, change } = state;
-  if (wording === "drive") return tn(`locks.condition.${locked ? "lockedDrive" : "unlockedDrive"}`, { name });
-  if (wording === "true") return tn(`locks.condition.${locked ? "lockedTrue" : "unlockedFalse"}`, { name });
-  return tn(`locks.condition.${locked ? "lockedDuring" : "unlockedOutside"}${change ? "For" : ""}`, { name, change });
+  return tn(`locks.condition.describe${kind}`, { name });
 }
 
 // How a started session is kept from being stopped (`lock::Lock`), by `method`. Set on the
@@ -195,4 +191,4 @@ const LOCKS = {
   },
 };
 
-export { KEPT, settingsOf, LOCKS, conditionLockText };
+export { LOCKS };

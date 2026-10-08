@@ -83,7 +83,7 @@ function addRows(parts, id) {
     const value = el("span", { class: "row-value" });
     // The row's inline action: a ghost icon button, as Carbon's contained lists have them.
     const button = (symbol, tip, act) => {
-      const node = el("cds-icon-button", { kind: "ghost", size: "lg", align: "left" }, carbonIcon(symbol, "icon"), el("span", { slot: "tooltip-content" }, tip));
+      const node = el("cds-icon-button", { kind: "ghost", size: "md", align: "left" }, carbonIcon(symbol, "icon"), el("span", { slot: "tooltip-content" }, tip));
       node.addEventListener("click", act);
       return node;
     };
@@ -197,14 +197,14 @@ function fillPanel(parts, id, key, panel, close) {
       });
       return item;
     });
-    const list = el("cds-contained-list", { kind: "disclosed", "aria-label": t("sessions.fields.when") }, ...options);
+    const list = el("cds-contained-list", { kind: "disclosed", size: "md", "aria-label": t("sessions.fields.when") }, ...options);
     const more = button(t("sessions.fields.newCondition"), "add", () => make(id, "conditions", (made) => save(current(id), { condition: made.id })));
     return panel.replaceChildren(el("div", { class: "row-panel" }, list, more));
   }
   // What is chosen while it is open: each click builds on the last, also before the last one's
   // save has come back.
   const chosen = new Set(session.targets);
-  const group = el("cds-contained-list", { kind: "disclosed", "aria-label": t("sessions.fields.block") });
+  const group = el("cds-contained-list", { kind: "disclosed", size: "md", "aria-label": t("sessions.fields.block") });
   const items = overview.targets.map((target) => {
     const mark = (on) => (on ? carbonIcon("checkmark", "icon") : el("span", { slot: "icon", class: "no-mark" }));
     let icon = mark(chosen.has(target.id));

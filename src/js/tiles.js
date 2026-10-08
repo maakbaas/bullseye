@@ -132,7 +132,8 @@ function makeTile(kind, id) {
   // The state tag beside the title, which saves a row.
   const top = el("div", { class: "top" }, el("div", { class: "heading" }, title, tag), menu, lock);
   // Its rows under its head (a session's: `fields.js`), then a session's Start / Stop on the right.
-  const rows = el("cds-contained-list", { class: "tile-rows" });
+  // Carbon's medium rows (2.5rem).
+  const rows = el("cds-contained-list", { class: "tile-rows", size: "md" });
   const tile = el("cds-tile", { class: columns }, top, rows, kind === "sessions" ? actions : null);
   // Below its button, or above it where there is no room.
   const menuBody = menu.querySelector("cds-overflow-menu-body");

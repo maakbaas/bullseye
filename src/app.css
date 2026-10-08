@@ -182,7 +182,7 @@ cds-link[inline] { display: inline-flex; }
 /* Text in the column starts where the letters in an inline dropdown do (its left padding, 1rem), so they line up from row to row. */
 .tile-rows .row-value { padding-inline-start: var(--cds-spacing-05); }
 .tile-rows .row-value:empty { display: none; }
-/* The first line of a row is one text line (1.25rem), so a row is as high as its button (3rem): Carbon pads the content by what a line of that height leaves. */
+/* The first line of a row is one text line (1.25rem), so a row is as high as its button (2.5rem): Carbon pads the content by what a line of that height leaves. */
 .tile-rows .row-label, .tile-rows .row-text > .row-value:first-child { line-height: 1.25rem; }
 /* A row's panel (in the dialog): its controls and button spaced as a form's, with room around. */
 .row-panel { display: flex; flex-direction: column; align-items: flex-start; gap: var(--cds-spacing-05); padding: var(--cds-spacing-05); }

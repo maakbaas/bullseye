@@ -150,8 +150,8 @@ fn describe_schedule(week: Week) -> Result<String, String> {
     week.normalized().map(|week| week.describe())
 }
 
-/// A session's allowance in words, after checking them: in full (`30 minutes in total, reset every day`)
-/// for the session editor, and as the tile's short label (`Allowed 30 minutes a day`). Needs no service.
+/// A session's allowance in words, after checking them (`30 minutes in total, reset every day`), for its
+/// form and the Allowance row's question. Needs no service.
 #[tauri::command]
 fn describe_allowance(terms: allowance::Terms) -> Result<allowance::Described, String> {
     terms.described()

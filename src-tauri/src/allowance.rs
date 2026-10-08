@@ -283,41 +283,18 @@ impl Terms {
     }
 }
 
-/// An allowance in words both ways, for the window (`describe_allowance`): `words` in full, for the
-/// session editor and the CLI, and `label` short, for a line of the session's tile.
+/// An allowance in words, for the window (`describe_allowance`): in full, as the session editor and
+/// the CLI say it.
 #[derive(Serialize, Debug, PartialEq)]
 pub struct Described {
     pub words: String,
-    pub label: String,
 }
 
 impl Terms {
-    /// Short, as a line of a session's tile says it, like its other lines (`Always active`):
-    /// `Allowed 30 minutes every day`, `Allowed 10 minutes every 2 hours per item`, `Allowed 10
-    /// minutes after every 50 minutes`.
-    pub fn label(&self) -> String {
-        match self {
-            Terms::Budget { allowed, scope, reset, every, .. } => {
-                let every = match reset {
-                    Reset::Never => " in total".to_string(),
-                    Reset::Every => format!(" every {}", duration::period(secs(every))),
-                    Reset::Condition => " each time active".to_string(),
-                };
-                let each = if *scope == Scope::Each { " per item" } else { "" };
-                format!("Allowed {}{every}{each}", duration::countdown(secs(allowed)))
-            }
-            Terms::Delayed { kind: DelayKind::After, value } => format!("Enforced after {}", duration::countdown(secs(value))),
-            Terms::Delayed { kind: DelayKind::From, value } => format!("Enforced from {}", moment(value)),
-            Terms::Pomodoro { blocked, allowed, .. } => {
-                format!("Allowed {} after every {}", duration::countdown(secs(allowed)), duration::period(secs(blocked)))
-            }
-        }
-    }
-
-    /// Checked, in words both ways.
+    /// Checked, in words.
     pub fn described(self) -> Result<Described, String> {
         let terms = self.checked()?;
-        Ok(Described { words: terms.describe(), label: terms.label() })
+        Ok(Described { words: terms.describe() })
     }
 }
 
@@ -714,44 +691,22 @@ mod tests {
     }
 
     #[test]
-    fn terms_are_written_out_in_full_and_short() {
+    fn terms_are_written_out() {
         let cases = [
-            (budget("30m", Scope::Total, Reset::Never), "30 minutes in total, never reset", "Allowed 30 minutes in total"),
-            (
-                every("1h", Scope::Total, "1h", Anchor::Clock),
-                "1 hour in total, reset every hour, on the clock, from midnight",
-                "Allowed 1 hour every hour",
-            ),
-            (
-                every("30m", Scope::Total, "1d", Anchor::Clock),
-                "30 minutes in total, reset every day, on the clock, from midnight",
-                "Allowed 30 minutes every day",
-            ),
+            (budget("30m", Scope::Total, Reset::Never), "30 minutes in total, never reset"),
+            (every("1h", Scope::Total, "1h", Anchor::Clock), "1 hour in total, reset every hour, on the clock, from midnight"),
+            (every("30m", Scope::Total, "1d", Anchor::Clock), "30 minutes in total, reset every day, on the clock, from midnight"),
             (
                 every("2h", Scope::Each, "36h", Anchor::Start),
                 "2 hours for each item, reset every 1 day and 12 hours, from the start of the session",
-                "Allowed 2 hours every 1 day and 12 hours per item",
             ),
-            (
-                budget("10m", Scope::Each, Reset::Condition),
-                "10 minutes for each item, reset each time its condition turns on",
-                "Allowed 10 minutes each time active per item",
-            ),
-            (
-                pomodoro("50m", "10m", Anchor::Start),
-                "Blocked for 50 minutes, then allowed for 10 minutes, from the start of the session",
-                "Allowed 10 minutes after every 50 minutes",
-            ),
-            (
-                pomodoro("1h", "30m", Anchor::Clock),
-                "Blocked for 1 hour, then allowed for 30 minutes, on the clock, from midnight",
-                "Allowed 30 minutes after every hour",
-            ),
+            (budget("10m", Scope::Each, Reset::Condition), "10 minutes for each item, reset each time its condition turns on"),
+            (pomodoro("50m", "10m", Anchor::Start), "Blocked for 50 minutes, then allowed for 10 minutes, from the start of the session"),
+            (pomodoro("1h", "30m", Anchor::Clock), "Blocked for 1 hour, then allowed for 30 minutes, on the clock, from midnight"),
         ];
-        for (terms, words, label) in cases {
+        for (terms, words) in cases {
             assert_eq!(terms.describe(), words);
-            assert_eq!(terms.label(), label);
-            assert_eq!(terms.described(), Ok(Described { words: words.into(), label: label.into() }));
+            assert_eq!(terms.described(), Ok(Described { words: words.into() }));
         }
         // What cannot be saved is not written out either.
         assert!(every("soon", Scope::Total, "1d", Anchor::Clock).described().is_err());
@@ -880,20 +835,15 @@ mod tests {
     }
 
     #[test]
-    fn a_delayed_start_is_written_out_in_full_and_short() {
+    fn a_delayed_start_is_written_out() {
         let cases = [
-            (after("30m"), "Nothing is enforced for the first 30 minutes", "Enforced after 30 minutes"),
-            (after("1h"), "Nothing is enforced for the first 1 hour", "Enforced after 1 hour"),
-            (
-                from("1970-01-02 00:00"),
-                "Nothing is enforced until Friday 2 January 1970, 00:00",
-                "Enforced from Friday 2 January 1970, 00:00",
-            ),
+            (after("30m"), "Nothing is enforced for the first 30 minutes"),
+            (after("1h"), "Nothing is enforced for the first 1 hour"),
+            (from("1970-01-02 00:00"), "Nothing is enforced until Friday 2 January 1970, 00:00"),
         ];
-        for (terms, words, label) in cases {
+        for (terms, words) in cases {
             assert_eq!(terms.describe(), words);
-            assert_eq!(terms.label(), label);
-            assert_eq!(terms.clone().described(), Ok(Described { words: words.into(), label: label.into() }));
+            assert_eq!(terms.clone().described(), Ok(Described { words: words.into() }));
             assert_eq!(terms.scope(), None);
         }
         // A date that cannot be read is worded as typed.

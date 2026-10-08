@@ -4,11 +4,11 @@
 // - `{name}`, `{times}`, … are filled in by the page. Keep each placeholder a text uses (you may
 //   move it); the comment above a group says what they stand for when it is not obvious.
 // - A text with `one` and `other` is chosen by the number `{n}`.
-// - Times (`2 hours and 5 minutes`), weekly schedules (`Mon-Fri 08:00-17:00`) and the service's
+// - Times (`2 hours`, `90 minutes`), weekly schedules (`Mon-Fri 08:00-17:00`) and the service's
 //   own messages (why something was refused) come from the Rust code, so the window and the CLI
 //   say the same; they are not in this file.
-// - Style: GUI labels, short but complete, with little punctuation. A time counting down reads
-//   "for the next {time}"; a state is one word or two ("Locked", "No active lock").
+// - Style: GUI labels, short but complete, with little punctuation. A state is one word or two
+//   ("Running", "Locked").
 // - Edit, then rebuild (or reopen the window in `npm run dev` after touching src-tauri/src/main.rs).
 //   A missing text shows as its path, and the console says which.
 window.STRINGS = {
@@ -56,7 +56,6 @@ window.STRINGS = {
     // A target's or condition's tile while a locked session uses it.
     inUse: "Used by a locked session",
     // {names}: the sessions that use it, as links; {n} how many.
-    usedBy: { one: "Used by session {names}", other: "Used by sessions {names}" },
     // While a weekly schedule's description is being asked of the backend.
     weeklyStandIn: "a weekly schedule",
   },
@@ -101,59 +100,14 @@ window.STRINGS = {
       renameHeading: "Rename {name}",
     },
 
-    // A session's tile. A weekly schedule is named, never written out (its times are on the
-    // Conditions page, and only there); {drive}: a flash drive's name, quoted; {name}: the
-    // condition's name; {left} and {change}: times in words.
+    // A session's tile: its Targets row with none, and its Condition row for a running session whose
+    // condition was deleted (it keeps the rule it started with). {drive}: a flash drive's name, quoted.
     tile: {
       noTargets: "No targets",
       active: "Active by schedule",
       activeCombined: "Active by combination",
       activeWebhook: "Active by a webhook",
-      activeNamed: "Active during {name}",
       activeDrive: "Active while {drive} is unplugged",
-      activeDriveNamed: "Active while {name} is unplugged",
-      activeCombinedNamed: "Active while {name} is true",
-      always: "Always active",
-      unknownLock: "Unknown lock",
-      lockedPassword: "Locked with a password",
-      lockedText: "Locked until its text is typed",
-      lockedDelay: "Locked. Stopping takes {delay}",
-      delayWait: "Can be stopped in {left}",
-      delayReady: "Ready to stop",
-      lockedRestart: "Locked until Windows restarts",
-      lockedFor: "Locked for the next {left}",
-      notLocked: "No active lock",
-      noAllowance: "No allowance",
-      // A running session's condition line: its state now and why ({change}: when that changes, if known).
-      // A schedule is "during" / "outside", a drive or a combination with one is "since …" (it is plugged
-      // in or out by hand, so it has no time).
-      activeDuring: "Active during {name}",
-      activeDuringFor: "Active during {name} for the next {change}",
-      inactiveOutside: "Inactive outside {name}",
-      inactiveOutsideFor: "Inactive outside {name} for the next {change}",
-      activeSinceDrive: "Active since {name} is unplugged",
-      inactiveSinceDrive: "Inactive since {name} is plugged in",
-      activeSinceTrue: "Active since {name} is true",
-      inactiveSinceFalse: "Inactive since {name} is false",
-      conditionGone: "a condition",
-      // A running session's allowance line (not running, the backend's short label: "Allowed 30 minutes a
-      // day"). A Pomodoro: {change}: the time until it turns.
-      allowanceOpenFor: "Allowed for the next {change}",
-      allowanceBlockedFor: "Allowed again in {change}",
-      // A delayed start: nothing is enforced yet ({change}: until it is), or enforcing from now on.
-      delayedWaiting: "Not enforced for the next {change}",
-      delayedBegun: "Enforcing",
-      allowanceOpen: "Allowed now",
-      allowanceBlocked: "Not allowed now",
-      // A budget: {left}: the time left; {reset}: the time until it is given back.
-      allowanceLeft: "{left} left to use",
-      allowanceLeftReset: "{left} left to use, reset in {reset}",
-      allowanceUsedUp: "Allowed time used up",
-      allowanceUsedUpReset: "Allowed time used up, reset in {reset}",
-      // A budget for each item: {items}: "youtube.com 12 minutes left, …".
-      allowanceItems: "Allowed per item: {items}",
-      allowanceItem: "{item} {left} left",
-      allowanceItemUsedUp: "{item} used up",
     },
     // The tag on a session's tile.
     state: {
@@ -168,7 +122,6 @@ window.STRINGS = {
     abortStop: "Keep locked",
     // Once the wait is over there is nothing left to keep: it locks again.
     relock: "Lock again",
-    lockLabel: "Lock",
     // In a session's ⋮ menu: its lock's settings.
     lockSettings: "Lock settings",
     // The dialog with a lock's settings. {method}: the lock's name below (locks.*.label).
@@ -277,22 +230,11 @@ window.STRINGS = {
       noneHeading: "No conditions yet",
       noneBody: "A condition lock needs a condition. Make one now and use it for this lock?",
       noneAction: "New condition",
-      // {name}: the condition, a link. Worded like the condition's line on a tile ("Active during …"),
-      // "Locks" for a session that is not running and "Locked" for one that is, locking now or not.
+      // What the lock is, for the Lock row's question. {name}: the condition, a link.
       describe: "Locks during {name}",
       describeDrive: "Locks while {name} is unplugged",
       describeCombined: "Locks while {name} is true",
-      // Running, by its state now ({change}: when it changes, when that is known). A flash drive is the key.
-      lockedDuring: "Locked during {name}",
-      lockedDuringFor: "Locked during {name} for the next {change}",
-      unlockedOutside: "Unlocked outside {name}",
-      unlockedOutsideFor: "Unlocked outside {name} for the next {change}",
-      lockedDrive: "Locked since {name} is unplugged",
-      unlockedDrive: "Unlocked since {name} is plugged in",
-      lockedTrue: "Locked since {name} is true",
-      unlockedFalse: "Unlocked since {name} is false",
-      // The condition has been deleted from a running session.
-      goneName: "a condition",
+      // The condition has been deleted.
       describeGone: "Condition deleted",
       confirmHeading: "Start {name} locked during {condition}?",
       // {detail}: nothing for a schedule, the drive for a flash drive.
@@ -351,7 +293,6 @@ window.STRINGS = {
     namePlaceholder: "e.g. Social media",
     nameMissing: "Name the target",
     nothing: "Nothing to block",
-    notUsed: "Not used by a session",
     // Above an editor section's checkboxes: with lists, and without.
     howLegend: "How",
     actionsLegend: "Actions",
@@ -517,7 +458,6 @@ window.STRINGS = {
     // {times}: the schedule in words; {drive}: the drive's name, quoted.
     active: "Active {times}",
     activeDrive: "Active while {drive} is unplugged",
-    notUsed: "Not used by a session",
     // Above the week grid.
     nothingMarked: "Mark when sessions are active",
     // The heading of a weekly schedule's grid; its line is `gridHelp`.

@@ -1,9 +1,7 @@
 // The Carbon web components the page uses, bundled into src/vendor/carbon.js by
 // scripts/vendor-carbon.mjs. Importing a component registers its `cds-*` element. A component the
 // page starts using must be added here, and the vendor files rebuilt (`npm run vendor`).
-import '@carbon/web-components/es/components/ui-shell/header.js';
-import '@carbon/web-components/es/components/ui-shell/header-name.js';
-// The pages, as tabs under the header.
+// The pages, as tabs.
 import '@carbon/web-components/es/components/tabs/tabs.js';
 import '@carbon/web-components/es/components/tabs/tab.js';
 // An icon-only tab (narrow window) names itself in a tooltip.
@@ -14,10 +12,9 @@ import '@carbon/web-components/es/components/breadcrumb/breadcrumb-item.js';
 import '@carbon/web-components/es/components/breadcrumb/breadcrumb-link.js';
 import '@carbon/web-components/es/components/link/link.js';
 import '@carbon/web-components/es/components/button/button.js';
-import '@carbon/web-components/es/components/button/button-set.js';
-// Edit, beside each block list in the block editor: an icon that names itself in a tooltip.
+// A session row's edit button: an icon that names itself in a tooltip.
 import '@carbon/web-components/es/components/icon-button/icon-button.js';
-// The block list editor's sections.
+// The target editor's sections.
 import '@carbon/web-components/es/components/accordion/accordion.js';
 import '@carbon/web-components/es/components/accordion/accordion-item.js';
 import '@carbon/web-components/es/components/tile/tile.js';
@@ -35,10 +32,6 @@ import '@carbon/web-components/es/components/radio-button/radio-button.js';
 import '@carbon/web-components/es/components/radio-button/radio-button-group.js';
 import '@carbon/web-components/es/components/dropdown/dropdown.js';
 import '@carbon/web-components/es/components/dropdown/dropdown-item.js';
-import '@carbon/web-components/es/components/multi-select/multi-select.js';
-import '@carbon/web-components/es/components/multi-select/multi-select-item.js';
-import '@carbon/web-components/es/components/select/select.js';
-import '@carbon/web-components/es/components/select/select-item.js';
 // The until lock's end: a date and a time of day.
 import '@carbon/web-components/es/components/date-picker/date-picker.js';
 import '@carbon/web-components/es/components/date-picker/date-picker-input.js';
@@ -52,8 +45,7 @@ import '@carbon/web-components/es/components/modal/modal-body.js';
 import '@carbon/web-components/es/components/modal/modal-body-content.js';
 import '@carbon/web-components/es/components/modal/modal-footer.js';
 import '@carbon/web-components/es/components/modal/modal-footer-button.js';
-import '@carbon/web-components/es/components/inline-loading/inline-loading.js';
-// A session's settings on its tile: one row each.
+// A tile's rows, and the lists to choose from in the dialog.
 import '@carbon/web-components/es/components/contained-list/contained-list.js';
 import '@carbon/web-components/es/components/contained-list/contained-list-item.js';
 
@@ -64,7 +56,6 @@ import checkmark16 from '@carbon/icons/es/checkmark/16.js';
 import close16 from '@carbon/icons/es/close/16.js';
 import calendar16 from '@carbon/icons/es/calendar/16.js';
 import edit16 from '@carbon/icons/es/edit/16.js';
-import information16 from '@carbon/icons/es/information/16.js';
 import documentExport16 from '@carbon/icons/es/document--export/16.js';
 import documentImport16 from '@carbon/icons/es/document--import/16.js';
 import locked16 from '@carbon/icons/es/locked/16.js';
@@ -89,13 +80,11 @@ import webhook16 from '@carbon/icons/es/webhook/16.js';
 
 const icons = {
   add: add16,
-  // In front of a block tile's lines and the tabs' labels.
+  // A schedule condition's row on its tile.
   'calendar-16': calendar16,
   // Export and Import in Settings.
-  // Edit, beside a block's block lists and schedule.
+  // A session row's edit button, and the title's on a target's or condition's tile.
   edit: edit16,
-  // Beside a session's rows: what the row's choice means, in a tooltip.
-  information: information16,
   // Buttons: Save and the dialog's confirm, Cancel, and Scan again.
   checkmark: checkmark16,
   close: close16,
@@ -107,13 +96,14 @@ const icons = {
   locked: locked16,
   'overflow-menu-vertical': overflowMenuVertical16,
   play: play16,
-  // A flash drive condition's line on a block's tile; the Conditions tab.
+  // A flash drive condition's row on its tile.
   'plug-16': plug16,
+  // The Conditions tab, a session's Condition row, and a combination's row on its tile.
   'rule-16': rule16,
   settings: settings16,
   stop: stop16,
   time: time16,
-  // The Allowances tab, and an allowance's line on a block's tile.
+  // A session's Allowance row.
   'pause-16': pause16,
   'trash-can': trashCan16,
   unlocked: unlocked16,

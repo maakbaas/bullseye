@@ -819,4 +819,4 @@ function weekEditor() {
   };
 }
 
-export { LISTS, SECTIONS, ACTIONS, targetForm, conditionForm, allowanceSection };
+export { LISTS, SECTIONS, targetForm, conditionForm, allowanceSection };
