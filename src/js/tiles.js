@@ -117,25 +117,23 @@ function nowText(running) {
 }
 
 // A session's status line, beside Start / Stop: running, what it does now and how its lock stands;
-// stopped, what it is set to (when it would block, its allowance and its lock), in the same short sentences. Parts
+// stopped, what its allowance and lock are set to, in the same short sentences. Nothing the rows say already. Parts
 // of text (with links, in the line's own type), or none.
 function statusParts(item) {
   const running = runningOf(item.id);
+  // Lock methods whose line says no more than the Lock row's dropdown (and the tag, while it runs).
+  const said = ["until_restart", "password", "text"].includes(item.lock.method);
   if (running) {
     const [icon, lock] = lockLines(item, running)[0];
-    return [nowText(running), icon === "locked" || item.lock.method !== "none" ? lock : null].filter(Boolean);
+    // "Blocking" alone, with no condition or allowance, says no more than "Running".
+    const now = running.condition || running.allowance || !running.enforcing ? nowText(running) : null;
+    return [now, (icon === "locked" || item.lock.method !== "none") && !said ? lock : null].filter(Boolean);
   }
-  const condition = conditionOf(item);
+  // Stopped: what the rows' dropdowns do not say (the condition is named in its row).
   const lock = LOCKS[item.lock && item.lock.method];
-  // When it would block, worded as its condition is (during a schedule, while a drive is unplugged, while a
-  // combination or a webhook is true).
-  const blocks = condition
-    ? tn(`sessions.status.${{ drive: "blocksDrive", true: "blocksTrue", during: "blocksDuring" }[wordingOf(condition)]}`, { name: ref(condition.name, editHref("conditions", condition.id)) })
-    : t("sessions.status.blocksAlways");
   return [
-    blocks,
     item.allowance ? allowanceLabel(item.allowance) : null,
-    item.lock.method === "none" ? null : lock ? lock.describe(item.lock) : t("sessions.tile.unknownLock"),
+    item.lock.method === "none" || said ? null : lock ? lock.describe(item.lock) : t("sessions.tile.unknownLock"),
   ].filter(Boolean);
 }
 
