@@ -21,7 +21,7 @@ use crate::client::Remote;
 use crate::condition::{Mode, Rule};
 use crate::definitions::{self, BlockList, Condition, Definition, Kind, Library};
 use crate::duration;
-use crate::lists::Entries;
+use crate::lists::{Entries, Lists};
 use crate::localtime;
 use crate::lock::Lock;
 use crate::proto::{Overview, Request, UnlockStatus};
@@ -76,8 +76,8 @@ Bullseye command line: everything the window can do.
 
 Usage: bullseye <command> [options]
 A <block>, <list> or <condition> is its name (any case) or its id. An option that takes several
-items takes them separated by commas, e.g. --sites youtube.com,reddit.com; a comma in an item
-is written \\, as in --titles \"Inbox\\, 3 unread,*YouTube*\".
+items takes the words after it, up to the next option: --sites youtube.com reddit.com. An item
+with a space in it goes in double quotes: --titles \"Team chat\" *YouTube*.
 
 A block is what you start: one or more block lists (what to block), a condition (when it is
 active; 'always', a weekly schedule, or a flash drive that is not connected), at most one
@@ -133,6 +133,10 @@ Blocks:
                            takes the change at once (not its lock); while it is locked, only its
                            name and a stricter allowance: a budget shorter or reset less often,
                            or none; a cycle cannot change.
+  add <block> --lists <lists>
+                           Add block lists to a block, keeping the ones it has.
+  remove <block> --lists <lists>
+                           Take block lists out of a block.
   delete <block> [--force] Delete a block that is not running. Asks first, unless --force.
   duplicate <block>        Make a copy of a block, named after it with a number: \"Work (2)\".
   start <block> [--force]  Start a block. The lock options of new set its lock first, as the lock
@@ -172,6 +176,14 @@ Block lists:
                               sites, allowed-sites, programs, store-apps, titles,
                               allowed-titles. While a locked block uses it, only stricter: more
                               to block, fewer allowed, more enforcers.
+  list add <list> [options]   Add entries to the lists of a block list, keeping what it has: the
+                              list options of list new (--sites, --programs, …), and
+                              --enforcers to turn on. While a locked block uses it, adding
+                              entries to block is allowed.
+  list remove <list> [options]
+                              Take entries out of a block list, however they are written
+                              (Steam is steam.exe), and turn --enforcers off. One that is not
+                              in it is refused, as a typo.
   list delete <list> [--force]
                               Delete a block list that no running block uses; it is taken out of
                               the blocks that use it (a block left without one is deleted).
@@ -184,7 +196,7 @@ Conditions:
                                     \"Mon-Fri 08:00-17:00; Sat 10-12\"; or a flash drive, by name
                                     or serial number ('drives' lists them): active while it is
                                     not connected; or a combination of two or more other
-                                    conditions (--any or --all, separated by commas): active when any
+                                    conditions (--any or --all, separated by spaces): active when any
                                     of them is, or when all are. Not of other combinations. A
                                     webhook asks one web address (it can hold GET parameters) every
                                     --every <time> (at least 1m, default 5m), with --method get|post
@@ -198,6 +210,10 @@ Conditions:
                                     Change a condition. While a locked block uses it, a schedule
                                     can only get more times, a drive cannot change, and a
                                     combination can only get more active.
+  condition add <condition> --conditions <conditions>
+                                    Add conditions to a combination.
+  condition remove <condition> --conditions <conditions>
+                                    Take conditions out of a combination (at least two stay).
   condition delete <condition> [--force]
                                     Delete a condition that no running block uses, directly or
                                     in a combination; blocks it was the condition of are always
@@ -297,6 +313,26 @@ enum Command {
     ListDelete {
         list: String,
         force: bool,
+    },
+    /// `add` / `remove`: block lists of a block.
+    BlockItems {
+        block: String,
+        lists: Vec<String>,
+        add: bool,
+    },
+    /// `list add` / `list remove`: entries of a block list's lists, by their field of `Entries`,
+    /// and enforcers.
+    ListItems {
+        list: String,
+        entries: BTreeMap<&'static str, Vec<String>>,
+        enforcers: Vec<String>,
+        add: bool,
+    },
+    /// `condition add` / `condition remove`: the conditions of a combination.
+    ConditionItems {
+        condition: String,
+        members: Vec<String>,
+        add: bool,
     },
     ConditionShow {
         condition: String,
@@ -466,7 +502,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
         ("list" | "condition", Some((verb, rest))) => (format!("{command} {verb}"), rest),
         ("list" | "condition", None) => {
             return Err(format!(
-                "`{command}` needs show, new, edit, delete, duplicate{}",
+                "`{command}` needs show, new, edit, add, remove, delete, duplicate{}",
                 if command == "condition" { " or check" } else { "" }
             ))
         }
@@ -484,6 +520,11 @@ fn parse(args: &[String]) -> Result<Command, String> {
             Command::New { name, changes: parse_block_changes(&mut options, false)? }
         }
         "edit" => Command::Edit { block: named(&mut options, "block")?, changes: parse_block_changes(&mut options, true)? },
+        "add" | "remove" => Command::BlockItems {
+            block: named(&mut options, "block")?,
+            lists: options.items("--lists")?.ok_or(format!("Give the block lists to {command}: --lists <lists>"))?,
+            add: command == "add",
+        },
         "delete" => Command::Delete { block: named(&mut options, "block")?, force: options.flag("--force") },
         "export" => Command::Export { file: options.positional().ok_or("Give the file to write, e.g. bullseye.json")? },
         "import" => Command::Import { file: options.positional().ok_or("Give the settings file to read")?, force: options.flag("--force") },
@@ -502,6 +543,15 @@ fn parse(args: &[String]) -> Result<Command, String> {
             Command::ListNew { name, changes: parse_list_changes(&mut options, false)? }
         }
         "list edit" => Command::ListEdit { list: named(&mut options, "block list")?, changes: parse_list_changes(&mut options, true)? },
+        "list add" | "list remove" => {
+            let list = named(&mut options, "block list")?;
+            let entries = parse_list_entries(&mut options, &[])?;
+            let enforcers = options.items("--enforcers")?.unwrap_or_default();
+            if entries.is_empty() && enforcers.is_empty() {
+                return Err(format!("Give what to {}: --sites, --programs, --titles, … or --enforcers", &command[5..]));
+            }
+            Command::ListItems { list, entries, enforcers, add: command == "list add" }
+        }
         "list delete" => Command::ListDelete { list: named(&mut options, "block list")?, force: options.flag("--force") },
         "condition show" => Command::ConditionShow { condition: named(&mut options, "condition")? },
         "condition new" => {
@@ -515,6 +565,13 @@ fn parse(args: &[String]) -> Result<Command, String> {
             condition: named(&mut options, "condition")?,
             name: options.value("--name")?,
             rule: parse_rule(&mut options)?,
+        },
+        "condition add" | "condition remove" => Command::ConditionItems {
+            condition: named(&mut options, "condition")?,
+            members: options
+                .items("--conditions")?
+                .ok_or(format!("Give the conditions to {}: --conditions <conditions>", &command[10..]))?,
+            add: command == "condition add",
         },
         "condition delete" => Command::ConditionDelete { condition: named(&mut options, "condition")?, force: options.flag("--force") },
         "condition test" => Command::ConditionTest { condition: named(&mut options, "condition")? },
@@ -747,6 +804,22 @@ fn parse_list_changes(options: &mut Options, editing: bool) -> Result<ListChange
             return Err(format!("--clear takes {}, not \"{list}\"", names.join(", ")));
         }
     }
+    changes.lists = parse_list_entries(options, &cleared)?;
+    if editing {
+        changes.name = options.value("--name")?;
+    }
+    changes.enforcers = match options.items("--enforcers")? {
+        Some(names) => Some(parse_enforcers(&names)?),
+        None if editing => None,
+        None => Some(parse_enforcers(&["all".to_string()])?),
+    };
+    Ok(changes)
+}
+
+/// The lists given (`--sites`, `--sites-file`, …) by their field of `Entries`, and those named in
+/// `cleared` as empty when not given.
+fn parse_list_entries(options: &mut Options, cleared: &[String]) -> Result<BTreeMap<&'static str, Vec<String>>, String> {
+    let mut lists = BTreeMap::new();
     for (option, key) in LIST_OPTIONS {
         let given = options.items(option)?;
         let from_file = options.value(&format!("{option}-file"))?;
@@ -756,18 +829,10 @@ fn parse_list_changes(options: &mut Options, editing: bool) -> Result<ListChange
             entries.extend(text.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string));
         }
         if given.is_some() || from_file.is_some() || cleared.iter().any(|c| c == &option[2..]) {
-            changes.lists.insert(key, entries);
+            lists.insert(key, entries);
         }
     }
-    if editing {
-        changes.name = options.value("--name")?;
-    }
-    changes.enforcers = match options.items("--enforcers")? {
-        Some(names) => Some(parse_enforcers(&names.join(","))?),
-        None if editing => None,
-        None => Some(parse_enforcers("all")?),
-    };
-    Ok(changes)
+    Ok(lists)
 }
 
 /// The names of the enforcers, as `Enforcers` calls its fields: a new enforcer is known here
@@ -779,12 +844,12 @@ fn enforcer_names() -> Vec<String> {
     }
 }
 
-/// `chromium_tabs,firefox_tabs`, or `all`: every enforcer as a new block list has them (windows by
+/// The enforcers named (`chromium_tabs firefox_tabs`), or `all`: every enforcer as a new block list has them (windows by
 /// title closed, not minimized: `window_titles_minimize` says to minimize them).
-fn parse_enforcers(list: &str) -> Result<Enforcers, String> {
+fn parse_enforcers(given: &[String]) -> Result<Enforcers, String> {
     let names = enforcer_names();
     let mut chosen: Map<String, Value> = names.iter().map(|name| (name.clone(), Value::Bool(false))).collect();
-    for name in list.split(',').map(str::trim).filter(|name| !name.is_empty()) {
+    for name in given.iter().map(String::as_str) {
         if name == "all" {
             if let Ok(Value::Object(all)) = serde_json::to_value(Enforcers::default()) {
                 for (name, on) in all.into_iter().filter(|(_, on)| *on == Value::Bool(true)) {
@@ -803,24 +868,6 @@ fn parse_enforcers(list: &str) -> Result<Enforcers, String> {
 /// The arguments after the command, taken out one kind at a time; whatever is left is an error.
 struct Options {
     args: Vec<String>,
-}
-
-/// One value of a list option as its items: split at commas (`a,b` and `a, b` alike), each
-/// trimmed, empty ones left out. A comma in an item is written `\,` (`Inbox\, 3 unread`); every
-/// other backslash is kept as it is, as window titles and paths have them.
-fn split_items(value: &str) -> Vec<String> {
-    let mut items = Vec::new();
-    let mut item = String::new();
-    let mut chars = value.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' if chars.next_if_eq(&',').is_some() => item.push(','),
-            ',' => items.push(std::mem::take(&mut item)),
-            c => item.push(c),
-        }
-    }
-    items.push(item);
-    items.into_iter().map(|item| item.trim().to_string()).filter(|item| !item.is_empty()).collect()
 }
 
 impl Options {
@@ -855,9 +902,9 @@ impl Options {
         Ok(values)
     }
 
-    /// The items of a list option, `None` when it is not given: `--name a,b`, `--name a b` (each
-    /// value up to the next option, which is also how PowerShell passes `a,b`), `--name=a,b` or
-    /// any mix, items split at commas (`split_items`). Given once at most.
+    /// The items of a list option, `None` when it is not given: every word after it up to the next
+    /// option (`--sites a.com b.com`; an item with a space in it is quoted, as the shell has it:
+    /// `--titles "Team chat" *Shorts*`), and with `--name=item` that item first. Given once at most.
     fn items(&mut self, name: &str) -> Result<Option<Vec<String>>, String> {
         let Some(at) = self.args.iter().position(|arg| arg == name || arg.starts_with(&format!("{name}="))) else {
             return Ok(None);
@@ -868,11 +915,11 @@ impl Options {
             values.push(self.args.remove(at));
         }
         if self.args.iter().any(|arg| arg == name || arg.starts_with(&format!("{name}="))) {
-            return Err(format!("{name} is given more than once; give all its items at once, separated by commas"));
+            return Err(format!("{name} is given more than once; give all its items after it at once, separated by spaces"));
         }
-        let items: Vec<String> = values.iter().flat_map(|value| split_items(value)).collect();
+        let items: Vec<String> = values.iter().map(|value| value.trim().to_string()).filter(|value| !value.is_empty()).collect();
         if items.is_empty() {
-            return Err(format!("{name} needs one or more items, separated by commas"));
+            return Err(format!("{name} needs one or more items, separated by spaces"));
         }
         Ok(Some(items))
     }
@@ -1058,7 +1105,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             changes.apply(&mut list);
             let name = list.name.clone();
             send(Request::SaveList { list })?;
-            say!("Made the block list \"{name}\". Use it with: bullseye new <block> --list \"{name}\"");
+            say!("Made the block list \"{name}\". Use it with: bullseye new <block> --lists \"{name}\"");
         }
         Command::ListEdit { list, changes } => {
             let overview = overview()?;
@@ -1110,6 +1157,60 @@ fn execute(command: Command) -> Result<(), Failure> {
             if let Some(rule) = rule {
                 condition.rule = resolve_rule(&overview, rule)?;
             }
+            let name = condition.name.clone();
+            send(Request::SaveCondition { condition })?;
+            say!("Saved the condition \"{name}\".");
+        }
+        Command::BlockItems { block, lists, add } => {
+            let overview = overview()?;
+            let mut block = find(&overview.blocks, &block, "block", |b| (&b.id, &b.name))?.clone();
+            let ids = lists
+                .iter()
+                .map(|l| find(&overview.lists, l, "block list", |l| (&l.id, &l.name)).map(|l| (l.id.clone(), l.name.clone())))
+                .collect::<Result<Vec<_>, _>>()?;
+            block.lists = changed(&block.lists, &ids, add, |name| format!("\"{name}\" is not a block list of \"{}\"", block.name))?;
+            let name = block.name.clone();
+            send(Request::SaveBlock { block })?;
+            say!("Saved the block \"{name}\".");
+        }
+        Command::ListItems { list, entries, enforcers, add } => {
+            let overview = overview()?;
+            let mut list = find(&overview.lists, &list, "block list", |l| (&l.id, &l.name))?.clone();
+            for (key, given) in entries {
+                let what =
+                    LIST_OPTIONS.iter().find(|(_, k)| *k == key).map(|(option, _)| option[2..].replace('-', " ")).unwrap_or_default();
+                let Some(field) = list.entries.field(key) else { continue };
+                let keyed: Vec<(String, String)> = given.iter().map(|entry| (entry_key(key, entry), entry.clone())).collect();
+                let now: Vec<String> = field.iter().map(|entry| entry_key(key, entry)).collect();
+                let kept = changed(&now, &keyed, add, |entry| format!("\"{entry}\" is not in the {what} of \"{}\"", list.name))?;
+                // The entries as they were typed, the new ones as given.
+                let mut typed: Vec<String> = Vec::new();
+                for entry_key in kept {
+                    match field.iter().find(|entry| self::entry_key(key, entry) == entry_key) {
+                        Some(entry) => typed.push(entry.clone()),
+                        None => typed.extend(keyed.iter().find(|(k, _)| *k == entry_key).map(|(_, entry)| entry.clone())),
+                    }
+                }
+                *field = typed;
+            }
+            if !enforcers.is_empty() {
+                list.enforcers = switched(list.enforcers, &enforcers, add).map_err(Failure::Usage)?;
+            }
+            let name = list.name.clone();
+            send(Request::SaveList { list })?;
+            say!("Saved the block list \"{name}\".");
+        }
+        Command::ConditionItems { condition, members, add } => {
+            let overview = overview()?;
+            let mut condition = find(&overview.conditions, &condition, "condition", |c| (&c.id, &c.name))?.clone();
+            let Rule::Combined { members: now, .. } = &mut condition.rule else {
+                return Err(failed(format!("\"{}\" is not a combination; add and remove change the conditions of one", condition.name)));
+            };
+            let ids = members
+                .iter()
+                .map(|c| find(&overview.conditions, c, "condition", |c| (&c.id, &c.name)).map(|c| (c.id.clone(), c.name.clone())))
+                .collect::<Result<Vec<_>, _>>()?;
+            *now = changed(now, &ids, add, |name| format!("\"{name}\" is not in \"{}\"", condition.name))?;
             let name = condition.name.clone();
             send(Request::SaveCondition { condition })?;
             say!("Saved the condition \"{name}\".");
@@ -1400,6 +1501,48 @@ fn apply_block_changes(overview: &Overview, block: &mut Definition, changes: Blo
     Ok(())
 }
 
+/// `now` with the items `given` (each a key and its name) added at the end, or taken out. Adding
+/// what is there already changes nothing; taking out what is not there is refused, as it is most
+/// likely a typo (`missing` says so, by its name).
+fn changed(now: &[String], given: &[(String, String)], add: bool, missing: impl Fn(&str) -> String) -> Result<Vec<String>, Failure> {
+    let mut items = now.to_vec();
+    for (key, name) in given {
+        let at = items.iter().position(|item| item == key);
+        match (add, at) {
+            (true, None) => items.push(key.clone()),
+            (true, Some(_)) => {}
+            (false, Some(at)) => {
+                items.remove(at);
+            }
+            (false, None) => return Err(failed(missing(name))),
+        }
+    }
+    Ok(items)
+}
+
+/// An entry of a list as the list reads it, letter case aside, so `Steam` is `steam.exe` and
+/// `YouTube.com` is `youtube.com`; as typed if it does not read.
+fn entry_key(field: &str, entry: &str) -> String {
+    let mut one = Entries::default();
+    if let Some(list) = one.field(field) {
+        list.push(entry.to_string());
+    }
+    let read = Lists::parse(&one).ok().and_then(|lists| lists.entries().field(field).and_then(|list| list.first().cloned()));
+    read.unwrap_or_else(|| entry.trim().to_string()).to_lowercase()
+}
+
+/// `enforcers` with those named (or `all`) turned on, or off.
+fn switched(enforcers: Enforcers, names: &[String], on: bool) -> Result<Enforcers, String> {
+    let named = serde_json::to_value(parse_enforcers(names)?).map_err(|e| e.to_string())?;
+    let mut fields = serde_json::to_value(enforcers).map_err(|e| e.to_string())?;
+    if let (Value::Object(named), Value::Object(fields)) = (named, &mut fields) {
+        for (name, _) in named.into_iter().filter(|(_, is)| *is == Value::Bool(true)) {
+            fields.insert(name, Value::Bool(on));
+        }
+    }
+    serde_json::from_value(fields).map_err(|e| e.to_string())
+}
+
 /// A lock with what it names looked up: its lock condition, given by name or id, as the
 /// condition's id.
 fn resolve_lock(overview: &Overview, lock: Lock) -> Result<Lock, Failure> {
@@ -1651,8 +1794,8 @@ fn describe_overview(overview: &Overview) -> String {
         overview.conditions.iter().map(|c| (c.name.clone(), describe_rule(overview, &c.rule))).collect();
     let mut text = String::new();
     for (title, rows, empty) in [
-        ("Blocks", blocks, "  None yet. Make one with: bullseye new <name> --list <block list>\n"),
-        ("Block lists", lists, "  None yet. Make one with: bullseye list new <name> --site <site>\n"),
+        ("Blocks", blocks, "  None yet. Make one with: bullseye new <name> --lists <block lists>\n"),
+        ("Block lists", lists, "  None yet. Make one with: bullseye list new <name> --sites <sites>\n"),
         ("Conditions", conditions, "  None (blocks without one are always active).\n"),
     ] {
         text.push_str(&format!("{title}:\n"));
@@ -1813,7 +1956,7 @@ mod tests {
         assert!(ok(&["status"]).contains("Blocks:\n  None yet"));
         assert_eq!(
             ok(&["list", "new", "Social", "--sites", "youtube.com", "--allowed-sites", "music.youtube.com"]),
-            "Made the block list \"Social\". Use it with: bullseye new <block> --list \"Social\"\n"
+            "Made the block list \"Social\". Use it with: bullseye new <block> --lists \"Social\"\n"
         );
         assert!(ok(&["condition", "new", "Work", "--times", "Mon-Fri 08:00-17:00"]).starts_with("Made the condition \"Work\"."));
         let made = ok(&["new", "Evening", "--lists", "Social", "--condition", "Work", "--allowance", "budget", "--allowed", "30m"]);
@@ -1858,7 +2001,7 @@ mod tests {
         let copy = ok(&["list", "show", "Social (2)"]);
         assert!(copy.contains("reddit.com") && !copy.contains("music.youtube.com"), "{copy}");
         assert_eq!(ok(&["condition", "edit", "Work (2)", "--name", "Weekend", "--times", "Sat-Sun"]), "Saved the condition \"Weekend\".\n");
-        ok(&["condition", "new", "Either", "--any", "Work,Weekend"]);
+        ok(&["condition", "new", "Either", "--any", "Work", "Weekend"]);
         assert!(ok(&["condition", "show", "Either"]).contains("any of \"Work\", \"Weekend\""));
         assert!(refused(&["condition", "new", "Pair", "--any", "Work"]).contains("at least two"));
 
@@ -1878,6 +2021,82 @@ mod tests {
         assert!(refused(&["list", "new", "Games", "--store-apps", "Microsoft.Xbox*"]).contains("exact package family name"));
         assert!(refused(&["new", "X", "--condition", "Nope"]).starts_with("No condition called \"Nope\""));
         assert_eq!(refused(&["condition", "test", "Work"]), "\"Work\" is not a webhook condition");
+    }
+
+    #[test]
+    fn items_are_added_and_removed() {
+        serve("add-remove");
+        ok(&["list", "new", "Social", "--sites", "youtube.com", "reddit.com", "--programs", "Steam", "--enforcers", "chromium_tabs"]);
+        ok(&["list", "new", "Games", "--programs", "game.exe"]);
+        ok(&["list", "new", "News", "--sites", "nu.nl"]);
+        let list = |name: &str| ok(&["list", "show", name]);
+
+        // A block list: entries added as typed (the service keeps them in order), and taken out however they are
+        // written, as the list reads them (Steam is steam.exe); what is there already stays once.
+        assert_eq!(
+            ok(&["list", "add", "Social", "--sites", "x.com", "YouTube.com", "--titles", "Inbox, 3 unread", "--enforcers", "firefox_tabs"]),
+            "Saved the block list \"Social\".\n"
+        );
+        let shown = list("Social");
+        assert!(shown.contains("Block list:     reddit.com, x.com, youtube.com"), "{shown}");
+        assert!(
+            shown.contains("Window titles:  Inbox, 3 unread") && shown.contains("firefox_tabs") && shown.contains("chromium_tabs"),
+            "{shown}"
+        );
+        ok(&["list", "remove", "Social", "--sites", "Reddit.com", "--programs", "steam.exe", "--enforcers", "chromium_tabs"]);
+        let shown = list("Social");
+        assert!(shown.contains("Block list:     x.com, youtube.com") && shown.contains("Programs:       (none)"), "{shown}");
+        assert!(!shown.contains("chromium_tabs") && shown.contains("firefox_tabs"), "{shown}");
+        // What is not there is a typo, and nothing is saved.
+        assert_eq!(
+            refused(&["list", "remove", "Social", "--sites", "x.com", "tiktok.com"]),
+            "\"tiktok.com\" is not in the sites of \"Social\""
+        );
+        assert!(list("Social").contains("x.com, youtube.com"));
+        assert_eq!(
+            refused(&["list", "remove", "Social", "--allowed-titles", "Notes"]),
+            "\"Notes\" is not in the allowed titles of \"Social\""
+        );
+        assert!(refused(&["list", "add", "Social", "--enforcers", "lasers"]).starts_with("Unknown enforcer \"lasers\""));
+        assert_eq!(refused(&["list", "add", "Social"]), "Give what to add: --sites, --programs, --titles, … or --enforcers");
+        // All the enforcers, on and off.
+        ok(&["list", "add", "Social", "--enforcers", "all"]);
+        assert!(list("Social").contains("chromium_tabs"));
+        ok(&["list", "remove", "Social", "--enforcers", "all"]);
+        assert!(list("Social").contains("Enforcers:      (none)"), "{}", list("Social"));
+
+        // A block's block lists.
+        ok(&["new", "Work", "--lists", "Social"]);
+        ok(&["add", "work", "--lists", "Games", "News", "Social"]);
+        assert!(ok(&["show", "Work"]).contains("Block lists: Social, Games, News"), "{}", ok(&["show", "Work"]));
+        ok(&["remove", "Work", "--lists", "social"]);
+        assert!(ok(&["show", "Work"]).contains("Block lists: Games, News"));
+        assert_eq!(refused(&["remove", "Work", "--lists", "Social"]), "\"Social\" is not a block list of \"Work\"");
+        assert!(refused(&["add", "Work", "--lists", "Nope"]).starts_with("No block list called \"Nope\""));
+        assert_eq!(refused(&["add", "Work"]), "Give the block lists to add: --lists <lists>");
+
+        // The conditions of a combination, and nothing else.
+        for name in ["Mornings", "Evenings", "Weekend"] {
+            ok(&["condition", "new", name, "--times", "sat"]);
+        }
+        ok(&["condition", "new", "Either", "--any", "Mornings", "Evenings"]);
+        ok(&["condition", "add", "Either", "--conditions", "Weekend"]);
+        assert!(
+            ok(&["condition", "show", "Either"]).contains("any of \"Mornings\", \"Evenings\", \"Weekend\""),
+            "{}",
+            ok(&["condition", "show", "Either"])
+        );
+        ok(&["condition", "remove", "Either", "--conditions", "Mornings"]);
+        assert!(ok(&["condition", "show", "Either"]).contains("any of \"Evenings\", \"Weekend\""));
+        assert_eq!(refused(&["condition", "remove", "Either", "--conditions", "Mornings"]), "\"Mornings\" is not in \"Either\"");
+        assert_eq!(
+            refused(&["condition", "add", "Weekend", "--conditions", "Mornings"]),
+            "\"Weekend\" is not a combination; add and remove change the conditions of one"
+        );
+        assert_eq!(refused(&["condition", "remove", "Either"]), "Give the conditions to remove: --conditions <conditions>");
+        // The service still holds to its rules: a combination of fewer than two is refused.
+        assert!(!refused(&["condition", "remove", "Either", "--conditions", "Weekend"]).is_empty());
+        assert_eq!(refused(&["list"]), "`list` needs show, new, edit, add, remove, delete, duplicate");
     }
 
     #[test]
@@ -2048,7 +2267,7 @@ mod tests {
         assert_eq!(ok(&["list", "edit", "L", "--name", "Media"]), "Saved the block list \"Media\".\n");
         ok(&["condition", "new", "Work", "--times", "Mon-Fri 08:00-17:00"]);
         ok(&["condition", "new", "Late", "--times", "Mon-Sun 16:00-18:00"]);
-        ok(&["condition", "new", "Both", "--all", "Work,Late"]);
+        ok(&["condition", "new", "Both", "--all", "Work", "Late"]);
         assert!(ok(&["condition", "show", "Both"]).contains("all of \"Work\", \"Late\""));
         // A lock until a date and time asks first, with the time it ends.
         ok(&["new", "Later", "--lists", "Media", "--lock-until", "2099-01-01 00:00"]);
@@ -2281,12 +2500,13 @@ mod tests {
 
     #[test]
     fn windows_by_title_are_closed_unless_minimized() {
+        let parse_enforcers = |names: &str| parse_enforcers(&names.split(' ').map(str::to_string).collect::<Vec<_>>());
         let all = parse_enforcers("all").unwrap();
         assert_eq!(all, Enforcers::default(), "all is every enforcer as a new block list has them: closing windows by title");
         assert!(!all.window_titles_minimize);
-        let down = parse_enforcers("chromium_tabs, window_titles_minimize").unwrap();
+        let down = parse_enforcers("chromium_tabs window_titles_minimize").unwrap();
         assert!(down.window_titles_minimize && down.chromium_tabs && !down.firefox_tabs);
-        assert!(parse_enforcers("all,window_titles_minimize").unwrap().window_titles_minimize);
+        assert!(parse_enforcers("all window_titles_minimize").unwrap().window_titles_minimize);
         // The lists with one way to act on them have no switch: their entries are it.
         for gone in ["exe_names", "store_apps", "window_titles", "window_titles_close"] {
             assert!(parse_enforcers(gone).unwrap_err().starts_with("Unknown enforcer"), "{gone}");
@@ -2313,7 +2533,8 @@ mod tests {
             "--allowed-titles",
             "*Visual Studio Code",
             "--enforcers",
-            "chromium_tabs, window_titles_minimize",
+            "chromium_tabs",
+            "window_titles_minimize",
         ]);
         let Ok(Command::ListNew { name, changes }) = parse(&line) else { panic!("not a new list") };
         assert_eq!(name, "Social");
@@ -2341,7 +2562,7 @@ mod tests {
 
     #[test]
     fn a_new_block_finds_its_lists_and_condition_by_name() {
-        let line = args(&["new", "Evening", "--lists", "social,l1", "--condition", "WORK HOURS", "--lock-duration", "2h 30m"]);
+        let line = args(&["new", "Evening", "--lists", "social", "l1", "--condition", "WORK HOURS", "--lock-duration", "2h 30m"]);
         let Ok(Command::New { name, changes }) = parse(&line) else { panic!("not new") };
         assert_eq!(name, "Evening");
         let mut b = block("x", &[]);
@@ -2404,38 +2625,35 @@ mod tests {
     }
 
     #[test]
-    fn several_items_are_separated_by_commas() {
-        assert_eq!(split_items("a.com,b.com"), vec!["a.com", "b.com"]);
-        // Spaces around items and empty items do not count.
-        assert_eq!(split_items(" a.com , ,b.com, "), vec!["a.com", "b.com"]);
-        // A comma in an item is \, ; other backslashes and quotes are kept as typed.
-        assert_eq!(split_items(r"Inbox\, 3 unread,*YouTube*"), vec!["Inbox, 3 unread", "*YouTube*"]);
-        assert_eq!(split_items(r#"C:\Users\notes.txt - Notepad, say "hi""#), vec![r"C:\Users\notes.txt - Notepad", r#"say "hi""#]);
-        assert_eq!(split_items(r"ends with \"), vec![r"ends with \"]);
-        assert!(split_items(" , ").is_empty());
-
+    fn several_items_are_the_words_after_their_option() {
         let items = |line: &[&str], name: &str| Options::new(&args(line)).items(name);
-        // With a comma, with spaces between (as PowerShell passes a,b), with =, and all of them.
+        // Each word up to the next option is an item, also the first with =; a word with a space
+        // in it (quoted in the shell) is one item, and a comma is part of an item.
         let both = Ok(Some(vec!["a.com".to_string(), "b.com".into()]));
-        assert_eq!(items(&["--sites", "a.com,b.com"], "--sites"), both);
         assert_eq!(items(&["--sites", "a.com", "b.com", "--force"], "--sites"), both);
         assert_eq!(items(&["--sites=a.com", "b.com"], "--sites"), both);
+        assert_eq!(
+            items(&["--titles", "Inbox, 3 unread", " *Chat* "], "--titles"),
+            Ok(Some(vec!["Inbox, 3 unread".to_string(), "*Chat*".into()]))
+        );
         assert_eq!(items(&["--force"], "--sites"), Ok(None));
+        // A single value is one word, and needs one.
+        assert_eq!(Options::new(&args(&["--name"])).value("--name"), Err("--name needs a value".into()));
         // Once, and with something in it.
         assert!(items(&["--sites", "a.com", "--sites", "b.com"], "--sites").unwrap_err().contains("more than once"));
-        assert_eq!(items(&["--sites", "--force"], "--sites"), Err("--sites needs one or more items, separated by commas".into()));
-        assert_eq!(items(&["--sites="], "--sites"), Err("--sites needs one or more items, separated by commas".into()));
+        assert_eq!(items(&["--sites", "--force"], "--sites"), Err("--sites needs one or more items, separated by spaces".into()));
+        assert_eq!(items(&["--sites=", " "], "--sites"), Err("--sites needs one or more items, separated by spaces".into()));
         // What is left after the items is for the other options.
         let mut options = Options::new(&args(&["--any", "Work", "Weekend", "--name", "Either"]));
         assert_eq!(options.items("--any"), Ok(Some(vec!["Work".to_string(), "Weekend".into()])));
         assert_eq!(options.value("--name"), Ok(Some("Either".into())));
         assert_eq!(options.finish(), Ok(()));
         // The commands take them so.
-        let Ok(Command::ListNew { changes, .. }) = parse(&args(&["list", "new", "A", "--titles", r"Inbox\, 3 unread,*Chat*"])) else {
+        let Ok(Command::ListNew { changes, .. }) = parse(&args(&["list", "new", "A", "--titles", "Inbox, 3 unread", "*Chat*"])) else {
             panic!("not new")
         };
         assert_eq!(changes.lists.get("titles"), Some(&vec!["Inbox, 3 unread".to_string(), "*Chat*".into()]));
-        let Ok(Command::ListEdit { changes, .. }) = parse(&args(&["list", "edit", "A", "--clear", "sites,allowed-titles"])) else {
+        let Ok(Command::ListEdit { changes, .. }) = parse(&args(&["list", "edit", "A", "--clear", "sites", "allowed-titles"])) else {
             panic!("not edit")
         };
         assert_eq!(changes.lists.keys().copied().collect::<Vec<_>>(), vec!["allowed_titles", "filters"]);
