@@ -161,8 +161,7 @@ pub fn until(text: &str) -> Result<Until, String> {
     let at = DateTime::parse(text)?;
     let end = Zone::current().instant(&at).ok_or_else(|| format!("Cannot tell when {at} is in this time zone"))?;
     let left = end.duration_since(SystemTime::now()).map_err(|_| format!("{at} has passed"))?;
-    // Rounded up to the minute, as the time was given in minutes.
-    Ok(Until { when: at.to_string(), left: duration::countdown(left.as_secs().div_ceil(60) * 60) })
+    Ok(Until { when: at.to_string(), left: duration::left(left.as_secs()) })
 }
 
 fn key_name(info: &DYNAMIC_TIME_ZONE_INFORMATION) -> String {

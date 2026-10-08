@@ -549,12 +549,10 @@ impl Session {
         let name = &self.name;
         match &self.lock {
             RunLock::None => None,
-            RunLock::Ends { .. } => {
-                self.remaining(now).map(|left| format!("“{name}” is locked for the next {}", duration::countdown(left)))
-            }
+            RunLock::Ends { .. } => self.remaining(now).map(|left| format!("“{name}” is locked for the next {}", duration::left(left))),
             // Like `in_condition`, locked if it cannot be known.
             RunLock::Condition { condition } => condition.active(&self.zone, now).then(|| {
-                let until = self.lock_change(now).map(|s| format!(" for the next {}", duration::countdown(s))).unwrap_or_default();
+                let until = self.lock_change(now).map(|s| format!(" for the next {}", duration::left(s))).unwrap_or_default();
                 match condition {
                     Rule::Schedule { .. } => format!("“{name}” is locked by its lock schedule{until}"),
                     Rule::FlashDrive { drive, .. } => format!("“{name}” is locked until the flash drive “{drive}” is connected"),
@@ -565,7 +563,7 @@ impl Session {
             RunLock::UntilRestart { .. } => Some(format!("“{name}” is locked until Windows restarts")),
             RunLock::Delay { delay, .. } => match self.stop_remaining(now) {
                 Some(0) => None,
-                Some(left) => Some(format!("“{name}” can be stopped in {}", duration::countdown(left))),
+                Some(left) => Some(format!("“{name}” can be stopped in {}", duration::left(left))),
                 None => Some(format!("“{name}” is locked: asking to stop it starts a wait of {}", duration::countdown(*delay))),
             },
             RunLock::Text { .. } => Some(format!("“{name}” is locked until its text is typed in")),
@@ -1048,16 +1046,16 @@ impl Sessions {
                 stop_delay: b.stop_delay(),
                 stop_delay_words: b.stop_delay().map(duration::countdown),
                 stop_remaining: b.stop_remaining(now),
-                stop_remaining_words: b.stop_remaining(now).map(duration::countdown),
+                stop_remaining_words: b.stop_remaining(now).map(duration::left),
                 password: b.password_hash().is_some(),
                 locked: b.locked(now).is_some(),
                 condition: b.condition.clone(),
                 enforcing: b.in_condition(now),
                 condition_change: b.condition_change(now),
-                remaining_words: b.remaining(now).map(duration::countdown),
-                condition_change_words: b.condition_change(now).map(duration::countdown),
+                remaining_words: b.remaining(now).map(duration::left),
+                condition_change_words: b.condition_change(now).map(duration::left),
                 lock_change: b.lock_change(now),
-                lock_change_words: b.lock_change(now).map(duration::countdown),
+                lock_change_words: b.lock_change(now).map(duration::left),
                 allowance: b.allowance.as_ref().map(|run| run.status(&b.zone, now)),
             })
             .collect();
@@ -1572,7 +1570,7 @@ mod tests {
         assert!(!a.enforcing);
         // In words too, for the window and the CLI.
         assert!(
-            a.remaining_words.as_deref().is_some_and(|words| words.starts_with("1 hour") || words.starts_with("59 minutes")),
+            a.remaining_words.as_deref().is_some_and(|words| words == "60 minutes" || words == "59 minutes"),
             "{:?}",
             a.remaining_words
         );
@@ -1600,7 +1598,7 @@ mod tests {
         let locks = || StartLock::Condition(office.clone().unwrap());
         list.start("a", "Work", vec![part(sites(&["a.com"]), Actions::default())], None, locks()).unwrap();
         let why = list.stop("a", false).unwrap_err();
-        assert!(why.contains("locked by its lock schedule for the next 1 hour") || why.contains("for the next 59 minutes"), "{why}");
+        assert!(why.contains("locked by its lock schedule for the next 60 minutes") || why.contains("for the next 59 minutes"), "{why}");
         let a = running(&list, "a");
         assert!(a.locked && a.lock_condition == office && a.enforcing);
         assert!(a.lock_change.is_some_and(|left| (3590..=3600).contains(&left)), "{:?}", a.lock_change);
@@ -2193,7 +2191,10 @@ mod tests {
         };
         start("Both", any).unwrap();
         let both = why("Both");
-        assert!(both.starts_with("“Both” is locked by its lock condition for the next 1 hour") || both.contains("59 minutes"), "{both}");
+        assert!(
+            both.starts_with("“Both” is locked by its lock condition for the next 60 minutes") || both.contains("59 minutes"),
+            "{both}"
+        );
     }
 
     #[test]

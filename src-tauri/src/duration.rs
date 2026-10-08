@@ -71,6 +71,16 @@ pub fn countdown(seconds: u64) -> String {
     }
 }
 
+/// Time left, as a countdown shows it: one unit, rounded. A unit is used from one and a half of it
+/// on, so below that the next one down counts: `2 minutes` for 2 minutes and 5 seconds, `89 seconds`
+/// for 1 minute and 29 seconds, `36 hours` for a day and a half less a second, `2 days` from there.
+pub fn left(seconds: u64) -> String {
+    let units = [(86400, "day"), (3600, "hour"), (60, "minute"), (1, "second")];
+    let &(size, unit) = units.iter().find(|&&(size, _)| seconds * 2 >= size * 3).unwrap_or(&units[3]);
+    let n = (seconds + size / 2) / size;
+    format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
+}
+
 /// A countdown after "every": a lone one is left out (`day`, not `1 day`), `2 days` and
 /// `1 day and 12 hours` stay as they are.
 pub fn period(seconds: u64) -> String {
@@ -84,6 +94,24 @@ pub fn period(seconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn time_left_is_one_unit_from_one_and_a_half_of_it() {
+        for (seconds, words) in [
+            (0, "0 seconds"),
+            (1, "1 second"),
+            (89, "89 seconds"),
+            (90, "2 minutes"),
+            (125, "2 minutes"),
+            (3599, "60 minutes"),
+            (5399, "90 minutes"),
+            (5400, "2 hours"),
+            (36 * 3600 - 1, "36 hours"),
+            (36 * 3600, "2 days"),
+        ] {
+            assert_eq!(left(seconds), words, "{seconds}");
+        }
+    }
 
     #[test]
     fn a_period_drops_a_lone_one() {

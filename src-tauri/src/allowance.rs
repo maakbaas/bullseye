@@ -540,7 +540,7 @@ impl Run {
     /// What is left, for the window and the CLI.
     pub fn status(&self, zone: &Zone, now: SystemTime) -> Status {
         let left = |key: &str| self.allowed_ms().saturating_sub(self.used.get(key).copied().unwrap_or(0)).div_ceil(1000);
-        let words = |seconds: u64| duration::countdown(seconds);
+        let words = duration::left;
         let phase = self.phase(zone, now);
         let total = (self.scope() == Some(Scope::Total)).then(|| left(TOTAL));
         let reset_in = into_period(&self.terms, self.started, zone, now).map(|(into, length)| length - into);

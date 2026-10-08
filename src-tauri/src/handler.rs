@@ -423,11 +423,11 @@ fn unlock_status(context: &Context) -> UnlockStatus {
         delay,
         delay_words: duration::countdown(delay),
         remaining,
-        remaining_words: remaining.map(duration::countdown),
+        remaining_words: remaining.map(duration::left),
         way: way.map(|way| way.lock.redacted()),
         way_open,
         way_left,
-        way_left_words: way_left.map(duration::countdown),
+        way_left_words: way_left.map(duration::left),
     }
 }
 
@@ -1503,7 +1503,7 @@ mod tests {
         assert_eq!((status.delay, status.delay_words.as_str(), status.remaining), (5400, "1 hour and 30 minutes", None));
         assert_eq!(handle(&context, 0, Request::AskForUnlock).0, Response::Done);
         let status = overview(&context).unlock;
-        assert_eq!((status.remaining, status.remaining_words.as_deref()), (Some(5400), Some("1 hour and 30 minutes")));
+        assert_eq!((status.remaining, status.remaining_words.as_deref()), (Some(5400), Some("2 hours")));
     }
 
     #[test]
@@ -1539,7 +1539,8 @@ mod tests {
         let Response::Failed(why) = handle(&context, 0, Request::Stop { id: "w".into(), password: None, text: None }).0 else {
             panic!("stopped")
         };
-        assert!(why.contains("2 hours and 5 minutes") || why.contains("2 hours and 4 minutes"), "{why}");
+        // A countdown is one unit, rounded.
+        assert!(why.contains("for the next 2 hours,"), "{why}");
         let Response::Refused(why) = handle(&context, 0, Request::PrepareUninstall).0 else { panic!("not refused") };
         assert!(why.contains("2 hours"), "{why}");
         // A weekly schedule with no time in it is never active: not even saved.

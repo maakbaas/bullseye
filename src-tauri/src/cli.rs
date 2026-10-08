@@ -3098,15 +3098,15 @@ mod tests {
         let delayed = |kind, value: &str| Some(Terms::Delayed { kind, value: value.into() });
         assert_eq!(allowance_of(&["new", "A", "--after", "30m"], None), Ok(delayed(DelayKind::After, "30m")));
         assert_eq!(allowance_of(&["new", "A", "--allowance", "delayed", "--after", "1h"], None), Ok(delayed(DelayKind::After, "1h")));
-        assert_eq!(
-            allowance_of(&["new", "A", "--from", "2026-10-06 18:00"], None),
-            Ok(delayed(DelayKind::From, "2026-10-06 18:00"))
-        );
+        assert_eq!(allowance_of(&["new", "A", "--from", "2026-10-06 18:00"], None), Ok(delayed(DelayKind::From, "2026-10-06 18:00")));
         // Over any allowance, a delayed start replaces it; over an old delayed start, the one named wins.
         let cycle = Some(Terms::Pomodoro { blocked: "50m".into(), allowed: "10m".into(), anchor: Anchor::Start });
         assert_eq!(allowance_of(&["edit", "Work", "--after", "5m"], cycle.clone()), Ok(delayed(DelayKind::After, "5m")));
         let old = delayed(DelayKind::After, "30m");
-        assert_eq!(allowance_of(&["edit", "Work", "--from", "2026-10-06 18:00"], old.clone()), Ok(delayed(DelayKind::From, "2026-10-06 18:00")));
+        assert_eq!(
+            allowance_of(&["edit", "Work", "--from", "2026-10-06 18:00"], old.clone()),
+            Ok(delayed(DelayKind::From, "2026-10-06 18:00"))
+        );
         assert_eq!(allowance_of(&["edit", "Work", "--after", "10m"], old.clone()), Ok(delayed(DelayKind::After, "10m")));
         // Without --after or --from the old delayed start stays; without one there is nothing to keep.
         assert_eq!(allowance_of(&["edit", "Work", "--allowance", "delayed"], old.clone()), Ok(old.clone()));
@@ -3132,9 +3132,6 @@ mod tests {
             (&["new", "A", "--allowance", "pomodoro", "--from", "2026-10-06 18:00"], "go with --allowance delayed"),
         ] {
             let error = parse(&args(line)).unwrap_err();
-            let error = match error {
-                Failure::Failed(why) | Failure::Usage(why) => why,
-            };
             assert!(error.contains(why), "{line:?}: {error}");
         }
         assert!(parse(&args(&["new", "A", "--allowance", "wait"])).is_err());
