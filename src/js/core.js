@@ -104,6 +104,8 @@ function notify(slot, kind, title, subtitle = "", { closable = true, scroll = tr
   if (!title) return;
   const note = el("cds-inline-notification", { kind, title, subtitle, "low-contrast": true, "hide-close-button": !closable });
   box.append(note);
+  // Closed, it is only hidden by Carbon: taken out, so its box is empty and takes no room.
+  note.addEventListener("cds-notification-closed", () => note.remove());
   // An error must not appear out of sight (a tile far down a long page, a form scrolled past its top).
   // Only once the notification has drawn: before that the box is empty and has no height to scroll to.
   if (kind === "error" && scroll) {
