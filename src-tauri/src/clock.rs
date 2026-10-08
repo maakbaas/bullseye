@@ -1,17 +1,17 @@
-//! The time a timed block is measured against: internet time (SNTP), not the Windows clock, so
-//! moving the system clock forward does not end a block early.
+//! The time a timed session is measured against: internet time (SNTP), not the Windows clock, so
+//! moving the system clock forward does not end a session early.
 //!
 //! Once an NTP server has answered, the time is that answer plus how long the process has run
 //! since, measured with `Instant` (the performance counter, which the Windows clock setting does
 //! not touch). It is re-checked every few minutes, against drift and sleep.
 //!
 //! Before any server has answered (offline, or the first seconds after logon), the time is the
-//! last moment the running block was known to be at (`at_least`, saved with the block), plus how
+//! last moment the running session was known to be at (`at_least`, saved with the session), plus how
 //! long this process has run. That only moves forward while the app is running, so unplugging the
 //! network does not let the clock be moved either. The cost is the honest one: time spent with
 //! the PC off counts only once the internet time is back.
 //!
-//! With neither, there is no block to protect, and the Windows clock is used.
+//! With neither, there is no session to protect, and the Windows clock is used.
 
 use std::net::UdpSocket;
 use std::sync::Mutex;
@@ -42,7 +42,7 @@ struct Anchor {
     /// Since the Unix epoch.
     unix: Duration,
     at: Instant,
-    /// From an NTP server, rather than the floor saved with a block.
+    /// From an NTP server, rather than the floor saved with a session.
     synced: bool,
 }
 
@@ -77,11 +77,11 @@ impl Clock {
         *self.anchor.locked() = Some(Anchor { unix, at, synced: true });
     }
 
-    /// Until internet time is in, the time is at least `unix_secs`: a time the running block
-    /// was seen at. Ignored once it is in.
-    pub fn at_least(&self, unix_secs: u64) {
+    /// Until internet time is in, the time is at least `time`: a time the running session was seen
+    /// at. Ignored once it is in.
+    pub fn at_least(&self, time: SystemTime) {
         let mut anchor = self.anchor.locked();
-        let floor = Duration::from_secs(unix_secs);
+        let floor = time.duration_since(UNIX_EPOCH).unwrap_or_default();
         match *anchor {
             Some(a) if a.synced || a.now() >= floor => {}
             _ => *anchor = Some(Anchor { unix: floor, at: Instant::now(), synced: false }),
@@ -174,11 +174,11 @@ mod tests {
         let clock = Clock::default();
         // Far ahead of the Windows clock, as though it had been set back.
         let floor = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 86_400;
-        clock.at_least(floor);
+        clock.at_least(UNIX_EPOCH + Duration::from_secs(floor));
         let now = clock.now().duration_since(UNIX_EPOCH).unwrap().as_secs();
         assert!((floor..floor + 2).contains(&now));
         // An older floor does not move it back.
-        clock.at_least(floor - 3600);
+        clock.at_least(UNIX_EPOCH + Duration::from_secs(floor - 3600));
         assert!(clock.now().duration_since(UNIX_EPOCH).unwrap().as_secs() >= floor);
         assert!(!clock.synced());
     }
@@ -188,7 +188,7 @@ mod tests {
         let clock = Clock::default();
         let real = Duration::from_secs(1_800_000_000);
         clock.set(real, Instant::now());
-        clock.at_least(1_900_000_000);
+        clock.at_least(UNIX_EPOCH + Duration::from_secs(1_900_000_000));
         assert!(clock.synced());
         assert_eq!(clock.now().duration_since(UNIX_EPOCH).unwrap().as_secs(), 1_800_000_000);
     }

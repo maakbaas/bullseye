@@ -1,9 +1,9 @@
 //! The app's side of the service: asks the service what to show and what to enforce.
 //!
-//! The app holds no block of its own. `tab_closer.rs` asks `Remote::active` every second, which
-//! has the same shape as `Blocklist::active`: every running block's part.
+//! The app holds no session of its own. `tab_closer.rs` asks `Remote::active` every second, which
+//! has the same shape as `Sessions::active`: every running session's part.
 //! If the service cannot be reached (it is restarting, or being updated), the last answer keeps
-//! being enforced: a gap in the service must not open the block.
+//! being enforced: a gap in the service must not open the session.
 //!
 //! In a debug build (`npm run dev`) the service's logic can run inside the app instead
 //! (`Remote::local`): no service, no pipe, no installer, and nothing that has to stay alive. Release
@@ -13,12 +13,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::block::{Active, Enforced};
-use crate::filters::FilterList;
+use crate::lists::Lists;
 use crate::pipe;
-use crate::programs::ProgramList;
-use crate::proto::{self, Overview, Policy, Request, Response};
+use crate::proto::{self, Overview, Policy, Request, Response, Used};
 use crate::registration;
+use crate::session::{Active, Enforced, Free, Usage};
 use crate::sync::LockExt;
 use crate::watchdog::note;
 
@@ -42,6 +41,12 @@ pub struct Remote {
     last_start: Arc<Mutex<Option<Instant>>>,
     /// Set in development: the service's logic, in this process.
     local: Option<Local>,
+    /// For the CLI: a request that finds the service registered but not running starts it and
+    /// waits for it, rather than failing (the app tries again a second later anyway).
+    patient: bool,
+    /// What the closing has seen in use of what an allowance lets through, until it is reported
+    /// along with the next question for the policy.
+    usage: Usage,
 }
 
 /// The least time between two attempts to start the service.
@@ -57,6 +62,12 @@ impl Remote {
         Remote::default()
     }
 
+    /// The CLI's: the same requests and answers as the app's, but it waits for a service it had to
+    /// start.
+    pub fn for_cli() -> Remote {
+        Remote { patient: true, ..Remote::default() }
+    }
+
     /// A remote that is its own service: for `npm run dev`, and for tests.
     #[cfg(any(debug_assertions, test))]
     pub fn local(handler: Local) -> Remote {
@@ -70,10 +81,26 @@ impl Remote {
 
     /// One request, to the service over the pipe or to the local one.
     fn send(&self, request: Request) -> Result<Response, String> {
-        match &self.local {
-            Some(local) => Ok(local(request)),
+        let first = match &self.local {
+            Some(local) => return Ok(local(request)),
             None => call(&request),
+        };
+        match first {
+            Err(e) if self.patient => self.after_starting_the_service(&request).ok_or(e),
+            answer => answer,
         }
+    }
+
+    /// The answer to `request` once the service, registered but not running, has been started;
+    /// `None` if it was running already (so something else is wrong) or did not come up.
+    fn after_starting_the_service(&self, request: &Request) -> Option<Response> {
+        if !matches!(registration::start_registered(), Ok(true)) {
+            return None;
+        }
+        (0..40).find_map(|_| {
+            std::thread::sleep(Duration::from_millis(250));
+            call(request).ok()
+        })
     }
 
     /// A command that answers yes or no.
@@ -81,6 +108,15 @@ impl Remote {
         match self.send(request)? {
             Response::Done => Ok(()),
             Response::Failed(why) | Response::Refused(why) => Err(why),
+            other => Err(format!("unexpected answer: {other:?}")),
+        }
+    }
+
+    /// Everything defined, password hashes included (Export).
+    pub fn library(&self) -> Result<crate::definitions::Library, String> {
+        match self.send(Request::Export)? {
+            Response::Library(library) => Ok(library),
+            Response::Failed(why) => Err(why),
             other => Err(format!("unexpected answer: {other:?}")),
         }
     }
@@ -95,6 +131,15 @@ impl Remote {
 
     /// What to enforce right now, if anything.
     pub fn active(&self) -> Option<Active> {
+        // What was seen in use since the last time goes first, so the service counts it before it
+        // says what is to be enforced now.
+        let used = self.usage.take();
+        if !used.is_empty() {
+            let report = used.iter().map(|(session, key)| Used { session: session.clone(), key: key.clone() }).collect();
+            if self.send(Request::Report { used: report }).is_err() {
+                self.usage.put_back(used);
+            }
+        }
         match self.send(Request::Policy) {
             Ok(Response::Policy(policy)) => {
                 self.failing.store(false, Ordering::Relaxed);
@@ -130,7 +175,7 @@ impl Remote {
 
     fn fail(&self, why: &str) {
         if !self.failing.swap(true, Ordering::Relaxed) {
-            note("app", &format!("the service did not answer, going on with the last block: {why}"));
+            note("app", &format!("the service did not answer, going on with the last session: {why}"));
         }
     }
 
@@ -139,41 +184,45 @@ impl Remote {
         let mut cache = self.cache.locked();
         if policies.is_empty() {
             *cache = None;
+            // Nothing runs, so nothing is counted.
+            self.usage.take();
             return;
         }
         if cache.as_ref().is_some_and(|c| c.policies == policies) {
             return;
         }
         match policies.iter().map(parse).collect::<Option<Vec<Enforced>>>() {
-            Some(blocks) => *cache = Some(Cached { policies, active: Active { blocks } }),
+            Some(sessions) => *cache = Some(Cached { policies, active: Active { sessions, used: self.usage.clone() } }),
             // Cannot happen with a service of this version; keep what is being enforced.
-            None => note("app", "the service sent a block list that cannot be read"),
+            None => note("app", "the service sent a target that cannot be read"),
         }
     }
 }
 
 fn parse(policy: &Policy) -> Option<Enforced> {
-    Some(Enforced {
-        filters: Arc::new(FilterList::parse(&policy.filters).ok()?),
-        allowed: Arc::new(FilterList::parse(&policy.allowed).ok()?),
-        programs: Arc::new(ProgramList::parse(&policy.programs).ok()?),
-        enforcers: policy.enforcers,
-    })
+    // What an allowance lets through is matched with the target's always-allowed sites and titles as exceptions.
+    let free = policy
+        .free
+        .iter()
+        .map(|free| {
+            let exceptions = Lists::exceptions(&policy.entries);
+            let entries =
+                crate::lists::Entries { allowed: exceptions.allowed, allowed_titles: exceptions.allowed_titles, ..free.entries.clone() };
+            Some(Free { session: free.session.clone(), key: free.key.clone(), lists: Arc::new(Lists::parse(&entries).ok()?) })
+        })
+        .collect::<Option<Vec<Free>>>()?;
+    Some(Enforced { lists: Arc::new(Lists::parse(&policy.entries).ok()?), actions: policy.actions, free })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lists::Entries;
     use crate::service;
-    use crate::state::Enforcers;
+    use crate::state::Actions;
 
     fn policy(filters: &[&str]) -> Policy {
-        Policy {
-            filters: filters.iter().map(|f| f.to_string()).collect(),
-            allowed: Vec::new(),
-            programs: Vec::new(),
-            enforcers: Enforcers::default(),
-        }
+        Policy::new(Entries { filters: filters.iter().map(|f| f.to_string()).collect(), ..Entries::default() }, Actions::default())
     }
 
     fn current(remote: &Remote) -> Option<Active> {
@@ -186,14 +235,14 @@ mod tests {
         assert!(current(&remote).is_none());
 
         remote.apply(vec![policy(&["tweakers.net"])]);
-        let list = current(&remote).unwrap().blocks[0].filters.clone();
-        assert!(list.is_blocked("https://tweakers.net/nieuws"));
+        let list = current(&remote).unwrap().sessions[0].lists.clone();
+        assert!(list.sites.is_blocked("https://tweakers.net/nieuws"));
 
         // The same policy again keeps the same parsed list.
         remote.apply(vec![policy(&["tweakers.net"])]);
-        assert!(Arc::ptr_eq(&list, &current(&remote).unwrap().blocks[0].filters));
+        assert!(Arc::ptr_eq(&list, &current(&remote).unwrap().sessions[0].lists));
 
-        // A different one replaces it, a second block comes along; none at all ends the blocks.
+        // A different one replaces it, a second session comes along; none at all ends the sessions.
         remote.apply(vec![policy(&["b.com"]), policy(&["c.com"])]);
         let active = current(&remote).unwrap();
         assert!(active.blocks_page("https://b.com/x", false) && active.blocks_page("https://c.com/", false));
@@ -205,38 +254,40 @@ mod tests {
     #[test]
     fn the_programs_come_along_and_are_parsed_with_the_policy() {
         let remote = Remote::new();
-        let with_programs = Policy { filters: vec![], allowed: vec![], programs: vec!["Steam*".into()], enforcers: Enforcers::default() };
+        let with_programs = Policy::new(Entries { programs: vec!["Steam*".into()], ..Entries::default() }, Actions::default());
         remote.apply(vec![with_programs]);
         let active = current(&remote).unwrap();
         assert!(active.blocks_program("steamwebhelper.exe") && !active.blocks_program("chrome.exe"));
         // A list that cannot be read leaves what is being enforced as it was.
-        let wrong = Policy { filters: vec![], allowed: vec![], programs: vec!["*".into()], enforcers: Enforcers::default() };
+        let wrong = Policy::new(Entries { programs: vec!["*".into()], ..Entries::default() }, Actions::default());
         remote.apply(vec![wrong]);
         assert!(current(&remote).unwrap().blocks_program("steamwebhelper.exe"));
     }
 
     #[test]
     fn a_local_remote_is_a_service_of_its_own_without_a_pipe() {
-        use crate::block::Blocklist;
-        use crate::definitions::{tests::definition, Definition, Definitions, Schedule};
+        use crate::definitions::{tests::session, tests::target, Definition, Definitions};
+        use crate::lock::Lock;
+        use crate::session::Sessions;
         use crate::state::Store;
         let dir = std::env::temp_dir().join(format!("client-{}-local", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let blocklist = Blocklist::with_store(Store::new(dir.join("state.json")));
-        let remote = Remote::local(service::local_handler(blocklist, Definitions::at(Some(dir.join("blocks.json")))));
+        let sessions = Sessions::with_store(Store::new(dir.join("state.json")));
+        let remote = Remote::local(service::local_handler(sessions, Definitions::at(Some(dir.join("sessions.json")))));
         assert!(remote.is_local());
         assert!(remote.active().is_none());
 
-        let block = Definition { schedule: Schedule::Duration { duration: "1h".into() }, ..definition("a", &["a.com"]) };
-        remote.command(Request::Save { block }).unwrap();
+        remote.command(Request::SaveTarget { target: target("a", &["a.com"]) }).unwrap();
+        let session = Definition { lock: Lock::Duration { duration: "1h".into() }, ..session("a", &["a"]) };
+        remote.command(Request::SaveSession { session }).unwrap();
         remote.command(Request::Start { id: "a".into() }).unwrap();
         assert!(remote.active().unwrap().blocks_page("https://a.com/x", false));
         assert!(remote.status().unwrap().running[0].remaining.is_some());
-        // The same rules as with the real service: a timed block cannot be stopped early, the
-        // password ends it.
-        assert!(remote.command(Request::Stop { id: "a".into() }).is_err());
-        assert!(remote.command(Request::Unlock { password: "wrong".into() }).is_err());
-        remote.command(Request::Unlock { password: "test1234".into() }).unwrap();
+        // The same rules as with the real service: a timed session cannot be stopped early, unlocking
+        // (free until a delay is set) ends it.
+        assert!(remote.command(Request::Stop { id: "a".into(), password: None, text: None }).is_err());
+        remote.command(Request::Unlock).unwrap();
+        // The app stays, with nothing to enforce.
         assert!(remote.active().is_none());
     }
 }

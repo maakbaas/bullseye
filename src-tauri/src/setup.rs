@@ -1,29 +1,43 @@
 //! Installing and uninstalling: what the Windows installer runs (`windows/hooks.nsh`), as an
-//! administrator, as `bullseye.exe --prepare-update` before replacing the app, `--install`
-//! after copying it, and `--uninstall` before removing it.
+//! administrator, as `bullseye-app.exe --install` after copying the app and `--uninstall` before
+//! removing it. Installing is from a clean machine only; there is no update path. Both also put the
+//! installation folder on the system `PATH` and take it off again (`system_path.rs`), so the CLI,
+//! `bullseye-app.exe`, runs from any terminal.
 //!
 //! The installer cannot stop the service itself (nobody but SYSTEM can), so it asks it, over the
-//! pipe. The service refuses while a block runs, so none of this is a way around a block: the way
-//! out of a timed block stays waiting for it to end or the unlock password.
+//! pipe. The service refuses while a session is locked, so this is no way around a session: the way out
+//! of a locked session stays waiting for it to end or the unlock password.
 
 use std::thread;
 use std::time::Duration;
 
 use crate::proto::{Request, Response};
 use crate::watchdog::note;
-use crate::{client, registration};
+use crate::{client, registration, system_path};
 
 /// Exit codes the installer hooks act on.
 pub const OK: i32 = 0;
 pub const FAILED: i32 = 1;
 pub const REFUSED: i32 = 2;
 
-/// Registers the service and starts it. The service starts the app for whoever is logged on.
+/// The folder the app (and the CLI next to it) is installed in, as `PATH` names it.
+fn folder() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.to_string_lossy().into_owned())
+}
+
+/// Registers the service and starts it. The service starts the app for whoever is logged on. The
+/// CLI not being on `PATH` is noted, not a failure: the service is what matters.
 pub fn install() -> i32 {
     let Ok(exe) = std::env::current_exe() else { return FAILED };
     match registration::install(&exe) {
         Ok(()) => {
             note("install", &format!("registered the {} service for {}", registration::NAME, exe.display()));
+            if let Some(dir) = folder() {
+                if let Err(e) = system_path::add(&dir) {
+                    note("install", &format!("could not put {dir} on PATH: {e}"));
+                }
+            }
             OK
         }
         Err(e) => {
@@ -33,24 +47,29 @@ pub fn install() -> i32 {
     }
 }
 
-/// Removes the service and everything it kept, and ends the app. Refused during a timed block.
+/// Removes the service and everything it kept, ends the app and takes its folder off `PATH`.
+/// Refused while a session is locked, and then `PATH` stays as it is.
 pub fn uninstall() -> i32 {
-    ask("uninstall", Request::PrepareUninstall)
+    let done = remove_service();
+    if done == OK {
+        if let Some(dir) = folder() {
+            if let Err(e) = system_path::remove(&dir) {
+                note("uninstall", &format!("could not take {dir} off PATH: {e}"));
+            }
+        }
+    }
+    done
 }
 
-/// Lets go of the exe so the installer can replace it. Refused during any block.
-pub fn prepare_update() -> i32 {
-    ask("update", Request::PrepareUpdate)
-}
-
-fn ask(what: &str, request: Request) -> i32 {
+fn remove_service() -> i32 {
+    let (what, request) = ("uninstall", Request::PrepareUninstall);
     // Nothing to ask: never installed, or already removed.
     if !registration::exists() {
         return OK;
     }
     let mut answer = client::call(&request);
     if answer.is_err() {
-        // Not running (an update that did not finish, say). Administrators may start it.
+        // Not running. Administrators may start it.
         let _ = registration::start_registered();
         for _ in 0..10 {
             thread::sleep(Duration::from_secs(1));

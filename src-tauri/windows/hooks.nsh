@@ -1,27 +1,9 @@
 ; Hooks into Tauri's NSIS installer (tauri.conf.json > bundle > windows > nsis > installerHooks).
 ; The installer runs as an administrator (installMode "perMachine"). The work itself is in the
 ; app (src/setup.rs); these only run it and act on its exit code:
-; 0 done, 1 failed, 2 refused because a block is running.
+; 0 done, 1 failed, 2 refused because a session is locked.
 ;
-; The service cannot be stopped by anyone but itself, so each hook asks it to let go over its
-; pipe. Both hooks run before the template's own "is the app running" check, which is why that
-; check finds nothing: the service has ended and has ended the app with it.
-
-!macro NSIS_HOOK_PREINSTALL
-  ; An update replaces the exe the service runs from. Nothing to ask on a first install.
-  ${If} ${FileExists} "$INSTDIR\${MAINBINARYNAME}.exe"
-    ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" --prepare-update' $0
-    ${If} $0 = 2
-      MessageBox MB_ICONSTOP "A block is running, so Bullseye cannot be updated now.$\n$\nWait for the block to end, or end it with the unlock password in the app, then run the installer again." /SD IDOK
-      SetErrorLevel 2
-      Quit
-    ${ElseIf} $0 <> 0
-      MessageBox MB_ICONSTOP "Bullseye could not be stopped for the update. See C:\ProgramData\bullseye\service.log." /SD IDOK
-      SetErrorLevel 1
-      Quit
-    ${EndIf}
-  ${EndIf}
-!macroend
+; Bullseye is only installed on a clean machine: there is no update path.
 
 !macro NSIS_HOOK_POSTINSTALL
   ; Registers the service, locks it down and starts it; it starts the app for whoever is logged on.
@@ -32,20 +14,20 @@
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
-  ; An update replaces the files only (and has asked the service already, in PREINSTALL).
-  ${If} $UpdateMode <> 1
-    ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" --uninstall' $0
-    ${If} $0 = 2
-      MessageBox MB_ICONSTOP "A timed block is still running, so Bullseye cannot be uninstalled now.$\n$\nWait for the block to end, or end it with the unlock password in the app, then uninstall again." /SD IDOK
-      SetErrorLevel 2
-      Quit
-    ${ElseIf} $0 <> 0
-      ; The service is registered but did not answer or did not end. Stopping here, rather than
-      ; deleting files under a service that may still be running, avoids a half-removed install.
-      ; (No service at all is exit code 0, so that case goes on.)
-      MessageBox MB_ICONSTOP "Bullseye's service did not respond, so nothing was removed.$\n$\nSee C:\ProgramData\bullseye\service.log, or use the recovery steps in detailed-instructions.md." /SD IDOK
-      SetErrorLevel 1
-      Quit
-    ${EndIf}
+  ; The service cannot be stopped by anyone but itself, so this asks it to remove itself over its
+  ; pipe. It runs before the template's own "is the app running" check, which is why that check
+  ; finds nothing: the service has ended and has ended the app with it.
+  ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" --uninstall' $0
+  ${If} $0 = 2
+    MessageBox MB_ICONSTOP "A block is locked, so Bullseye cannot be uninstalled now.$\n$\nWait for its lock to end, or end it with the unlock password in the app, then uninstall again." /SD IDOK
+    SetErrorLevel 2
+    Quit
+  ${ElseIf} $0 <> 0
+    ; The service is registered but did not answer or did not end. Stopping here, rather than
+    ; deleting files under a service that may still be running, avoids a half-removed install.
+    ; (No service at all is exit code 0, so that case goes on.)
+    MessageBox MB_ICONSTOP "Bullseye's service did not respond, so nothing was removed.$\n$\nSee C:\ProgramData\bullseye\service.log." /SD IDOK
+    SetErrorLevel 1
+    Quit
   ${EndIf}
 !macroend

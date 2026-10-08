@@ -21,11 +21,11 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
-use windows_sys::Win32::System::IO::CancelIoEx;
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, GetNamedPipeServerSessionId, PIPE_READMODE_BYTE,
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
+use windows_sys::Win32::System::IO::CancelIoEx;
 
 use crate::proto::{self, Request, Response, PIPE};
 use crate::sync::{spawn_critical, LockExt};
@@ -193,7 +193,7 @@ pub fn connect() -> Result<File, String> {
 
 /// Checks that the pipe is served from session 0, the session of services. Only SYSTEM and other
 /// services run there: a standard user cannot start a process in it, so cannot stand in for the
-/// service. Without this, anything could open the pipe first and tell the app there is no block.
+/// service. Without this, anything could open the pipe first and tell the app there is no session.
 ///
 /// This asks the pipe itself. Looking at the serving process (its file name, say) does not work:
 /// a standard user may not open a SYSTEM process, not even for a look.

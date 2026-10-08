@@ -1,7 +1,28 @@
 [package]
-name = "bullseye"
+name = "bullseye-app"
 version = "0.1.0"
 edition = "2021"
+# `tauri dev` runs the tray app, not the CLI.
+default-run = "bullseye-app"
+
+# The app, the service and the CLI share one library. Not called `bullseye`: a library and a binary
+# of the same name collide on Windows (rust-lang/cargo#8519).
+[lib]
+name = "bullseye_core"
+path = "src/lib.rs"
+
+# The tray app, which is also the service and the installer's helper. Named like the package:
+# Tauri takes a binary of the package's name (or `default-run`) for the main one, so the package
+# is not called `bullseye`, which is the CLI's name.
+[[bin]]
+name = "bullseye-app"
+path = "src/main.rs"
+
+# The command line (`CLI.md`), `bullseye` on PATH. Tauri's installer puts every binary of the
+# package next to the app, and `--install` puts that folder on PATH (`system_path.rs`).
+[[bin]]
+name = "bullseye"
+path = "src/bin/bullseye.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -9,28 +30,40 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 # the unlock password is kept as a PBKDF2 hash (see src/unlock.rs)
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+# random salts for the passwords of password locks (see src/unlock.rs)
+getrandom = "0.3"
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.10"
 sysinfo = "0.39.6"
 tauri = { version = "2", features = ["tray-icon"] }
+# the Save and Open dialogs of Export and Import in Settings
+tauri-plugin-dialog = "2"
 uiautomation = "0.25.1"
 # the service (src/service.rs); install, failure actions, session notifications
 windows-service = "0.8"
-# named mutexes, the named pipe, starting the app in the user's session (see src/watchdog.rs, src/pipe.rs)
+# named mutexes, the named pipe, starting the app in the user's session, window events (see src/watchdog.rs, src/pipe.rs, src/wake.rs)
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
+    "Win32_System_Console",
     "Win32_System_Environment",
     "Win32_System_IO",
     "Win32_System_Pipes",
+    "Win32_System_Registry",
     "Win32_System_RemoteDesktop",
     "Win32_System_Threading",
+    "Win32_System_Time",
+    "Win32_UI_Accessibility",
     "Win32_UI_WindowsAndMessaging",
 ] }
+# the service hears programs start (src/wake.rs), to close blocked ones without waiting for the next pass
+wmi = { version = "0.18", default-features = false }
+# the requests of webhook conditions (src/webhook.rs): blocking, TLS with certificate checks
+ureq = "2"
 
 [profile.dev]
 incremental = false       # don't accumulate a multi-GB incremental cache

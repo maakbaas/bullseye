@@ -4,7 +4,7 @@
 //! The web view behind the window costs about 300 MB and half a dozen extra processes, and the
 //! app is only looked at now and then; the blocking never needs the window. So the app starts in
 //! the tray with no window at all, and gives the memory back after a quiet spell. A window that is
-//! looked at in bursts (check, start a block, look again a minute later) reopens instantly; the
+//! looked at in bursts (check, start a session, look again a minute later) reopens instantly; the
 //! first opening after a long pause takes about half a second.
 
 use std::sync::Mutex;
@@ -20,7 +20,10 @@ const LABEL: &str = "main";
 /// The page is responsive (Carbon's grid), so the window can be any size from the minimum up.
 const WIDTH: f64 = 760.0;
 const HEIGHT: f64 = 720.0;
-const MIN_WIDTH: f64 = 360.0;
+/// Wide enough for an editor's Delete, Cancel and Save to stay on one row (they wrap below 452 px
+/// with a 15 px scrollbar, measured; Windows' is 17), the scrollbar's room on both sides included
+/// (`scrollbar-gutter: stable both-edges`).
+const MIN_WIDTH: f64 = 456.0;
 const MIN_HEIGHT: f64 = 480.0;
 
 /// How long a dismissed window is kept before it is destroyed.

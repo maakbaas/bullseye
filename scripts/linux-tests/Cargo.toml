@@ -1,0 +1,42 @@
+# The tests of Bullseye's platform-free code, on Linux (or macOS), with coverage.
+#
+# The app only builds for Windows, so `cargo test` in src-tauri runs only there (and in CI).
+# This crate builds the modules that do not need Windows straight from src-tauri/src (`#[path]`,
+# never a copy) with stand-ins for the few that do (src/boot.rs, drives.rs, watchdog.rs,
+# client.rs and the windows-sys crate next to this file). See AGENTS.md, "Development".
+#
+#   cargo test --manifest-path scripts/linux-tests/Cargo.toml -- --skip only_the_installed_app --skip the_app_of_a_program
+#   cargo llvm-cov --manifest-path scripts/linux-tests/Cargo.toml --summary-only -- --skip only_the_installed_app --skip the_app_of_a_program
+#
+# The two tests skipped need Windows itself (a Windows process and Windows paths).
+[package]
+name = "bullseye-linux-tests"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+# As in src-tauri/Cargo.toml.
+[dependencies]
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+getrandom = "0.3"
+regex = "1.13.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.10"
+ureq = "2"
+windows-sys = { path = "windows-sys" }
+
+# PBKDF2 runs 600 000 rounds; unoptimised that takes seconds per password check.
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.hmac]
+opt-level = 3
+[profile.dev.package.pbkdf2]
+opt-level = 3
+[profile.dev.package.digest]
+opt-level = 3
+[profile.dev.package.block-buffer]
+opt-level = 3

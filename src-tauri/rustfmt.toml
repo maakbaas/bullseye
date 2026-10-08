@@ -1,0 +1,4 @@
+# The code's own style: lines up to 140 characters, and short constructs kept on one line.
+# CI checks it (`cargo fmt --check`).
+max_width = 140
+use_small_heuristics = "Max"

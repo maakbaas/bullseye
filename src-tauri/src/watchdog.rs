@@ -2,8 +2,8 @@
 //!
 //! The service (`service.rs`) runs as SYSTEM in session 0, which has no desktop, so it cannot
 //! close browser tabs itself. The app does that, in the logged-on user's session, and the service
-//! keeps it there: it starts the app at every logon and, while a block runs, starts it again
-//! within about a second of it ending. With no block the app is left alone, so quitting it with
+//! keeps it there: it starts the app at every logon and, while a session runs, starts it again
+//! within about a second of it ending. With no session the app is left alone, so quitting it with
 //! the unlock password sticks.
 //!
 //! **Which process is "the app" is the service's decision, not a matter of its name.** The service
@@ -18,9 +18,6 @@
 //! policy: that request comes from the same thread that closes the tabs (`tab_closer.rs`), so an
 //! app that was suspended, or whose closing thread hangs or is suspended, stops asking, and the
 //! service ends it and starts a new one (`AppSlot::supervise`).
-//!
-//! What this does not stop: the app is still a process of the user it protects against. Someone
-//! who can inject code into it can keep it asking while it enforces nothing.
 //!
 //! Nothing here is hidden or protected beyond that, on purpose: the service is named
 //! `bullseye` in the services list, the app runs under its own name in Task Manager, and
@@ -42,12 +39,11 @@ use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
 use windows_sys::Win32::System::RemoteDesktop::{ProcessIdToSessionId, WTSGetActiveConsoleSessionId, WTSQueryUserToken};
 use windows_sys::Win32::System::Threading::{
-    CreateProcessAsUserW, OpenProcess, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
-    CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-    PROCESS_TERMINATE, STARTUPINFOW,
+    CreateProcessAsUserW, OpenProcess, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject, CREATE_UNICODE_ENVIRONMENT,
+    PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, STARTUPINFOW,
 };
 
-use crate::block::Blocklist;
+use crate::session::Sessions;
 use crate::state;
 use crate::sync::{spawn_critical, LockExt};
 
@@ -55,7 +51,7 @@ use crate::sync::{spawn_critical, LockExt};
 /// cannot turn into a process being started over and over.
 const MAX_BACKOFF: u32 = 10;
 
-/// An app that has asked for its policy before must ask again within this time, while a block
+/// An app that has asked for its policy before must ask again within this time, while a session
 /// runs, or it is ended and started again.
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -66,8 +62,8 @@ const STARTUP_GRACE: Duration = Duration::from_secs(20);
 /// not the app having stalled.
 const RESUME_GAP: Duration = Duration::from_secs(3);
 
-/// Set at logon (and when the service starts): the app is wanted even without a block.
-/// Cleared once an app is there, so quitting it with the unlock password sticks.
+/// Set at logon (and when the service starts): the app is wanted even without a session.
+/// Cleared once an app is there: without a session, one that has ended is not started again.
 pub static LAUNCH_APP: AtomicBool = AtomicBool::new(true);
 
 /// Whether this process is the service, which only decides where `note` writes.
@@ -91,9 +87,7 @@ impl Process {
     /// Opens a process by id. The service is SYSTEM and may open any.
     pub fn open(pid: u32) -> Option<Process> {
         // SAFETY: plain call; the handle is closed in `drop`.
-        let handle = unsafe {
-            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid)
-        };
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid) };
         (!handle.is_null()).then_some(Process { handle: handle as usize, pid })
     }
 
@@ -168,10 +162,10 @@ impl AppSlot {
         }
     }
 
-    /// Looks after the app once a second: forgets one that has ended and, while a block runs, ends
+    /// Looks after the app once a second: forgets one that has ended and, while a session runs, ends
     /// one that has stopped asking. `resumed` is set when the machine seems to have slept, which
     /// is no fault of the app's. Returns whether there is no app now.
-    pub fn supervise(&self, block_active: bool, resumed: bool) -> bool {
+    pub fn supervise(&self, session_active: bool, resumed: bool) -> bool {
         let mut current = self.current.locked();
         if let Some(app) = current.as_mut() {
             let now = Instant::now();
@@ -181,7 +175,7 @@ impl AppSlot {
             } else if resumed {
                 app.since = now;
                 app.heard = app.heard.map(|_| now);
-            } else if block_active && is_stale(app.since, app.heard, now) {
+            } else if session_active && is_stale(app.since, app.heard, now) {
                 note("service", "the app stopped asking for its policy; ending it");
                 app.process.terminate();
                 *current = None;
@@ -250,7 +244,7 @@ fn session_of(pid: u32) -> u32 {
 }
 
 /// The service's half: starts the app when it is wanted and not there, and looks after it.
-pub fn spawn_supervisor(blocklist: Blocklist, slot: Arc<AppSlot>) {
+pub fn spawn_supervisor(sessions: Sessions, slot: Arc<AppSlot>) {
     spawn_critical("supervisor", move || {
         // How many starts in a row have not led to a running app, which slows the starting down.
         let mut missed = 0u32;
@@ -262,9 +256,9 @@ pub fn spawn_supervisor(blocklist: Blocklist, slot: Arc<AppSlot>) {
             let resumed = last_round.elapsed() >= RESUME_GAP;
             last_round = Instant::now();
 
-            let block_active = blocklist.is_running();
-            let no_app = slot.supervise(block_active, resumed);
-            if !block_active && !LAUNCH_APP.load(Ordering::SeqCst) {
+            let session_active = sessions.is_running();
+            let no_app = slot.supervise(session_active, resumed);
+            if !session_active && !LAUNCH_APP.load(Ordering::SeqCst) {
                 missed = 0;
                 continue;
             }
@@ -348,7 +342,7 @@ fn launch_app() -> Result<Process, String> {
     }
 }
 
-/// Ends the app, when the service goes away for an update or an uninstall. Every other process
+/// Ends the app, when the service goes away for an uninstall. Every other process
 /// of this executable that was started without arguments; the service itself and the installer's
 /// calls are left alone.
 pub fn kill_apps() {
@@ -374,7 +368,7 @@ fn exe() -> Option<PathBuf> {
     std::env::current_exe().ok()
 }
 
-/// Writes a line to a log file as well as to stderr: `service.log` next to the saved block for
+/// Writes a line to a log file as well as to stderr: `service.log` next to the saved session for
 /// the service, `app.log` in `%LOCALAPPDATA%\bullseye` for the app.
 ///
 /// Neither runs with a window, so stderr goes nowhere in a release build; the file is how the
@@ -422,8 +416,7 @@ fn civil(days: u64) -> (u64, u64, u64) {
     let z = days as i64 + 719_468;
     let era = z.div_euclid(146_097);
     let day_of_era = z.rem_euclid(146_097);
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     // March-based month number, so the leap day is the last day of the year.
     let month_from_march = (5 * day_of_year + 2) / 153;
@@ -479,7 +472,7 @@ mod tests {
 
     #[test]
     fn file_names_match_regardless_of_path_and_case() {
-        assert_eq!(file_name(std::path::Path::new(r"C:\a\B\bullseye.EXE")), "bullseye.exe");
+        assert_eq!(file_name(std::path::Path::new(r"C:\a\B\bullseye-app.EXE")), "bullseye-app.exe");
     }
 
     #[test]
@@ -562,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn an_app_that_stops_asking_is_ended_but_not_by_a_sleep_or_without_a_block() {
+    fn an_app_that_stops_asking_is_ended_but_not_by_a_sleep_or_without_a_session() {
         let now = Instant::now();
         let ago = |seconds| now - Duration::from_secs(seconds);
         let quiet = |slot: &AppSlot, child: &Child| {
@@ -571,7 +564,7 @@ mod tests {
         let (mut stale, mut slept, mut idle) = (sleeper(), sleeper(), sleeper());
         let slot = AppSlot::new(true);
 
-        // Quiet for 30 seconds while a block runs: ended, and the slot is empty for a new one.
+        // Quiet for 30 seconds while a session runs: ended, and the slot is empty for a new one.
         quiet(&slot, &stale);
         let held = Process::open(stale.id()).unwrap();
         assert!(slot.supervise(true, false));
@@ -583,7 +576,7 @@ mod tests {
         assert!(!Process::open(slept.id()).unwrap().exited());
         assert!(!slot.supervise(true, false), "the grace after a sleep should still be running");
 
-        // And with no block there is nothing to enforce, so nothing to end it for.
+        // And with no session there is nothing to enforce, so nothing to end it for.
         quiet(&slot, &idle);
         assert!(!slot.supervise(false, false));
         assert!(!Process::open(idle.id()).unwrap().exited());

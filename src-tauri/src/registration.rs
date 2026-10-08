@@ -11,8 +11,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use windows_service::service::{
-    ServiceAccess, ServiceAction, ServiceActionType, ServiceErrorControl, ServiceFailureActions, ServiceFailureResetPeriod,
-    ServiceInfo, ServiceStartType, ServiceState, ServiceType,
+    ServiceAccess, ServiceAction, ServiceActionType, ServiceErrorControl, ServiceFailureActions, ServiceFailureResetPeriod, ServiceInfo,
+    ServiceStartType, ServiceState, ServiceType,
 };
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
@@ -39,7 +39,6 @@ const SAFE_BOOT: [&str; 2] = [
 /// `CREATE_NO_WINDOW`: the tools below are console programs, which would flash a window.
 pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-const ERROR_SERVICE_EXISTS: i32 = 1073;
 const ERROR_SERVICE_ALREADY_RUNNING: i32 = 1056;
 
 fn manager(access: ServiceManagerAccess) -> Result<ServiceManager, String> {
@@ -50,9 +49,8 @@ fn is_os_error(error: &windows_service::Error, code: i32) -> bool {
     matches!(error, windows_service::Error::Winapi(e) if e.raw_os_error() == Some(code))
 }
 
-/// Registers the service for `exe`, locks it down, and starts it. Needs an administrator. If
-/// the service is already there (an update), it is only started again: its settings stay, and
-/// could not be changed by an administrator anyway.
+/// Registers the service for `exe`, locks it down, and starts it. Needs an administrator, and a
+/// machine without the service (Bullseye is only installed on a clean machine).
 pub fn install(exe: &Path) -> Result<(), String> {
     let manager = manager(ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE)?;
     let info = ServiceInfo {
@@ -69,61 +67,43 @@ pub fn install(exe: &Path) -> Result<(), String> {
         account_password: None,
     };
     let access = ServiceAccess::CHANGE_CONFIG | ServiceAccess::START | ServiceAccess::QUERY_STATUS;
-    let (service, created) = match manager.create_service(&info, access) {
-        Ok(service) => (service, true),
-        Err(e) if is_os_error(&e, ERROR_SERVICE_EXISTS) => {
-            let service = manager
-                .open_service(NAME, ServiceAccess::START | ServiceAccess::QUERY_STATUS)
-                .map_err(|e| format!("the service exists but cannot be opened: {e}"))?;
-            (service, false)
-        }
-        Err(e) => return Err(format!("cannot create the service: {e}")),
-    };
-    if created {
-        let describe = |what: &str, e: windows_service::Error| format!("{what}: {e}");
-        service
-            .set_description("Blocks distracting sites while a block is running. Started with Windows and restarted if it fails.")
-            .map_err(|e| describe("cannot set the description", e))?;
-        // Windows starts it again at once, every time it fails, however often.
-        service
-            .update_failure_actions(ServiceFailureActions {
-                reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(24 * 60 * 60)),
-                reboot_msg: None,
-                command: None,
-                actions: Some(
-                    (0..3).map(|_| ServiceAction { action_type: ServiceActionType::Restart, delay: Duration::ZERO }).collect(),
-                ),
-            })
-            .map_err(|e| describe("cannot set the failure actions", e))?;
-        // Also when it ends with a failure exit code instead of being killed.
-        service
-            .set_failure_actions_on_non_crash_failures(true)
-            .map_err(|e| describe("cannot set the failure flag", e))?;
-        // Last: after this, an administrator can no longer change the service. The handle held
-        // here keeps the rights it was opened with.
-        let output = Command::new("sc.exe")
-            .args(["sdset", NAME, SDDL])
+    let service = manager.create_service(&info, access).map_err(|e| format!("cannot create the service: {e}"))?;
+    let describe = |what: &str, e: windows_service::Error| format!("{what}: {e}");
+    service
+        .set_description("Sessions distracting sites while a session is running. Started with Windows and restarted if it fails.")
+        .map_err(|e| describe("cannot set the description", e))?;
+    // Windows starts it again at once, every time it fails, however often.
+    service
+        .update_failure_actions(ServiceFailureActions {
+            reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(24 * 60 * 60)),
+            reboot_msg: None,
+            command: None,
+            actions: Some((0..3).map(|_| ServiceAction { action_type: ServiceActionType::Restart, delay: Duration::ZERO }).collect()),
+        })
+        .map_err(|e| describe("cannot set the failure actions", e))?;
+    // Also when it ends with a failure exit code instead of being killed.
+    service.set_failure_actions_on_non_crash_failures(true).map_err(|e| describe("cannot set the failure flag", e))?;
+    // Last: after this, an administrator can no longer change the service. The handle held
+    // here keeps the rights it was opened with.
+    let output = Command::new("sc.exe")
+        .args(["sdset", NAME, SDDL])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("cannot run sc.exe: {e}"))?;
+    if !output.status.success() {
+        return Err(format!("cannot lock the service down: {}", String::from_utf8_lossy(&output.stdout).trim()));
+    }
+    for key in SAFE_BOOT {
+        let output = Command::new("reg.exe")
+            .args(["add", key, "/ve", "/d", "Service", "/f"])
             .creation_flags(CREATE_NO_WINDOW)
             .output()
-            .map_err(|e| format!("cannot run sc.exe: {e}"))?;
+            .map_err(|e| format!("cannot run reg.exe: {e}"))?;
         if !output.status.success() {
-            return Err(format!("cannot lock the service down: {}", String::from_utf8_lossy(&output.stdout).trim()));
-        }
-        for key in SAFE_BOOT {
-            let output = Command::new("reg.exe")
-                .args(["add", key, "/ve", "/d", "Service", "/f"])
-                .creation_flags(CREATE_NO_WINDOW)
-                .output()
-                .map_err(|e| format!("cannot run reg.exe: {e}"))?;
-            if !output.status.success() {
-                return Err(format!("cannot add {key}: {}", String::from_utf8_lossy(&output.stderr).trim()));
-            }
+            return Err(format!("cannot add {key}: {}", String::from_utf8_lossy(&output.stderr).trim()));
         }
     }
-    match service.start::<OsString>(&[]) {
-        Err(e) if !is_os_error(&e, ERROR_SERVICE_ALREADY_RUNNING) => Err(format!("cannot start the service: {e}")),
-        _ => Ok(()),
-    }
+    service.start::<OsString>(&[]).map_err(|e| format!("cannot start the service: {e}"))
 }
 
 /// Whether the service is registered.
@@ -163,9 +143,9 @@ pub fn wait_stopped(timeout: Duration) -> bool {
 /// Run by the service itself, as SYSTEM, on an uninstall: deletes the service, its safe-mode
 /// keys and everything it saved.
 pub fn remove() {
-    match manager(ServiceManagerAccess::CONNECT).and_then(|m| {
-        m.open_service(NAME, ServiceAccess::DELETE).map_err(|e| format!("cannot open the service: {e}"))
-    }) {
+    match manager(ServiceManagerAccess::CONNECT)
+        .and_then(|m| m.open_service(NAME, ServiceAccess::DELETE).map_err(|e| format!("cannot open the service: {e}")))
+    {
         Ok(service) => {
             if let Err(e) = service.delete() {
                 note("service", &format!("cannot delete the service: {e}"));

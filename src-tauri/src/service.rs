@@ -1,6 +1,6 @@
 //! The Windows service: the root of everything. It runs as SYSTEM, started by Windows at boot
 //! and started again by Windows if it ever fails, and it holds what must not be in the user's
-//! reach: the block definitions, the running blocks, internet time, the unlock hash.
+//! reach: the session definitions, the running sessions, internet time, the unlock delay and countdown.
 //!
 //! It cannot close tabs itself (a service has no desktop), so the app does that, and this keeps
 //! the app running (`watchdog.rs`) and tells it what to enforce, over a named pipe (`pipe.rs`).
@@ -8,7 +8,7 @@
 //! Who may stop it is decided by its access list (`SDDL`, set by `install`): administrators can
 //! look at it and start it, and only SYSTEM can stop, change or delete it. The service does not
 //! even accept a stop request. It ends only by the installer asking it to over the pipe, which
-//! it refuses during a block (`handle`).
+//! it refuses during a session (`handle`).
 //!
 //! `main` starts it with `--service`, which only Windows does. Development has no service at all:
 //! a debug build runs the same request handling inside the app (`embedded`).
@@ -35,16 +35,17 @@ use windows_service::service::{
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult, ServiceStatusHandle};
 use windows_service::service_dispatcher;
 
-use crate::block::Blocklist;
-use crate::definitions::Definitions;
 #[cfg(any(debug_assertions, test))]
 use crate::client::Local;
+use crate::definitions::Definitions;
 use crate::handler::{handle, Context, Shutdown};
 use crate::registration::{self, CREATE_NO_WINDOW, NAME};
+use crate::session::Sessions;
 use crate::state;
 use crate::sync::spawn_critical;
+use crate::unlock::UnlockDelay;
 use crate::watchdog::{self, note, AppSlot};
-use crate::{clock, pipe};
+use crate::{clock, pipe, wake};
 
 define_windows_service!(ffi_service_main, service_main);
 
@@ -95,14 +96,12 @@ fn run_service() -> Result<(), String> {
     report(&status, ServiceState::Running, ServiceControlAccept::SESSION_CHANGE, 0);
     note("service", "running");
 
-    let Ok(shutdown) = quit.recv() else {
+    let Ok(Shutdown) = quit.recv() else {
         report(&status, ServiceState::Stopped, ServiceControlAccept::empty(), 1);
         return Err("the pipe thread ended".into());
     };
     watchdog::kill_apps();
-    if matches!(shutdown, Shutdown::Remove) {
-        registration::remove();
-    }
+    registration::remove();
     note("service", "ending at the installer's request");
     // Exit code 0: Windows does not start a service again that ended cleanly.
     report(&status, ServiceState::Stopped, ServiceControlAccept::empty(), 0);
@@ -128,51 +127,52 @@ fn start_engine(for_real: bool) -> Result<mpsc::Receiver<Shutdown>, String> {
     if for_real {
         lock_down_data_dir();
     }
-    let blocklist = start_blocklist();
+    let sessions = start_sessions();
     let slot = Arc::new(AppSlot::new(for_real));
     if for_real {
-        watchdog::spawn_supervisor(blocklist.clone(), slot.clone());
+        watchdog::spawn_supervisor(sessions.clone(), slot.clone());
+        wake::spawn_process_watch(sessions.clone());
     }
     let (quit, quit_rx) = mpsc::channel();
-    let context = Arc::new(Context::new(blocklist, Definitions::new(), slot));
+    let context = Arc::new(Context::new(sessions, Definitions::new(), slot).with_unlock(UnlockDelay::new()));
     pipe::serve(move |caller, request| handle(&context, caller, request), quit)?;
     Ok(quit_rx)
 }
 
-/// The running blocks, as the service has them: internet time on, blocks left behind by an earlier
-/// run picked up again (so a restart does not end them), and a thread that ends a timed block whose
+/// The running sessions, as the service has them: internet time on, sessions left behind by an earlier
+/// run picked up again (so a restart does not end them), and a thread that ends a timed session whose
 /// time is up and keeps the time on disk moving for a restart while offline (`Saved::seen`), even
 /// when no app is asking.
-fn start_blocklist() -> Blocklist {
+fn start_sessions() -> Sessions {
     clock::spawn_sync();
-    let blocklist = Blocklist::new();
-    blocklist.restore();
-    let ticking = blocklist.clone();
+    let sessions = Sessions::new();
+    sessions.restore();
+    let ticking = sessions.clone();
     spawn_critical("ticker", move || loop {
         ticking.active();
         thread::sleep(Duration::from_secs(1));
     });
-    blocklist
+    sessions
 }
 
 /// The service's logic without a service: every request answered in this process, for
 /// `Remote::local`. Nobody can talk to it but the app that holds it, and nothing looks after the
 /// app (`AppSlot::new(false)`).
 #[cfg(any(debug_assertions, test))]
-pub fn local_handler(blocklist: Blocklist, definitions: Definitions) -> Local {
-    let context = Context::new(blocklist, definitions, Arc::new(AppSlot::new(false)));
+pub fn local_handler(sessions: Sessions, definitions: Definitions) -> Local {
+    let context = Context::new(sessions, definitions, Arc::new(AppSlot::new(false))).with_unlock(UnlockDelay::new());
     Arc::new(move |request| handle(&context, 0, request).0)
 }
 
 /// For `npm run dev`: the service inside the app, with no service installed, no pipe and no
 /// administrator rights. **Debug builds only**, and not used with `BULLSEYE_USE_SERVICE` set.
-/// Ending the app ends the enforcing, which is fine while developing. The blocks are kept in
-/// `%LOCALAPPDATA%\bullseye-dev`, so a timed block is still there the next time; delete that
+/// Ending the app ends the enforcing, which is fine while developing. The sessions are kept in
+/// `%LOCALAPPDATA%\bullseye-dev`, so a timed session is still there the next time; delete that
 /// folder to forget it.
 #[cfg(debug_assertions)]
 pub fn embedded() -> Local {
     use_dev_dir();
-    local_handler(start_blocklist(), Definitions::new())
+    local_handler(start_sessions(), Definitions::new())
 }
 
 /// Development keeps its files apart from a real install's: `%LOCALAPPDATA%\bullseye-dev`.
@@ -192,10 +192,9 @@ fn lock_down_data_dir() {
     if let Err(e) = fs::create_dir_all(&dir) {
         return note("service", &format!("cannot create {}: {e}", dir.display()));
     }
-    for args in [
-        vec!["/setowner", "*S-1-5-18"],
-        vec!["/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "/grant:r", "*S-1-5-32-544:(OI)(CI)RX"],
-    ] {
+    for args in
+        [vec!["/setowner", "*S-1-5-18"], vec!["/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "/grant:r", "*S-1-5-32-544:(OI)(CI)RX"]]
+    {
         match Command::new("icacls.exe").arg(&dir).args(&args).creation_flags(CREATE_NO_WINDOW).output() {
             Ok(output) if output.status.success() => {}
             Ok(output) => note("service", &format!("icacls {args:?}: {}", String::from_utf8_lossy(&output.stdout).trim())),
@@ -207,8 +206,9 @@ fn lock_down_data_dir() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::definitions::tests::definition;
-    use crate::definitions::{Definition, Schedule};
+    use crate::definitions::tests::{session, target};
+    use crate::definitions::Definition;
+    use crate::lock::Lock;
     use crate::proto::{Request, Response};
     use std::time::Duration;
 
@@ -237,12 +237,13 @@ mod tests {
         assert_eq!(client::call(&Request::Register), Ok(Response::Done));
         let Ok(Response::Status(status)) = client::call(&Request::Status) else { panic!("no status") };
         assert!(status.running.is_empty());
-        let block = Definition { schedule: Schedule::Duration { duration: "1h".into() }, ..definition("a", &["a.com"]) };
-        assert_eq!(client::call(&Request::Save { block }), Ok(Response::Done));
+        assert_eq!(client::call(&Request::SaveTarget { target: target("a", &["a.com"]) }), Ok(Response::Done));
+        let session = Definition { lock: Lock::Duration { duration: "1h".into() }, ..session("a", &["a"]) };
+        assert_eq!(client::call(&Request::SaveSession { session }), Ok(Response::Done));
         assert_eq!(client::call(&Request::Start { id: "a".into() }), Ok(Response::Done));
         let Ok(Response::Policy(policies)) = client::call(&Request::Policy) else { panic!("no policy") };
-        assert_eq!(policies[0].filters, vec!["a.com"]);
-        assert!(matches!(client::call(&Request::Stop { id: "a".into() }), Ok(Response::Failed(_))));
+        assert_eq!(policies[0].entries.filters, vec!["a.com"]);
+        assert!(matches!(client::call(&Request::Stop { id: "a".into(), password: None, text: None }), Ok(Response::Failed(_))));
         assert!(matches!(client::call(&Request::PrepareUninstall), Ok(Response::Refused(_))));
 
         // A length far beyond the limit gets an error back, not an allocation.
@@ -252,9 +253,8 @@ mod tests {
         drop(pipe);
 
         // Several requests at once, as the app's ticks and the UI's polls make.
-        let threads: Vec<_> = (0..6)
-            .map(|_| std::thread::spawn(|| assert!(matches!(client::call(&Request::Status), Ok(Response::Status(_))))))
-            .collect();
+        let threads: Vec<_> =
+            (0..6).map(|_| std::thread::spawn(|| assert!(matches!(client::call(&Request::Status), Ok(Response::Status(_)))))).collect();
         for thread in threads {
             thread.join().unwrap();
         }
@@ -266,10 +266,9 @@ mod tests {
         // What it gets is a refusal, or a closed pipe; never an answer to a request it did not make.
         assert!(matches!(proto::read_message::<Response>(&mut silent), Ok(Response::Failed(_)) | Err(_)));
 
-        // The password ends the block; then the installer may update, and the service says so.
-        let unlock = Request::Unlock { password: "test1234".into() };
-        assert_eq!(client::call(&unlock), Ok(Response::Done));
-        assert_eq!(client::call(&Request::PrepareUpdate), Ok(Response::Done));
-        assert!(matches!(quit.recv_timeout(Duration::from_secs(5)), Ok(Shutdown::Update)));
+        // Unlocking (free, with no delay set) ends the session; then the installer may uninstall, and the service says so.
+        assert_eq!(client::call(&Request::Unlock), Ok(Response::Done));
+        assert_eq!(client::call(&Request::PrepareUninstall), Ok(Response::Done));
+        assert!(matches!(quit.recv_timeout(Duration::from_secs(5)), Ok(Shutdown)));
     }
 }

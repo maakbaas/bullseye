@@ -5,14 +5,14 @@
 //! - `*` matches any characters: `*launcher.exe` covers `epiclauncher.exe` and `launcher.exe`.
 //!
 //! Some programs must never be closed, because closing them breaks Windows or this app: they are
-//! listed in `PROTECTED`. An entry that would match any of them is refused when the block starts,
+//! listed in `PROTECTED`. An entry that would match any of them is refused when the session starts,
 //! which also refuses `*` and `*.exe` and the like, so a typo cannot take the desktop down.
 
 use regex::RegexSet;
 
 /// Programs that are never closed: Windows' own, and this app's (the tray app, its WebView2 and
 /// the service). Lower case, as the names are compared.
-const PROTECTED: [&str; 24] = [
+const PROTECTED: [&str; 25] = [
     "explorer.exe",
     "winlogon.exe",
     "wininit.exe",
@@ -32,6 +32,7 @@ const PROTECTED: [&str; 24] = [
     "startmenuexperiencehost.exe",
     "shellexperiencehost.exe",
     "msedgewebview2.exe",
+    "bullseye-app.exe",
     "bullseye.exe",
     "system",
     "registry",
@@ -43,7 +44,7 @@ const PROTECTED: [&str; 24] = [
 const NOT_IN_A_NAME: [char; 8] = ['\\', '/', ':', '"', '<', '>', '|', '?'];
 
 pub struct ProgramList {
-    /// The normalized entries, kept so a block can be written to disk and resumed (`state.rs`).
+    /// The normalized entries, kept so a session can be written to disk and resumed (`state.rs`).
     entries: Vec<String>,
     matchers: RegexSet,
 }
@@ -91,8 +92,13 @@ impl ProgramList {
     /// `PROTECTED`, whatever the list says.
     pub fn is_blocked(&self, file_name: &str) -> bool {
         let name = file_name.to_lowercase();
-        !PROTECTED.contains(&name.as_str()) && self.matchers.is_match(&name)
+        !is_protected(&name) && self.matchers.is_match(&name)
     }
+}
+
+/// Whether a program (by file name, any case) is one of those that are never closed.
+pub fn is_protected(file_name: &str) -> bool {
+    PROTECTED.contains(&file_name.to_lowercase().as_str())
 }
 
 /// Lower case, with `.exe` added when missing.
