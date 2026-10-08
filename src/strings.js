@@ -101,21 +101,21 @@ window.STRINGS = {
       renameHeading: "Rename {name}",
     },
 
-    // A running session's status line: what it does now ({change}: until when, in words; {left} and
+    // A running session's status line, in short sentences (a full stop is added after each): what it does now ({change}: until when, in words; {left} and
     // {reset}: an allowance's time left and when it is given back). Its lock follows (`tile.locked*`).
     status: {
       blocking: "Blocking",
       blockingFor: "Blocking for the next {change}",
-      blockingUntilAllowed: "Blocking, allowed again in {change}",
+      blockingUntilAllowed: "Blocking. Allowed again in {change}",
       idle: "Not blocking now",
       idleFor: "Not blocking for the next {change}",
-      delayed: "Not blocking yet, starts in {change}",
+      delayed: "Not blocking yet. Starts in {change}",
       allowed: "Allowed now",
       allowedFor: "Allowed for the next {change}",
       left: "{left} of allowance left",
-      leftReset: "{left} of allowance left, refilled in {reset}",
-      usedUp: "Blocking, allowance used up",
-      usedUpReset: "Blocking, allowance back in {reset}",
+      leftReset: "{left} of allowance left. Refilled in {reset}",
+      usedUp: "Blocking. Allowance used up",
+      usedUpReset: "Blocking. Allowance back in {reset}",
       items: "Allowance left: {items}",
     },
 
@@ -135,7 +135,7 @@ window.STRINGS = {
       unknownLock: "Unknown lock",
       lockedPassword: "Locked with a password",
       lockedText: "Locked until its text is typed",
-      lockedDelay: "Locked, stopping takes {delay}",
+      lockedDelay: "Locked. Stopping takes {delay}",
       delayWait: "Can be stopped in {left}",
       delayReady: "Ready to stop",
       lockedRestart: "Locked until Windows restarts",

@@ -297,7 +297,8 @@ function renderTiles(kind) {
       const shown = JSON.stringify(status);
       if (parts.status.dataset.shown !== shown) {
         parts.status.dataset.shown = shown;
-        parts.status.replaceChildren(...status.flatMap((part, at) => [at ? " · " : null, ...nodesOf(part)]).filter(Boolean));
+        // Each part a short sentence of its own, ending with a full stop.
+        parts.status.replaceChildren(...status.flatMap((part, at) => [at ? " " : null, ...nodesOf(part), "."]).filter(Boolean));
       }
       parts.status.hidden = !status.length;
     }
