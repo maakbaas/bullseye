@@ -76,15 +76,15 @@ async function allowed(check, session) {
 
 // The rows of the session `id`, added to its tile's parts (`tiles.js`).
 function addRows(parts, id) {
-  const list = el("cds-contained-list", { class: "session-rows" });
+  // Carbon's small rows (2rem): an inline dropdown is as high as one.
+  const list = el("cds-contained-list", { class: "session-rows", size: "sm" });
   parts.rows = {};
   for (const { key, icon } of ROWS) {
     const label = el("span", { class: "row-label" }, t(`sessions.fields.${key}`));
     const value = el("span", { class: "row-value" });
-    const now = el("span", { class: "row-now" });
     // The row's inline action: a ghost icon button, as Carbon's contained lists have them.
     const button = (symbol, tip, act) => {
-      const node = el("cds-icon-button", { kind: "ghost", size: "lg", align: "left" }, carbonIcon(symbol, "icon"), el("span", { slot: "tooltip-content" }, tip));
+      const node = el("cds-icon-button", { kind: "ghost", size: "sm", align: "left" }, carbonIcon(symbol, "icon"), el("span", { slot: "tooltip-content" }, tip));
       node.addEventListener("click", act);
       return node;
     };
@@ -117,15 +117,15 @@ function addRows(parts, id) {
         lock: () => button("settings", t("sessions.lockSettings"), () => parts.setLock(chosenOf("lock", current(id)))),
       }[key]();
     }
-    // Under what the row has (its dropdown, or the condition's name): what the choice means, and while
-    // the session runs what is happening now. The condition's name takes the first line of its own
-    // text, so its explanation is a line of its own (`extra`).
+    // Under what the row has (its dropdown, or the condition's name): what the choice means. The
+    // condition's name takes the first line of its own text, so its explanation is a line of its own
+    // (`extra`). What is happening now is the tile's status line, under the rows (`tiles.js`).
     const extra = el("span", { class: "row-extra" });
     const buttons = el("span", { slot: "action", class: "row-actions" }, edit);
-    const box = el("span", { class: "row" }, label, el("span", { class: "row-text" }, select, value, extra, now));
+    const box = el("span", { class: "row" }, label, el("span", { class: "row-text" }, select, value, extra));
     const row = el("cds-contained-list-item", {}, carbonIcon(icon, "icon"), box, buttons);
     list.append(row);
-    parts.rows[key] = { row, box, label, value, extra, now, edit, select };
+    parts.rows[key] = { row, box, label, value, extra, edit, select };
   }
   parts.top.after(list);
 }
@@ -134,25 +134,24 @@ function addRows(parts, id) {
 // end later, a delay can be longer (the service judges which).
 const lengthens = (running) => running.remaining !== null && !running.lock_condition && !running.until_restart && !running.password && !running.lock_text ? true : !!running.stop_delay;
 
-// What the rows say: `lines` per row, its value and what is happening now (`tiles.js`), what the
+// What the rows say: `lines` per row, its value (`tiles.js`), what the
 // dropdowns have chosen, and which can be changed.
 function renderRows(parts, session, lines) {
   const running = runningOf(session.id);
   const locked = !!(running && running.locked);
   for (const { key } of ROWS) {
-    const { label, value, extra, now, edit, select } = parts.rows[key];
+    const { label, value, extra, edit, select } = parts.rows[key];
     // "Target" or "Targets", as many as it has.
     if (key === "block") {
       const named = t("sessions.fields.blockCount", { n: session.targets.length });
       if (label.textContent !== named) label.textContent = named;
     }
-    const [text, current, described] = lines[key];
+    const [text, , described] = lines[key];
     // The row's explanation: what the choice means (for none, in a few words of its own). Text, or parts with links in them (`ref`); only redrawn when it changed.
     const none = { unless: "none", lock: "none" }[key];
     const explained = none !== undefined && chosenOf(key, session) === none ? t(`sessions.fields.explain_${key}`) : text;
-    // Below the dropdown, one line while the session is stopped (what the choice means) and two while
-    // it runs (that, and what is happening now). The condition is named first, a link as the targets
-    // are, and its explanation and status follow.
+    // Below the dropdown, what the choice means. The condition is named first, a link as the targets
+    // are, and its explanation follows.
     const line = key === "when" || key === "block" ? text : explained;
     const shown = JSON.stringify(line);
     if (value.dataset.shown !== shown) {
@@ -162,9 +161,6 @@ function renderRows(parts, session, lines) {
     const sentence = key === "when" ? described : "";
     if (extra.textContent !== sentence) extra.textContent = sentence;
     extra.hidden = !sentence;
-    const status = key === "block" ? "" : current || "";
-    if (now.textContent !== status) now.textContent = status;
-    now.hidden = !status;
     if (select) {
       // The choices are rebuilt only when they changed, so an open dropdown is left alone.
       const options = optionsOf(key);

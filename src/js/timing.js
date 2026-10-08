@@ -3,7 +3,7 @@
 // service reads both (`describe_duration`, `describe_until`), so a wrong or past time is said in its
 // words.
 
-import { el, invalid, invoke, localDate, t } from "./core.js";
+import { el, errorNote, invalid, invoke, localDate, t } from "./core.js";
 import { durationField } from "./duration.js";
 
 // `kinds`: how long and when, as the service names them (`for` and `until` for a lock, `after` and
@@ -19,15 +19,18 @@ export function timingFields([long, when], text) {
   datePicker.append(dateInput);
   const timePicker = el("cds-time-picker", { "label-text": t("timing.time"), placeholder: t("timing.timePlaceholder"), "max-length": "5" });
   const row = el("div", { class: "date-time" }, datePicker, timePicker);
+  // The service's reason a date and time cannot be used is about both: under them, as a duration's is.
+  const note = errorNote();
+  const when_ = el("div", { class: "date-time-field" }, row, note.node);
   kind.value = long;
   const show = () => {
     input.node.hidden = kind.value !== long;
-    row.hidden = kind.value !== when;
+    when_.hidden = kind.value !== when;
   };
   kind.addEventListener("cds-dropdown-selected", show);
   show();
   return {
-    nodes: [kind, input.node, row],
+    nodes: [kind, input.node, when_],
     // What the session had (`{ kind, value }`), or the first kind with nothing in it.
     fill(settings) {
       const { kind: chosen, value = "" } = settings || {};
@@ -49,11 +52,12 @@ export function timingFields([long, when], text) {
       datePicker.addEventListener("cds-date-picker-changed", handler);
       timePicker.addEventListener("input", handler);
     },
-    // `{ kind, value }`, or null with the fault shown on the field it belongs to.
+    // `{ kind, value }`, or null with the fault shown on the fields it belongs to.
     async read() {
       input.error(null);
       invalid(dateInput, null);
       invalid(timePicker, null);
+      note.show(null);
       if (kind.value === long) {
         const value = input.text();
         const fault = await invoke("describe_duration", { text: value }).then(() => null, (e) => String(e));
@@ -63,7 +67,10 @@ export function timingFields([long, when], text) {
       if (invalid(timePicker, timePicker.value.trim() ? null : t("timing.timeMissing"))) return null;
       const value = `${datePicker.value} ${timePicker.value.trim()}`;
       const fault = await invoke("describe_until", { text: value }).then(() => null, (e) => String(e));
-      return invalid(timePicker, fault) ? null : { kind: when, value };
+      invalid(dateInput, fault ? " " : null);
+      invalid(timePicker, fault ? " " : null);
+      note.show(fault);
+      return fault ? null : { kind: when, value };
     },
   };
 }

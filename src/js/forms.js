@@ -252,7 +252,7 @@ function targetForm() {
       for (const [key, area] of Object.entries(areas)) if (!LISTS[key].picker) area.placeholder = show ? LISTS[key].placeholder : "";
     },
     settle: async () => {},
-    error: () => (name.value.trim() ? null : t("targets.nameMissing")),
+    error: () => (invalid(name, name.value.trim() ? null : t("targets.nameMissing")) ? t("targets.nameMissing") : null),
     name,
   };
 }
@@ -309,7 +309,7 @@ function drivePicker() {
       const drive = known.get(select.value);
       return { serial: drive.serial, drive: drive.name };
     },
-    error: () => (select.value && known.has(select.value) ? null : t("conditions.drive.missing")),
+    error: () => (invalid(select, select.value && known.has(select.value) ? null : t("conditions.drive.missing")) ? t("conditions.drive.missing") : null),
     disable(value) {
       off = value;
       select.disabled = off;
@@ -454,6 +454,7 @@ function combinePicker() {
   for (const key of ["any", "all"]) mode.append(el("cds-dropdown-item", { value: key }, t(`conditions.combine.${key}`)));
   const group = el("cds-checkbox-group", { "legend-text": t("conditions.combine.legend") });
   const none = el("p", { class: "cds--type-body-01" }, t("conditions.combine.none"));
+  group.addEventListener("cds-checkbox-changed", () => invalid(group, null));
   let boxes = [];
   let off = false;
   return {
@@ -473,7 +474,7 @@ function combinePicker() {
       mode.value = condition.type === "combined" ? condition.mode : "any";
     },
     read: () => ({ mode: mode.value, members: boxes.filter((box) => box.checked).map((box) => box.dataset.id) }),
-    error: () => (boxes.filter((box) => box.checked).length >= 2 ? null : t("conditions.combine.missing")),
+    error: () => (invalid(group, boxes.filter((box) => box.checked).length >= 2 ? null : t("conditions.combine.missing")) ? t("conditions.combine.missing") : null),
     disable(value) {
       off = value;
       mode.disabled = value;
@@ -537,7 +538,7 @@ function conditionForm() {
     },
     settle: () => week.settle(),
     error: () => {
-      if (!name.value.trim()) return t("conditions.nameMissing");
+      if (invalid(name, name.value.trim() ? null : t("conditions.nameMissing"))) return t("conditions.nameMissing");
       // A valid one answers null, which must not fall through to another type's check.
       const part = { flash_drive: picker, webhook: hook, combined: combine, schedule: week }[type.value] ?? week;
       return part.error();
@@ -807,7 +808,14 @@ function weekEditor() {
       draw();
     },
     settle: async () => {},
-    error: () => problem,
+    // On a save: nothing marked is said as what is wrong, under the grid.
+    error() {
+      if (problem) {
+        summary.hidden = true;
+        note.show(problem);
+      }
+      return problem;
+    },
   };
 }
 

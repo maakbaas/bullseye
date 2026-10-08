@@ -77,9 +77,10 @@ $("save").addEventListener("click", async () => {
   // What is still being typed counts, and what cannot be read is said here.
   await form.settle();
   const problem = form.error();
+  // What is wrong is said at its field (`error()` marks it): the first of them is brought into view.
   if (problem) {
-    notify("editor-notices", "error", t("editor.saveFailed", { noun: KINDS[kind].noun }), problem);
-    $("editor-notices").dataset.lock = "error";
+    const wrong = $("form").querySelector("[invalid], .form-error:not([hidden])");
+    if (wrong) wrong.scrollIntoView({ block: "center", behavior: "smooth" });
     return;
   }
   $("save").disabled = true;

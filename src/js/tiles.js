@@ -122,7 +122,7 @@ function sessionLines(item) {
       running && rule ? t(`sessions.fields.${running.enforcing === false ? "inactive" : "active"}${running.condition_change_words ? "For" : ""}`, { change: running.condition_change_words }) : running ? t("sessions.fields.active") : null,
       condition ? plain(summaryOf("conditions", condition)[0]) : t("sessions.fields.explain_when"),
     ],
-    unless: [item.allowance ? allowanceLabel(item.allowance) : t("sessions.fields.noAllowance"), running ? (item.allowance ? plain(allowanceLine(running, item.allowance)[1]) : t("sessions.fields.enforcing")) : null],
+    unless: [item.allowance ? allowanceLabel(item.allowance) : t("sessions.fields.noAllowance"), running && item.allowance ? plain(allowanceLine(running, item.allowance)[1]) : null],
     lock: [
       item.lock.method === "none" ? LOCKS.none.label : lock ? plain(lock.describe(item.lock)) : t("sessions.tile.unknownLock"),
       // Running: how its lock stands, unless it has none.
@@ -227,7 +227,9 @@ function makeTile(kind, id) {
   // The state tag beside the title, which saves a row.
   const top = el("div", { class: "top" }, el("div", { class: "heading" }, title, tag), menu, lock);
   // A session's lines are its rows (`fields.js`), between its head and Start / Stop.
-  const body = el("div", { class: "body" }, el("div", { class: "info" }, kind === "sessions" ? null : summary), actions);
+  // A running session's status line: how its condition, allowance and lock stand now, beside Start / Stop.
+  const status = el("p", { class: "status cds--type-helper-text-01" });
+  const body = el("div", { class: "body" }, el("div", { class: "info" }, kind === "sessions" ? status : summary), actions);
   const tile = el("cds-tile", { class: columns }, top, body);
   // Below its button, or above it where there is no room.
   const menuBody = menu.querySelector("cds-overflow-menu-body");
@@ -241,7 +243,7 @@ function makeTile(kind, id) {
       if (item.dataset.action === "delete") confirmDelete(kind, id);
     });
   }
-  const parts = { tile, top, name, tag, summary, actions, menu, lock, editIcon, deleteItem: menu.querySelector('[data-action="delete"]') };
+  const parts = { tile, top, name, tag, summary, status, actions, menu, lock, editIcon, deleteItem: menu.querySelector('[data-action="delete"]') };
   if (kind === "sessions") {
     addSessionControls(parts, id);
     addRows(parts, id);
@@ -286,7 +288,12 @@ function renderTiles(kind) {
     parts.editIcon.classList.toggle("unavailable", !!held);
     if (kind === "sessions") {
       renderSessionControls(parts, item);
-      renderRows(parts, item, sessionLines(item));
+      const lines = sessionLines(item);
+      renderRows(parts, item, lines);
+      // What is happening now, in one line for the tile: the condition, the allowance, the lock.
+      const now = ["when", "unless", "lock"].map((key) => lines[key][1]).filter(Boolean).join(" · ");
+      if (parts.status.textContent !== now) parts.status.textContent = now;
+      parts.status.hidden = !now;
     }
     else {
       // Tagged while a locked session uses it (it can then only get stricter); a running session
