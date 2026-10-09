@@ -54,11 +54,11 @@ const LOCKS = {
         const end = await invoke("describe_until", { text: value || "" }).catch(() => null);
         if (!end) return null;
         const values = { name: quoted(session.name), when: end.when, left: end.left };
-        return { heading: t("locks.timed.untilConfirmHeading", values), body: t("locks.timed.untilConfirmBody", values), action: t("locks.timed.confirmAction", values) };
+        return { heading: t("locks.timed.untilConfirmHeading", values), body: t("locks.timed.untilConfirmBody", values), action: t("locks.confirmAction", values) };
       }
       const duration = await invoke("describe_duration", { text: value || "" }).catch(() => value);
       const values = { name: quoted(session.name), duration };
-      return { heading: t("locks.timed.forConfirmHeading", values), body: t("locks.timed.forConfirmBody", values), action: t("locks.timed.confirmAction", values) };
+      return { heading: t("locks.timed.forConfirmHeading", values), body: t("locks.timed.forConfirmBody", values), action: t("locks.confirmAction", values) };
     },
   },
   until_restart: {
@@ -67,7 +67,7 @@ const LOCKS = {
     confirm: async (session) => ({
       heading: t("locks.until_restart.confirmHeading", { name: quoted(session.name) }),
       body: t("locks.until_restart.confirmBody", { name: quoted(session.name) }),
-      action: t("locks.until_restart.confirmAction", { name: quoted(session.name) }),
+      action: t("locks.confirmAction", { name: quoted(session.name) }),
     }),
   },
   condition: {
@@ -98,7 +98,7 @@ const LOCKS = {
       return {
         heading: t("locks.condition.confirmHeading", values),
         body: t("locks.condition.confirmBody", values),
-        action: t("locks.condition.confirmAction", values),
+        action: t("locks.confirmAction", values),
       };
     },
   },
@@ -124,7 +124,7 @@ const LOCKS = {
       return {
         heading: t("locks.delay.confirmHeading", values),
         body: t("locks.delay.confirmBody", values),
-        action: t("locks.delay.confirmAction", values),
+        action: t("locks.confirmAction", values),
       };
     },
   },
@@ -141,7 +141,7 @@ const LOCKS = {
     confirm: async (session) => ({
       heading: t("locks.text.confirmHeading", { name: quoted(session.name) }),
       body: t("locks.text.confirmBody", { name: quoted(session.name) }),
-      action: t("locks.text.confirmAction", { name: quoted(session.name) }),
+      action: t("locks.confirmAction", { name: quoted(session.name) }),
     }),
   },
   password: {
@@ -187,7 +187,7 @@ const LOCKS = {
     confirm: async (session) => ({
       heading: t("locks.password.confirmHeading", { name: quoted(session.name) }),
       body: t("locks.password.confirmBody", { name: quoted(session.name) }),
-      action: t("locks.password.confirmAction", { name: quoted(session.name) }),
+      action: t("locks.confirmAction", { name: quoted(session.name) }),
     }),
   },
 };

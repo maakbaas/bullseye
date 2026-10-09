@@ -11,7 +11,7 @@ import { addRows, renderRows, renameSession } from "./fields.js";
 // A running session's condition when its definition no longer has it (it keeps the rule it started
 // with): the drive's own name, or a word for the kind.
 function ruleName(rule) {
-  if (rule.type === "flash_drive") return t("sessions.tile.activeDrive", { drive: quoted(rule.drive) });
+  if (rule.type === "flash_drive") return t("conditions.activeDrive", { drive: quoted(rule.drive) });
   return t(rule.type === "combined" ? "sessions.tile.activeCombined" : rule.type === "webhook" ? "sessions.tile.activeWebhook" : "sessions.tile.active");
 }
 
@@ -31,7 +31,7 @@ function rowsOf(kind, item) {
       const counts = section.lists.filter((key) => item[key] && item[key].length).map((key) => LISTS[key].count(item[key].length));
       const actions = section.lists.length ? [] : section.actions.filter((e) => item.actions && item.actions[e.key]).map((e) => e.short || e.label);
       const value = [...counts, ...actions];
-      if (value.length) rows.push([section.icon, t(`tiles.${section.key}`), value.join(t("common.separator"))]);
+      if (value.length) rows.push([section.icon, section.short, value.join(t("common.separator"))]);
     }
     if (!rows.length) rows.push(["target-16", t("tiles.blocks"), t("targets.nothing")]);
     return [...rows, ["locked", t("tiles.usedBy"), usersText(item)]];
@@ -208,7 +208,7 @@ function renderTiles(kind) {
 function addSessionControls(parts, id) {
   const toggle = el("cds-button", { kind: "primary", size: "md" });
   // A delay lock's wait can be ended while it counts down or waits to be used.
-  const abort = el("cds-button", { kind: "tertiary", size: "md", hidden: true }, t("sessions.abortStop"), carbonIcon("locked", "icon"));
+  const abort = el("cds-button", { kind: "tertiary", size: "md", hidden: true }, t("common.keepLocked"), carbonIcon("locked", "icon"));
   parts.actions.append(abort, toggle);
   // The Lock row's menu chooses the method, or the settings of the one it has (`fields.js`).
   Object.assign(parts, { toggle, abort, setLock: (method) => setLock(id, method) });
@@ -227,9 +227,9 @@ async function setLock(id, method) {
   if (method === "condition" && !overview.conditions.length) {
     parts.choosing = true;
     const make = await ask({
-      heading: t("locks.condition.noneHeading"),
+      heading: t("conditions.emptyTitle"),
       body: t("locks.condition.noneBody"),
-      action: t("locks.condition.noneAction"),
+      action: t("conditions.newLabel"),
       kind: "primary",
     });
     parts.choosing = false;
@@ -315,7 +315,7 @@ function renderSessionControls(parts, session) {
   const asking = running && running.stop_delay && running.stop_remaining === null;
   parts.abort.hidden = !(running && running.stop_delay && running.stop_remaining !== null);
   // Waiting: keep it locked; once the wait is over, lock it again.
-  const abortLabel = t(running && running.stop_remaining === 0 ? "sessions.relock" : "sessions.abortStop");
+  const abortLabel = t(running && running.stop_remaining === 0 ? "common.lockAgain" : "common.keepLocked");
   if (parts.abort.textContent.trim() !== abortLabel) parts.abort.replaceChildren(abortLabel, carbonIcon("locked", "icon"));
   const action = running ? (asking ? "ask" : "stop") : "start";
   if (parts.toggle.dataset.action !== action) {
@@ -373,7 +373,7 @@ async function startOrStop(id) {
   // A session locked with a password stops with it.
   let password = null;
   if (running && running.password) {
-    const field = el("cds-password-input", { label: t("sessions.stopPassword"), autocomplete: "off" });
+    const field = el("cds-password-input", { label: t("locks.password.field"), autocomplete: "off" });
     const given = await ask({
       heading: t("sessions.stopHeading", { name: quoted(session.name) }),
       body: t("sessions.stopBody"),

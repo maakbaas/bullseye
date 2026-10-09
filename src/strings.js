@@ -20,10 +20,6 @@ window.STRINGS = {
   nav: {
     // What a screen reader calls the tabs.
     label: "Pages",
-    sessions: "Sessions",
-    targets: "Targets",
-    conditions: "Conditions",
-    settings: "Settings",
   },
 
   common: {
@@ -50,6 +46,14 @@ window.STRINGS = {
     quoted: "“{name}”",
     // Between names in a list of them.
     separator: ", ",
+    // Kept apart from strings that happen to read the same: these mean the same wherever they are.
+    type: "Type",
+    // A delay lock's wait (a session's) or the unlock countdown (Settings): ending it, and once it is
+    // over, locking again.
+    keepLocked: "Keep locked",
+    lockAgain: "Lock again",
+    // Under the title of a target's or condition's editor.
+    editorDescription: "Running sessions follow changes made here; a locked one only accepts stricter ones",
     // The service's words as a sentence of a question ({text}).
     sentence: "{text}.",
     // Before the last of a list: a, b and c.
@@ -79,10 +83,8 @@ window.STRINGS = {
       block: "Targets",
       // The Targets row's label: as many as it has.
       blockCount: { one: "Target", other: "Targets" },
-      newTarget: "New target",
       when: "Condition",
       always: "Always",
-      newCondition: "New condition",
       unless: "Allowance",
       lock: "Lock",
       allowanceSettings: "Allowance settings",
@@ -91,10 +93,6 @@ window.STRINGS = {
       changeWhen: "Change condition",
       // The dialog of a row: {what}: the row ("Condition"), {name}: the session.
       panelHeading: "{what} of {name}",
-      noAllowance: "No allowance",
-      budget: "Time budget",
-      pomodoro: "Pomodoro cycle",
-      delayed: "Delayed start",
       budgetHeading: "Time budget of {name}",
       pomodoroHeading: "Pomodoro cycle of {name}",
       delayedHeading: "Delayed start of {name}",
@@ -110,7 +108,6 @@ window.STRINGS = {
       active: "Active by schedule",
       activeCombined: "Active by combination",
       activeWebhook: "Active by a webhook",
-      activeDrive: "Active while {drive} is unplugged",
     },
     // The tag on a session's tile.
     state: {
@@ -124,10 +121,7 @@ window.STRINGS = {
     showAll: "Show all sessions",
     stop: "Stop",
     requestStop: "Request stop",
-    abortStop: "Keep locked",
-    // Once the wait is over there is nothing left to keep: it locks again.
-    relock: "Lock again",
-    // In a session's ⋮ menu: its lock's settings.
+    // The Lock row's settings button.
     lockSettings: "Lock settings",
     // The dialog with a lock's settings. {method}: the lock's name below (locks.*.label).
     lockHeading: "{method} lock for {name}",
@@ -141,7 +135,6 @@ window.STRINGS = {
     // Stopping a session locked with a password.
     stopHeading: "Stop {name}?",
     stopBody: "Enter the password to stop this session",
-    stopPassword: "Password",
     // Stopping a session locked with a text: the text is shown above the input.
     stopTextBody: "Type the text above exactly. Pasting is blocked",
     stopTextLabel: "Type the text here",
@@ -166,12 +159,6 @@ window.STRINGS = {
     when: "Active",
     usedBy: "Used by",
     none: "No session",
-    // A target's rows, one per part of its editor that has something in it: short, as a row's label is.
-    websites: "Websites",
-    programs: "Programs",
-    store: "Store apps",
-    titles: "Titles",
-    other: "Other",
   },
   // A duration: a number and its unit (`duration.js`).
   duration: { unit: "Unit", d: "Days", h: "Hours", m: "Minutes", s: "Seconds" },
@@ -199,10 +186,10 @@ window.STRINGS = {
     },
   },
   // The lock methods, as chosen on a session's tile. `describe` is what the lock is, in the question
-  // when a locked session's lock is made stricter; `confirm*` is the question before starting a locked session. A confirmAction is
-  // the modal's button: keep it to a few words without placeholders, as Carbon's modal buttons
-  // have one fixed height and a long label runs out of them.
+  // when a locked session's lock is made stricter; `confirm*` is the question before starting a locked session, and `confirmAction`
+  // its button, the same for every method: a few words, as Carbon's modal buttons have one fixed height.
   locks: {
+    confirmAction: "Start locked",
     none: {
       label: "No lock",
       describe: "No active lock",
@@ -217,24 +204,21 @@ window.STRINGS = {
       forConfirmBody: "Locked for {duration}. Only unlocking in Settings ends it early",
       untilConfirmHeading: "Start {name} until {when}?",
       untilConfirmBody: "Locked until {when}, {left} from now. Only unlocking in Settings ends it early",
-      confirmAction: "Start locked",
     },
     until_restart: {
       label: "Until restart",
       describe: "Locks until Windows restarts",
       confirmHeading: "Start {name} until Windows restarts?",
       confirmBody: "Locked until Windows restarts. Shutting down with Fast Startup is not a restart. Only unlocking in Settings ends it early",
-      confirmAction: "Start locked",
     },
     condition: {
       label: "Condition",
       field: "Locked during",
       helper: "Locked while this condition is active",
       missing: "Choose a condition",
-      // Chosen when there is no condition yet: offers to make one, which the lock is then set to.
-      noneHeading: "No conditions yet",
+      // Chosen when there is no condition yet: offers to make one, which the lock is then set to
+      // (headed conditions.emptyTitle, its button conditions.newLabel).
       noneBody: "A condition lock needs a condition. Make one now and use it for this lock?",
-      noneAction: "New condition",
       // What the lock is, for the Lock row's question. {name}: the condition, a link.
       describe: "Locks during {name}",
       describeDrive: "Locks while {name} is unplugged",
@@ -245,7 +229,6 @@ window.STRINGS = {
       // {detail}: nothing for a schedule, the drive for a flash drive.
       confirmBody: "Locked while {condition} is active{detail}. Otherwise you can stop it. Only unlocking in Settings ends it early",
       driveDetail: " (while {drive} is unplugged)",
-      confirmAction: "Start locked",
     },
     delay: {
       label: "Delay",
@@ -254,7 +237,6 @@ window.STRINGS = {
       describe: "Locks until stopping has waited {delay}",
       confirmHeading: "Start {name} locked by a delay?",
       confirmBody: "Stopping takes {delay} after asking for it, or unlocking in Settings",
-      confirmAction: "Start locked",
     },
     text: {
       label: "Custom text",
@@ -265,7 +247,6 @@ window.STRINGS = {
       describe: "Locks until its text is typed",
       confirmHeading: "Start {name} locked by a custom text?",
       confirmBody: "Stopped only by typing its text here, or by unlocking in Settings",
-      confirmAction: "Start locked",
     },
     password: {
       label: "Password",
@@ -279,7 +260,6 @@ window.STRINGS = {
       describe: "Locks with a password",
       confirmHeading: "Start {name} locked with a password?",
       confirmBody: "Stopped only with its password, or by unlocking in Settings",
-      confirmAction: "Start locked",
     },
   },
 
@@ -292,7 +272,6 @@ window.STRINGS = {
     editTitle: "Edit target",
     emptyTitle: "No targets yet",
     emptyText: "Add sites, programs or apps to close, and how to close them",
-    editorDescription: "Running sessions follow changes made here; a locked one only accepts stricter ones",
     // {names}: the locked sessions that use it, quoted.
     limited: "{names} uses it and is locked. You can add blocked entries, remove always allowed ones and turn actions on, nothing else. It cannot be deleted",
     namePlaceholder: "e.g. Social media",
@@ -356,12 +335,15 @@ window.STRINGS = {
         title: "Programs",
         description: "Asks listed programs to close, ends them after 3 seconds",
       },
+      // `short`: a target tile's row label, where the title is too long for it.
       store: {
         title: "Microsoft Store apps",
+        short: "Store apps",
         description: "Asks ticked apps to close, ends them after 3 seconds",
       },
       titles: {
         title: "Windows by title",
+        short: "Titles",
         description: "Closes or minimizes windows whose title matches",
       },
       other: {
@@ -390,13 +372,11 @@ window.STRINGS = {
     editTitle: "Edit condition",
     emptyTitle: "No conditions yet",
     emptyText: "Sessions without a condition are always active. Add one such as work hours",
-    editorDescription: "Running sessions follow changes made here; a locked one only accepts stricter ones",
     // {names}: the locked sessions that use it, quoted.
     held: "{names} uses it and is locked. A drive cannot change. It cannot be deleted",
     limited: "{names} uses it and is locked. A schedule can only gain times, a drive cannot change and a combination can only get more active. It cannot be deleted",
     namePlaceholder: "e.g. Work hours",
     nameMissing: "Name the condition",
-    typeLabel: "Type",
     // A webhook: one web address asked every so often; the true matcher first, then the false one, else the fallback.
     webhook: {
       url: "Web address",
@@ -420,13 +400,10 @@ window.STRINGS = {
       matchInactive: "Not active when",
       matchActive: "Active when",
       matchText: "The answer that turns the condition around",
-      testTitle: "Test",
       testText: "Asks the address once, with these settings",
       matchOn: "Match on",
       on: { status: "HTTP code", body: "Body" },
-      status: "HTTP code",
       statusWrong: "Enter an HTTP status code, e.g. 200",
-      body: "Body",
       bodyPlaceholder: "e.g. on",
       bodyHelper: "The whole body must equal this, white space around it aside",
       bodyMissing: "Enter the body text",
@@ -451,7 +428,6 @@ window.STRINGS = {
     activeAll: "Active when all of {names} are true",
     // A combination: which conditions, and whether any or all of them make it active. Never of other combinations.
     combine: {
-      title: "Combination",
       text: "Two or more other conditions, of which any or all must be active",
       modeLabel: "Active when",
       modeHelper: "Any needs one, all needs every one",
@@ -476,9 +452,7 @@ window.STRINGS = {
     drive: {
       title: "Drive",
       text: "The drive that is the key: the condition is active while it is unplugged",
-      field: "Flash drive",
       helper: "Active while unplugged. Plugging it in switches sessions off and opens its lock. Drives without a serial number are not listed",
-      choose: "Choose a flash drive",
       scanning: "Looking for drives",
       none: "No flash drive found. Plug it in and scan again",
       // {name}: the drive's name and serial number, for the one the condition was set to that is not connected now.
@@ -490,13 +464,18 @@ window.STRINGS = {
 
   // A session's allowance, set on its tile (its settings in the modal).
   allowance: {
-    typeLabel: "Type",
     typeHelper: "As long as the session runs. A running session takes changes at once; a locked one only stricter ones",
+    // The kinds, in the session's Allowance row and in the allowance's form.
     type: {
-      none: "None",
+      none: "No allowance",
       budget: "Time budget",
-      pomodoro: "Pomodoro",
+      pomodoro: "Pomodoro cycle",
       delayed: "Delayed start",
+    },
+    // What a budget's reset every so long, or a Pomodoro cycle, is counted from.
+    anchor: {
+      start: "The start of the session",
+      clock: "The clock, from midnight",
     },
     // A time budget.
     budget: {
@@ -516,8 +495,6 @@ window.STRINGS = {
       everyHelper: "Counted from the point chosen below",
       anchorLabel: "Counted from",
       anchorHelper: "On the clock, every 1d comes at midnight and every 1h on the hour. It has to fit a day evenly",
-      start: "The start of the session",
-      clock: "The clock, from midnight",
     },
     // A Pomodoro cycle: blocked first, then everything is allowed, over and over.
     cycle: {
@@ -526,8 +503,6 @@ window.STRINGS = {
       helper: "Everything the session closes is allowed during the allowed time",
       anchorLabel: "Cycles count from",
       anchorHelper: "On the clock, a cycle of an hour starts at every full hour. It has to fit a day evenly",
-      start: "The start of the session",
-      clock: "The clock, from midnight",
     },
     // Under the fields: the terms in words, from the backend.
     describing: "Checking",
@@ -556,7 +531,6 @@ window.STRINGS = {
   settings: {
     title: "Settings",
     description: "Unlocking, the unlock delay, and moving everything to another computer",
-    unlockTitle: "Unlock",
     unlockText: "Ends every running session, locked ones too. Sessions, targets and conditions stay. The only way to end a locked session early. Request it, wait for the countdown, then unlock. Keep locked cancels it and keeps everything locked; once it is ready the button reads Lock again",
     // No delay set: the state of a clean install.
     unlockFree: "Ends every running session, locked ones too. Sessions, targets and conditions stay. Free right now: set an unlock delay below for a countdown",
@@ -580,12 +554,9 @@ window.STRINGS = {
       answerPassword: "Unlock with password",
       answerHeading: "Unlock?",
       answerBody: "Enter the password to end every running session now",
-      answerTextBody: "Type the text above exactly. Pasting is blocked",
     },
     unlock: "Unlock",
     request: "Request unlock",
-    abort: "Keep locked",
-    relock: "Lock again",
     aborted: "Everything stays locked",
     confirmHeading: "End every running session?",
     confirmBody: "Locked sessions end too. Sessions, targets and conditions stay",
@@ -621,15 +592,11 @@ window.STRINGS = {
     // Store apps in the file that are not installed on this PC, which are left out: a Store app is one
     // exact package, and this PC may have the app as another one, or not at all. {apps}: each as
     // importAppIn, {app} its name and {target} its target, quoted.
-    importAppsLeftOut: {
-      one: "Left out, not installed on this PC: {apps}",
-      other: "Left out, not installed on this PC: {apps}",
-    },
+    importAppsLeftOut: "Left out, not installed on this PC: {apps}",
     importAppIn: "{app} in {target}",
     importAppsUnknown: "Could not tell which Store apps are installed here, so all are kept",
     // Said too when a session runs without being locked: it ends.
     importStops: "Running sessions without a lock are stopped",
-    importAction: "Import",
     imported: "Imported",
     importFailed: "Not imported",
   },

@@ -23,7 +23,7 @@ const kindTexts = (kind, editor = true) => ({
   description: t(`${kind}.description`),
   newLabel: t(`${kind}.newLabel`),
   empty: [t(`${kind}.emptyTitle`), t(`${kind}.emptyText`)],
-  ...(editor ? { editTitle: t(`${kind}.editTitle`), editorDescription: t(`${kind}.editorDescription`) } : {}),
+  ...(editor ? { editTitle: t(`${kind}.editTitle`), editorDescription: t("common.editorDescription") } : {}),
 });
 
 const KINDS = {

@@ -37,7 +37,7 @@ const SECTIONS = [
   // Closing (`choice`, the default: off) or minimizing: radio buttons, not a checkbox.
   { key: "titles", icon: "text-font", lists: ["titles", "allowed_titles"], choice: "close", actions: [action("window_titles_minimize")] },
   { key: "other", icon: "apps", lists: [], actions: [action("obsidian_web_viewer")] },
-].map((section) => ({ ...section, title: t(`targets.sections.${section.key}.title`), description: window.STRINGS.targets.sections[section.key].description && t(`targets.sections.${section.key}.description`) }));
+].map((section) => ({ ...section, title: t(`targets.sections.${section.key}.title`), short: t(`targets.sections.${section.key}.${window.STRINGS.targets.sections[section.key].short ? "short" : "title"}`), description: window.STRINGS.targets.sections[section.key].description && t(`targets.sections.${section.key}.description`) }));
 
 const ACTIONS = SECTIONS.flatMap((section) => section.actions);
 
@@ -262,7 +262,7 @@ function targetForm() {
 // list while it is away, so saving does not lose it. Drives are told apart by their hardware's
 // serial number (`drives.rs`).
 function drivePicker() {
-  const select = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.drive.field"), "helper-text": t("conditions.drive.helper") });
+  const select = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.typeDrive"), "helper-text": t("conditions.drive.helper") });
   const rescan = el("cds-button", { kind: "tertiary", size: "md" }, t("conditions.drive.scan"), carbonIcon("renew", "icon"));
   let known = new Map();
   let had = {};
@@ -288,7 +288,7 @@ function drivePicker() {
     known = new Map(drives.map((drive) => [drive.serial, drive]));
     const away = had.serial && !known.has(had.serial) ? [{ serial: had.serial, name: had.name || had.serial }] : [];
     for (const drive of away) known.set(drive.serial, drive);
-    select.setAttribute("label", t(drives.length || away.length ? "conditions.drive.choose" : "conditions.drive.none"));
+    select.setAttribute("label", t(drives.length || away.length ? "conditions.drive.missing" : "conditions.drive.none"));
     select.replaceChildren(
       ...drives.map((drive) => item(drive.serial, `${drive.name} (${drive.serial})`)),
       ...away.map((drive) => item(drive.serial, t("conditions.drive.away", { name: `${drive.name} (${drive.serial})` }))),
@@ -323,8 +323,8 @@ function drivePicker() {
 function matcherFields() {
   const mode = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.webhook.matchOn") });
   for (const key of ["status", "body"]) mode.append(el("cds-dropdown-item", { value: key }, t(`conditions.webhook.on.${key}`)));
-  const status = el("cds-text-input", { label: t("conditions.webhook.status"), placeholder: "200", "max-count": "3" });
-  const body = el("cds-textarea", { label: t("conditions.webhook.body"), placeholder: t("conditions.webhook.bodyPlaceholder"), "helper-text": t("conditions.webhook.bodyHelper"), rows: 3 });
+  const status = el("cds-text-input", { label: t("conditions.webhook.on.status"), placeholder: "200", "max-count": "3" });
+  const body = el("cds-textarea", { label: t("conditions.webhook.on.body"), placeholder: t("conditions.webhook.bodyPlaceholder"), "helper-text": t("conditions.webhook.bodyHelper"), rows: 3 });
   const show = () => {
     status.hidden = mode.value !== "status";
     body.hidden = mode.value !== "body";
@@ -425,7 +425,7 @@ function webhookPicker() {
       section(t("conditions.webhook.requestTitle"), t("conditions.webhook.requestText"), url, method, every.node),
       section(t("conditions.webhook.defaultTitle"), t("conditions.webhook.defaultText"), fallback),
       matchPart,
-      section(t("conditions.webhook.testTitle"), t("conditions.webhook.testText"), el("div", { class: "inline-action" }, test), result),
+      section(t("conditions.webhook.test"), t("conditions.webhook.testText"), el("div", { class: "inline-action" }, test), result),
     ],
     fill(condition) {
       const hook = condition.type === "webhook" ? condition : {};
@@ -488,7 +488,7 @@ function combinePicker() {
 // chosen type is not kept.
 function conditionForm() {
   const name = nameField(t("conditions.namePlaceholder"));
-  const type = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.typeLabel") });
+  const type = el("cds-dropdown", { autoalign: true, "title-text": t("common.type") });
   type.append(
     el("cds-dropdown-item", { value: "schedule" }, t("conditions.typeSchedule")),
     el("cds-dropdown-item", { value: "flash_drive" }, t("conditions.typeDrive")),
@@ -503,7 +503,7 @@ function conditionForm() {
   const picker = drivePicker();
   const drivePart = section(t("conditions.drive.title"), t("conditions.drive.text"), ...picker.nodes);
   const combine = combinePicker();
-  const combinePart = section(t("conditions.combine.title"), t("conditions.combine.text"), ...combine.nodes);
+  const combinePart = section(t("conditions.typeCombined"), t("conditions.combine.text"), ...combine.nodes);
   const show = () => {
     weekPart.hidden = type.value !== "schedule";
     drivePart.hidden = type.value !== "flash_drive";
@@ -558,18 +558,18 @@ function allowanceSection() {
     for (const key of keys) field.append(el("cds-dropdown-item", { value: key }, t(`${path}.${key}`)));
     return field;
   };
-  const type = dropdown(t("allowance.typeLabel"), t("allowance.typeHelper"), ["none", "budget", "pomodoro", "delayed"], "allowance.type");
+  const type = dropdown(t("common.type"), t("allowance.typeHelper"), ["none", "budget", "pomodoro", "delayed"], "allowance.type");
   const text = (label, helper) => durationField({ label, helper });
   const allowed = text(t("allowance.budget.allowedLabel"), t("allowance.budget.allowedHelper"));
   const scope = dropdown(t("allowance.budget.scopeLabel"), t("allowance.budget.scopeHelper"), ["total", "each"], "allowance.budget");
   const reset = dropdown(t("allowance.budget.resetLabel"), t("allowance.budget.resetHelper"), ["never", "every", "condition"], "allowance.budget");
   // Given back every so long: how long, and counted from the session's start or the clock.
   const every = text(t("allowance.budget.everyLabel"), t("allowance.budget.everyHelper"));
-  const resetAnchor = dropdown(t("allowance.budget.anchorLabel"), t("allowance.budget.anchorHelper"), ["start", "clock"], "allowance.budget");
+  const resetAnchor = dropdown(t("allowance.budget.anchorLabel"), t("allowance.budget.anchorHelper"), ["start", "clock"], "allowance.anchor");
   const everyPart = el("div", { class: "fields" }, every.node, resetAnchor);
   const blocked = text(t("allowance.cycle.blockedLabel"), t("allowance.cycle.helper"));
   const cycleAllowed = text(t("allowance.cycle.allowedLabel"), t("allowance.cycle.helper"));
-  const anchor = dropdown(t("allowance.cycle.anchorLabel"), t("allowance.cycle.anchorHelper"), ["start", "clock"], "allowance.cycle");
+  const anchor = dropdown(t("allowance.cycle.anchorLabel"), t("allowance.cycle.anchorHelper"), ["start", "clock"], "allowance.anchor");
   const budgetPart = el("div", { class: "fields" }, allowed.node, scope, reset, everyPart);
   const cyclePart = el("div", { class: "fields" }, blocked.node, cycleAllowed.node, anchor);
   // Nothing enforced for a while after the start, or until a time (`timing.js`).

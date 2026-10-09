@@ -65,7 +65,7 @@ function renderSettings() {
   const answerLabel = answer ? t("settings.way.answer" + (way.method === "text" ? "Text" : "Password")) : "";
   if (answer && $("unlock-answer").textContent.trim() !== answerLabel) $("unlock-answer").replaceChildren(answerLabel, carbonIcon("unlocked", "icon"));
   renderWay();
-  const abortLabel = t(remaining === 0 ? "settings.relock" : "settings.abort");
+  const abortLabel = t(remaining === 0 ? "common.lockAgain" : "common.keepLocked");
   if ($("abort-unlock").textContent.trim() !== abortLabel) $("abort-unlock").replaceChildren(abortLabel, carbonIcon("locked", "icon"));
   // Only when it differs: this draws every second, and a label swapped under a click can lose it.
   const delayLabel = t(free ? "settings.setDelay" : "settings.changeDelay");
@@ -109,7 +109,7 @@ $("unlock-answer").addEventListener("click", async () => {
     text = await askText(t("settings.way.answerHeading"), way.text, t("settings.unlock"));
     if (text === null) return;
   } else {
-    const field = el("cds-password-input", { label: t("sessions.stopPassword"), autocomplete: "off" });
+    const field = el("cds-password-input", { label: t("locks.password.field"), autocomplete: "off" });
     password = await ask({
       heading: t("settings.way.answerHeading"),
       body: t("settings.way.answerBody"),
@@ -246,7 +246,7 @@ $("import").addEventListener("click", async () => {
     const apps = opened.left_out.map((app) => t("settings.importAppIn", { app: quoted(app.name), target: quoted(app.target) }));
     const leftOut = !opened.apps_checked ? t("settings.importAppsUnknown") : apps.length ? t("settings.importAppsLeftOut", { n: apps.length, apps: joined(apps).join("") }) : "";
     if (leftOut) body.push(leftOut);
-    const sure = await ask({ heading: t("settings.importHeading"), body: body.join(" "), action: t("settings.importAction"), kind: "danger" });
+    const sure = await ask({ heading: t("settings.importHeading"), body: body.join(" "), action: t("settings.import"), kind: "danger" });
     if (!sure) return;
     await invoke("import_settings", { path: opened.path });
     notify("transfer-notices", "success", t("settings.imported"), leftOut);

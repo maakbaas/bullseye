@@ -44,7 +44,7 @@ function optionsOf(key) {
     return [[ALWAYS, t("sessions.fields.always")], ...overview.conditions.map((c) => [c.id, c.name])];
   }
   if (key === "unless") {
-    return [["none", t("sessions.fields.noAllowance")], ["budget", t("sessions.fields.budget")], ["pomodoro", t("sessions.fields.pomodoro")], ["delayed", t("sessions.fields.delayed")]];
+    return ["none", "budget", "pomodoro", "delayed"].map((type) => [type, t(`allowance.type.${type}`)]);
   }
   return Object.entries(LOCKS).map(([value, lock]) => [value, lock.label]);
 }
@@ -197,7 +197,7 @@ function fillPanel(parts, id, key, panel, close) {
       return item;
     });
     const list = el("cds-contained-list", { kind: "disclosed", size: "md", "aria-label": t("sessions.fields.when") }, ...options);
-    const more = button(t("sessions.fields.newCondition"), "add", () => make(id, "conditions", (made) => save(current(id), { condition: made.id })));
+    const more = button(t("conditions.newLabel"), "add", () => make(id, "conditions", (made) => save(current(id), { condition: made.id })));
     return panel.replaceChildren(el("div", { class: "row-panel" }, list, more));
   }
   // What is chosen while it is open: each click builds on the last, also before the last one's
@@ -219,7 +219,7 @@ function fillPanel(parts, id, key, panel, close) {
     return item;
   });
   group.append(...items);
-  const nodes = [group, button(t("sessions.fields.newTarget"), "add", () => make(id, "targets", (made) => save(current(id), { targets: [...current(id).targets, made.id] })))];
+  const nodes = [group, button(t("targets.newLabel"), "add", () => make(id, "targets", (made) => save(current(id), { targets: [...current(id).targets, made.id] })))];
   panel.replaceChildren(el("div", { class: "row-panel" }, ...nodes));
 }
 
