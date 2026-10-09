@@ -96,10 +96,23 @@ function addRows(parts, id) {
       edit = button("edit", t(`sessions.fields.${key === "block" ? "changeBlock" : "changeWhen"}`), async () => {
         const { node, chosen } = choices(id, key);
         const heading = t("sessions.fields.panelHeading", { what: t(`sessions.fields.${key}`), name: quoted(current(id).name) });
-        if (!(await ask({ heading, fields: [node], action: t("common.save"), kind: "primary", read: () => true }))) return;
-        const next = chosen();
-        const session = current(id);
-        if (Object.entries(next).some(([field, value]) => JSON.stringify(value) !== JSON.stringify(session[field] ?? null))) save(session, next);
+        // Saved on Save; what the service refuses (a running session left with nothing to block) is
+        // said in the dialog, which stays open to choose again.
+        const saved = await ask({
+          heading,
+          fields: [node],
+          action: t("common.save"),
+          kind: "primary",
+          read: async () => {
+            const next = chosen();
+            const session = current(id);
+            if (Object.entries(next).some(([field, value]) => JSON.stringify(value) !== JSON.stringify(session[field] ?? null))) {
+              await invoke("save_session", { session: { ...session, ...next } });
+            }
+            return true;
+          },
+        });
+        if (saved) await refresh();
       });
     } else {
       select = el("cds-dropdown", { type: "inline", size: "sm", "aria-label": t(`sessions.fields.${key}`) });
@@ -197,10 +210,9 @@ function choices(id, key) {
     marks.set(value, mark(picked.has(value)));
     const item = el("cds-contained-list-item", { clickable: true }, marks.get(value), text);
     item.addEventListener("cds-contained-list-item-click", () => {
-      // Targets are marked and unmarked, all but the last; a condition is one of them.
-      if (many && picked.has(value)) {
-        if (picked.size > 1) picked.delete(value);
-      } else {
+      // Targets are marked and unmarked; a condition is one of them.
+      if (many && picked.has(value)) picked.delete(value);
+      else {
         if (!many) picked.clear();
         picked.add(value);
       }

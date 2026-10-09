@@ -92,6 +92,8 @@ main { padding-block: var(--cds-spacing-06); }
 /* A dropdown's list shows all its items where there is room (Carbon stops it at five and a half and scrolls),
    through the list's own part; where there is not, it still scrolls. */
 cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
+/* A refusal in the dialog, spaced from the fields under it as they are from each other. */
+#confirm-error { margin-block-end: var(--cds-spacing-06); }
 .modal-fields { display: flex; flex-direction: column; gap: var(--cds-spacing-06); }
 /* An allowance's form in the modal, its groups spaced as its fields. */
 .modal-fields .fields { display: flex; flex-direction: column; gap: var(--cds-spacing-06); }
