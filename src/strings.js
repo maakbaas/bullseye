@@ -101,6 +101,33 @@ window.STRINGS = {
       renameHeading: "Rename {name}",
     },
 
+    // Under a session's Condition, Allowance and Lock rows, in a few words: what is happening now while
+    // it runs. {change}, {left}, {reset}, {delay}: times in words; {item}: a site, program or title.
+    now: {
+      active: "Active now",
+      activeFor: "Active for {change}",
+      inactive: "Inactive now",
+      inactiveFor: "Inactive for {change}",
+      allowed: "Allowed now",
+      allowedFor: "Allowed for {change}",
+      blocked: "Blocked now",
+      blockedFor: "Allowed in {change}",
+      delayedFor: "Starts in {change}",
+      begun: "Started",
+      left: "{left} left",
+      leftReset: "{left} left, refilled in {reset}",
+      usedUp: "Used up",
+      usedUpReset: "Used up, back in {reset}",
+      itemLeft: "{item} {left} left",
+      itemUsedUp: "{item} used up",
+      lockedFor: "Locked for {change}",
+      locked: "Locked now",
+      unlocked: "Unlocked now",
+      unlockedFor: "Unlocked for {change}",
+      stopTakes: "Stopping takes {delay}",
+      stopIn: "Can be stopped in {left}",
+      stopReady: "Can be stopped now",
+    },
     // A session's tile: its Targets row with none, and its Condition row for a running session whose
     // condition was deleted (it keeps the rule it started with). {drive}: a flash drive's name, quoted.
     tile: {

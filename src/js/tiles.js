@@ -72,7 +72,31 @@ function sessionLines(item) {
   return {
     block: names.length ? joined(names) : t("sessions.tile.noTargets"),
     when: condition ? ref(condition.name, editHref("conditions", condition.id)) : rule ? plain(ruleName(rule)) : t("sessions.fields.always"),
+    now: running ? runningNow(item, running) : { lock: ["timed", "delay", "condition"].includes(item.lock.method) ? LOCKS[item.lock.method].describe(item.lock) : null },
   };
+}
+
+// A running session's rows in a few words each (`sessions.now`): whether its condition has it active
+// and for how long, what its allowance allows, how its lock stands. Nothing where the row says it all.
+function runningNow(item, running) {
+  const now = (key, change, values = {}) => t(`sessions.now.${key}${change ? "For" : ""}`, { change, ...values });
+  const when = running.condition ? now(running.enforcing ? "active" : "inactive", running.condition_change_words) : null;
+  let unless = null;
+  const state = running.allowance;
+  if (state && state.terms.type === "pomodoro") unless = now(state.open ? "allowed" : "blocked", state.change_words);
+  else if (state && state.terms.type === "delayed") unless = state.open && state.change_words ? now("delayed", state.change_words) : t("sessions.now.begun");
+  else if (state && state.left !== null) unless = t(`sessions.now.${state.left === 0 ? "usedUp" : "left"}${state.reset_words ? "Reset" : ""}`, { left: state.left_words, reset: state.reset_words });
+  else if (state && state.items.length) {
+    const items = state.items.map((i) => t(`sessions.now.${i.left === 0 ? "itemUsedUp" : "itemLeft"}`, { item: i.item, left: i.left_words }));
+    unless = items.join(t("common.separator"));
+  }
+  let lock = null;
+  if (running.stop_delay) {
+    const left = running.stop_remaining;
+    lock = left === null ? t("sessions.now.stopTakes", { delay: running.stop_delay_words }) : left === 0 ? t("sessions.now.stopReady") : t("sessions.now.stopIn", { left: running.stop_remaining_words });
+  } else if (running.remaining_words) lock = t("sessions.now.lockedFor", { change: running.remaining_words });
+  else if (running.lock_condition) lock = now(running.locked ? "locked" : "unlocked", running.lock_change_words);
+  return { when, unless, lock };
 }
 
 // ---- A page of tiles. Tiles are kept and updated in place, so an open menu or a lock being

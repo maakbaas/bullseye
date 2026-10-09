@@ -184,6 +184,15 @@ cds-link[inline] { display: inline-flex; }
 /* Text in the column starts where the letters in an inline dropdown do (its left padding, 1rem), so they line up from row to row. */
 .tile-rows .row-value { padding-inline-start: var(--cds-spacing-05); }
 .tile-rows .row-value:empty { display: none; }
+/* What is happening now: helper text, lined up with the value's letters; under the value in a narrow
+   window, beside it from Carbon's md breakpoint (the values in a column as wide as a dropdown, so the
+   lines start at one place on every row; a row without one, Targets, keeps the whole width). */
+.tile-rows .row-now { color: var(--cds-text-helper); padding-inline-start: var(--cds-spacing-05); }
+.tile-rows .row-now:empty { display: none; }
+@media (min-width: 42rem) {
+  .tile-rows .row-text:has(> .row-now:not(:empty)) { grid-template-columns: 16rem minmax(0, 1fr); column-gap: var(--cds-spacing-05); }
+  .tile-rows .row-text > .row-now { grid-row: 1; grid-column: 2; line-height: 1.25rem; padding-inline-start: 0; }
+}
 /* The first line of a row is one text line (1.25rem), so a row is as high as its button (2.5rem): Carbon pads the content by what a line of that height leaves. */
 .tile-rows .row-label, .tile-rows .row-text > .row-value:first-child { line-height: 1.25rem; }
 /* A row's panel (in the dialog): its controls and button spaced as a form's, with room around. */

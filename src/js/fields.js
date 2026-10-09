@@ -81,6 +81,8 @@ function addRows(parts, id) {
   for (const { key, icon } of ROWS) {
     const label = el("span", { class: "row-label" }, t(`sessions.fields.${key}`));
     const value = el("span", { class: "row-value" });
+    // Under it, in a few words, what is happening now (`tiles.js`).
+    const now = el("span", { class: "row-now cds--type-helper-text-01" });
     // The row's inline action: a ghost icon button, as Carbon's contained lists have them.
     const button = (symbol, tip, act) => {
       const node = el("cds-icon-button", { kind: "ghost", size: "md", align: "left" }, carbonIcon(symbol, "icon"), el("span", { slot: "tooltip-content" }, tip));
@@ -117,10 +119,10 @@ function addRows(parts, id) {
       }[key]();
     }
     const buttons = el("span", { slot: "action", class: "row-actions" }, edit);
-    const box = el("span", { class: "row" }, label, el("span", { class: "row-text" }, select, value));
+    const box = el("span", { class: "row" }, label, el("span", { class: "row-text" }, select, value, now));
     const row = el("cds-contained-list-item", {}, carbonIcon(icon, "icon"), box, buttons);
     list.append(row);
-    parts.fields[key] = { row, box, label, value, edit, select };
+    parts.fields[key] = { row, box, label, value, now, edit, select };
   }
 }
 
@@ -128,13 +130,13 @@ function addRows(parts, id) {
 // end later, a delay can be longer (the service judges which).
 const lengthens = (running) => running.remaining !== null && !running.lock_condition && !running.until_restart && !running.password && !running.lock_text ? true : !!running.stop_delay;
 
-// What the rows say: `lines` per row, its value (`tiles.js`), what the
+// What the rows say: `lines` per row, its value and what is happening now (`tiles.js`), what the
 // dropdowns have chosen, and which can be changed.
 function renderRows(parts, session, lines) {
   const running = runningOf(session.id);
   const locked = !!(running && running.locked);
   for (const { key } of ROWS) {
-    const { label, value, edit, select } = parts.fields[key];
+    const { label, value, now, edit, select } = parts.fields[key];
     // "Target" or "Targets", as many as it has.
     if (key === "block") {
       const named = t("sessions.fields.blockCount", { n: session.targets.length });
@@ -146,6 +148,12 @@ function renderRows(parts, session, lines) {
     if (value.dataset.shown !== shown) {
       value.dataset.shown = shown;
       value.replaceChildren(...(line ? nodesOf(line) : []));
+    }
+    const status = lines.now[key] || "";
+    const said = JSON.stringify(status);
+    if (now.dataset.shown !== said) {
+      now.dataset.shown = said;
+      now.replaceChildren(...(status ? nodesOf(status) : []));
     }
     if (select) {
       // The choices are rebuilt only when they changed, so an open dropdown is left alone.
