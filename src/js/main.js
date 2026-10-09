@@ -4,7 +4,7 @@ import { $, applyStrings, ask, el, invalid, invoke, joined, notify, overview, qu
 import { LOCKS } from "./locks.js";
 import { durationField } from "./duration.js";
 import { KINDS } from "./kinds.js";
-import { askText, renderTiles, showOnly, showSession, tiles } from "./tiles.js";
+import { askText, renderTiles, showOnly, tiles } from "./tiles.js";
 import { newSession } from "./fields.js";
 import { closeEditor, openEditor, renderEditorLock } from "./editor.js";
 import { detour } from "./detour.js";
@@ -362,7 +362,7 @@ function showSingle() {
 $("show-all-button").replaceChildren(t("sessions.showAll"), carbonIcon("list", "icon"));
 window.addEventListener("hashchange", route);
 // A new session is asked in the modal (its name and targets), and its tile opens for the rest.
-$("new-item").addEventListener("click", () => (page === "sessions" ? newSession(showSession) : (location.hash = KINDS[page].newPath)));
+$("new-item").addEventListener("click", () => (page === "sessions" ? newSession() : (location.hash = KINDS[page].newPath)));
 const PAGES = { sessions: "#/", targets: "#/targets", conditions: "#/conditions", settings: "#/settings" };
 // Below Carbon's md breakpoint (672 px) the tabs are icons only, each with its label as tooltip.
 const narrow = matchMedia("(max-width: 41.99rem)");

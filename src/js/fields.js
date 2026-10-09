@@ -3,7 +3,7 @@
 // lock's settings, a new session and a new name are asked in the modal. New target and New
 // condition go to that kind's editor and come back with it chosen (`detour`).
 
-import { ask, confirmStricter, dismiss, el, invalid, invoke, newId, nodesOf, notify, overview, quoted, refresh, runningOf, t } from "./core.js";
+import { ask, confirmStricter, dismiss, editHref, el, invalid, invoke, newId, nodesOf, notify, overview, quoted, refresh, runningOf, t } from "./core.js";
 import { LOCKS } from "./locks.js";
 import { allowanceSection } from "./forms.js";
 import { KINDS, freeName } from "./kinds.js";
@@ -280,9 +280,9 @@ async function setAllowance(parts, id, type) {
   await save(session, { allowance: terms });
 }
 
-// A new session: its name, in the modal; the rest, targets too, is set on its tile, which is
-// brought into view (`show`). Without a target it does nothing yet.
-async function newSession(show) {
+// A new session: its name, in the modal; the rest, targets too, is set on its tile, which is then
+// shown on its own, as a link to it shows it. Without a target it does nothing yet.
+async function newSession() {
   const name = el("cds-text-input", { label: t("common.name"), value: freeName("sessions", overview.sessions) });
   const made = await ask({
     heading: t("sessions.newLabel"),
@@ -296,7 +296,7 @@ async function newSession(show) {
   });
   if (!made) return;
   await save(made, {});
-  show(made.id);
+  location.hash = editHref("sessions", made.id);
 }
 
 // A new name, in the modal.

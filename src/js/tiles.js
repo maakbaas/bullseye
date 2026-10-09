@@ -90,13 +90,6 @@ function statusLine(line) {
 
 const tiles = new Map(); // `${kind}:${id}` -> its parts
 
-// Brings the tile of the session `id` into view: where a link to a session goes, as it has no
-// page of its own.
-function showSession(id) {
-  const parts = tiles.get(`sessions:${id}`);
-  if (parts) parts.tile.scrollIntoView({ block: "start" });
-}
-
 // A tile's ⋮ opens below its button, or above it where there is no room below: Carbon's overflow
 // menu does not flip by itself, so its direction (its own property) is set before it opens. Its
 // items are its button's size, sm: 2rem.
@@ -469,4 +462,4 @@ async function duplicate(kind, id) {
   }
 }
 
-export { tiles, renderTiles, showSession, showOnly, confirmDelete, askText };
+export { tiles, renderTiles, showOnly, confirmDelete, askText };
