@@ -24,6 +24,9 @@ const KEPT = "•".repeat(8);
 const settingsOf = (session, method) =>
   (session.lock && session.lock.method === method ? session.lock : (session.kept_locks || []).find((lock) => lock.method === method)) || {};
 
+// What a random text is drawn from (`lock::random_text`).
+const CHARACTERS = "abcdefghijklmnopqrstuvwxyz0123456789";
+
 const LOCKS = {
   none: {
     label: t("locks.none.label"),
@@ -153,15 +156,23 @@ const LOCKS = {
     form: (session) => {
       const count = el("cds-text-input", { label: t("locks.random_text.field"), "helper-text": t("locks.random_text.helper"), inputmode: "numeric" });
       count.value = String(settingsOf(session, "random_text").length || 30);
+      // How long that is, as a text of that length (drawn here, only to be looked at).
+      const example = el("cds-textarea", { label: t("locks.random_text.example"), readonly: true, rows: 4 });
+      const show = () => {
+        const length = Math.min(Number(count.value) || 0, 1000);
+        example.value = Array.from(crypto.getRandomValues(new Uint8Array(length)), (byte) => CHARACTERS[byte % 36]).join("");
+      };
       count.addEventListener("input", () => {
-        const digits = String(count.value).replace(/\D/g, "").slice(0, 3);
+        const digits = String(count.value).replace(/\D/g, "").slice(0, 4);
         if (digits !== count.value) count.value = digits;
+        show();
       });
+      show();
       return {
-        fields: [count],
+        fields: [count, example],
         read: async () => {
           const length = Number(count.value);
-          return invalid(count, length >= 1 && length <= 200 ? null : t("locks.random_text.missing")) ? null : { method: "random_text", length };
+          return invalid(count, length >= 1 && length <= 1000 ? null : t("locks.random_text.missing")) ? null : { method: "random_text", length };
         },
       };
     },

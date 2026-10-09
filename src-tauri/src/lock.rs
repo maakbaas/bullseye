@@ -15,7 +15,7 @@ use crate::duration;
 /// The longest text a text lock can ask to be typed: it is shown, and typed, by hand.
 const MAX_TEXT: usize = 1000;
 /// The longest random text, in characters.
-pub const MAX_RANDOM: u32 = 200;
+pub const MAX_RANDOM: u32 = 1000;
 
 /// The longest wait of a delay lock, as long as the unlock delay can be.
 const MAX_DELAY: Duration = Duration::from_secs(24 * 3600);

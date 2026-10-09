@@ -865,7 +865,7 @@ fn the_other_commands() {
         parse(&args(&["start", "Work", "--lock-random", "twelve"])),
         Err("The number of characters is a whole number, not “twelve”".into())
     );
-    assert_eq!(parse(&args(&["start", "Work", "--lock-random", "0"])), Err("A random text has 1 to 200 characters".into()));
+    assert_eq!(parse(&args(&["start", "Work", "--lock-random", "0"])), Err("A random text has 1 to 1000 characters".into()));
     // A flash drive is named here and looked up among the connected ones when the command runs.
     assert_eq!(
         parse(&args(&["condition", "new", "Key", "--drive", "Kingston"])),

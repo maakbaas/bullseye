@@ -66,7 +66,7 @@ Sessions:
       --lock-text <text>            Locked until the text is typed in exactly: the window shows it
                                     above an input that cannot be pasted into, and that is the only
                                     place to stop such a session (or by unlocking).
-      --lock-random <n>             Locked until a random text of n letters and digits (1 to 200),
+      --lock-random <n>             Locked until a random text of n letters and digits (1 to 1000),
                                     drawn when it starts, is typed in, as --lock-text.
       --no-lock                     Not locked: it can be stopped at any time (the default).
   edit <session> [options]          Change a session: the options of new, which replace what they

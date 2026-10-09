@@ -67,7 +67,7 @@ Exit codes: `0` done, `1` failed, refused or cancelled (the reason is printed), 
 | `--lock-condition <condition>` | Lock: while this condition is active. A schedule locks at its times; a flash drive locks while it is not connected. | |
 | `--lock-password <pw>` | Lock: with this password. Only a hash of it is kept. | |
 | `--lock-delay <time>` | Lock: stopping is asked for with `stop`, counts down this long (at most 24 hours) and can be aborted with `stop --abort`; when it is over, `stop` stops the session. Like unlocking. | |
-| `--lock-random <n>` | Lock: until a random text of `n` letters and digits (1 to 200), drawn when the session starts, is typed in, as with `--lock-text`. | |
+| `--lock-random <n>` | Lock: until a random text of `n` letters and digits (1 to 1000), drawn when the session starts, is typed in, as with `--lock-text`. | |
 | `--lock-text <text>` | Lock: until this text is typed in exactly. The window shows it above an input that cannot be pasted into; that is the only place to stop such a session (or by unlocking). The text is no secret: anyone who can see the session sees it. | |
 | `--no-lock` | Not locked. | yes |
 | `--name <name>` | (`edit` only) A new name. | |
