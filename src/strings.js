@@ -108,8 +108,6 @@ window.STRINGS = {
       // gives ({allowed}, {blocked}, {time}: times in one unit; {date}),
       // and the locks that hold by no time, running or not.
       always: "At all times",
-      whenAny: "When any is true",
-      whenAll: "When all are true",
       neverPaused: "Never paused",
       // A Pomodoro cycle: blocked / allowed, as a cycle is told (25 minutes / 5 minutes).
       cycle: "{blocked} / {allowed}",
@@ -129,11 +127,20 @@ window.STRINGS = {
       activeFor: "Active for {change}",
       inactive: "Inactive",
       inactiveFor: "Inactive for {change}",
-      // A flash drive or a webhook: what has it on or off (stopped: as when on).
+      // A flash drive, a webhook or a combination with no time known: what has it on or off (stopped:
+      // as when on). The same for a lock's condition.
       activeByDevice: "Active by device",
       inactiveByDevice: "Inactive by device",
       activeByWebhook: "Active by webhook",
       inactiveByWebhook: "Inactive by webhook",
+      activeByCombination: "Active by combination",
+      inactiveByCombination: "Inactive by combination",
+      lockedByDevice: "Locked by device",
+      unlockedByDevice: "Unlocked by device",
+      lockedByWebhook: "Locked by webhook",
+      unlockedByWebhook: "Unlocked by webhook",
+      lockedByCombination: "Locked by combination",
+      unlockedByCombination: "Unlocked by combination",
       allowedFor: "Allowed for {change}",
       blocked: "Blocked",
       blockedFor: "Allowed in {change}",
@@ -158,8 +165,7 @@ window.STRINGS = {
       for: "For {time}",
       until: "Until {date}",
       during: "During {condition}",
-      whileUnplugged: "While {condition} is unplugged",
-      whileTrue: "While {condition} is true",
+      by: "By {condition}",
     },
     // A session's tile: its Targets row with none, and its Condition row for a running session whose
     // condition was deleted (it keeps the rule it started with). {drive}: a flash drive's name, quoted.

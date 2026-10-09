@@ -1,7 +1,7 @@
 // A page of tiles, one per session, target or condition: kept and updated in place, so an open menu
 // survives a refresh. A session's tile also has its lock and Start / Stop. Deleting is asked here.
 
-import { $, ask, confirmStricter, el, invalid, invoke, joined, targetName, newId, durationText, untilText, editHref, nodesOf, notify, overview, quoted, reachable, ref, refresh, runningOf, conditionOf, t, tn, usersOf, weekText, wordingOf } from "./core.js";
+import { $, ask, confirmStricter, el, invalid, invoke, joined, targetName, newId, durationText, untilText, editHref, nodesOf, notify, overview, quoted, reachable, ref, refresh, runningOf, conditionOf, t, tn, usersOf, weekText } from "./core.js";
 import { LOCKS } from "./locks.js";
 import { LISTS, SECTIONS } from "./forms.js";
 import { KINDS } from "./kinds.js";
@@ -80,9 +80,7 @@ function sessionLines(item) {
 // and for how long, what its allowance allows, how its lock stands.
 function runningNow(item, running) {
   const now = (key, change, values = {}) => t(`sessions.now.${key}${change ? "For" : ""}`, { change, ...values });
-  // A flash drive or a webhook says what has it on or off; it has no time.
-  const by = running.condition && { flash_drive: "Device", webhook: "Webhook" }[running.condition.type];
-  const when = !running.condition ? t("sessions.now.active") : by ? t(`sessions.now.${running.enforcing ? "active" : "inactive"}By${by}`) : now(running.enforcing ? "active" : "inactive", running.condition_change_words);
+  const when = !running.condition ? t("sessions.now.active") : ruleNow(running.condition, running.enforcing ? "active" : "inactive", running.condition_change_words);
   let unless = t("sessions.now.neverPaused");
   const state = running.allowance;
   // A cycle or a delayed start whose time cannot be told is enforced (`Clock::phase`): blocked, begun.
@@ -99,7 +97,7 @@ function runningNow(item, running) {
     const left = running.stop_remaining;
     lock = left === null ? t("sessions.now.delay", { delay: durationText(`${running.stop_delay}s`, "short") }) : left === 0 ? t("sessions.now.unlocked") : t("sessions.now.in", { left: running.stop_remaining_words });
   } else if (running.remaining_words) lock = t("sessions.now.timeLeft", { left: running.remaining_words });
-  else if (running.lock_condition) lock = now(running.locked ? "locked" : "unlocked", running.lock_change_words);
+  else if (running.lock_condition) lock = ruleNow(running.lock_condition, running.locked ? "locked" : "unlocked", running.lock_change_words);
   else lock = plainLock(running.until_restart ? "until_restart" : running.lock_text ? "text" : running.password ? "password" : "none");
   // Nothing is blocked while the condition is off, so there is nothing for an allowance to allow.
   if (!running.enforcing) unless = t("sessions.now.inactiveCondition");
@@ -113,10 +111,18 @@ function stoppedNow(item) {
   return { when: condition ? stoppedCondition(condition) : t("sessions.now.always"), unless: stoppedAllowance(item.allowance), lock: stoppedLock(item.lock) };
 }
 
+// A rule's state now (`state`: active / inactive, locked / unlocked): for how long when that is known,
+// otherwise what has it so: a device, a webhook, a combination.
+function ruleNow(rule, state, change) {
+  if (change) return t(`sessions.now.${state}For`, { change });
+  const by = { flash_drive: "Device", webhook: "Webhook", combined: "Combination" }[rule.type];
+  return t(`sessions.now.${state}${by ? `By${by}` : ""}`);
+}
+
 function stoppedCondition(condition) {
   if (condition.type === "flash_drive") return t("sessions.now.activeByDevice");
   if (condition.type === "webhook") return t("sessions.now.activeByWebhook");
-  if (condition.type === "combined") return t(condition.mode === "all" ? "sessions.now.whenAll" : "sessions.now.whenAny");
+  if (condition.type === "combined") return t("sessions.now.activeByCombination");
   return weekText(condition.days);
 }
 
@@ -136,8 +142,8 @@ function stoppedLock(lock) {
   if (lock.method === "condition") {
     const condition = overview.conditions.find((c) => c.id === lock.condition);
     if (!condition) return null;
-    const key = { drive: "whileUnplugged", true: "whileTrue", during: "during" }[wordingOf(condition)];
-    return tn(`sessions.now.${key}`, { condition: ref(condition.name, editHref("conditions", condition.id)) });
+    // "During" a schedule's times; "by" what has the others on.
+    return tn(`sessions.now.${condition.type === "schedule" ? "during" : "by"}`, { condition: ref(condition.name, editHref("conditions", condition.id)) });
   }
   return plainLock(lock.method);
 }
