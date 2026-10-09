@@ -217,7 +217,7 @@ fn stopped_lines(session: &Definition, conditions: &[Condition], zone: &Zone, at
         Lock::Timed { kind: TimedKind::Until, value } => Line::new(now("until", &[("date", &short_date(value, zone, at))])),
         Lock::UntilRestart => Line::new(now("restart", &[])),
         Lock::Delay { delay } => Line::new(now("delay", &[("delay", &short(delay))])),
-        Lock::Text { .. } => Line::new(now("text", &[])),
+        Lock::Text { .. } | Lock::RandomText { .. } => Line::new(now("text", &[])),
         Lock::Password { .. } => Line::new(now("password", &[])),
         // "During" a schedule's times; "by" what has the others on.
         Lock::Condition { condition } => match find(condition) {

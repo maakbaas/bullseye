@@ -16,7 +16,7 @@ You set up three kinds of things, each on its own tab:
 
 Two more ideas complete the picture:
 
-- **Lock**: how hard a running session is to stop. None, for a while, until a date and time, until Windows restarts, while a condition is active (a USB stick can be the key: locked while it is unplugged), after a delay you have to wait out, after typing a text you cannot paste, or with a password someone else keeps.
+- **Lock**: how hard a running session is to stop. None, for a while, until a date and time, until Windows restarts, while a condition is active (a USB stick can be the key: locked while it is unplugged), after a delay you have to wait out, after typing a text you cannot paste (your own, or a random one drawn at the start), or with a password someone else keeps.
 - **Allowance**: a way for a session to go quiet for a while. A time budget (say 30 minutes a day, for the whole session or per site), a Pomodoro cycle (50 minutes blocked, 10 minutes free) or a delayed start (nothing is enforced for the first hour, or until a date and time, and everything is from then on).
 
 A target acts by what its lists hold: pages of blocked sites are closed wherever they open (tabs, split views, app windows), programs by name, Store apps and windows by title (closed or minimized). Obsidian's web viewer can be closed too.

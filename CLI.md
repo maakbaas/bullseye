@@ -44,7 +44,7 @@ It sends the same requests to the Bullseye service as the window, so the service
 | `bullseye import <file> [--force]` | **Import** in Settings |
 | `bullseye drives [--json]` | the flash drives the **Flash drive** type of a condition offers, by name and serial number |
 | `bullseye unlock [--abort] [--password <pw>]` | **Request unlock**, **Unlock** and **Keep locked** / **Lock again** in Settings; `--password` unlocks at once with the password of the other way to unlock |
-| `bullseye unlock-way [--condition <condition> \| --password <pw> \| --text <text> \| --none]` | **Another way to unlock** in Settings: show it, set it or remove it |
+| `bullseye unlock-way [--condition <condition> \| --password <pw> \| --text <text> \| --random <n> \| --none]` | **Another way to unlock** in Settings: show it, set it or remove it |
 | `bullseye unlock-delay [<time>]` | **Unlock delay** in Settings: show it, or set it |
 | `bullseye help` | |
 | `bullseye version` | |
@@ -67,6 +67,7 @@ Exit codes: `0` done, `1` failed, refused or cancelled (the reason is printed), 
 | `--lock-condition <condition>` | Lock: while this condition is active. A schedule locks at its times; a flash drive locks while it is not connected. | |
 | `--lock-password <pw>` | Lock: with this password. Only a hash of it is kept. | |
 | `--lock-delay <time>` | Lock: stopping is asked for with `stop`, counts down this long (at most 24 hours) and can be aborted with `stop --abort`; when it is over, `stop` stops the session. Like unlocking. | |
+| `--lock-random <n>` | Lock: until a random text of `n` letters and digits (1 to 200), drawn when the session starts, is typed in, as with `--lock-text`. | |
 | `--lock-text <text>` | Lock: until this text is typed in exactly. The window shows it above an input that cannot be pasted into; that is the only place to stop such a session (or by unlocking). The text is no secret: anyone who can see the session sees it. | |
 | `--no-lock` | Not locked. | yes |
 | `--name <name>` | (`edit` only) A new name. | |
@@ -241,7 +242,7 @@ bullseye unlock-delay 0
 
 ### The other way to unlock
 
-Besides the delay, which is always there, one other way to unlock can be set (`unlock-way`), chosen like a session's lock but only a condition, a custom text or a password: unlocking is ready when the delay is over **or** this way lets go, one is enough. `--condition <condition>` is locked while the condition is active (as a session's lock) and open when it is not, `--text <text>` opens when the text is typed in (in the window: a terminal cannot refuse a paste) and `--password <pw>` with the password (`unlock --password`, asked for when not given; only a salted hash is kept). `--none` removes it. Setting one makes unlocking easier, so it needs unlocking to be ready, or no session to be locked; removing it is always free.
+Besides the delay, which is always there, one other way to unlock can be set (`unlock-way`), chosen like a session's lock but only a condition, a custom text, a random text or a password: unlocking is ready when the delay is over **or** this way lets go, one is enough. `--condition <condition>` is locked while the condition is active (as a session's lock) and open when it is not, `--text <text>` opens when the text is typed in (in the window: a terminal cannot refuse a paste), `--random <n>` likewise with a random text of `n` letters and digits, drawn when it is set and again after each unlock, and `--password <pw>` with the password (`unlock --password`, asked for when not given; only a salted hash is kept). `--none` removes it. Setting one makes unlocking easier, so it needs unlocking to be ready, or no session to be locked; removing it is always free.
 
 ```
 bullseye unlock-way

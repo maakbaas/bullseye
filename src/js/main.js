@@ -60,9 +60,9 @@ function renderSettings() {
   $("abort-unlock").hidden = free || !requested;
   // A text or password that unlocks at once, when the countdown has not.
   const way = overview.unlock.way;
-  const answer = way && (way.method === "text" || way.method === "password");
+  const answer = way && ["text", "random_text", "password"].includes(way.method);
   $("unlock-answer").hidden = !locked || ready || !answer;
-  const answerLabel = answer ? t("settings.way.answer" + (way.method === "text" ? "Text" : "Password")) : "";
+  const answerLabel = answer ? t("settings.way.answer" + (way.method === "password" ? "Password" : "Text")) : "";
   if (answer && $("unlock-answer").textContent.trim() !== answerLabel) $("unlock-answer").replaceChildren(answerLabel, carbonIcon("unlocked", "icon"));
   renderWay();
   const abortLabel = t(remaining === 0 ? "common.lockAgain" : "common.keepLocked");
@@ -105,7 +105,7 @@ $("unlock-answer").addEventListener("click", async () => {
   if (!way) return;
   let password = null;
   let text = null;
-  if (way.method === "text") {
+  if (way.method === "text" || way.method === "random_text") {
     text = await askText(t("settings.way.answerHeading"), way.text, t("settings.unlock"));
     if (text === null) return;
   } else {
@@ -133,7 +133,7 @@ $("unlock-answer").addEventListener("click", async () => {
 // ---- The other way to unlock (`unlock::Way`): a lock method besides the delay, which is always there.
 
 // Only these of the lock methods (the delay is always there), with the same labels as on a session.
-const WAYS = ["none", "condition", "text", "password"];
+const WAYS = ["none", "condition", "text", "random_text", "password"];
 const wayMethod = el("cds-dropdown", { autoalign: true, "title-text": t("settings.way.title"), class: "way-method" });
 for (const key of WAYS) wayMethod.append(el("cds-dropdown-item", { value: key }, LOCKS[key].label));
 $("way-controls").append(wayMethod);

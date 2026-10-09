@@ -66,6 +66,8 @@ Sessions:
       --lock-text <text>            Locked until the text is typed in exactly: the window shows it
                                     above an input that cannot be pasted into, and that is the only
                                     place to stop such a session (or by unlocking).
+      --lock-random <n>             Locked until a random text of n letters and digits (1 to 200),
+                                    drawn when it starts, is typed in, as --lock-text.
       --no-lock                     Not locked: it can be stopped at any time (the default).
   edit <session> [options]          Change a session: the options of new, which replace what they
                                     name (--targets replaces all its targets), and --name <name>. A
@@ -191,7 +193,9 @@ Other:
                                     by typing the text.
   unlock-way [options]              Show the other way to unlock besides the delay, or set it:
                                     --condition <condition> (locked while it is active, open when it
-                                    is not), --password <pw>, --text <text> or --none to remove it.
+                                    is not), --password <pw>, --text <text>, --random <n> (a random
+                                    text of n letters and digits, drawn again after each unlock) or
+                                    --none to remove it.
                                     Setting one needs unlocking to be ready, or no session to be
                                     locked; removing it is free.
   unlock-delay [<time>]             Show how long unlocking takes, or set it: 0 to 24 hours, e.g.
@@ -515,7 +519,7 @@ pub(super) fn parse(args: &[String]) -> Result<Command, String> {
 }
 
 /// `--lock-duration <duration>`, `--lock-until <date time>`, `--lock-until-restart`,
-/// `--lock-condition <condition>`, `--lock-password <pw>`, `--lock-text <text>` or `--no-lock`, at most one. A lock
+/// `--lock-condition <condition>`, `--lock-password <pw>`, `--lock-text <text>`, `--lock-random <n>` or `--no-lock`, at most one. A lock
 /// condition by name or id, looked up when the command runs (`resolve_lock`).
 pub(super) fn parse_lock(options: &mut Options) -> Result<Option<Lock>, String> {
     let duration = options.value("--lock-duration")?.map(Lock::timed_for);
@@ -524,14 +528,16 @@ pub(super) fn parse_lock(options: &mut Options) -> Result<Option<Lock>, String> 
     let conditional = options.value("--lock-condition")?.map(|condition| Lock::Condition { condition });
     let password = options.value("--lock-password")?.map(|password| Lock::Password { password: Some(password), hash: None });
     let typed = options.value("--lock-text")?.map(|text| Lock::Text { text });
+    let random = options.value("--lock-random")?.map(|length| random_text(&length)).transpose()?;
     let delayed = options.value("--lock-delay")?.map(|delay| Lock::Delay { delay });
     let unlocked = options.flag("--no-lock").then_some(Lock::None);
-    let mut given: Vec<Lock> = [duration, until, restart, conditional, password, typed, delayed, unlocked].into_iter().flatten().collect();
+    let mut given: Vec<Lock> =
+        [duration, until, restart, conditional, password, typed, random, delayed, unlocked].into_iter().flatten().collect();
     let lock = match given.len() {
         0 => return Ok(None),
         1 => given.remove(0),
         _ => return Err(
-            "Give one of --lock-duration, --lock-until, --lock-until-restart, --lock-condition, --lock-password, --lock-text, --lock-delay and --no-lock"
+            "Give one of --lock-duration, --lock-until, --lock-until-restart, --lock-condition, --lock-password, --lock-text, --lock-random, --lock-delay and --no-lock"
                 .into(),
         ),
     };
@@ -540,13 +546,14 @@ pub(super) fn parse_lock(options: &mut Options) -> Result<Option<Lock>, String> 
     Ok(Some(lock))
 }
 
-/// `--condition <condition>`, `--password <pw>`, `--text <text>` or `--none` of `unlock-way`: the other way
+/// `--condition <condition>`, `--password <pw>`, `--text <text>`, `--random <n>` or `--none` of `unlock-way`: the other way
 /// to unlock as a lock method, at most one; nothing given is showing it.
 pub(super) fn parse_way(options: &mut Options) -> Result<Option<Option<Lock>>, String> {
     let mut given: Vec<Option<Lock>> = Vec::new();
     given.extend(options.value("--condition")?.map(|condition| Some(Lock::Condition { condition })));
     given.extend(options.value("--password")?.map(|password| Some(Lock::Password { password: Some(password), hash: None })));
     given.extend(options.value("--text")?.map(|text| Some(Lock::Text { text })));
+    given.extend(options.value("--random")?.map(|length| random_text(&length)).transpose()?.map(Some));
     given.extend(options.flag("--none").then_some(None));
     match given.len() {
         0 => Ok(None),
@@ -557,8 +564,14 @@ pub(super) fn parse_way(options: &mut Options) -> Result<Option<Option<Lock>>, S
             }
             Ok(Some(way))
         }
-        _ => Err("Give one of --condition, --password, --text and --none".into()),
+        _ => Err("Give one of --condition, --password, --text, --random and --none".into()),
     }
+}
+
+/// A random text lock of `length` characters, as typed (its text is drawn by the service).
+fn random_text(length: &str) -> Result<Lock, String> {
+    let length = length.trim().parse().map_err(|_| format!("The number of characters is a whole number, not “{length}”"))?;
+    Ok(Lock::RandomText { length, text: None })
 }
 
 /// The options of `new` and `edit`. Only `edit` takes `--name`.

@@ -27,6 +27,7 @@ pub(super) fn describe_unlock_way(status: &UnlockStatus) -> String {
     match &status.way {
         None => "Only the delay unlocks.".into(),
         Some(Lock::Text { .. }) => "Unlocking is also possible by typing a text in, in the window.".into(),
+        Some(Lock::RandomText { .. }) => "Unlocking is also possible by typing a random text in, in the window.".into(),
         Some(Lock::Password { .. }) => "Unlocking is also possible at once with a password (`unlock --password`).".into(),
         Some(Lock::Condition { .. }) => {
             when("Unlocking is open: its condition is not active.", "Unlocking is locked while its condition is active")
@@ -111,6 +112,7 @@ pub(super) fn lock_question(overview: &Overview, session: &Definition) -> Option
             ask("delay", "confirmHeading", "confirmBody", &[("delay", &delay)])
         }
         Lock::Text { .. } => ask("text", "confirmHeading", "confirmBody", &[]),
+        Lock::RandomText { length, .. } => ask("random_text", "confirmHeading", "confirmBody", &[("n", &length.to_string())]),
         Lock::Password { .. } => ask("password", "confirmHeading", "confirmBody", &[]),
     }
 }
@@ -251,6 +253,7 @@ pub(super) fn describe_session(overview: &Overview, session: &Definition) -> Str
         Lock::Condition { .. } => "condition",
         Lock::Delay { .. } => "delay",
         Lock::Text { .. } => "text",
+        Lock::RandomText { .. } => "random_text",
         Lock::Password { .. } => "password",
     };
     let mut text = field("Name", &session.name) + &field("Id", &session.id);

@@ -10,7 +10,7 @@ use crate::definitions::{Condition, Definition, Definitions, Library, Resolved, 
 use crate::duration;
 use crate::lists::Entries;
 use crate::localtime::Zone;
-use crate::lock::{Lock, TimedKind};
+use crate::lock::{self, Lock, TimedKind};
 use crate::proto::{Check, FreeEntries, Overview, Policy, Request, Response, UnlockStatus};
 use crate::session::{Part, Sessions, StartLock};
 use crate::sync::LockExt;
@@ -439,6 +439,8 @@ fn start_lock(resolved: &Resolved) -> Result<StartLock, String> {
         Lock::UntilRestart => StartLock::UntilRestart,
         Lock::Delay { .. } => StartLock::Delay(lock.delay()?.ok_or("No delay for the lock")?),
         Lock::Text { text } => StartLock::Text(text.clone()),
+        // Drawn now, so it cannot be learnt before.
+        Lock::RandomText { length, .. } => StartLock::Text(lock::random_text(*length)?),
         Lock::Password { .. } => StartLock::Password(lock.password_hash().ok_or("Set a password for the password lock")?.to_string()),
     })
 }
@@ -482,6 +484,8 @@ fn set_unlock_way(context: &Context, lock: Option<Lock>) -> Result<(), String> {
             (lock, Some(opening))
         }
         Lock::Text { .. } => (lock, None),
+        // Its text is drawn now, and again after each unlock (`unlock_with`).
+        Lock::RandomText { length, .. } => (Lock::RandomText { length, text: Some(lock::random_text(length)?) }, None),
         // Only its hash is kept; a password lock without a new password keeps the one it has.
         Lock::Password { password, hash } => {
             let hash = match (password, hash) {
@@ -494,7 +498,9 @@ fn set_unlock_way(context: &Context, lock: Option<Lock>) -> Result<(), String> {
             };
             (Lock::Password { password: None, hash: Some(hash) }, None)
         }
-        _ => return Err("The way to unlock can be a condition, a custom text or a password; the delay is always there".into()),
+        _ => {
+            return Err("The way to unlock can be a condition, a custom text, a random text or a password; the delay is always there".into())
+        }
     };
     context.unlock.set_way(Some(unlock::Way { lock, opening }), now, idle)
 }
@@ -528,6 +534,16 @@ fn unlock_with(context: &Context, password: Option<&str>, text: Option<&str>) ->
         return Err("Unlocking is not ready yet: ask for it and wait for the countdown, or use the other way to unlock".into());
     }
     context.sessions.reset();
+    // A random text is used up: the next unlock has a new one. (Unlocked either way: if none can be
+    // drawn or kept, the old one stays.)
+    if let Some(unlock::Way { lock: Lock::RandomText { length, .. }, opening }) = context.unlock.way() {
+        let redrawn = lock::random_text(length).and_then(|text| {
+            context.unlock.set_way(Some(unlock::Way { lock: Lock::RandomText { length, text: Some(text) }, opening }), now, true)
+        });
+        if let Err(e) = redrawn {
+            eprintln!("unlock: the random text stays as it was: {e}");
+        }
+    }
     context.unlock.abort()
 }
 
@@ -1234,6 +1250,38 @@ mod tests {
         // Removing is free while a session is locked.
         assert_eq!(run(&idle, timed("b", &["b.com"], "1h")), Response::Done);
         assert_eq!(handle(&idle, 0, Request::SetUnlockWay { way: None }).0, Response::Done);
+    }
+
+    #[test]
+    fn a_random_text_is_drawn_for_a_session_and_for_the_way_to_unlock() {
+        let context = context("random-text");
+        let ask = |request: Request| handle(&context, 0, request).0;
+        let random = |length| Lock::RandomText { length, text: None };
+        // A session: drawn when it starts, then stopped by it as by a custom text.
+        assert_eq!(run(&context, definition("a", &["a.com"]).lock(random(12))), Response::Done);
+        let drawn = overview(&context).running[0].lock_text.clone().unwrap();
+        assert!(drawn.len() == 12 && drawn.chars().all(|c| c.is_ascii_alphanumeric()), "{drawn}");
+        assert!(failed(ask(Request::Stop { id: "a".into(), password: None, text: Some("wrong".into()) })));
+        assert_eq!(ask(Request::Stop { id: "a".into(), password: None, text: Some(drawn.clone()) }), Response::Done);
+        // A length out of range is refused.
+        assert!(failed(save(&context, definition("b", &["b.com"]).lock(random(0)))));
+
+        // The way to unlock: drawn when it is set, and used up by an unlock.
+        assert_eq!(ask(Request::SetUnlockDelay { delay: "1h".into() }), Response::Done);
+        assert_eq!(ask(Request::SetUnlockWay { way: Some(random(8)) }), Response::Done);
+        let text = || match overview(&context).unlock.way {
+            Some(Lock::RandomText { length: 8, text: Some(text) }) => text,
+            other => panic!("{other:?}"),
+        };
+        let first = text();
+        assert_eq!(first.len(), 8);
+        assert_eq!(run(&context, timed("c", &["c.com"], "1h")), Response::Done);
+        assert!(failed(ask(Request::UnlockWith { password: None, text: Some("x".into()) })));
+        assert_eq!(ask(Request::UnlockWith { password: None, text: Some(first.clone()) }), Response::Done);
+        assert!(!context.sessions.is_running());
+        assert_ne!(text(), first, "a new one for the next unlock");
+        // Not a way to unlock: a delay, or a lock of no answer.
+        assert!(failed(ask(Request::SetUnlockWay { way: Some(Lock::UntilRestart) })));
     }
 
     #[test]

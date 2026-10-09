@@ -113,7 +113,9 @@ impl Way {
     pub fn answered(&self, password: Option<&str>, text: Option<&str>) -> bool {
         let same = |a: &str, b: &str| a.replace("\r\n", "\n") == b.replace("\r\n", "\n");
         match &self.lock {
-            Lock::Text { text: expected } => text.is_some_and(|given| same(expected, given)),
+            Lock::Text { text: expected } | Lock::RandomText { text: Some(expected), .. } => {
+                text.is_some_and(|given| same(expected, given))
+            }
             Lock::Password { hash: Some(hash), .. } => password.is_some_and(|given| check_hash(given, hash)),
             _ => false,
         }

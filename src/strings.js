@@ -313,6 +313,16 @@ window.STRINGS = {
       confirmHeading: "Start {name} locked by a custom text?",
       confirmBody: "Stopped only by typing its text here, or by unlocking in Settings",
     },
+    random_text: {
+      label: "Random text",
+      field: "Number of characters",
+      helper: "Letters and digits, new each time it locks. They have to be typed over, no pasting",
+      missing: "Enter a number from 1 to 200",
+      // {n}: the number of characters.
+      describe: { one: "Locks until {n} random character is typed", other: "Locks until {n} random characters are typed" },
+      confirmHeading: "Start {name} locked by a random text?",
+      confirmBody: { one: "Stopped only by typing over {n} random character, or by unlocking in Settings", other: "Stopped only by typing over {n} random characters, or by unlocking in Settings" },
+    },
     password: {
       label: "Password",
       field: "Password",

@@ -14,6 +14,8 @@ use crate::duration;
 
 /// The longest text a text lock can ask to be typed: it is shown, and typed, by hand.
 const MAX_TEXT: usize = 1000;
+/// The longest random text, in characters.
+pub const MAX_RANDOM: u32 = 200;
 
 /// The longest wait of a delay lock, as long as the unlock delay can be.
 const MAX_DELAY: Duration = Duration::from_secs(24 * 3600);
@@ -55,6 +57,15 @@ pub enum Lock {
     /// by typing `text` exactly as it is shown (the window shows it above an input that cannot be
     /// pasted into, and the service compares the two). It is no secret, so it is kept as it is.
     Text { text: String },
+    /// Locked until a random text is typed in: `length` characters of a-z and 0-9 (`random_text`),
+    /// drawn when the session starts and then held like a custom text (`Text`), so it cannot be
+    /// learnt beforehand. As the other way to unlock (`unlock.rs`), `text` is the one drawn for it,
+    /// drawn again after each unlock; a session's definition has none.
+    RandomText {
+        length: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    },
     /// Locked with a password of its own: it runs until stopped with that password (or the unlock
     /// password). Meant for someone else to set, so the user does not know it. Only a salted hash
     /// of it is kept (`unlock::new_hash`); neither is ever sent back to a client (`redacted`).
@@ -153,6 +164,11 @@ impl Lock {
         self.duration()?;
         self.delay()?;
         self.until()?;
+        if let Lock::RandomText { length, .. } = self {
+            if !(1..=MAX_RANDOM).contains(length) {
+                return Err(format!("A random text has 1 to {MAX_RANDOM} characters"));
+            }
+        }
         if let Lock::Text { text } = self {
             if text.trim().is_empty() {
                 return Err("Give the text that has to be typed to stop the session".into());
@@ -165,9 +181,38 @@ impl Lock {
     }
 }
 
+/// `length` random characters of a-z and 0-9, each as likely as the others.
+pub fn random_text(length: u32) -> Result<String, String> {
+    const CHARACTERS: &[u8; 36] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    let mut text = String::new();
+    while text.len() < length as usize {
+        let mut bytes = [0u8; 64];
+        getrandom::fill(&mut bytes).map_err(|e| format!("cannot draw a random text: {e}"))?;
+        // 252 is 7 × 36: a byte at or above it would favour the first characters.
+        for byte in bytes.into_iter().filter(|&b| b < 252).take(length as usize - text.len()) {
+            text.push(CHARACTERS[usize::from(byte % 36)] as char);
+        }
+    }
+    Ok(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_random_text_is_drawn_from_letters_and_digits() {
+        let drawn = random_text(MAX_RANDOM).unwrap();
+        assert_eq!(drawn.len(), MAX_RANDOM as usize);
+        assert!(drawn.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()), "{drawn}");
+        assert_ne!(random_text(30).unwrap(), random_text(30).unwrap());
+        assert_eq!(random_text(0).unwrap(), "");
+        let random = |length| Lock::RandomText { length, text: None };
+        assert!(random(1).check().is_ok() && random(MAX_RANDOM).check().is_ok());
+        assert!(random(0).check().is_err() && random(MAX_RANDOM + 1).check().is_err());
+        // Kept as a method of its own, the text only when there is one.
+        assert_eq!(serde_json::to_value(random(12)).unwrap(), serde_json::json!({ "method": "random_text", "length": 12 }));
+    }
 
     #[test]
     fn a_lock_says_how_long() {

@@ -145,6 +145,33 @@ const LOCKS = {
       action: t("locks.confirmAction", { name: quoted(session.name) }),
     }),
   },
+  random_text: {
+    label: t("locks.random_text.label"),
+    // A number of characters: the service draws the text itself when the session starts (or, as the
+    // other way to unlock, when it is set and after each unlock), so it cannot be learnt before.
+    // Digits only, as a duration's number (`duration.js`).
+    form: (session) => {
+      const count = el("cds-text-input", { label: t("locks.random_text.field"), "helper-text": t("locks.random_text.helper"), inputmode: "numeric" });
+      count.value = String(settingsOf(session, "random_text").length || 30);
+      count.addEventListener("input", () => {
+        const digits = String(count.value).replace(/\D/g, "").slice(0, 3);
+        if (digits !== count.value) count.value = digits;
+      });
+      return {
+        fields: [count],
+        read: async () => {
+          const length = Number(count.value);
+          return invalid(count, length >= 1 && length <= 200 ? null : t("locks.random_text.missing")) ? null : { method: "random_text", length };
+        },
+      };
+    },
+    describe: (lock) => t("locks.random_text.describe", { n: lock.length }),
+    confirm: async (session) => ({
+      heading: t("locks.random_text.confirmHeading", { name: quoted(session.name) }),
+      body: t("locks.random_text.confirmBody", { name: quoted(session.name), n: session.lock.length }),
+      action: t("locks.confirmAction", { name: quoted(session.name) }),
+    }),
+  },
   password: {
     label: t("locks.password.label"),
     // Sent once; the service keeps only a salted hash and never sends either back, so a session

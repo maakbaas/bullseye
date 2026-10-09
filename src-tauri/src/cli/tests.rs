@@ -441,6 +441,7 @@ fn the_way_to_unlock_in_words() {
     assert_eq!(with(condition(), true, None), "Unlocking is open: its condition is not active.");
     assert_eq!(with(condition(), false, Some("2 hours")), "Unlocking is locked while its condition is active (in 2 hours)");
     assert_eq!(with(Lock::timed_for("1h"), false, None), "Only the delay unlocks.");
+    assert!(with(Lock::RandomText { length: 8, text: Some("a1b2c3d4".into()) }, false, None).contains("random text"));
 }
 
 /// A running session as the status gives it, always active and not locked.
@@ -507,6 +508,7 @@ fn a_session_with_parts_gone_or_unreadable_is_still_shown() {
     assert_eq!(lock_of(&overview, Lock::Condition { condition: "gone".into() }), "Lock:        Condition");
     assert_eq!(lock_of(&overview, Lock::Password { password: None, hash: None }), "Lock:        Password");
     assert_eq!(lock_of(&overview, Lock::Text { text: "x".into() }), "Lock:        Custom text");
+    assert_eq!(lock_of(&overview, Lock::RandomText { length: 5, text: None }), "Lock:        Random text");
     assert_eq!(lock_of(&overview, Lock::UntilRestart), "Lock:        Until restart");
     let shown = describe_session(&overview, &b);
     assert!(shown.contains("Target:      (deleted)\nCondition:   (deleted)\nAllowance:   No allowance\nLock:        No lock\n"), "{shown}");
@@ -711,6 +713,9 @@ fn start_can_set_the_lock_as_the_tile_does() {
     assert!(ask(&overview, Lock::UntilRestart).unwrap().0.contains("until Windows restarts"));
     assert!(ask(&overview, Lock::Delay { delay: "5m".into() }).unwrap().1.starts_with("Stopping takes 5 minutes"));
     assert!(ask(&overview, Lock::Text { text: "x".into() }).unwrap().0.contains("custom text"));
+    let random = |length| ask(&overview, Lock::RandomText { length, text: None }).unwrap();
+    assert!(random(12).0.contains("random text") && random(12).1.contains("12 random characters"));
+    assert!(random(1).1.contains("1 random character,"));
     assert!(ask(&overview, Lock::Password { password: None, hash: None }).unwrap().0.contains("password"));
     assert_eq!(ask(&overview, Lock::None), None);
     assert_eq!(ask(&overview, Lock::Condition { condition: "gone".into() }), None);
@@ -852,6 +857,15 @@ fn the_other_commands() {
         Ok(Command::Start { session: "Work".into(), lock: Some(Lock::Text { text: "I will not scroll".into() }), force: true })
     );
     assert!(parse(&args(&["start", "Work", "--lock-text", "x", "--lock-password", "pw"])).is_err());
+    assert_eq!(
+        parse(&args(&["start", "Work", "--lock-random", "12"])),
+        Ok(Command::Start { session: "Work".into(), lock: Some(Lock::RandomText { length: 12, text: None }), force: false })
+    );
+    assert_eq!(
+        parse(&args(&["start", "Work", "--lock-random", "twelve"])),
+        Err("The number of characters is a whole number, not “twelve”".into())
+    );
+    assert_eq!(parse(&args(&["start", "Work", "--lock-random", "0"])), Err("A random text has 1 to 200 characters".into()));
     // A flash drive is named here and looked up among the connected ones when the command runs.
     assert_eq!(
         parse(&args(&["condition", "new", "Key", "--drive", "Kingston"])),
@@ -878,6 +892,11 @@ fn the_other_commands() {
         Ok(Command::UnlockWay { way: Some(Some(Lock::Text { text: "let me out".into() })) })
     );
     assert!(parse(&args(&["unlock-way", "--text", "x", "--password", "y"])).is_err());
+    assert_eq!(
+        parse(&args(&["unlock-way", "--random", "8"])),
+        Ok(Command::UnlockWay { way: Some(Some(Lock::RandomText { length: 8, text: None })) })
+    );
+    assert!(parse(&args(&["unlock-way", "--random", "x"])).is_err());
     assert!(parse(&args(&["unlock-way", "--duration", "1h"])).is_err());
     assert_eq!(parse(&args(&["unlock", "--abort"])), Ok(Command::Unlock { abort: true, password: None }));
     assert_eq!(parse(&args(&["unlock-delay"])), Ok(Command::UnlockDelay { delay: None }));
