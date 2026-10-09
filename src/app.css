@@ -189,6 +189,15 @@ cds-link[inline] { display: inline-flex; }
    lines start at one place on every row; a row without one, Targets, keeps the whole width). */
 .tile-rows .row-now { color: var(--cds-text-helper); padding-inline-start: var(--cds-spacing-05); }
 .tile-rows .row-now:empty { display: none; }
+/* A link in it (a lock's condition) in its size, through the link's own type tokens. */
+.tile-rows .row-now cds-link {
+  --cds-body-compact-01-font-size: var(--cds-helper-text-01-font-size, 0.75rem);
+  --cds-body-compact-01-line-height: var(--cds-helper-text-01-line-height, 1.33333);
+  --cds-body-compact-01-letter-spacing: var(--cds-helper-text-01-letter-spacing, 0.32px);
+  --cds-body-01-font-size: var(--cds-helper-text-01-font-size, 0.75rem);
+  --cds-body-01-line-height: var(--cds-helper-text-01-line-height, 1.33333);
+  --cds-body-01-letter-spacing: var(--cds-helper-text-01-letter-spacing, 0.32px);
+}
 @media (min-width: 42rem) {
   .tile-rows .row-text:has(> .row-now:not(:empty)) { grid-template-columns: 16rem minmax(0, 1fr); column-gap: var(--cds-spacing-05); }
   .tile-rows .row-text > .row-now { grid-row: 1; grid-column: 2; line-height: 1.25rem; padding-inline-start: 0; }
