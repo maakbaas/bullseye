@@ -157,16 +157,18 @@ const LOCKS = {
       // How long that is, as a text of that length (drawn here, only to be looked at).
       const example = el("cds-textarea", { label: t("locks.random_text.example"), readonly: true, rows: 4 });
       const show = () => {
-        const length = Math.min(Number(count.value) || 0, 1000);
+        const length = Number(count.value) || 0;
         example.value = Array.from(crypto.getRandomValues(new Uint8Array(length)), (byte) => CHARACTERS[byte % 36]).join("");
       };
       count.addEventListener("input", show);
       show();
       return {
         fields: [count, example],
+        // What the service says of the length (1 to its most), on the field.
         read: async () => {
-          const length = Number(count.value);
-          return invalid(count, length >= 1 && length <= 1000 ? null : t("locks.random_text.missing")) ? null : { method: "random_text", length };
+          const lock = { method: "random_text", length: Number(count.value) || 0 };
+          const why = await invoke("check_stricter", { check: { what: "lock", id: session.id || "", lock } }).then(() => null, String);
+          return invalid(count, why) ? null : lock;
         },
       };
     },

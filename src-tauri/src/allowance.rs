@@ -173,38 +173,46 @@ impl Terms {
     /// The terms, checked: durations that can be read and are not zero, and a cycle or a reset on the
     /// clock that fits a day evenly. A budget that does not reset every so long has no `every`.
     pub fn checked(self) -> Result<Terms, String> {
+        self.checked_at().map_err(|problem| problem.why)
+    }
+
+    /// As `checked`, with the field of the allowance's form the problem is in (`Problem`).
+    pub fn checked_at(self) -> Result<Terms, Problem> {
+        let at = |field: &'static str| move |why: String| Problem { field: Some(field), why };
+        let whole = |why: String| Problem { field: None, why };
         match &self {
             Terms::Delayed { kind: DelayKind::After, value } => {
-                seconds(value, "how long to wait before enforcing")?;
+                seconds(value, "how long to wait before enforcing").map_err(at("value"))?;
             }
             Terms::Delayed { kind: DelayKind::From, value } => {
-                DateTime::parse(value)?;
+                DateTime::parse(value).map_err(at("value"))?;
             }
             Terms::Budget { allowed, scope, reset, every, anchor } => {
-                seconds(allowed, "how long is allowed")?;
-                let (every, anchor) = checked_reset(*reset, every, *anchor, "the time has to be given back")?;
+                seconds(allowed, "how long is allowed").map_err(at("allowed"))?;
+                let (every, anchor) = checked_reset(*reset, every, *anchor, "the time has to be given back").map_err(at("every"))?;
                 return Ok(Terms::Budget { allowed: allowed.clone(), scope: *scope, reset: *reset, every, anchor });
             }
             Terms::Breaks { count, length, reset, every, anchor } => {
                 if !(1..=MAX_BREAKS).contains(count) {
-                    return Err(format!("Enter how many breaks, 1 to {MAX_BREAKS}"));
+                    return Err(at("count")(format!("Enter how many breaks, 1 to {MAX_BREAKS}")));
                 }
-                if seconds(length, "how long a break is")? > DAY {
-                    return Err("A break can be at most 24 hours".into());
+                if seconds(length, "how long a break is").map_err(at("length"))? > DAY {
+                    return Err(at("length")("A break can be at most 24 hours".into()));
                 }
-                let (every, anchor) = checked_reset(*reset, every, *anchor, "the breaks have to be given back")?;
+                let (every, anchor) = checked_reset(*reset, every, *anchor, "the breaks have to be given back").map_err(at("every"))?;
                 return Ok(Terms::Breaks { count: *count, length: length.clone(), reset: *reset, every, anchor });
             }
             Terms::Pomodoro { blocked, allowed, anchor } => {
-                let cycle = seconds(blocked, "how long to block for")?.saturating_add(seconds(allowed, "how long to allow for")?);
+                let blocked = seconds(blocked, "how long to block for").map_err(at("blocked"))?;
+                let cycle = blocked.saturating_add(seconds(allowed, "how long to allow for").map_err(at("allowed"))?);
                 if cycle > DAY {
-                    return Err("A cycle, the blocked time and the allowed time together, can be at most 24 hours".into());
+                    return Err(whole("A cycle, the blocked time and the allowed time together, can be at most 24 hours".into()));
                 }
                 if *anchor == Anchor::Clock && !DAY.is_multiple_of(cycle) {
-                    return Err(format!(
+                    return Err(whole(format!(
                         "On the clock a cycle has to fit a day evenly, such as 30 minutes or 1 hour; {} does not",
                         duration::countdown(cycle)
-                    ));
+                    )));
                 }
             }
         }
@@ -350,10 +358,18 @@ pub struct Described {
     pub words: String,
 }
 
+/// Why terms cannot be saved, and the field of the allowance's form that is wrong, by its name in
+/// the terms (`allowed`, `every`, `blocked`, `count`, `length`, `value`); `None`: the terms together.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct Problem {
+    pub field: Option<&'static str>,
+    pub why: String,
+}
+
 impl Terms {
-    /// Checked, in words.
-    pub fn described(self) -> Result<Described, String> {
-        let terms = self.checked()?;
+    /// Checked, in words; or what is wrong, and where.
+    pub fn described(self) -> Result<Described, Problem> {
+        let terms = self.checked_at()?;
         Ok(Described { words: terms.describe() })
     }
 }
@@ -675,6 +691,9 @@ impl Run {
             reset_words: reset_in.map(words),
             items,
             breaks_left: self.breaks_left(),
+            // One can be taken: some are left and none is going on (and, said by the session, its
+            // condition is active).
+            break_ready: self.breaks_left().is_some_and(|left| left > 0) && !phase.is_some_and(|phase| phase.allowed),
         }
     }
 }
@@ -708,6 +727,10 @@ pub struct Status {
     /// Breaks: how many are left to take (a break going on is `open`, for `change` seconds).
     #[serde(default)]
     pub breaks_left: Option<u32>,
+    /// Breaks: whether one can be taken now (`Sessions::take_break` would take it), for the window's
+    /// Take a break.
+    #[serde(default)]
+    pub break_ready: bool,
 }
 
 #[cfg(test)]
@@ -808,6 +831,26 @@ mod tests {
     }
 
     #[test]
+    fn a_problem_says_which_field_it_is_in() {
+        let field = |terms: Terms| terms.described().unwrap_err().field;
+        assert_eq!(field(breaks(0, "10m", Reset::Never, "", Anchor::Start)), Some("count"));
+        assert_eq!(field(breaks(3, "", Reset::Never, "", Anchor::Start)), Some("length"));
+        assert_eq!(field(breaks(3, "25h", Reset::Never, "", Anchor::Start)), Some("length"));
+        assert_eq!(field(breaks(3, "10m", Reset::Every, "7h", Anchor::Clock)), Some("every"));
+        assert_eq!(field(every("", Scope::Total, "1d", Anchor::Clock)), Some("allowed"));
+        assert_eq!(field(every("30m", Scope::Total, "", Anchor::Clock)), Some("every"));
+        assert_eq!(field(pomodoro("", "10m", Anchor::Start)), Some("blocked"));
+        assert_eq!(field(pomodoro("10m", "", Anchor::Start)), Some("allowed"));
+        assert_eq!(field(Terms::Delayed { kind: DelayKind::After, value: "0m".into() }), Some("value"));
+        assert_eq!(field(Terms::Delayed { kind: DelayKind::From, value: "soon".into() }), Some("value"));
+        // The terms together: no one field is wrong.
+        assert_eq!(field(pomodoro("23h", "2h", Anchor::Start)), None);
+        assert_eq!(field(pomodoro("30m", "20m", Anchor::Clock)), None);
+        // The message is the same as `checked` gives.
+        assert_eq!(breaks(0, "10m", Reset::Never, "", Anchor::Start).checked(), Err(format!("Enter how many breaks, 1 to {MAX_BREAKS}")));
+    }
+
+    #[test]
     fn a_break_is_taken_ended_early_and_given_back() {
         let zone = Zone::fixed(0);
         let mut run = Run::new(breaks(2, "10m", Reset::Every, "1h", Anchor::Clock), at(0));
@@ -818,7 +861,8 @@ mod tests {
         run.take_break(at(60)).unwrap();
         assert_eq!(run.phase(&zone, at(120)), Some(Phase { allowed: true, change: 540 }));
         let status = run.status(&zone, at(120));
-        assert!(status.open && status.change == Some(540) && status.breaks_left == Some(1));
+        assert!(status.open && status.change == Some(540) && status.breaks_left == Some(1) && !status.break_ready);
+        assert!(run.status(&zone, at(700)).break_ready, "over, and one left");
         assert_eq!(run.take_break(at(120)), Err("A break is going on already".into()));
         // Ended early: over, and still used.
         run.end_break(at(180)).unwrap();

@@ -46,6 +46,14 @@ export function timingFields([long, when], text) {
       if (kind.value !== when) return { kind: long, value: input.text() };
       return { kind: when, value: `${datePicker.value} ${timePicker.value.trim()}`.trim() };
     },
+    // The service's reason against the value (null clears it), on the fields it belongs to; true when there is one.
+    error(why) {
+      if (kind.value === long) return input.error(why);
+      invalid(dateInput, why ? " " : null);
+      invalid(timePicker, why ? " " : null);
+      note.show(why);
+      return !!why;
+    },
     onChange(handler) {
       kind.addEventListener("cds-dropdown-selected", handler);
       input.onChange(handler);

@@ -550,7 +550,8 @@ function conditionForm() {
 // cycle, a delayed start or breaks) and what the type needs: how much time, for the session or each
 // item, and when it is given back; blocked for, allowed for, counted from where; when enforcing
 // starts; or how many breaks of how long, given back when. Under it the terms in words, written by the
-// backend (`describe_allowance`), which is also what says what cannot be saved. `fill(terms or null)`,
+// backend (`describe_allowance`), which is also what says what cannot be saved, on the field it is
+// about or under the terms. `fill(terms or null)`,
 // `read()` (the terms, or null for none), `settle()` and `error()`.
 function allowanceSection() {
   const dropdown = (label, helper, keys, path) => {
@@ -597,23 +598,43 @@ function allowanceSection() {
     if (type.value === "breaks") return { type: "breaks", count: Number(count.value) || 0, length: length.text(), reset: reset.value, ...often };
     return null;
   };
-  // The terms in words; or why they cannot be saved. Only the latest answer counts.
+  // Where the service says a problem is (`allowance::Problem`, by the terms' field names): the field's
+  // own error; one about the terms together goes under them.
+  const onField = (field) =>
+    ({
+      allowed: type.value === "pomodoro" ? cycleAllowed : allowed,
+      every,
+      blocked,
+      length,
+      value: delayed,
+      count: { error: (why) => invalid(count, why) },
+    })[field] || null;
+  const fieldsWithErrors = [allowed, cycleAllowed, every, blocked, length, delayed];
+  // The terms in words; or why they cannot be saved, and where. Only the latest answer counts.
   async function describe() {
     const mine = ++asked;
     const wanted = terms();
     let words = "";
     let wrong = null;
+    let field = null;
     if (wanted) {
       try {
         words = (await invoke("describe_allowance", { terms: wanted })).words;
       } catch (e) {
-        wrong = String(e);
+        wrong = e && e.why ? e.why : String(e);
+        field = (e && e.field) || null;
       }
     }
     if (mine !== asked) return;
     problem = wrong;
     summary.show(wrong ? null : words);
-    note.show(tried && wrong);
+    // Said once a save was tried (or after, as it is changed).
+    const shown = tried ? wrong : null;
+    for (const each of fieldsWithErrors) each.error(null);
+    invalid(count, null);
+    const place = onField(field);
+    if (place) place.error(shown);
+    note.show(place ? null : shown);
   }
   const soon = () => {
     clearTimeout(timer);
@@ -670,6 +691,8 @@ function allowanceSection() {
       show();
       tried = false;
       note.show(null);
+      for (const each of fieldsWithErrors) each.error(null);
+      invalid(count, null);
       summary.show(terms() ? t("allowance.describing") : null);
       describe();
     },

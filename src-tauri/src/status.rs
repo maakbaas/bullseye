@@ -338,6 +338,7 @@ mod tests {
             reset_words: None,
             items: vec![],
             breaks_left: None,
+            break_ready: false,
         }
     }
 

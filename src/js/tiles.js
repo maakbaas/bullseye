@@ -346,13 +346,13 @@ function renderSessionControls(parts, session) {
   }
   // A session locked with a password stops with it, one locked with a text by typing it (asked for on Stop).
   parts.toggle.disabled = busy || (running && running.locked && !asking && !running.password && !running.lock_text) || !reachable;
-  // Breaks: one to take while the condition is active and one is left; or the one going on, to end.
+  // Breaks: one to take when the service says one can be (`break_ready`), or the one going on, to end.
   const breaks = running && running.allowance && running.allowance.terms.type === "breaks" ? running.allowance : null;
   parts.pause.hidden = !breaks;
   if (breaks) {
     const label = t(breaks.open ? "sessions.endBreak" : "sessions.takeBreak");
     if (parts.pause.textContent.trim() !== label) parts.pause.replaceChildren(label, carbonIcon(breaks.open ? "play" : "cafe", "icon"));
-    parts.pause.disabled = !reachable || (!breaks.open && (!running.enforcing || !breaks.breaks_left));
+    parts.pause.disabled = !reachable || !(breaks.open || breaks.break_ready);
   }
 }
 

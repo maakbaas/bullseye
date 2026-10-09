@@ -197,7 +197,7 @@ cds-link[inline] { display: inline-flex; }
 
 /* The state tag beside the title, wrapping under it when the name is long; it sits on the letters'
    middle, which is a little below the line's. */
-.session-tile .heading { display: flex; flex-wrap: wrap; align-items: center; column-gap: var(--cds-spacing-03); min-inline-size: 0; }
+.session-tile .heading { display: flex; flex-wrap: wrap; align-items: center; column-gap: var(--cds-spacing-02); min-inline-size: 0; }
 .session-tile .heading > cds-tag { margin-block-start: var(--cds-spacing-01); }
 /* Carbon's overflow menu joins its open button with a strip over the seam (its `::after`), sized and
    placed by rules for its CSS class that the web component's host does not match, so the strip is

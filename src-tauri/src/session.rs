@@ -1057,7 +1057,11 @@ impl Sessions {
                 condition_change_words: b.condition_change(now).map(duration::left),
                 lock_change: b.lock_change(now),
                 lock_change_words: b.lock_change(now).map(duration::left),
-                allowance: b.allowance.as_ref().map(|run| run.status(&b.zone, now)),
+                // A break is only taken while the condition has the session on.
+                allowance: b.allowance.as_ref().map(|run| {
+                    let status = run.status(&b.zone, now);
+                    allowance::Status { break_ready: status.break_ready && b.in_condition(now), ..status }
+                }),
             })
             .collect();
         Status { running, clock_synced: self.clock.synced() }
@@ -1795,6 +1799,7 @@ mod tests {
         assert_eq!(list.end_break("plain"), Err("This session has no breaks".into()));
         assert_eq!(list.end_break("gone"), Err("This session is not running".into()));
         // Taken, locked as it is: nothing of it is enforced until it ends.
+        assert!(running(&list, "a").allowance.is_some_and(|status| status.break_ready));
         list.take_break("a").unwrap();
         assert!(!list.active().unwrap().blocks_page("https://a.com/") && list.active().unwrap().blocks_page("https://b.com/"));
         assert_eq!(running(&list, "a").allowance.and_then(|status| status.breaks_left), Some(0));
@@ -1810,6 +1815,17 @@ mod tests {
         // Outside its condition there is nothing to take a break from.
         resumed.clock.at_least(monday(17 * 3600));
         assert_eq!(resumed.take_break("a"), Err("A break can only be taken while the session's condition is active".into()));
+        // And the status says so, with breaks left.
+        let one = Terms::Breaks {
+            count: 1,
+            length: "5m".into(),
+            reset: allowance::Reset::Never,
+            every: String::new(),
+            anchor: allowance::Anchor::Start,
+        };
+        let parts = vec![part(sites(&["c.com"]), Actions::default())];
+        resumed.start_with("c", "C", parts, weekly("mon-fri 08:00-17:00"), Some(one), StartLock::None).unwrap();
+        assert!(running(&resumed, "c").allowance.is_some_and(|status| status.breaks_left == Some(1) && !status.break_ready));
     }
 
     fn budget(allowed: &str, scope: Scope) -> Terms {

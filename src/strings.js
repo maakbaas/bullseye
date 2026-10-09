@@ -325,7 +325,6 @@ window.STRINGS = {
       label: "Random text",
       field: "Number of characters",
       helper: "Letters and digits, new each time it locks. They have to be typed over, no pasting",
-      missing: "Enter a number from 1 to 1000",
       // A text of the chosen length, to show how long it is; not the one that is drawn.
       example: "Example",
       // {n}: the number of characters.

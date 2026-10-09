@@ -32,7 +32,8 @@ pub enum Check {
     AllowanceKind { id: String, kind: String },
     /// The session's allowance set to these terms (none: taken away).
     Allowance { id: String, allowance: Option<Terms> },
-    /// The session's lock set to this one (a timed lock or a delay, longer).
+    /// The session's lock set to this one: one that can be read (`Lock::check`), and on a locked
+    /// session a timed lock or a delay, longer. Any `id` that does not run is only read.
     Lock { id: String, lock: Lock },
     /// A target saved like this.
     Target { target: Target },

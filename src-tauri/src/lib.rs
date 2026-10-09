@@ -165,9 +165,9 @@ fn describe_schedule(week: Week) -> Result<String, String> {
 }
 
 /// A session's allowance in words, after checking them (`30 minutes in total, reset every day`), for its
-/// form and the Allowance row's question. Needs no service.
+/// form and the Allowance row's question; or what is wrong, and in which field. Needs no service.
 #[tauri::command]
-fn describe_allowance(terms: allowance::Terms) -> Result<allowance::Described, String> {
+fn describe_allowance(terms: allowance::Terms) -> Result<allowance::Described, allowance::Problem> {
     terms.described()
 }
 

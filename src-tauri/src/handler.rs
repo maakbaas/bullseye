@@ -367,6 +367,8 @@ fn check_stricter(context: &Context, check: Check) -> Result<(), String> {
             Ok(())
         }
         Check::Lock { id, lock } => {
+            // Whether it can be read at all, for any session or the other way to unlock (no id).
+            lock.check()?;
             if !context.sessions.running_ids().iter().any(|running| running == &id) {
                 return Ok(());
             }
@@ -1267,6 +1269,13 @@ mod tests {
         assert!(drawn.len() == 12 && drawn.chars().all(|c| c.is_ascii_alphanumeric()), "{drawn}");
         assert!(failed(ask(Request::Stop { id: "a".into(), password: None, text: Some("wrong".into()) })));
         assert_eq!(ask(Request::Stop { id: "a".into(), password: None, text: Some(drawn.clone()) }), Response::Done);
+        // A length out of range is said before anything is saved, for any session or none.
+        for id in ["a", ""] {
+            let check = Request::Check { check: Check::Lock { id: id.into(), lock: random(0) } };
+            assert_eq!(ask(check), Response::Failed("A random text has 1 to 1000 characters".into()));
+        }
+        let check = Request::Check { check: Check::Lock { id: String::new(), lock: random(30) } };
+        assert_eq!(ask(check), Response::Done);
         // A length out of range is refused; a text given with it is not kept.
         assert!(failed(save(&context, definition("b", &["b.com"]).lock(random(0)))));
         assert_eq!(
