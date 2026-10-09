@@ -80,7 +80,9 @@ function sessionLines(item) {
 // and for how long, what its allowance allows, how its lock stands.
 function runningNow(item, running) {
   const now = (key, change, values = {}) => t(`sessions.now.${key}${change ? "For" : ""}`, { change, ...values });
-  const when = running.condition ? now(running.enforcing ? "active" : "inactive", running.condition_change_words) : t("sessions.now.active");
+  // A flash drive or a webhook says what has it on or off; it has no time.
+  const by = running.condition && { flash_drive: "Device", webhook: "Webhook" }[running.condition.type];
+  const when = !running.condition ? t("sessions.now.active") : by ? t(`sessions.now.${running.enforcing ? "active" : "inactive"}By${by}`) : now(running.enforcing ? "active" : "inactive", running.condition_change_words);
   let unless = t("sessions.now.neverPaused");
   const state = running.allowance;
   // A cycle or a delayed start whose time cannot be told is enforced (`Clock::phase`): blocked, begun.
@@ -95,7 +97,7 @@ function runningNow(item, running) {
   let lock = null;
   if (running.stop_delay) {
     const left = running.stop_remaining;
-    lock = left === null ? t("sessions.now.stopTakes", { delay: durationText(`${running.stop_delay}s`, "short") }) : left === 0 ? t("sessions.now.stopReady") : t("sessions.now.stopIn", { left: running.stop_remaining_words });
+    lock = left === null ? t("sessions.now.delay", { delay: durationText(`${running.stop_delay}s`, "short") }) : left === 0 ? t("sessions.now.unlocked") : t("sessions.now.in", { left: running.stop_remaining_words });
   } else if (running.remaining_words) lock = t("sessions.now.timeLeft", { left: running.remaining_words });
   else if (running.lock_condition) lock = now(running.locked ? "locked" : "unlocked", running.lock_change_words);
   else lock = plainLock(running.until_restart ? "until_restart" : running.lock_text ? "text" : running.password ? "password" : "none");
@@ -112,8 +114,8 @@ function stoppedNow(item) {
 }
 
 function stoppedCondition(condition) {
-  if (condition.type === "flash_drive") return t("sessions.now.whileOut");
-  if (condition.type === "webhook") return t("sessions.now.whileOn");
+  if (condition.type === "flash_drive") return t("sessions.now.activeByDevice");
+  if (condition.type === "webhook") return t("sessions.now.activeByWebhook");
   if (condition.type === "combined") return t(condition.mode === "all" ? "sessions.now.whenAll" : "sessions.now.whenAny");
   return weekText(condition.days);
 }
@@ -123,15 +125,14 @@ function stoppedAllowance(terms) {
   const short = (text) => durationText(text, "short");
   if (terms.type === "pomodoro") return t("sessions.now.cycle", { allowed: short(terms.allowed), blocked: short(terms.blocked) });
   if (terms.type === "delayed") return terms.kind === "from" ? t("sessions.now.from", { date: untilText(terms.value, true) }) : t("sessions.now.after", { time: short(terms.value) });
-  // A budget: how much, for the session or each item, and when it is given back.
-  const reset = { never: "Total", every: "Every", condition: "Active" }[terms.reset] || "Total";
-  return t(`sessions.now.${terms.scope === "each" ? "item" : "budget"}${reset}`, { time: short(terms.allowed), period: durationText(terms.every, "period") });
+  // A budget: how much, for the session or each item (when it is given back is in its settings).
+  return t(`sessions.now.${terms.scope === "each" ? "perItem" : "budget"}`, { time: short(terms.allowed) });
 }
 
 // The Lock row says it is the lock: what it holds by, as briefly as the dropdown leaves it to say.
 function stoppedLock(lock) {
   if (lock.method === "timed") return lock.kind === "until" ? t("sessions.now.until", { date: untilText(lock.value, true) }) : t("sessions.now.for", { time: durationText(lock.value, "short") });
-  if (lock.method === "delay") return t("sessions.now.waits", { delay: durationText(lock.delay, "short") });
+  if (lock.method === "delay") return t("sessions.now.delay", { delay: durationText(lock.delay, "short") });
   if (lock.method === "condition") {
     const condition = overview.conditions.find((c) => c.id === lock.condition);
     if (!condition) return null;

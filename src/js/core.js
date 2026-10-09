@@ -79,8 +79,8 @@ function described(command, args, standIn) {
 }
 const weekText = (days) => described("describe_schedule", { week: { days } }, t("common.weeklyStandIn"));
 // A duration as typed (`2h 30m`) written out, as the service writes it (`duration::Words`): `words`
-// exactly (`1 hour and 30 minutes`), `short` in one unit for a tile's status (`2 hours`), `period`
-// after "every" (`day`). As typed until the answer is in.
+// exactly (`1 hour and 30 minutes`), `short` in one unit for a tile's status (`2 hours`). As typed
+// until the answer is in.
 const durationText = (text, form = "words") => {
   const words = described("describe_duration", { text: text || "" }, null);
   return words ? words[form] : text || "";

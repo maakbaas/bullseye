@@ -71,18 +71,16 @@ pub fn countdown(seconds: u64) -> String {
     }
 }
 
-/// A set duration in words three ways (`describe_duration`): exactly (`1 hour and 30 minutes`), for a
-/// question; in one unit as time left is (`2 hours`), for a status on a tile; and after "every"
-/// (`day`, `2 hours`).
+/// A set duration in words both ways (`describe_duration`): exactly (`1 hour and 30 minutes`), for a
+/// question, and in one unit as time left is (`2 hours`), for a status on a tile.
 #[derive(serde::Serialize, Debug, PartialEq)]
 pub struct Words {
     pub words: String,
     pub short: String,
-    pub period: String,
 }
 
 pub fn words(seconds: u64) -> Words {
-    Words { words: countdown(seconds), short: left(seconds), period: period(seconds) }
+    Words { words: countdown(seconds), short: left(seconds) }
 }
 
 /// Time left, as a countdown shows it: one unit, rounded. A unit is used from one and a half of it
@@ -111,11 +109,8 @@ mod tests {
 
     #[test]
     fn a_set_duration_is_written_exactly_and_short() {
-        assert_eq!(
-            words(5400),
-            Words { words: "1 hour and 30 minutes".into(), short: "2 hours".into(), period: "1 hour and 30 minutes".into() }
-        );
-        assert_eq!(words(86400), Words { words: "1 day".into(), short: "24 hours".into(), period: "day".into() });
+        assert_eq!(words(5400), Words { words: "1 hour and 30 minutes".into(), short: "2 hours".into() });
+        assert_eq!(words(86400), Words { words: "1 day".into(), short: "24 hours".into() });
     }
 
     #[test]
