@@ -25,6 +25,7 @@ use crate::datetime::DateTime;
 use crate::duration;
 use crate::lists::{Entries, Lists};
 use crate::localtime::Zone;
+use crate::lock;
 use crate::state::{self, Actions, Store, Uses};
 use crate::sync::LockExt;
 use crate::unlock;
@@ -98,7 +99,7 @@ impl Enforced {
     /// allowed blocks every site but that one. Each session's allowed sites are exceptions to its
     /// own target only.
     pub fn blocks_site(&self, url: &str) -> bool {
-        self.lists.sites.is_blocked(url) && !self.lists.allowed.is_blocked(url)
+        self.lists.blocks_site(url)
     }
 }
 
@@ -156,50 +157,27 @@ impl Active {
         false
     }
 
-    /// Whether a page is on a target and not allowed (`Enforced::blocks_site`), for the free items.
-    fn site_in_use(lists: &Lists, url: &str) -> bool {
-        lists.sites.is_blocked(url) && !lists.allowed.is_blocked(url)
-    }
-
-    /// Whether a page shown in a browser is to be closed by any session that closes such pages:
-    /// `split_view` for a window showing two pages, otherwise an ordinary tab.
-    pub fn blocks_page(&self, url: &str, split_view: bool) -> bool {
-        self.judge(
-            |b| if split_view { b.actions.chromium_split_view } else { b.actions.chromium_tabs },
-            |b| b.blocks_site(url),
-            |lists| Active::site_in_use(lists, url),
-        )
-    }
-
-    /// Whether a page shown in an app window (a Chromium window with no tabs) is to be closed, with
-    /// the window, by any session that closes those.
-    pub fn blocks_app_window(&self, url: &str) -> bool {
-        self.judge(|b| b.actions.chromium_app_windows, |b| b.blocks_site(url), |lists| Active::site_in_use(lists, url))
-    }
-
-    /// Whether a page open in a Firefox tab is to be closed, by any session that closes those:
-    /// `split_view` for a page in either half of a split view, otherwise an ordinary tab.
-    pub fn blocks_firefox_page(&self, url: &str, split_view: bool) -> bool {
-        self.judge(
-            |b| if split_view { b.actions.firefox_split_view } else { b.actions.firefox_tabs },
-            |b| b.blocks_site(url),
-            |lists| Active::site_in_use(lists, url),
-        )
+    /// Whether a page shown in a browser is to be closed, however it shows (a tab, a split view, an
+    /// app window): by any session whose target has its site.
+    pub fn blocks_page(&self, url: &str) -> bool {
+        self.judge(|b| b.actions.uses(Uses::Sites), |b| b.blocks_site(url), |lists| lists.blocks_site(url))
     }
 
     /// Whether any session has sites to look for, so the browsers are worth looking at: to close, or
     /// to see in use for an allowance.
     pub fn watches_sites(&self) -> bool {
-        self.sessions
-            .iter()
-            .any(|b| b.actions.uses(Uses::Sites) && (!b.lists.sites.is_empty() || b.free.iter().any(|f| !f.lists.sites.is_empty())))
+        self.watches(Uses::Sites)
+    }
+
+    /// Whether any session acts on this kind of list and has entries in it, to act on or (let through
+    /// by an allowance) to see in use.
+    fn watches(&self, list: Uses) -> bool {
+        self.sessions.iter().any(|b| b.actions.uses(list) && (b.lists.has(list) || b.free.iter().any(|f| f.lists.has(list))))
     }
 
     /// Whether any session closes programs and has some to close (or to see in use).
     pub fn closes_programs(&self) -> bool {
-        self.sessions.iter().any(|b| {
-            b.actions.uses(Uses::Programs) && (!b.lists.programs.is_empty() || b.free.iter().any(|f| !f.lists.programs.is_empty()))
-        })
+        self.watches(Uses::Programs)
     }
 
     /// Whether a program (by file name) is closed by any session that closes programs.
@@ -213,9 +191,7 @@ impl Active {
 
     /// Whether any session closes Store apps and has some to close (or to see in use).
     pub fn closes_store_apps(&self) -> bool {
-        self.sessions.iter().any(|b| {
-            b.actions.uses(Uses::StoreApps) && (!b.lists.store_apps.is_empty() || b.free.iter().any(|f| !f.lists.store_apps.is_empty()))
-        })
+        self.watches(Uses::StoreApps)
     }
 
     /// Whether a Store app (by package family name) is closed by any session that closes them. Never
@@ -232,9 +208,7 @@ impl Active {
     /// Whether any session closes or minimizes windows by their title and has some titles (or to see
     /// in use).
     pub fn watches_titles(&self) -> bool {
-        self.sessions
-            .iter()
-            .any(|b| b.actions.uses(Uses::Titles) && (!b.lists.titles.is_empty() || b.free.iter().any(|f| !f.lists.titles.is_empty())))
+        self.watches(Uses::Titles)
     }
 
     /// Whether any session minimizes windows by their title, so any window coming up is worth a look
@@ -427,9 +401,10 @@ impl Session {
         }
     }
 
-    /// Whether it has something to keep on disk besides its lock: a budget that is being used up.
+    /// Whether it has something to keep on disk besides its lock: a budget that is being used up, or
+    /// breaks that a reset gives back.
     fn keeps_count(&self) -> bool {
-        self.allowance.as_ref().is_some_and(|run| run.scope().is_some())
+        self.allowance.as_ref().is_some_and(|run| run.scope().is_some() || run.breaks_left().is_some())
     }
 
     /// What of it the app is to enforce at `now`, by its allowance: all of it with none; nothing while a
@@ -549,12 +524,10 @@ impl Session {
         let name = &self.name;
         match &self.lock {
             RunLock::None => None,
-            RunLock::Ends { .. } => {
-                self.remaining(now).map(|left| format!("“{name}” is locked for the next {}", duration::countdown(left)))
-            }
+            RunLock::Ends { .. } => self.remaining(now).map(|left| format!("“{name}” is locked for the next {}", duration::left(left))),
             // Like `in_condition`, locked if it cannot be known.
             RunLock::Condition { condition } => condition.active(&self.zone, now).then(|| {
-                let until = self.lock_change(now).map(|s| format!(" for the next {}", duration::countdown(s))).unwrap_or_default();
+                let until = self.lock_change(now).map(|s| format!(" for the next {}", duration::left(s))).unwrap_or_default();
                 match condition {
                     Rule::Schedule { .. } => format!("“{name}” is locked by its lock schedule{until}"),
                     Rule::FlashDrive { drive, .. } => format!("“{name}” is locked until the flash drive “{drive}” is connected"),
@@ -565,7 +538,7 @@ impl Session {
             RunLock::UntilRestart { .. } => Some(format!("“{name}” is locked until Windows restarts")),
             RunLock::Delay { delay, .. } => match self.stop_remaining(now) {
                 Some(0) => None,
-                Some(left) => Some(format!("“{name}” can be stopped in {}", duration::countdown(left))),
+                Some(left) => Some(format!("“{name}” can be stopped in {}", duration::left(left))),
                 None => Some(format!("“{name}” is locked: asking to stop it starts a wait of {}", duration::countdown(*delay))),
             },
             RunLock::Text { .. } => Some(format!("“{name}” is locked until its text is typed in")),
@@ -618,7 +591,7 @@ pub struct Running {
     pub condition_change: Option<u64>,
     /// Seconds until its lock condition locks or frees it, if it has one that ever does.
     pub lock_change: Option<u64>,
-    /// The three times above in words (`duration::countdown`), so the window and the CLI show them the
+    /// The three times above in words (`duration::left`), so the window and the CLI show them the
     /// same way without a formatter of their own.
     pub remaining_words: Option<String>,
     pub condition_change_words: Option<String>,
@@ -633,6 +606,22 @@ pub struct Status {
     /// Whether the time comes from the internet yet; until then, time with the service not running
     /// does not count.
     pub clock_synced: bool,
+}
+
+/// The lock a locked session may take instead of `old`: only a stricter one of the same kind. A
+/// lock that ends at a time may end later (a duration or until, whichever it was given as), and a
+/// delay may be longer, its wait if it has been asked for going on from when it was asked.
+fn stricter(old: &RunLock, new: RunLock) -> Result<RunLock, String> {
+    match (old, new) {
+        (RunLock::Ends { at: old }, RunLock::Ends { at }) if at > *old => Ok(RunLock::Ends { at }),
+        (RunLock::Ends { .. }, RunLock::Ends { .. }) => Err("This session is locked, so its lock can only end later".into()),
+        (RunLock::Delay { delay: old, asked }, RunLock::Delay { delay, .. }) if delay > *old => Ok(RunLock::Delay { delay, asked: *asked }),
+        (RunLock::Delay { .. }, RunLock::Delay { .. }) => Err("This session is locked, so its delay can only get longer".into()),
+        _ => {
+            Err("This session is locked, so its lock cannot be changed until it can be stopped, except to end later or to wait longer"
+                .into())
+        }
+    }
 }
 
 impl Sessions {
@@ -679,8 +668,25 @@ impl Sessions {
         }
         let zone = self.zone.clone().unwrap_or_else(Zone::current);
         let now = self.clock.now();
+        let lock = self.run_lock(lock, &zone, now)?;
+        let parts = parts.into_iter().map(|p| RunPart::new(p.name, p.lists, p.actions)).collect();
+        let allowance = allowance.map(|terms| Run::new(terms, now));
+        let new = Session { id: id.to_string(), name: name.to_string(), parts, lock, condition, zone, allowance };
+        // Written before the session goes live, so a session cannot be missed after a restart. A
+        // session that cannot be written would not survive the service ending, so it does not start.
+        let mut all: Vec<&Session> = inner.sessions.iter().collect();
+        all.push(&new);
+        self.save(&all).map_err(|e| format!("Cannot save the session, so it would not survive a restart: {e}"))?;
+        inner.sessions.push(new);
+        inner.saved_at = Instant::now();
+        Ok(())
+    }
+
+    /// What a lock asked for runs as, from `now` in `zone`: a duration or a date becomes the moment
+    /// it ends, a restart this start of Windows.
+    fn run_lock(&self, lock: StartLock, zone: &Zone, now: SystemTime) -> Result<RunLock, String> {
         let ends = |end: SystemTime| state::to_unix(end).map(|at| RunLock::Ends { at }).ok_or("Cannot tell the time");
-        let lock = match lock {
+        Ok(match lock {
             StartLock::None => RunLock::None,
             StartLock::For(length) => ends(now + length)?,
             StartLock::Until(at) => {
@@ -697,18 +703,46 @@ impl Sessions {
             StartLock::Delay(wait) => RunLock::Delay { delay: wait.as_secs(), asked: None },
             StartLock::Text(text) => RunLock::Text { text },
             StartLock::Password(hash) => RunLock::Password { hash },
-        };
-        let parts = parts.into_iter().map(|p| RunPart::new(p.name, p.lists, p.actions)).collect();
-        let allowance = allowance.map(|terms| Run::new(terms, now));
-        let new = Session { id: id.to_string(), name: name.to_string(), parts, lock, condition, zone, allowance };
-        // Written before the session goes live, so a session cannot be missed after a restart. A
-        // session that cannot be written would not survive the service ending, so it does not start.
-        let mut all: Vec<&Session> = inner.sessions.iter().collect();
-        all.push(&new);
-        self.save(&all).map_err(|e| format!("Cannot save the session, so it would not survive a restart: {e}"))?;
-        inner.sessions.push(new);
+        })
+    }
+
+    /// Gives the running session `id` another lock, as if it started with it now (in the time zone
+    /// it runs in). Only while it is not locked: it could be stopped and started again with that
+    /// lock anyway, so this loosens nothing. A locked one keeps its lock, except that a lock that
+    /// ends at a time (a duration or until) may end later, and a delay may be longer (`stricter`).
+    pub fn relock(&self, id: &str, lock: StartLock) -> Result<(), String> {
+        let mut inner = self.inner.locked();
+        self.expire(&mut inner);
+        let now = self.clock.now();
+        let session = inner.sessions.iter().find(|b| b.id == id).ok_or("This session is not running")?;
+        let lock = self.lock_for(session, lock, now)?;
+        let at = inner.sessions.iter().position(|b| b.id == id).expect("found above");
+        let old = std::mem::replace(&mut inner.sessions[at].lock, lock);
+        // Written at once, as starting is: a lock that cannot be kept over a restart is not given.
+        if let Err(e) = self.save(&inner.sessions.iter().collect::<Vec<_>>()) {
+            inner.sessions[at].lock = old;
+            return Err(format!("Cannot save the session, so it would not survive a restart: {e}"));
+        }
         inner.saved_at = Instant::now();
         Ok(())
+    }
+
+    /// What `relock` would do, without doing it: whether the running session `id` may take this lock.
+    pub fn check_relock(&self, id: &str, lock: StartLock) -> Result<(), String> {
+        let mut inner = self.inner.locked();
+        self.expire(&mut inner);
+        let session = inner.sessions.iter().find(|b| b.id == id).ok_or("This session is not running")?;
+        self.lock_for(session, lock, self.clock.now()).map(|_| ())
+    }
+
+    /// The lock a running session takes when it is given `lock`: as it starts with it now, and for a
+    /// session that is locked only a stricter one (`stricter`).
+    fn lock_for(&self, session: &Session, lock: StartLock, now: SystemTime) -> Result<RunLock, String> {
+        let lock = self.run_lock(lock, &session.zone, now)?;
+        if session.locked(now).is_some() {
+            return stricter(&session.lock, lock);
+        }
+        Ok(lock)
     }
 
     /// Stops the session `id` unless it is locked right now. `answered`: the right password of its
@@ -765,6 +799,33 @@ impl Sessions {
             RunLock::Delay { asked, .. } => *asked = None,
             _ => return Err("This session is not locked with a delay".into()),
         }
+        self.save_all(&mut inner);
+        Ok(())
+    }
+
+    /// Takes one of the session's breaks now (`allowance::Run::take_break`): only while its condition
+    /// has it on, as nothing is enforced otherwise. Kept on disk, so a restart does not give it back.
+    pub fn take_break(&self, id: &str) -> Result<(), String> {
+        let mut inner = self.inner.locked();
+        self.expire(&mut inner);
+        let now = self.clock.now();
+        let session = inner.sessions.iter_mut().find(|b| b.id == id).ok_or("This session is not running")?;
+        if !session.in_condition(now) {
+            return Err("A break can only be taken while the session's condition is active".into());
+        }
+        session.advance(now);
+        session.allowance.as_mut().ok_or("This session has no breaks")?.take_break(now)?;
+        self.save_all(&mut inner);
+        Ok(())
+    }
+
+    /// Ends the break going on, early: it stays used up.
+    pub fn end_break(&self, id: &str) -> Result<(), String> {
+        let mut inner = self.inner.locked();
+        self.expire(&mut inner);
+        let now = self.clock.now();
+        let session = inner.sessions.iter_mut().find(|b| b.id == id).ok_or("This session is not running")?;
+        session.allowance.as_mut().ok_or("This session has no breaks")?.end_break(now)?;
         self.save_all(&mut inner);
         Ok(())
     }
@@ -930,15 +991,14 @@ impl Sessions {
         self.save_all(&mut inner);
     }
 
-    /// Whether `password` is the password of the running session `id`'s password lock.
     /// Whether `text` is exactly the text of the running session `id`'s text lock (line breaks
     /// whichever way they were typed).
     pub fn text_matches(&self, id: &str, text: &str) -> bool {
         let inner = self.inner.locked();
-        let same = |a: &str, b: &str| a.replace("\r\n", "\n") == b.replace("\r\n", "\n");
-        inner.sessions.iter().find(|b| b.id == id).and_then(|b| b.lock_text()).is_some_and(|expected| same(expected, text))
+        inner.sessions.iter().find(|b| b.id == id).and_then(|b| b.lock_text()).is_some_and(|expected| lock::same_text(expected, text))
     }
 
+    /// Whether `password` is the password of the running session `id`'s password lock.
     pub fn password_matches(&self, id: &str, password: &str) -> bool {
         let inner = self.inner.locked();
         let hash = inner.sessions.iter().find(|b| b.id == id).and_then(|b| b.password_hash().map(str::to_string));
@@ -987,17 +1047,21 @@ impl Sessions {
                 stop_delay: b.stop_delay(),
                 stop_delay_words: b.stop_delay().map(duration::countdown),
                 stop_remaining: b.stop_remaining(now),
-                stop_remaining_words: b.stop_remaining(now).map(duration::countdown),
+                stop_remaining_words: b.stop_remaining(now).map(duration::left),
                 password: b.password_hash().is_some(),
                 locked: b.locked(now).is_some(),
                 condition: b.condition.clone(),
                 enforcing: b.in_condition(now),
                 condition_change: b.condition_change(now),
-                remaining_words: b.remaining(now).map(duration::countdown),
-                condition_change_words: b.condition_change(now).map(duration::countdown),
+                remaining_words: b.remaining(now).map(duration::left),
+                condition_change_words: b.condition_change(now).map(duration::left),
                 lock_change: b.lock_change(now),
-                lock_change_words: b.lock_change(now).map(duration::countdown),
-                allowance: b.allowance.as_ref().map(|run| run.status(&b.zone, now)),
+                lock_change_words: b.lock_change(now).map(duration::left),
+                // A break is only taken while the condition has the session on.
+                allowance: b.allowance.as_ref().map(|run| {
+                    let status = run.status(&b.zone, now);
+                    allowance::Status { break_ready: status.break_ready && b.in_condition(now), ..status }
+                }),
             })
             .collect();
         Status { running, clock_synced: self.clock.synced() }
@@ -1192,13 +1256,13 @@ mod tests {
         start(&list, "untimed", sites(&["b.com"]), None).unwrap();
         let active = list.active().unwrap();
         assert_eq!(active.sessions.len(), 2);
-        assert!(active.blocks_page("https://a.com/", false) && active.blocks_page("https://b.com/", false));
+        assert!(active.blocks_page("https://a.com/") && active.blocks_page("https://b.com/"));
         assert!(list.locked().is_some_and(|why| why.contains("Session timed")));
 
         // The timed one ends by itself; the other goes on.
         std::thread::sleep(Duration::from_millis(60));
         let active = list.active().unwrap();
-        assert!(!active.blocks_page("https://a.com/", false) && active.blocks_page("https://b.com/", false));
+        assert!(!active.blocks_page("https://a.com/") && active.blocks_page("https://b.com/"));
         assert!(!list.runs("timed") && list.runs("untimed"));
         assert_eq!(list.locked(), None);
         // Stopping one leaves the others.
@@ -1208,36 +1272,17 @@ mod tests {
     }
 
     #[test]
-    fn each_session_goes_by_its_own_actions_and_allowed_sites() {
+    fn each_session_goes_by_its_own_allowed_sites() {
         let list = sessions("own-rules");
-        let tabs_only = Actions {
-            chromium_tabs: true,
-            chromium_split_view: false,
-            obsidian_web_viewer: false,
-            chromium_app_windows: false,
-            firefox_tabs: false,
-            firefox_split_view: false,
-            window_titles_minimize: false,
-        };
-        let split_only = Actions {
-            chromium_tabs: false,
-            chromium_split_view: true,
-            obsidian_web_viewer: false,
-            chromium_app_windows: false,
-            firefox_tabs: false,
-            firefox_split_view: false,
-            window_titles_minimize: false,
-        };
+        let no_obsidian = Actions { obsidian_web_viewer: false, ..Actions::default() };
         let everything_but_google =
             Lists { sites: FilterList::parse(&["*"]).unwrap(), allowed: FilterList::parse(&["google.com"]).unwrap(), ..Lists::default() };
-        list.start("tabs", "Tabs", vec![part(everything_but_google, tabs_only)], None, StartLock::None).unwrap();
-        list.start("split", "Split", vec![part(sites(&["google.com"]), split_only)], None, StartLock::None).unwrap();
+        list.start("all", "All", vec![part(everything_but_google, no_obsidian)], None, StartLock::None).unwrap();
+        assert!(!list.active().unwrap().blocks_page("https://google.com/") && list.active().unwrap().blocks_page("https://youtube.com/"));
+        list.start("google", "Google", vec![part(sites(&["google.com"]), no_obsidian)], None, StartLock::None).unwrap();
         let active = list.active().unwrap();
         // One session's allowed site is not an exception to another session's list.
-        assert!(!active.blocks_page("https://google.com/", false));
-        assert!(active.blocks_page("https://google.com/", true));
-        assert!(active.blocks_page("https://youtube.com/", false));
-        assert!(!active.blocks_page("https://youtube.com/", true));
+        assert!(active.blocks_page("https://google.com/") && active.blocks_page("https://youtube.com/"));
         assert!(active.watches_sites() && !active.closes_programs() && !active.closes_obsidian());
     }
 
@@ -1260,6 +1305,85 @@ mod tests {
     }
 
     #[test]
+    fn a_running_session_that_is_not_locked_takes_a_lock_as_if_it_started_now() {
+        let list = sessions("relock");
+        assert!(list.relock("a", StartLock::For(Duration::from_secs(60))).unwrap_err().contains("not running"));
+        start(&list, "a", sites(&["a.com"]), None).unwrap();
+        list.relock("a", StartLock::For(Duration::from_secs(3600))).unwrap();
+        assert!(running(&list, "a").remaining.is_some_and(|left| (3595..=3600).contains(&left)));
+        assert!(list.stop("a", false).is_err());
+        // Locked now, so it keeps the lock it has, whatever else is asked.
+        for other in [StartLock::None, StartLock::Delay(Duration::from_secs(60)), StartLock::Text("x".into())] {
+            let refused = list.relock("a", other).unwrap_err();
+            assert_eq!(
+                refused,
+                "This session is locked, so its lock cannot be changed until it can be stopped, except to end later or to wait longer"
+            );
+        }
+        // The lock is kept over a restart, as a lock it started with is.
+        let resumed = reopened("relock");
+        resumed.restore();
+        assert!(running(&resumed, "a").remaining.is_some_and(|left| (3595..=3600).contains(&left)));
+        assert!(resumed.stop("a", false).is_err());
+        // A lock that cannot be given (a date that has passed) leaves the session as it was.
+        start(&list, "b", sites(&["b.com"]), None).unwrap();
+        let passed = list.relock("b", StartLock::Until(DateTime::parse("2000-01-01 00:00").unwrap())).unwrap_err();
+        assert!(passed.contains("has passed"), "{passed}");
+        assert!(list.stop("b", false).is_ok());
+    }
+
+    #[test]
+    fn a_locked_session_can_end_later_or_wait_longer_but_not_the_opposite() {
+        let list = sessions("relock-stricter");
+        start(&list, "a", sites(&["a.com"]), Some(Duration::from_secs(3600))).unwrap();
+        let hours = |n: u64| StartLock::For(Duration::from_secs(n * 3600));
+        // Ending sooner or at the same time is refused; later is taken, and held over a restart.
+        for sooner in [1, 0] {
+            let refused = list.relock("a", StartLock::For(Duration::from_secs(sooner * 1800))).unwrap_err();
+            assert_eq!(refused, "This session is locked, so its lock can only end later");
+        }
+        list.relock("a", hours(3)).unwrap();
+        assert!(running(&list, "a").remaining.is_some_and(|left| (10795..=10800).contains(&left)));
+        assert!(list.relock("a", hours(2)).is_err());
+        let resumed = reopened("relock-stricter");
+        resumed.restore();
+        assert!(running(&resumed, "a").remaining.is_some_and(|left| (10795..=10800).contains(&left)));
+        // A date does as well as a duration.
+        let far = DateTime::parse("2099-01-01 00:00").unwrap();
+        list.relock("a", StartLock::Until(far)).unwrap();
+        assert!(running(&list, "a").remaining.is_some_and(|left| left > 10800));
+
+        // A delay: only a longer one, and a wait that has begun goes on from when it was asked.
+        start(&list, "d", sites(&["d.com"]), None).unwrap();
+        list.relock("d", StartLock::Delay(Duration::from_secs(60))).unwrap();
+        assert_eq!(running(&list, "d").stop_delay, Some(60));
+        for shorter in [60, 30] {
+            let refused = list.relock("d", StartLock::Delay(Duration::from_secs(shorter))).unwrap_err();
+            assert_eq!(refused, "This session is locked, so its delay can only get longer");
+        }
+        list.ask_to_stop("d").unwrap();
+        list.relock("d", StartLock::Delay(Duration::from_secs(600))).unwrap();
+        assert_eq!(running(&list, "d").stop_delay, Some(600));
+        assert!(running(&list, "d").stop_remaining.is_some_and(|left| left > 60));
+    }
+
+    #[test]
+    fn a_lock_that_cannot_be_saved_is_not_given() {
+        let dir = std::env::temp_dir().join(format!("session-{}-relock-unsaved", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("not-a-folder"), "").unwrap();
+        let list =
+            Sessions { inner: Arc::default(), clock: test_clock(), zone: Some(Zone::fixed(0)), store: None, boot: Some("boot".into()) };
+        start(&list, "a", sites(&["a.com"]), None).unwrap();
+        // The same sessions, now with a state file that can never be written.
+        let unsaved =
+            Sessions { store: Some(Arc::new(Store::new(dir.join("not-a-folder").join("state.json")))), inner: list.inner.clone(), ..list };
+        assert!(unsaved.relock("a", StartLock::For(Duration::from_secs(60))).unwrap_err().contains("would not survive a restart"));
+        assert!(unsaved.stop("a", false).is_ok());
+    }
+
+    #[test]
     fn sessions_outlive_the_service_that_started_them() {
         let list = sessions("resume");
         start(&list, "a", sites(&["https://tweakers.net/", "b.com"]), Some(Duration::from_secs(3600))).unwrap();
@@ -1270,7 +1394,7 @@ mod tests {
         let resumed = reopened("resume");
         resumed.restore();
         let active = resumed.active().unwrap();
-        assert!(active.blocks_page("https://tweakers.net/nieuws", false) && active.blocks_page("https://c.com/", false));
+        assert!(active.blocks_page("https://tweakers.net/nieuws") && active.blocks_page("https://c.com/"));
         let a = running(&resumed, "a");
         assert_eq!(a.name, "Session a");
         assert!(a.remaining.is_some_and(|left| (3595..=3600).contains(&left)));
@@ -1293,7 +1417,7 @@ mod tests {
     }
 
     fn blocks_site(active: &Active, url: &str) -> bool {
-        active.blocks_page(url, false)
+        active.blocks_page(url)
     }
 
     #[test]
@@ -1374,15 +1498,7 @@ mod tests {
 
     #[test]
     fn a_resumed_session_keeps_its_actions() {
-        let only_obsidian = Actions {
-            chromium_tabs: false,
-            chromium_split_view: false,
-            obsidian_web_viewer: true,
-            chromium_app_windows: false,
-            firefox_tabs: false,
-            firefox_split_view: false,
-            window_titles_minimize: false,
-        };
+        let only_obsidian = Actions { obsidian_web_viewer: true, window_titles_minimize: true };
         let list = sessions("actions");
         list.start("a", "A", vec![part(sites(&[]), only_obsidian)], None, StartLock::For(Duration::from_secs(3600))).unwrap();
         let resumed = reopened("actions");
@@ -1415,7 +1531,7 @@ mod tests {
         .unwrap();
         // An always-active session next to it, to show the other one going quiet on its own.
         start(&list, "b", sites(&["b.com"]), None).unwrap();
-        assert!(list.active().unwrap().blocks_page("https://a.com/", false));
+        assert!(list.active().unwrap().blocks_page("https://a.com/"));
         let a = running(&list, "a");
         assert!(a.enforcing && a.condition == office);
         // The test runs on a real clock as well, so a few seconds may pass along the way.
@@ -1426,13 +1542,13 @@ mod tests {
         // still locked.
         list.clock.at_least(monday(17 * 3600));
         let active = list.active().unwrap();
-        assert!(!active.blocks_page("https://a.com/", false) && active.blocks_page("https://b.com/", false));
+        assert!(!active.blocks_page("https://a.com/") && active.blocks_page("https://b.com/"));
         assert!(list.runs("a") && list.stop("a", false).is_err());
         let a = running(&list, "a");
         assert!(!a.enforcing);
         // In words too, for the window and the CLI.
         assert!(
-            a.remaining_words.as_deref().is_some_and(|words| words.starts_with("1 hour") || words.starts_with("59 minutes")),
+            a.remaining_words.as_deref().is_some_and(|words| words == "60 minutes" || words == "59 minutes"),
             "{:?}",
             a.remaining_words
         );
@@ -1460,7 +1576,7 @@ mod tests {
         let locks = || StartLock::Condition(office.clone().unwrap());
         list.start("a", "Work", vec![part(sites(&["a.com"]), Actions::default())], None, locks()).unwrap();
         let why = list.stop("a", false).unwrap_err();
-        assert!(why.contains("locked by its lock schedule for the next 1 hour") || why.contains("for the next 59 minutes"), "{why}");
+        assert!(why.contains("locked by its lock schedule for the next 60 minutes") || why.contains("for the next 59 minutes"), "{why}");
         let a = running(&list, "a");
         assert!(a.locked && a.lock_condition == office && a.enforcing);
         assert!(a.lock_change.is_some_and(|left| (3590..=3600).contains(&left)), "{:?}", a.lock_change);
@@ -1529,24 +1645,8 @@ mod tests {
     #[test]
     fn a_session_of_several_targets_enforces_each_by_its_own_rules() {
         let list = sessions("parts");
-        let tabs_only = Actions {
-            chromium_tabs: true,
-            chromium_split_view: false,
-            obsidian_web_viewer: false,
-            chromium_app_windows: false,
-            firefox_tabs: false,
-            firefox_split_view: false,
-            window_titles_minimize: false,
-        };
-        let programs_only = Actions {
-            chromium_tabs: false,
-            chromium_split_view: false,
-            obsidian_web_viewer: false,
-            chromium_app_windows: false,
-            firefox_tabs: false,
-            firefox_split_view: false,
-            window_titles_minimize: false,
-        };
+        let tabs_only = Actions { obsidian_web_viewer: false, window_titles_minimize: false };
+        let programs_only = tabs_only;
         let games = Lists { programs: ProgramList::parse(&["steam"]).unwrap(), ..Lists::default() };
         let social = Part { name: "Social".into(), lists: sites(&["youtube.com"]), actions: tabs_only };
         list.start(
@@ -1559,7 +1659,7 @@ mod tests {
         .unwrap();
         let active = list.active().unwrap();
         assert_eq!(active.sessions.len(), 2);
-        assert!(active.blocks_page("https://youtube.com/", false) && active.blocks_program("steam.exe"));
+        assert!(active.blocks_page("https://youtube.com/") && active.blocks_program("steam.exe"));
         let lists = running(&list, "a").targets;
         assert_eq!(lists.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), vec!["Social", "Games"]);
         // And again after a restart.
@@ -1677,6 +1777,57 @@ mod tests {
         assert!(!list.is_running() && store.load().is_empty());
     }
 
+    #[test]
+    fn a_break_is_taken_by_hand_while_the_condition_is_active_and_survives_a_restart() {
+        let list = sessions("breaks");
+        list.clock.at_least(monday(16 * 3600));
+        let terms = Terms::Breaks {
+            count: 1,
+            length: "10m".into(),
+            reset: allowance::Reset::Never,
+            every: String::new(),
+            anchor: allowance::Anchor::Start,
+        };
+        let parts = vec![part(sites(&["a.com"]), Actions::default())];
+        let office = weekly("mon-fri 08:00-17:00");
+        list.start_with("a", "A", parts, office, Some(terms), StartLock::For(Duration::from_secs(2 * 3600))).unwrap();
+        start(&list, "plain", sites(&["b.com"]), None).unwrap();
+        assert!(list.active().unwrap().blocks_page("https://a.com/"));
+        // Only a session with breaks takes one; one that does not run takes nothing.
+        assert_eq!(list.take_break("plain"), Err("This session has no breaks".into()));
+        assert_eq!(list.take_break("gone"), Err("This session is not running".into()));
+        assert_eq!(list.end_break("plain"), Err("This session has no breaks".into()));
+        assert_eq!(list.end_break("gone"), Err("This session is not running".into()));
+        // Taken, locked as it is: nothing of it is enforced until it ends.
+        assert!(running(&list, "a").allowance.is_some_and(|status| status.break_ready));
+        list.take_break("a").unwrap();
+        assert!(!list.active().unwrap().blocks_page("https://a.com/") && list.active().unwrap().blocks_page("https://b.com/"));
+        assert_eq!(running(&list, "a").allowance.and_then(|status| status.breaks_left), Some(0));
+        // A restart keeps the break going and the one taken.
+        let resumed = reopened("breaks");
+        resumed.clock.at_least(monday(16 * 3600 + 60));
+        resumed.restore();
+        assert!(!resumed.active().unwrap().blocks_page("https://a.com/"));
+        // Ended early: enforced again, and still used up.
+        resumed.end_break("a").unwrap();
+        assert!(resumed.active().unwrap().blocks_page("https://a.com/"));
+        assert_eq!(resumed.take_break("a"), Err("No breaks left".into()));
+        // Outside its condition there is nothing to take a break from.
+        resumed.clock.at_least(monday(17 * 3600));
+        assert_eq!(resumed.take_break("a"), Err("A break can only be taken while the session's condition is active".into()));
+        // And the status says so, with breaks left.
+        let one = Terms::Breaks {
+            count: 1,
+            length: "5m".into(),
+            reset: allowance::Reset::Never,
+            every: String::new(),
+            anchor: allowance::Anchor::Start,
+        };
+        let parts = vec![part(sites(&["c.com"]), Actions::default())];
+        resumed.start_with("c", "C", parts, weekly("mon-fri 08:00-17:00"), Some(one), StartLock::None).unwrap();
+        assert!(running(&resumed, "c").allowance.is_some_and(|status| status.breaks_left == Some(1) && !status.break_ready));
+    }
+
     fn budget(allowed: &str, scope: Scope) -> Terms {
         Terms::Budget {
             allowed: allowed.into(),
@@ -1701,18 +1852,18 @@ mod tests {
         .unwrap();
         // With time left the site is let through and its use is noted, to be counted.
         let active = list.active().unwrap();
-        assert!(!active.blocks_page("https://a.com/x", false));
+        assert!(!active.blocks_page("https://a.com/x"));
         assert_eq!(active.used.take(), vec![("a".to_string(), TOTAL.to_string())]);
         assert!(running(&list, "a").allowance.is_some_and(|status| status.open && status.left.is_some_and(|left| left > 0)));
         // What is reported counts from the last time the app asked; ignored: another session, another key.
         list.polled();
         std::thread::sleep(Duration::from_millis(1100));
         list.charge(&[("other".to_string(), TOTAL.to_string()), ("a".to_string(), "site:a.com".to_string())]);
-        assert!(!list.active().unwrap().blocks_page("https://a.com/x", false));
+        assert!(!list.active().unwrap().blocks_page("https://a.com/x"));
         list.charge(&[("a".to_string(), TOTAL.to_string())]);
         // Used up: closed again.
         let active = list.active().unwrap();
-        assert!(active.blocks_page("https://a.com/x", false));
+        assert!(active.blocks_page("https://a.com/x"));
         assert!(running(&list, "a").allowance.is_some_and(|status| !status.open && status.left == Some(0)));
     }
 
@@ -1729,14 +1880,14 @@ mod tests {
         )
         .unwrap();
         let active = list.active().unwrap();
-        assert!(!active.blocks_page("https://a.com/", false) && !active.blocks_page("https://b.com/", false));
+        assert!(!active.blocks_page("https://a.com/") && !active.blocks_page("https://b.com/"));
         assert_eq!(active.used.take().len(), 2);
         list.polled();
         std::thread::sleep(Duration::from_millis(1100));
         list.charge(&[("a".to_string(), "site:a.com".to_string())]);
         let active = list.active().unwrap();
-        assert!(active.blocks_page("https://a.com/", false), "a.com is used up");
-        assert!(!active.blocks_page("https://b.com/", false), "b.com has all its time");
+        assert!(active.blocks_page("https://a.com/"), "a.com is used up");
+        assert!(!active.blocks_page("https://b.com/"), "b.com has all its time");
         assert_eq!(active.used.take(), vec![("a".to_string(), "site:b.com".to_string())]);
         let items = running(&list, "a").allowance.unwrap().items;
         assert_eq!(items.iter().map(|i| (i.item.as_str(), i.left)).collect::<Vec<_>>(), vec![("a.com", 0)]);
@@ -1747,7 +1898,7 @@ mod tests {
         let list = sessions("cycle");
         let cycle = Terms::Pomodoro { blocked: "1h".into(), allowed: "10m".into(), anchor: allowance::Anchor::Start };
         list.start_with("a", "A", vec![part(sites(&["a.com"]), Actions::default())], None, Some(cycle), StartLock::None).unwrap();
-        assert!(list.active().unwrap().blocks_page("https://a.com/", false), "blocked first");
+        assert!(list.active().unwrap().blocks_page("https://a.com/"), "blocked first");
         assert!(running(&list, "a").allowance.is_some_and(|status| !status.open && status.change.is_some()));
 
         let list = sessions("budget-kept");
@@ -1795,13 +1946,11 @@ mod tests {
             titles: strings(&["*Chat*"]),
             ..Entries::default()
         });
-        let actions = only(&["chromium_app_windows", "firefox_split_view"]);
+        let actions = only(&[]);
         list.start("a", "A", vec![part(lists, actions)], None, StartLock::None).unwrap();
         let active = list.active().unwrap();
-        // Sites: only where an action for it is on.
-        assert!(active.blocks_app_window("https://a.com/x") && !active.blocks_app_window("https://b.com/"));
-        assert!(active.blocks_firefox_page("https://a.com/", true) && !active.blocks_firefox_page("https://a.com/", false));
-        assert!(!active.blocks_page("https://a.com/", false) && !active.blocks_page("https://a.com/", true));
+        // Sites: wherever they show.
+        assert!(active.blocks_page("https://a.com/x") && !active.blocks_page("https://b.com/"));
         assert!(active.watches_sites());
         // Store apps, never one of Windows' own whatever the list says.
         assert!(active.closes_store_apps());
@@ -1896,7 +2045,7 @@ mod tests {
         assert!(!active.blocks_store_app("Microsoft.XboxApp_8wekyb3d8bbwe"));
         assert!(active.title_action("Team chat", false).is_none());
         assert!(!active.blocks_program("game.exe"));
-        assert!(!active.blocks_app_window("https://a.com/") && !active.blocks_firefox_page("https://a.com/", false));
+        assert!(!active.blocks_page("https://a.com/"));
         let mut seen = active.used.take();
         seen.sort();
         let key = |k: &str| ("a".to_string(), k.to_string());
@@ -1973,7 +2122,7 @@ mod tests {
             list.start_with("a", "A", vec![part(sites(&["a.com"]), Actions::default())], None, Some(budget("1h", scope)), StartLock::None)
                 .unwrap();
             let active = list.active().unwrap();
-            assert!(!active.blocks_page("https://a.com/", false), "{scope:?}: the site is let through");
+            assert!(!active.blocks_page("https://a.com/"), "{scope:?}: the site is let through");
             assert!(active.closes_obsidian(), "{scope:?}: Obsidian is not");
             assert!(active.used.take().iter().all(|(_, key)| key.starts_with("site:") || key == TOTAL));
         }
@@ -2002,9 +2151,9 @@ mod tests {
         // A wildcard entry is one item for everything it matches; a page that two entries match is
         // seen as both.
         let active = list.active().unwrap();
-        assert!(!active.blocks_page("https://old.reddit.com/r/x", false) && !active.blocks_page("https://www.reddit.com/", false));
+        assert!(!active.blocks_page("https://old.reddit.com/r/x") && !active.blocks_page("https://www.reddit.com/"));
         assert_eq!(active.used.take(), vec![key("site:*"), key("site:*.reddit.com")]);
-        assert!(!active.blocks_page("https://youtube.com/", false));
+        assert!(!active.blocks_page("https://youtube.com/"));
         assert_eq!(active.used.take(), vec![key("site:*"), key("site:youtube.com")]);
         // Once one of the entries that match a page is used up, the page is closed, though the other
         // has time.
@@ -2012,13 +2161,13 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1100));
         list.charge(&[key("site:youtube.com")]);
         let active = list.active().unwrap();
-        assert!(active.blocks_page("https://youtube.com/", false));
-        assert!(!active.blocks_page("https://example.com/", false), "* still has time for the rest");
+        assert!(active.blocks_page("https://youtube.com/"));
+        assert!(!active.blocks_page("https://example.com/"), "* still has time for the rest");
         list.polled();
         std::thread::sleep(Duration::from_millis(1100));
         list.charge(&[key("site:*")]);
         let active = list.active().unwrap();
-        assert!(active.blocks_page("https://example.com/", false) && active.blocks_page("https://old.reddit.com/", false));
+        assert!(active.blocks_page("https://example.com/") && active.blocks_page("https://old.reddit.com/"));
         // The items as the window shows them: by the entry as typed.
         let mut items: Vec<String> = running(&list, "a").allowance.unwrap().items.into_iter().map(|i| i.item).collect();
         items.sort();
@@ -2053,7 +2202,10 @@ mod tests {
         };
         start("Both", any).unwrap();
         let both = why("Both");
-        assert!(both.starts_with("“Both” is locked by its lock condition for the next 1 hour") || both.contains("59 minutes"), "{both}");
+        assert!(
+            both.starts_with("“Both” is locked by its lock condition for the next 60 minutes") || both.contains("59 minutes"),
+            "{both}"
+        );
     }
 
     #[test]
@@ -2099,7 +2251,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1100));
         list.charge(&[("a".to_string(), "site:a.com".to_string()), ("a".to_string(), "site:b.com".to_string())]);
         let active = list.active().unwrap();
-        assert!(active.blocks_page("https://a.com/", false) && active.blocks_page("https://b.com/", false));
+        assert!(active.blocks_page("https://a.com/") && active.blocks_page("https://b.com/"));
         assert!(active.sessions[0].free.is_empty());
     }
 

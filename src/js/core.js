@@ -78,8 +78,7 @@ function described(command, args, standIn) {
   return texts.get(key);
 }
 const weekText = (days) => described("describe_schedule", { week: { days } }, t("common.weeklyStandIn"));
-// A session's allowance (its terms) as a tile's line says it, short (`Allowed 30 minutes a day`).
-const allowanceLabel = (terms) => (described("describe_allowance", { terms }, null) || { label: "" }).label;
+// A duration as typed (`2h 30m`) written out, as the service writes it.
 const durationText = (text) => described("describe_duration", { text: text || "" }, text || "");
 // An until lock's end written out (`Tuesday 6 October 2026, 18:00`); as typed until then, or
 // once it has passed.
@@ -105,10 +104,12 @@ function notify(slot, kind, title, subtitle = "", { closable = true, scroll = tr
   if (!title) return;
   const note = el("cds-inline-notification", { kind, title, subtitle, "low-contrast": true, "hide-close-button": !closable });
   box.append(note);
+  // Closed, it is only hidden by Carbon: taken out, so its box is empty and takes no room.
+  note.addEventListener("cds-notification-closed", () => note.remove());
   // An error must not appear out of sight (a tile far down a long page, a form scrolled past its top).
   // Only once the notification has drawn: before that the box is empty and has no height to scroll to.
   if (kind === "error" && scroll) {
-    const show = () => requestAnimationFrame(() => note.isConnected && note.scrollIntoView({ session: "center", behavior: "smooth" }));
+    const show = () => requestAnimationFrame(() => note.isConnected && note.scrollIntoView({ block: "center", behavior: "smooth" }));
     if (note.updateComplete) note.updateComplete.then(show);
     else show();
   }
@@ -153,7 +154,6 @@ const usersOf = (id) => overview.sessions.filter((b) => b.targets.includes(id) |
 const driveIn = (c) => c.type === "flash_drive" || c.type === "webhook" || (c.rules || []).some(driveIn) || (c.members || []).some((id) => driveIn(overview.conditions.find((m) => m.id === id) || {}));
 const wordingOf = (c) => (c.type === "flash_drive" ? "drive" : driveIn(c) ? "true" : "during");
 // (A webhook is worded like a combination with a drive: "active since <name> is true": it has no time.)
-const holdersOf = (id) => usersOf(id).filter((b) => runningOf(b.id));
 // Those of them that cannot be stopped now: what they use can only get stricter.
 const lockedUsersOf = (id) => usersOf(id).filter((b) => runningOf(b.id) && runningOf(b.id).locked);
 
@@ -164,19 +164,48 @@ function invalid(field, why) {
   return !!why;
 }
 
+// A form's note, as Carbon says it: a low-contrast notification under the fields it is about, hidden
+// while there is nothing to say. `show(text or null)` sets its text (a subtitle, under `title`).
+function formNote(kind, title = "") {
+  const node = el("cds-inline-notification", { class: "form-note", kind, title, "low-contrast": true, "hide-close-button": true, hidden: true });
+  return {
+    node,
+    show(text) {
+      node.hidden = !text;
+      if (text) node.setAttribute("subtitle", text);
+    },
+  };
+}
+// Why a form cannot be saved: an error under its fields.
+const errorNote = () => formNote("error", t("common.cannotSave"));
+// What the form's settings come to (an allowance's terms, a schedule's times), as the webhook's test
+// answer is shown: information under them.
+const infoNote = () => formNote("info");
+
 // The one dialog: a question before anything that cannot be taken back, or a short form (a
 // lock's settings, a password). Resolves false for Cancel, the X or Escape; otherwise true,
 // or with `fields`, what `read` makes of them: the dialog stays open while that is null (the
-// fields then say what is wrong).
+// fields then say what is wrong) or `read` throws (what it says is shown in the dialog).
 let answer = null;
 let reader = null;
+// Carbon's modal gives focus back to what opened it when it closes, so a keyboard goes on from there.
+// Opened with a pointer, that focus only shows the button's tooltip: it is let go once the dialog has
+// closed. `pointer`: whether the last input was a pointer's (it is what opened the dialog).
+let pointer = false;
+let openedByPointer = false;
+document.addEventListener("pointerdown", () => (pointer = true), true);
+document.addEventListener("keydown", () => (pointer = false), true);
+// Once the dialog has closed and Carbon has given the focus back: let it go, if a pointer opened it.
+const letGo = () => openedByPointer && setTimeout(() => !$("confirm").open && document.activeElement && document.activeElement.blur());
 function ask({ heading, body = "", action, kind, fields = [], read = null }) {
   if (answer) answer(false);
+  if (!$("confirm").open) openedByPointer = pointer;
   $("confirm-heading").textContent = heading;
   $("confirm-body").textContent = body;
   $("confirm-body").hidden = !body;
+  $("confirm-error").hidden = true;
   $("confirm-action").textContent = action;
-  $("confirm-action").setAttribute("kind", kind);
+  if (kind) $("confirm-action").setAttribute("kind", kind);
   $("confirm-fields").replaceChildren(...fields);
   $("confirm-fields").hidden = fields.length === 0;
   $("confirm").setAttribute("size", fields.length ? "sm" : "xs");
@@ -188,7 +217,8 @@ function ask({ heading, body = "", action, kind, fields = [], read = null }) {
   return new Promise((resolve) => (answer = resolve));
 }
 $("confirm-fields").addEventListener("keydown", (event) => {
-  if (event.key === "Enter") $("confirm-action").click();
+  // Not in a text area, where Enter starts a new line (a text lock's text has several).
+  if (event.key === "Enter" && event.composedPath()[0].tagName !== "TEXTAREA") $("confirm-action").click();
 });
 function answered(value) {
   const resolve = answer;
@@ -196,11 +226,38 @@ function answered(value) {
   if (resolve) resolve(value);
 }
 $("confirm-action").addEventListener("click", async () => {
-  const value = reader ? await reader() : true;
+  $("confirm-error").hidden = true;
+  let value;
+  try {
+    value = reader ? await reader() : true;
+  } catch (e) {
+    // Refused: it stays open with the reason, to be changed.
+    $("confirm-error").setAttribute("title", t("common.notSaved"));
+    $("confirm-error").setAttribute("subtitle", String(e));
+    $("confirm-error").hidden = false;
+    return;
+  }
   if (value === null || value === undefined) return;
   $("confirm").open = false;
+  letGo();
   answered(value);
 });
-$("confirm").addEventListener("cds-modal-closed", () => answered(false));
+// Closes the dialog from inside it, as a list's New does. (Opened again at once, it stays.)
+function dismiss(value = false) {
+  $("confirm").open = false;
+  letGo();
+  answered(value);
+}
+$("confirm").addEventListener("cds-modal-closed", () => {
+  if ($("confirm").open) return;
+  answered(false);
+  letGo();
+});
 
-export { invoke, $, t, tn, ref, joined, nodesOf, editHref, quoted, names, applyStrings, el, described, weekText, allowanceLabel, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, targetName, usersOf, wordingOf, holdersOf, lockedUsersOf, invalid, ask };
+// Asked before a locked session is made stricter, in whatever way: as when it is started locked, it
+// cannot be taken back. `names`: the session or sessions, quoted; `what`: what it will be, a sentence.
+function confirmStricter(names, what) {
+  return ask({ heading: t("stricter.heading", { names }), body: t("stricter.body", { names, what }), action: t("stricter.action"), kind: "primary" });
+}
+
+export { invoke, $, t, tn, ref, joined, nodesOf, editHref, quoted, names, applyStrings, el, weekText, durationText, untilText, localDate, lines, newId, notify, overview, reachable, refresh, whenRefreshed, runningOf, conditionOf, targetName, usersOf, wordingOf, lockedUsersOf, invalid, errorNote, infoNote, ask, dismiss, confirmStricter };

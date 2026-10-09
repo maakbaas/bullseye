@@ -94,7 +94,7 @@ impl Week {
         }
         let mut schedule = Week::default();
         for rule in text.split([';', '\n']).map(str::trim).filter(|rule| !rule.is_empty()) {
-            parse_rule(rule, &mut schedule).map_err(|why| format!("In \"{rule}\": {why}"))?;
+            parse_rule(rule, &mut schedule).map_err(|why| format!("In “{rule}”: {why}"))?;
         }
         schedule.normalized().map(Some)
     }
@@ -142,7 +142,7 @@ fn parse_rule(rule: &str, schedule: &mut Week) -> Result<(), String> {
     }
     let mut spans = Vec::new();
     for word in words {
-        let (start, end) = word.split_once('-').ok_or_else(|| format!("\"{word}\" is not a time span such as 08:00-17:00"))?;
+        let (start, end) = word.split_once('-').ok_or_else(|| format!("“{word}” is not a time span such as 08:00-17:00"))?;
         let (start, end) = (parse_time(start)?, parse_time(end)?);
         if start == DAY {
             return Err("a span cannot start at 24:00".into());
@@ -193,12 +193,12 @@ fn day(word: &str) -> Result<usize, String> {
     const FULL: [&str; 7] = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
     FULL.iter()
         .position(|full| word.len() >= 2 && full.starts_with(word))
-        .ok_or_else(|| format!("\"{word}\" is not a day; use e.g. mon, mon-fri, daily, weekdays or weekends"))
+        .ok_or_else(|| format!("“{word}” is not a day; use e.g. mon, mon-fri, daily, weekdays or weekends"))
 }
 
 /// `8`, `8:30`, `08:30`, `24:00`, `8am`, `12pm`, `5:30pm`, as minutes since midnight.
 fn parse_time(word: &str) -> Result<u16, String> {
-    let invalid = || format!("\"{word}\" is not a time such as 08:00, 17:30 or 5pm");
+    let invalid = || format!("“{word}” is not a time such as 08:00, 17:30 or 5pm");
     let (digits, half) = match word.strip_suffix("am").or_else(|| word.strip_suffix("a")) {
         Some(digits) => (digits, Some(0)),
         None => match word.strip_suffix("pm").or_else(|| word.strip_suffix("p")) {

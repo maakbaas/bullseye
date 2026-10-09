@@ -1,13 +1,16 @@
-// What targets are made of (`LISTS`, `SECTIONS`) and the editors' forms: a session, a target,
-// a condition (with its week grid or its flash drive). Every form has `nodes`, `fill(item)`, `read(item)`,
+// What targets are made of (`LISTS`, `SECTIONS`) and the editors' forms: a target, a condition (with
+// its week grid, flash drive or webhook), and a session's allowance (`allowanceSection`). Every form has `nodes`, `fill(item)`, `read(item)`,
 // `disable(off)`, `settle()` and `error()`.
 
-import { el, invalid, invoke, lines, overview, t } from "./core.js";
+import { el, errorNote, infoNote, invalid, invoke, lines, overview, t } from "./core.js";
+import { durationField, numberField } from "./duration.js";
+import { timingFields } from "./timing.js";
 
-// ---- What things are made of. Three kinds, each a list of its own: targets (what to
-// session), conditions (when) and sessions (one or more targets, a condition, an allowance and a
-// lock: what is started; the allowance and the lock are set on the session itself). The editors, tiles and summaries are built from these tables, so a new kind of
-// list, action or lock method is an entry here (plus its backend side, see AGENTS.md).
+// ---- What things are made of. Three kinds, each a list of its own: targets (what to block),
+// conditions (when) and sessions (one or more targets, a condition, an allowance and a lock: what is
+// started; the allowance and the lock are set on the session itself). The editors, tiles and
+// summaries are built from these tables, so a new kind of list, action or lock method is an entry
+// here (plus its backend side, see AGENTS.md).
 
 // The lists a target can have (`definitions::Target`), by field name.
 const LISTS = Object.fromEntries(
@@ -29,17 +32,15 @@ const LISTS = Object.fromEntries(
 // when it has entries.
 const action = (key) => ({ key, label: t(`targets.actions.${key}.label`), short: window.STRINGS.targets.actions[key].short });
 const SECTIONS = [
-  { key: "websites", lists: ["filters", "allowed"], actions: [action("chromium_tabs"), action("chromium_split_view"), action("chromium_app_windows"), action("firefox_tabs"), action("firefox_split_view")] },
-  { key: "programs", lists: ["programs"], actions: [] },
-  { key: "store", lists: ["store_apps"], actions: [] },
+  { key: "websites", icon: "earth", lists: ["filters", "allowed"], actions: [] },
+  { key: "programs", icon: "application", lists: ["programs"], actions: [] },
+  { key: "store", icon: "shopping-bag", lists: ["store_apps"], actions: [] },
   // Closing (`choice`, the default: off) or minimizing: radio buttons, not a checkbox.
-  { key: "titles", lists: ["titles", "allowed_titles"], choice: "close", actions: [action("window_titles_minimize")] },
-  { key: "other", lists: [], actions: [action("obsidian_web_viewer")] },
-].map((section) => ({ ...section, title: t(`targets.sections.${section.key}.title`), description: window.STRINGS.targets.sections[section.key].description && t(`targets.sections.${section.key}.description`) }));
+  { key: "titles", icon: "text-font", lists: ["titles", "allowed_titles"], choice: "close", actions: [action("window_titles_minimize")] },
+  { key: "other", icon: "apps", lists: [], actions: [action("obsidian_web_viewer")] },
+].map((section) => ({ ...section, title: t(`targets.sections.${section.key}.title`), short: t(`targets.sections.${section.key}.${window.STRINGS.targets.sections[section.key].short ? "short" : "title"}`), description: window.STRINGS.targets.sections[section.key].description && t(`targets.sections.${section.key}.description`) }));
 
-const ACTIONS = SECTIONS.flatMap((section) => section.actions);
-
-// ---- The editors. Each kind's form is built once and reused; every form has `nodes`,
+// ---- The editors. Each kind's form is built anew each time an editor opens; every form has `nodes`,
 // `fill(item)`, `read(item)` (the item with the form's values), `disable(off)`, `settle()`
 // (finish what is being typed) and `error()` (what is wrong, or null).
 
@@ -59,85 +60,6 @@ function nameSection(input, ...more) {
 // Settings page has, with space between parts and no line (only the buttons have one above them).
 const section = (title, text, ...content) =>
   el("section", {}, el("h2", { class: "cds--type-productive-heading-03" }, title), el("p", { class: "cds--type-body-01" }, text), ...content);
-
-// The condition select's choice for no condition (an empty value reads as nothing chosen).
-const ALWAYS = "always";
-function sessionForm() {
-  const name = nameField(t("sessions.namePlaceholder"));
-  const lists = el("cds-checkbox-group", { "legend-text": t("sessions.targetsLegend") });
-  const noTargets = el("p", { class: "cds--type-body-01" }, t("sessions.noTargets"));
-  const condition = el("cds-dropdown", { autoalign: true, "title-text": t("sessions.conditionLabel"), "helper-text": t("sessions.conditionHelper") });
-  // Made here and added to this session: the editor comes back with it.
-  const newTarget = el("cds-button", { kind: "tertiary", size: "md" }, t("sessions.newTarget"), carbonIcon("add", "icon"));
-  const newCondition = el("cds-button", { kind: "tertiary", size: "md" }, t("sessions.newCondition"), carbonIcon("add", "icon"));
-  // The editor makes it (`editor.js`, the `bullseye-make` event).
-  const make = (kind, id = null) => () => newTarget.dispatchEvent(new CustomEvent("bullseye-make", { detail: { kind, id }, bubbles: true }));
-  newTarget.addEventListener("click", make("targets"));
-  newCondition.addEventListener("click", make("conditions"));
-  // Changing one that exists: the same detour, to its editor.
-  const editCondition = el("cds-button", { kind: "tertiary", size: "md" }, t("sessions.editCondition"), carbonIcon("edit", "icon"));
-  editCondition.addEventListener("click", () => condition.value && condition.value !== ALWAYS && make("conditions", condition.value)());
-  // The allowance, set here on the session like its lock is on the tile (`allowanceSection`).
-  const allowance = allowanceSection();
-  let off = false;
-  const syncEdit = () => {
-    editCondition.disabled = off || !condition.value || condition.value === ALWAYS;
-  };
-  condition.addEventListener("cds-dropdown-selected", syncEdit);
-  let boxes = {};
-  let edits = [];
-  return {
-    nodes: [
-      nameSection(name),
-      section(t("sessions.whatTitle"), t("sessions.whatText"), lists, noTargets, el("div", { class: "inline-action" }, newTarget)),
-      section(t("sessions.whenTitle"), t("sessions.whenText"), condition, el("div", { class: "inline-action" }, newCondition, editCondition)),
-      section(t("sessions.allowanceTitle"), t("sessions.allowanceText"), ...allowance.nodes),
-    ],
-    fill(session, isNew = false) {
-      name.value = session.name;
-      boxes = {};
-      edits = [];
-      lists.replaceChildren(
-        ...overview.targets.map((list) => {
-          const box = el("cds-checkbox", { "label-text": list.name });
-          box.checked = session.targets.includes(list.id);
-          boxes[list.id] = box;
-          const edit = el("cds-icon-button", { kind: "ghost", size: "sm", align: "right" }, carbonIcon("edit"), el("span", { slot: "tooltip-content" }, t("sessions.editTarget")));
-          edit.addEventListener("click", make("targets", list.id));
-          edits.push(edit);
-          edit.disabled = off;
-          return el("div", { class: "list-row" }, box, edit);
-        }),
-      );
-      lists.hidden = !overview.targets.length;
-      noTargets.hidden = !!overview.targets.length;
-      condition.replaceChildren(
-        el("cds-dropdown-item", { value: ALWAYS }, t("sessions.always")),
-        ...overview.conditions.map((s) => el("cds-dropdown-item", { value: s.id }, s.name)),
-      );
-      condition.value = session.condition || ALWAYS;
-      allowance.fill(session.allowance);
-      syncEdit();
-    },
-    read: (session) => ({
-      ...session,
-      name: name.value.trim(),
-      targets: overview.targets.filter((l) => boxes[l.id] && boxes[l.id].checked).map((l) => l.id),
-      condition: condition.value && condition.value !== ALWAYS ? condition.value : null,
-      allowance: allowance.read(),
-    }),
-    // A locked session: only its name and its allowance stay open, as the service takes a new name and a
-    // stricter allowance from it (and judges which is stricter).
-    disable(value) {
-      off = value;
-      for (const control of [condition, newTarget, newCondition, ...edits, ...Object.values(boxes)]) control.disabled = off;
-      syncEdit();
-    },
-    settle: () => allowance.settle(),
-    error: () => (name.value.trim() ? allowance.error() : t("sessions.nameMissing")),
-    name,
-  };
-}
 
 // Text areas side by side (the sites to block and the allowed ones) keep one height: dragging
 // one's resize handle sizes the others in its row too. Carbon's textarea has no attribute or
@@ -229,7 +151,7 @@ function appPicker(list) {
         draw();
       },
       (e) => {
-        status.textContent = `${t("targets.store_apps.failed")}: ${e}`;
+        status.textContent = t("targets.store_apps.failedWhy", { why: String(e) });
         draw();
       },
     );
@@ -329,7 +251,7 @@ function targetForm() {
       for (const [key, area] of Object.entries(areas)) if (!LISTS[key].picker) area.placeholder = show ? LISTS[key].placeholder : "";
     },
     settle: async () => {},
-    error: () => (name.value.trim() ? null : t("targets.nameMissing")),
+    error: () => (invalid(name, name.value.trim() ? null : t("targets.nameMissing")) ? t("targets.nameMissing") : null),
     name,
   };
 }
@@ -339,7 +261,7 @@ function targetForm() {
 // list while it is away, so saving does not lose it. Drives are told apart by their hardware's
 // serial number (`drives.rs`).
 function drivePicker() {
-  const select = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.drive.field"), "helper-text": t("conditions.drive.helper") });
+  const select = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.typeDrive"), "helper-text": t("conditions.drive.helper") });
   const rescan = el("cds-button", { kind: "tertiary", size: "md" }, t("conditions.drive.scan"), carbonIcon("renew", "icon"));
   let known = new Map();
   let had = {};
@@ -365,10 +287,10 @@ function drivePicker() {
     known = new Map(drives.map((drive) => [drive.serial, drive]));
     const away = had.serial && !known.has(had.serial) ? [{ serial: had.serial, name: had.name || had.serial }] : [];
     for (const drive of away) known.set(drive.serial, drive);
-    select.setAttribute("label", t(drives.length || away.length ? "conditions.drive.choose" : "conditions.drive.none"));
+    select.setAttribute("label", t(drives.length || away.length ? "conditions.drive.missing" : "conditions.drive.none"));
     select.replaceChildren(
-      ...drives.map((drive) => item(drive.serial, `${drive.name} (${drive.serial})`)),
-      ...away.map((drive) => item(drive.serial, t("conditions.drive.away", { name: `${drive.name} (${drive.serial})` }))),
+      ...drives.map((drive) => item(drive.serial, t("conditions.drive.named", { name: drive.name, serial: drive.serial }))),
+      ...away.map((drive) => item(drive.serial, t("conditions.drive.away", { name: t("conditions.drive.named", { name: drive.name, serial: drive.serial }) }))),
     );
     select.value = known.has(keep) ? keep : "";
     if (fault) invalid(select, fault);
@@ -386,7 +308,7 @@ function drivePicker() {
       const drive = known.get(select.value);
       return { serial: drive.serial, drive: drive.name };
     },
-    error: () => (select.value && known.has(select.value) ? null : t("conditions.drive.missing")),
+    error: () => (invalid(select, select.value && known.has(select.value) ? null : t("conditions.drive.missing")) ? t("conditions.drive.missing") : null),
     disable(value) {
       off = value;
       select.disabled = off;
@@ -396,12 +318,12 @@ function drivePicker() {
 }
 
 // A webhook's match: what turns the condition from its fallback to the other state, by a dropdown
-// (the HTTP code or the body) and its field. `title` names the state it gives ("Not active when").
+// (the HTTP code or the body) and its field.
 function matcherFields() {
   const mode = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.webhook.matchOn") });
   for (const key of ["status", "body"]) mode.append(el("cds-dropdown-item", { value: key }, t(`conditions.webhook.on.${key}`)));
-  const status = el("cds-text-input", { label: t("conditions.webhook.status"), placeholder: "200", "max-count": "3" });
-  const body = el("cds-textarea", { label: t("conditions.webhook.body"), placeholder: t("conditions.webhook.bodyPlaceholder"), "helper-text": t("conditions.webhook.bodyHelper"), rows: 3 });
+  const status = el("cds-text-input", { label: t("conditions.webhook.on.status"), placeholder: t("conditions.webhook.statusPlaceholder"), "max-count": "3" });
+  const body = el("cds-textarea", { label: t("conditions.webhook.on.body"), placeholder: t("conditions.webhook.bodyPlaceholder"), "helper-text": t("conditions.webhook.bodyHelper"), rows: 3 });
   const show = () => {
     status.hidden = mode.value !== "status";
     body.hidden = mode.value !== "body";
@@ -443,10 +365,11 @@ function matcherFields() {
 // first what the condition is by default (also with no answer), then the one match that makes it the
 // other. A Test button asks it once (`test_webhook`).
 function webhookPicker() {
-  const url = el("cds-text-input", { label: t("conditions.webhook.url"), placeholder: "https://example.com/state?room=1", "helper-text": t("conditions.webhook.urlHelper") });
+  const url = el("cds-text-input", { label: t("conditions.webhook.url"), placeholder: t("conditions.webhook.urlPlaceholder"), "helper-text": t("conditions.webhook.urlHelper") });
   const method = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.webhook.method") });
-  for (const key of ["get", "post"]) method.append(el("cds-dropdown-item", { value: key }, key.toUpperCase()));
-  const every = el("cds-text-input", { label: t("conditions.webhook.every"), placeholder: "1", "helper-text": t("conditions.webhook.everyHelper") });
+  for (const key of ["get", "post"]) method.append(el("cds-dropdown-item", { value: key }, t(`conditions.webhook.methods.${key}`)));
+  // No seconds: it is asked at most once a minute.
+  const every = durationField({ label: t("conditions.webhook.every"), helper: t("conditions.webhook.everyHelper"), units: ["d", "h", "m"] });
   const fallback = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.webhook.fallback"), "helper-text": t("conditions.webhook.fallbackHelper") });
   for (const key of ["active", "inactive"]) fallback.append(el("cds-dropdown-item", { value: key }, t(`conditions.webhook.fallback_${key}`)));
   const matcher = matcherFields();
@@ -463,20 +386,19 @@ function webhookPicker() {
   const read = () => ({
     url: url.value.trim(),
     method: method.value || "get",
-    interval: Math.round(Number(every.value.trim()) * 60),
+    interval: every.seconds(),
     fallback: fallback.value !== "inactive",
     matcher: matcher.read(),
   });
   const error = () => {
     invalid(url, null);
-    invalid(every, null);
+    every.error(null);
     if (!/^https?:\/\/\S{3,}$/.test(url.value.trim())) {
       invalid(url, t("conditions.webhook.urlWrong"));
       return t("conditions.webhook.urlWrong");
     }
-    const minutes = Number(every.value.trim());
-    if (!Number.isFinite(minutes) || minutes < 1) {
-      invalid(every, t("conditions.webhook.everyWrong"));
+    if (every.seconds() < 60) {
+      every.error(t("conditions.webhook.everyWrong"));
       return t("conditions.webhook.everyWrong");
     }
     return matcher.error();
@@ -499,16 +421,16 @@ function webhookPicker() {
   });
   return {
     nodes: [
-      section(t("conditions.webhook.requestTitle"), t("conditions.webhook.requestText"), url, method, every),
+      section(t("conditions.webhook.requestTitle"), t("conditions.webhook.requestText"), url, method, every.node),
       section(t("conditions.webhook.defaultTitle"), t("conditions.webhook.defaultText"), fallback),
       matchPart,
-      section(t("conditions.webhook.testTitle"), t("conditions.webhook.testText"), el("div", { class: "inline-action" }, test), result),
+      section(t("conditions.webhook.test"), t("conditions.webhook.testText"), el("div", { class: "inline-action" }, test), result),
     ],
     fill(condition) {
       const hook = condition.type === "webhook" ? condition : {};
       url.value = hook.url || "";
       method.value = hook.method || "get";
-      every.value = hook.interval ? String(Math.round(hook.interval / 60)) : "1";
+      every.set(hook.interval || 60);
       fallback.value = hook.fallback === false ? "inactive" : "active";
       matcher.fill(hook.matcher);
       nameMatch();
@@ -517,7 +439,8 @@ function webhookPicker() {
     read,
     error,
     disable(off) {
-      for (const control of [url, method, every, fallback, test]) control.disabled = off;
+      for (const control of [url, method, fallback, test]) control.disabled = off;
+      every.disable(off);
       matcher.disable(off);
     },
   };
@@ -530,6 +453,7 @@ function combinePicker() {
   for (const key of ["any", "all"]) mode.append(el("cds-dropdown-item", { value: key }, t(`conditions.combine.${key}`)));
   const group = el("cds-checkbox-group", { "legend-text": t("conditions.combine.legend") });
   const none = el("p", { class: "cds--type-body-01" }, t("conditions.combine.none"));
+  group.addEventListener("cds-checkbox-changed", () => invalid(group, null));
   let boxes = [];
   let off = false;
   return {
@@ -549,7 +473,7 @@ function combinePicker() {
       mode.value = condition.type === "combined" ? condition.mode : "any";
     },
     read: () => ({ mode: mode.value, members: boxes.filter((box) => box.checked).map((box) => box.dataset.id) }),
-    error: () => (boxes.filter((box) => box.checked).length >= 2 ? null : t("conditions.combine.missing")),
+    error: () => (invalid(group, boxes.filter((box) => box.checked).length >= 2 ? null : t("conditions.combine.missing")) ? t("conditions.combine.missing") : null),
     disable(value) {
       off = value;
       mode.disabled = value;
@@ -563,7 +487,7 @@ function combinePicker() {
 // chosen type is not kept.
 function conditionForm() {
   const name = nameField(t("conditions.namePlaceholder"));
-  const type = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.typeLabel") });
+  const type = el("cds-dropdown", { autoalign: true, "title-text": t("common.type") });
   type.append(
     el("cds-dropdown-item", { value: "schedule" }, t("conditions.typeSchedule")),
     el("cds-dropdown-item", { value: "flash_drive" }, t("conditions.typeDrive")),
@@ -578,7 +502,7 @@ function conditionForm() {
   const picker = drivePicker();
   const drivePart = section(t("conditions.drive.title"), t("conditions.drive.text"), ...picker.nodes);
   const combine = combinePicker();
-  const combinePart = section(t("conditions.combine.title"), t("conditions.combine.text"), ...combine.nodes);
+  const combinePart = section(t("conditions.typeCombined"), t("conditions.combine.text"), ...combine.nodes);
   const show = () => {
     weekPart.hidden = type.value !== "schedule";
     drivePart.hidden = type.value !== "flash_drive";
@@ -613,7 +537,7 @@ function conditionForm() {
     },
     settle: () => week.settle(),
     error: () => {
-      if (!name.value.trim()) return t("conditions.nameMissing");
+      if (invalid(name, name.value.trim() ? null : t("conditions.nameMissing"))) return t("conditions.nameMissing");
       // A valid one answers null, which must not fall through to another type's check.
       const part = { flash_drive: picker, webhook: hook, combined: combine, schedule: week }[type.value] ?? week;
       return part.error();
@@ -622,10 +546,12 @@ function conditionForm() {
   };
 }
 
-// A session's allowance, a section of the session form: its type (none, a time budget or a Pomodoro
-// cycle) and what the type needs: how much time, for the session or each item, and when it is given
-// back; or blocked for, allowed for, counted from where. Under it the terms in words, written by the
-// backend (`describe_allowance`), which is also what says what cannot be saved. `fill(terms or null)`,
+// A session's allowance, in the dialog of its Allowance row: its type (none, a time budget, a Pomodoro
+// cycle, a delayed start or breaks) and what the type needs: how much time, for the session or each
+// item, and when it is given back; blocked for, allowed for, counted from where; when enforcing
+// starts; or how many breaks of how long, given back when. Under it the terms in words, written by the
+// backend (`describe_allowance`), which is also what says what cannot be saved, on the field it is
+// about or under the terms. `fill(terms or null)`,
 // `read()` (the terms, or null for none), `settle()` and `error()`.
 function allowanceSection() {
   const dropdown = (label, helper, keys, path) => {
@@ -633,50 +559,82 @@ function allowanceSection() {
     for (const key of keys) field.append(el("cds-dropdown-item", { value: key }, t(`${path}.${key}`)));
     return field;
   };
-  const type = dropdown(t("allowance.typeLabel"), t("allowance.typeHelper"), ["none", "budget", "pomodoro"], "allowance.type");
-  const text = (label, placeholder, helper) => el("cds-text-input", { label, placeholder, "helper-text": helper });
-  const allowed = text(t("allowance.budget.allowedLabel"), t("allowance.budget.allowedPlaceholder"), t("allowance.budget.allowedHelper"));
+  const type = dropdown(t("common.type"), t("allowance.typeHelper"), ["none", "budget", "pomodoro", "delayed", "breaks"], "allowance.type");
+  const text = (label, helper) => durationField({ label, helper });
+  const allowed = text(t("allowance.budget.allowedLabel"), t("allowance.budget.allowedHelper"));
   const scope = dropdown(t("allowance.budget.scopeLabel"), t("allowance.budget.scopeHelper"), ["total", "each"], "allowance.budget");
   const reset = dropdown(t("allowance.budget.resetLabel"), t("allowance.budget.resetHelper"), ["never", "every", "condition"], "allowance.budget");
   // Given back every so long: how long, and counted from the session's start or the clock.
-  const every = text(t("allowance.budget.everyLabel"), t("allowance.budget.everyPlaceholder"), t("allowance.budget.everyHelper"));
-  const resetAnchor = dropdown(t("allowance.budget.anchorLabel"), t("allowance.budget.anchorHelper"), ["start", "clock"], "allowance.budget");
-  const everyPart = el("div", { class: "fields" }, every, resetAnchor);
-  const blocked = text(t("allowance.cycle.blockedLabel"), t("allowance.cycle.blockedPlaceholder"), t("allowance.cycle.helper"));
-  const cycleAllowed = text(t("allowance.cycle.allowedLabel"), t("allowance.cycle.allowedPlaceholder"), t("allowance.cycle.helper"));
-  const anchor = dropdown(t("allowance.cycle.anchorLabel"), t("allowance.cycle.anchorHelper"), ["start", "clock"], "allowance.cycle");
-  const budgetPart = el("div", { class: "fields" }, allowed, scope, reset, everyPart);
-  const cyclePart = el("div", { class: "fields" }, blocked, cycleAllowed, anchor);
-  const summary = el("p", { class: "cds--type-body-01 week-summary" });
+  const every = text(t("allowance.budget.everyLabel"), t("allowance.budget.everyHelper"));
+  const resetAnchor = dropdown(t("allowance.budget.anchorLabel"), t("allowance.budget.anchorHelper"), ["start", "clock"], "allowance.anchor");
+  const everyPart = el("div", { class: "fields" }, every.node, resetAnchor);
+  const blocked = text(t("allowance.cycle.blockedLabel"), t("allowance.cycle.helper"));
+  const cycleAllowed = text(t("allowance.cycle.allowedLabel"), t("allowance.cycle.helper"));
+  const anchor = dropdown(t("allowance.cycle.anchorLabel"), t("allowance.cycle.anchorHelper"), ["start", "clock"], "allowance.anchor");
+  const budgetPart = el("div", { class: "fields" }, allowed.node, scope);
+  // Breaks: how many and how long each (what is out of range, the service says under the form).
+  const count = numberField({ label: t("allowance.breaks.countLabel"), helper: t("allowance.breaks.countHelper"), length: 3 });
+  const length = text(t("allowance.breaks.lengthLabel"), t("allowance.breaks.lengthHelper"));
+  const breaksPart = el("div", { class: "fields" }, count, length.node);
+  // When a budget's time, or the breaks, are given back: the same picker for both.
+  const resetPart = el("div", { class: "fields" }, reset, everyPart);
+  const cyclePart = el("div", { class: "fields" }, blocked.node, cycleAllowed.node, anchor);
+  // Nothing enforced for a while after the start, or until a time (`timing.js`).
+  const delayed = timingFields(["after", "from"], "delayed");
+  const delayedPart = el("div", { class: "fields" }, ...delayed.nodes);
+  const summary = infoNote();
+  const note = errorNote();
   let problem = null;
+  // What is wrong is only said once a save was tried (or after, as it is changed).
+  let tried = false;
   let asked = 0;
   let timer = null;
 
   const terms = () => {
-    if (type.value === "pomodoro") return { type: "pomodoro", blocked: blocked.value.trim(), allowed: cycleAllowed.value.trim(), anchor: anchor.value };
-    if (type.value === "budget") {
-      const often = reset.value === "every" ? { every: every.value.trim(), anchor: resetAnchor.value } : {};
-      return { type: "budget", allowed: allowed.value.trim(), scope: scope.value, reset: reset.value, ...often };
-    }
+    if (type.value === "pomodoro") return { type: "pomodoro", blocked: blocked.text(), allowed: cycleAllowed.text(), anchor: anchor.value };
+    if (type.value === "delayed") return { type: "delayed", ...delayed.value() };
+    const often = reset.value === "every" ? { every: every.text(), anchor: resetAnchor.value } : {};
+    if (type.value === "budget") return { type: "budget", allowed: allowed.text(), scope: scope.value, reset: reset.value, ...often };
+    if (type.value === "breaks") return { type: "breaks", count: Number(count.value) || 0, length: length.text(), reset: reset.value, ...often };
     return null;
   };
-  // The terms in words; or why they cannot be saved. Only the latest answer counts.
+  // Where the service says a problem is (`allowance::Problem`, by the terms' field names): the field's
+  // own error; one about the terms together goes under them.
+  const onField = (field) =>
+    ({
+      allowed: type.value === "pomodoro" ? cycleAllowed : allowed,
+      every,
+      blocked,
+      length,
+      value: delayed,
+      count: { error: (why) => invalid(count, why) },
+    })[field] || null;
+  const fieldsWithErrors = [allowed, cycleAllowed, every, blocked, length, delayed];
+  // The terms in words; or why they cannot be saved, and where. Only the latest answer counts.
   async function describe() {
     const mine = ++asked;
     const wanted = terms();
     let words = "";
     let wrong = null;
+    let field = null;
     if (wanted) {
       try {
         words = (await invoke("describe_allowance", { terms: wanted })).words;
       } catch (e) {
-        wrong = String(e);
+        wrong = e && e.why ? e.why : String(e);
+        field = (e && e.field) || null;
       }
     }
     if (mine !== asked) return;
     problem = wrong;
-    summary.textContent = wrong || words;
-    summary.classList.toggle("problem", !!wrong);
+    summary.show(wrong ? null : words);
+    // Said once a save was tried (or after, as it is changed).
+    const shown = tried ? wrong : null;
+    for (const each of fieldsWithErrors) each.error(null);
+    invalid(count, null);
+    const place = onField(field);
+    if (place) place.error(shown);
+    note.show(place ? null : shown);
   }
   const soon = () => {
     clearTimeout(timer);
@@ -684,11 +642,19 @@ function allowanceSection() {
   };
   const show = () => {
     budgetPart.hidden = type.value !== "budget";
+    breaksPart.hidden = type.value !== "breaks";
+    resetPart.hidden = !["budget", "breaks"].includes(type.value);
+    reset.setAttribute("title-text", t(type.value === "breaks" ? "allowance.breaks.resetLabel" : "allowance.budget.resetLabel"));
     cyclePart.hidden = type.value !== "pomodoro";
+    delayedPart.hidden = type.value !== "delayed";
     everyPart.hidden = reset.value !== "every";
-    summary.hidden = !terms();
+    if (!terms()) {
+      summary.show(null);
+      note.show(null);
+    }
   };
-  for (const field of [allowed, blocked, cycleAllowed, every]) field.addEventListener("input", soon);
+  for (const field of [allowed, blocked, cycleAllowed, every, delayed, length]) field.onChange(soon);
+  count.addEventListener("input", soon);
   for (const field of [scope, anchor, resetAnchor]) field.addEventListener("cds-dropdown-selected", describe);
   reset.addEventListener("cds-dropdown-selected", () => {
     show();
@@ -699,27 +665,41 @@ function allowanceSection() {
     describe();
   });
   return {
-    nodes: [type, budgetPart, cyclePart, summary],
+    nodes: [type, budgetPart, breaksPart, resetPart, cyclePart, delayedPart, summary.node, note.node],
     // Both types' fields start from what the session has, else from an example of each.
     fill(allowance) {
       type.value = (allowance && allowance.type) || "none";
       const budget = allowance && allowance.type === "budget" ? allowance : {};
       const cycle = allowance && allowance.type === "pomodoro" ? allowance : {};
-      allowed.value = budget.allowed || "30m";
+      const delay = allowance && allowance.type === "delayed" ? allowance : null;
+      const breaks = allowance && allowance.type === "breaks" ? allowance : {};
+      // The reset is the budget's or the breaks', whichever it has.
+      const given = allowance && allowance.reset ? allowance : {};
+      delayed.fill(delay);
+      allowed.set(budget.allowed || 0);
       scope.value = budget.scope || "total";
-      reset.value = budget.reset || "every";
-      every.value = budget.every || "1d";
-      resetAnchor.value = budget.reset === "every" ? budget.anchor : "clock";
-      blocked.value = cycle.blocked || "50m";
-      cycleAllowed.value = cycle.allowed || "10m";
+      reset.value = given.reset || "never";
+      every.set(given.every || 0);
+      resetAnchor.value = given.reset === "every" ? given.anchor : "clock";
+      // A new one: three breaks of ten minutes.
+      count.value = String(breaks.count || 3);
+      length.set(breaks.length || "10m");
+      // A new cycle is the classic one; the rest start empty.
+      blocked.set(cycle.blocked || "25m");
+      cycleAllowed.set(cycle.allowed || "5m");
       anchor.value = cycle.anchor || "start";
       show();
-      summary.textContent = t("allowance.describing");
+      tried = false;
+      note.show(null);
+      for (const each of fieldsWithErrors) each.error(null);
+      invalid(count, null);
+      summary.show(terms() ? t("allowance.describing") : null);
       describe();
     },
     read: terms,
     settle: async () => {
       clearTimeout(timer);
+      tried = true;
       await describe();
     },
     error: () => problem,
@@ -736,7 +716,8 @@ const SLOT = 30; // minutes per cell
 function weekEditor() {
   // What is marked, written out by the backend, below it (how to use it is its section's line).
   const grid = el("div", { class: "week", "aria-hidden": "true" });
-  const summary = el("p", { class: "cds--type-body-01 week-summary" });
+  const summary = infoNote();
+  const note = errorNote();
   const cells = DAY_NAMES.map(() => []);
   let days = DAY_NAMES.map(() => []);
   let disabled = false;
@@ -780,18 +761,18 @@ function weekEditor() {
     // saved like this.
     if (days.every((spans) => !spans.length)) {
       problem = t("conditions.nothingMarked");
-      summary.textContent = problem;
-      summary.classList.remove("problem");
+      summary.show(problem);
+      note.show(null);
       return;
     }
     try {
-      summary.textContent = t("conditions.active", { times: await invoke("describe_schedule", { week: { days } }) });
+      summary.show(t("conditions.active", { times: await invoke("describe_schedule", { week: { days } }) }));
       problem = null;
     } catch (e) {
       problem = String(e);
-      summary.textContent = problem;
+      summary.show(null);
     }
-    summary.classList.toggle("problem", !!problem);
+    note.show(problem);
   }
 
   // Dragging from one cell to another marks the rectangle between them (those days, those
@@ -849,7 +830,7 @@ function weekEditor() {
   grid.addEventListener("pointercancel", finish);
 
   return {
-    nodes: [grid, summary],
+    nodes: [grid, summary.node, note.node],
     read: () => ({ days: days.map((spans) => spans.map((span) => [...span])) }),
     fill: (values) => {
       days = values.days.map((spans) => spans.map((span) => [...span]));
@@ -863,8 +844,15 @@ function weekEditor() {
       draw();
     },
     settle: async () => {},
-    error: () => problem,
+    // On a save: nothing marked is said as what is wrong, under the grid.
+    error() {
+      if (problem) {
+        summary.show(null);
+        note.show(problem);
+      }
+      return problem;
+    },
   };
 }
 
-export { LISTS, SECTIONS, ACTIONS, ALWAYS, sessionForm, targetForm, conditionForm };
+export { LISTS, SECTIONS, targetForm, conditionForm, allowanceSection };

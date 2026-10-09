@@ -1,37 +1,16 @@
-// The editor of a session, target or condition: opening it (also on a detour, `detour.js`), its
-// breadcrumb, saving and deleting, and keeping what a running session uses read-only.
+// The editor of a target or condition: opening it (also on a detour from a session's tile,
+// `detour.js`), its breadcrumb, saving and deleting, and keeping what a locked session uses to
+// stricter changes.
 
-import { $, el, notify, refresh, t } from "./core.js";
+import { $, confirmStricter, el, invoke, lockedUsersOf, names, notify, refresh, t } from "./core.js";
 import { KINDS } from "./kinds.js";
 import { confirmDelete } from "./tiles.js";
-import { detour } from "./detour.js";
 
 // The form of the kind being edited, built anew each time the editor opens. A reused one would
 // put Carbon's text areas back into the page after they had been taken out of it, and Carbon
 // then no longer measures an empty one, whose helper text stays squeezed to zero width.
 const forms = {};
 let editing = null; // { kind, item (as opened), isNew }
-
-// From the session editor: the session as it is now is kept, and gets the new item when it is saved.
-// `id`: an existing target or condition to change, instead of a new one.
-function detourFor({ kind, id }) {
-  const draft = forms.sessions.read(editing.item);
-  const back = location.hash || KINDS.sessions.path;
-  detour.current = {
-    back,
-    draft,
-    crumbs: [
-      { label: KINDS.sessions.title, href: KINDS.sessions.path },
-      { label: draft.name || (editing.isNew ? KINDS.sessions.newLabel : editing.item.name), href: back },
-    ],
-    onSaved: async (item) => {
-      if (id) return;
-      if (kind === "targets" && !draft.targets.includes(item.id)) draft.targets.push(item.id);
-      if (kind === "conditions") draft.condition = item.id;
-    },
-  };
-  location.hash = `${back}/${kind}/${id ? `edit/${encodeURIComponent(id)}` : "new"}`;
-}
 
 // The breadcrumb: links up to the last, which is this page.
 function setCrumbs(crumbs) {
@@ -42,10 +21,10 @@ function setCrumbs(crumbs) {
   );
 }
 
-// `via`: the detour this item is made on; `draft`: a session as it was being edited before one.
-function openEditor(kind, id, { via = null, draft = null } = {}) {
+// `via`: the detour this item is made on.
+function openEditor(kind, id, { via = null } = {}) {
   const kindOf = KINDS[kind];
-  const item = draft || (id ? kindOf.items().find((i) => i.id === id) : kindOf.create());
+  const item = id ? kindOf.items().find((i) => i.id === id) : kindOf.create();
   if (!item) {
     location.hash = kindOf.path;
     return;
@@ -73,9 +52,14 @@ function renderEditorLock() {
   const held = !editing.isNew && kind.held(editing.item);
   // Locked: what is used may only get stricter, which is for the service to judge.
   const limited = !held && !editing.isNew && kind.limited(editing.item);
-  forms[editing.kind].disable(!!held);
-  // No example entries where entries are fixed or limited, or they read as entries.
-  if (forms[editing.kind].examples) forms[editing.kind].examples(!held && !limited);
+  // The form follows only when that changes (this runs every second).
+  const state = `${!!held} ${!!limited}`;
+  if (editing.lockState !== state) {
+    editing.lockState = state;
+    forms[editing.kind].disable(!!held);
+    // No example entries where entries are fixed or limited, or they read as entries.
+    if (forms[editing.kind].examples) forms[editing.kind].examples(!held && !limited);
+  }
   // Only the name can be changed on something a locked session holds; it never loosens anything.
   $("delete").disabled = !!held || (!editing.isNew && kind.inUse(editing.item));
   const box = $("editor-notices");
@@ -98,21 +82,36 @@ $("save").addEventListener("click", async () => {
   // What is still being typed counts, and what cannot be read is said here.
   await form.settle();
   const problem = form.error();
+  // What is wrong is said at its field (`error()` marks it): the first of them is brought into view.
   if (problem) {
-    notify("editor-notices", "error", t("editor.saveFailed", { noun: KINDS[kind].noun }), problem);
-    $("editor-notices").dataset.lock = "error";
+    const wrong = $("form").querySelector("[invalid], .form-note[kind='error']:not([hidden])");
+    if (wrong) wrong.scrollIntoView({ block: "center", behavior: "smooth" });
     return;
   }
   $("save").disabled = true;
   try {
     const saved = form.read(editing.item);
+    // What a locked session uses can only get stricter, and that cannot be taken back: asked first
+    // (nothing to ask when nothing is changed).
+    const holders = editing.isNew ? [] : lockedUsersOf(editing.item.id);
+    if (holders.length && JSON.stringify(saved) !== JSON.stringify(editing.item)) {
+      // The service says first if it would be refused, as it is when it is looser.
+      await invoke("check_stricter", { check: kind === "targets" ? { what: "target", target: saved } : { what: "condition", condition: saved } });
+      if (!(await confirmStricter(names(holders), t("stricter.shared")))) {
+        $("save").disabled = false;
+        return;
+      }
+    }
     await KINDS[kind].save(saved);
     const { via } = editing;
     if (via) {
-      // Back where it was made from, with it: the service's view first, so it is there.
-      await via.onSaved(saved);
-      await refresh();
+      // Back where it was made from first (going there clears the page's notices, so what is said
+      // of the session it was made for stays), then the service's view, so it is there, then it is chosen.
+      const back = new Promise((resolve) => addEventListener("hashchange", resolve, { once: true }));
       location.hash = via.back;
+      await back;
+      await refresh();
+      await via.onSaved(saved);
     } else location.hash = KINDS[kind].path;
   } catch (e) {
     notify("editor-notices", "error", t("editor.saveFailed", { noun: KINDS[kind].noun }), String(e));
@@ -122,9 +121,6 @@ $("save").addEventListener("click", async () => {
   await refresh();
 });
 $("delete").addEventListener("click", () => editing && confirmDelete(editing.kind, editing.item.id));
-
-// The session form's New target and New condition buttons (`forms.js`).
-$("form").addEventListener("bullseye-make", (event) => detourFor(event.detail));
 
 // Leaving the editor (`main.js`).
 function closeEditor() {

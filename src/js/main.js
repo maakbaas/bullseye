@@ -2,8 +2,10 @@
 
 import { $, applyStrings, ask, el, invalid, invoke, joined, notify, overview, quoted, refresh, t, whenRefreshed } from "./core.js";
 import { LOCKS } from "./locks.js";
+import { durationField } from "./duration.js";
 import { KINDS } from "./kinds.js";
-import { askText, renderTiles, tiles } from "./tiles.js";
+import { askText, renderTiles, showOnly, tiles } from "./tiles.js";
+import { newSession } from "./fields.js";
 import { closeEditor, openEditor, renderEditorLock } from "./editor.js";
 import { detour } from "./detour.js";
 
@@ -11,10 +13,19 @@ applyStrings();
 whenRefreshed(render);
 
 let page = "sessions"; // the kind whose page or editor is shown
+let single = null; // the session shown on its own (`#/edit/<id>`), or null
 
 function render() {
   if (!$("view-settings").hidden) renderSettings();
-  if (!$("view-list").hidden) renderTiles(page);
+  if (!$("view-list").hidden) {
+    // A session shown on its own that is gone (deleted), or the only one: back to all of them.
+    if (single && (overview.sessions.length < 2 || !overview.sessions.some((s) => s.id === single))) {
+      location.hash = KINDS.sessions.path;
+      return;
+    }
+    renderTiles(page);
+    showSingle();
+  }
   renderEditorLock();
 }
 
@@ -34,7 +45,8 @@ function renderSettings() {
   const locked = overview.running.some((running) => running.locked);
   $("unlock-text").textContent = t(free ? "settings.unlockFree" : "settings.unlockText");
   $("unlock-state").hidden = locked && free;
-  $("unlock-state").textContent = !locked
+  // What unlocking would do now, as the forms' notes say what their settings come to.
+  $("unlock-state").subtitle = !locked
     ? t("settings.unlockNothing")
     : !requested
       ? t("settings.unlockAsk", { delay: delayWords })
@@ -42,36 +54,30 @@ function renderSettings() {
         ? t(remaining === 0 ? "settings.unlockReady" : "settings.unlockReadyWay")
         : t("settings.unlockWait", { left });
   $("unlock").hidden = !locked;
-  $("unlock").replaceChildren(t(free || ready ? "settings.unlock" : "settings.request"), carbonIcon(free || ready ? "unlocked" : "time", "icon"));
+  // Redrawn only when it changes: a new label under the pointer can swallow a click.
+  const unlockLabel = t(free || ready ? "settings.unlock" : "settings.request");
+  if ($("unlock").textContent.trim() !== unlockLabel) $("unlock").replaceChildren(unlockLabel, carbonIcon(free || ready ? "unlocked" : "time", "icon"));
   // Counting down: nothing to press but Abort.
   $("unlock").disabled = requested && !ready;
   $("abort-unlock").hidden = free || !requested;
   // A text or password that unlocks at once, when the countdown has not.
   const way = overview.unlock.way;
-  const answer = way && (way.method === "text" || way.method === "password");
+  const answer = way && ["text", "random_text", "password"].includes(way.method);
   $("unlock-answer").hidden = !locked || ready || !answer;
-  const answerLabel = answer ? t("settings.way.answer" + (way.method === "text" ? "Text" : "Password")) : "";
+  const answerLabel = answer ? t("settings.way.answer" + (way.method === "password" ? "Password" : "Text")) : "";
   if (answer && $("unlock-answer").textContent.trim() !== answerLabel) $("unlock-answer").replaceChildren(answerLabel, carbonIcon("unlocked", "icon"));
   renderWay();
-  const abortLabel = t(remaining === 0 ? "settings.relock" : "settings.abort");
+  const abortLabel = t(remaining === 0 ? "common.lockAgain" : "common.keepLocked");
   if ($("abort-unlock").textContent.trim() !== abortLabel) $("abort-unlock").replaceChildren(abortLabel, carbonIcon("locked", "icon"));
   // Only when it differs: this draws every second, and a label swapped under a click can lose it.
   const delayLabel = t(free ? "settings.setDelay" : "settings.changeDelay");
   if ($("set-delay").textContent.trim() !== delayLabel) $("set-delay").replaceChildren(delayLabel, carbonIcon("time", "icon"));
 }
 
-// A delay in seconds as it is typed (`1d`, `2h 30m`), to start the field from: the words the
-// backend writes (`2 hours and 30 minutes`) are not what it reads.
-function typedDelay(seconds) {
-  const units = [["d", 86400], ["h", 3600], ["m", 60], ["s", 1]];
-  const parts = [];
-  for (const [unit, size] of units) {
-    const n = Math.floor(seconds / size);
-    seconds -= n * size;
-    if (n) parts.push(`${n}${unit}`);
-  }
-  return parts.join(" ");
-}
+// How long unlocking takes, as a duration field (none is all zeros).
+// No seconds: a wait of seconds is no wait.
+const delayField = durationField({ label: t("settings.delayLabel"), units: ["d", "h", "m"] });
+$("delay-field").append(delayField.node);
 
 async function unlock() {
   const { delay, remaining, way_open: wayOpen } = overview.unlock;
@@ -101,11 +107,11 @@ $("unlock-answer").addEventListener("click", async () => {
   if (!way) return;
   let password = null;
   let text = null;
-  if (way.method === "text") {
+  if (way.method === "text" || way.method === "random_text") {
     text = await askText(t("settings.way.answerHeading"), way.text, t("settings.unlock"));
     if (text === null) return;
   } else {
-    const field = el("cds-password-input", { label: t("sessions.stopPassword"), autocomplete: "off" });
+    const field = el("cds-password-input", { label: t("locks.password.field"), autocomplete: "off" });
     password = await ask({
       heading: t("settings.way.answerHeading"),
       body: t("settings.way.answerBody"),
@@ -129,19 +135,17 @@ $("unlock-answer").addEventListener("click", async () => {
 // ---- The other way to unlock (`unlock::Way`): a lock method besides the delay, which is always there.
 
 // Only these of the lock methods (the delay is always there), with the same labels as on a session.
-const WAYS = ["none", "condition", "text", "password"];
+const WAYS = ["none", "condition", "text", "random_text", "password"];
 const wayMethod = el("cds-dropdown", { autoalign: true, "title-text": t("settings.way.title"), class: "way-method" });
 for (const key of WAYS) wayMethod.append(el("cds-dropdown-item", { value: key }, LOCKS[key].label));
 $("way-controls").append(wayMethod);
 let choosingWay = false;
 
-// What it is now, in a line.
+// The way chosen now, in its dropdown.
 function renderWay() {
-  const { way, way_open: open } = overview.unlock;
+  const { way } = overview.unlock;
   const method = way ? way.method : "none";
   if (!choosingWay && wayMethod.value !== method) wayMethod.value = method;
-  const key = { none: "stateNone", text: "stateText", password: "statePassword", condition: "stateCondition" }[method];
-  $("way-state").textContent = open ? t("settings.way.stateOpen") : t("settings.way." + key);
 }
 
 // Setting it: the lock method's own form (worded for unlocking), then the service checks it. Cancel
@@ -203,7 +207,7 @@ $("abort-unlock").addEventListener("click", async () => {
 $("set-delay").addEventListener("click", async () => {
   notify("delay-notices");
   try {
-    await invoke("set_unlock_delay", { delay: $("delay").value });
+    await invoke("set_unlock_delay", { delay: delayField.text() });
     await refresh();
     const { delay, delay_words: words } = overview.unlock;
     notify("delay-notices", "success", t(delay === 0 ? "settings.delayFree" : "settings.delaySet", { delay: words }));
@@ -212,7 +216,6 @@ $("set-delay").addEventListener("click", async () => {
   }
   renderSettings();
 });
-$("delay").addEventListener("keydown", (event) => { if (event.key === "Enter") $("set-delay").click(); });
 
 // Export and Import: the dialogs, the file and its reading are the app's (`export_settings`,
 // `open_settings`); the service replaces everything on Import.
@@ -245,7 +248,7 @@ $("import").addEventListener("click", async () => {
     const apps = opened.left_out.map((app) => t("settings.importAppIn", { app: quoted(app.name), target: quoted(app.target) }));
     const leftOut = !opened.apps_checked ? t("settings.importAppsUnknown") : apps.length ? t("settings.importAppsLeftOut", { n: apps.length, apps: joined(apps).join("") }) : "";
     if (leftOut) body.push(leftOut);
-    const sure = await ask({ heading: t("settings.importHeading"), body: body.join(" "), action: t("settings.importAction"), kind: "danger" });
+    const sure = await ask({ heading: t("settings.importHeading"), body: body.join(". "), action: t("settings.import"), kind: "danger" });
     if (!sure) return;
     await invoke("import_settings", { path: opened.path });
     notify("transfer-notices", "success", t("settings.imported"), leftOut);
@@ -279,34 +282,41 @@ function showView(view) {
 
 function route() {
   const hash = location.hash || "#/";
+  // What a page said is for that page: gone once it is left, also when it is come back to. (A service
+  // that does not answer is said again at the next refresh; an editor's own notice when it opens.)
+  for (const box of document.querySelectorAll(".notices")) box.replaceChildren();
   let view = "list";
   let kind = "sessions";
   let edit = null;
-  // A target or condition made on a detour (`detour`): from the session editor, or for a
-  // lock. Without its detour (the page was reloaded), back to where it came from.
-  const nested = hash.match(/^#\/((?:new|edit\/[^/]+|lock\/[^/]+))\/(targets|conditions)\/(?:new|edit\/([^/]+))$/);
+  // A target or condition made on a detour from a session's tile (`detour`). Without its detour
+  // (the page was reloaded), back to the sessions.
+  const nested = hash.match(/^#\/session\/[^/]+\/(targets|conditions)\/new$/);
   if (nested) {
-    const back = nested[1].startsWith("lock/") ? KINDS.sessions.path : `#/${nested[1]}`;
-    if (!detour.current || detour.current.back !== back) {
-      location.hash = back;
+    if (!detour.current) {
+      location.hash = KINDS.sessions.path;
       return;
     }
-    page = nested[2];
+    page = nested[1];
     showView("editor");
     // Still within the session it is made for.
     markPage("sessions");
-    openEditor(nested[2], nested[3] ? decodeURIComponent(nested[3]) : null, { via: detour.current });
+    openEditor(nested[1], null, { via: detour.current });
     $("scroller").scrollTo(0, 0);
     return;
   }
-  // Back from a detour: the session as it was being edited, with what was made on it.
-  const resumed = detour.current && detour.current.back === hash ? detour.current.draft : null;
   detour.current = null;
+  // A link to a session shows its tile on its own, under Sessions in the breadcrumb; the only one
+  // is shown as the list.
+  single = null;
   const match = hash.match(/^#\/(?:(targets|conditions)(?:\/|$))?(new|edit\/(.+))?$/);
   if (hash === "#/settings") view = "settings";
   else if (match) {
     kind = match[1] || "sessions";
-    if (match[2]) {
+    if (match[2] && kind === "sessions") {
+      // The only session is shown as the list of all of them (a new first one too).
+      if (match[3] && overview.sessions.length !== 1) single = decodeURIComponent(match[3]);
+      else history.replaceState(null, "", KINDS.sessions.path);
+    } else if (match[2]) {
       view = "editor";
       edit = match[3] ? decodeURIComponent(match[3]) : "";
     }
@@ -322,25 +332,41 @@ function route() {
     // Always just "New", with the page's own name for screen readers.
     $("new-item").replaceChildren(t("common.new"), carbonIcon("add", "icon"));
     $("new-item").setAttribute("aria-label", kindOf.newLabel);
+    // Not on a session shown on its own.
+    $("new-item").hidden = !!single;
     $("empty-title").textContent = kindOf.empty[0];
     $("empty-text").textContent = kindOf.empty[1];
-    notify("list-notices");
     $("tiles").replaceChildren();
     tiles.clear();
+    showOnly(single);
     renderTiles(kind);
+    showSingle();
   }
-  if (view === "editor") openEditor(kind, edit || null, { draft: kind === "sessions" ? resumed : null });
+  if (view === "editor") openEditor(kind, edit || null);
   else closeEditor();
   if (view === "settings") {
-    $("delay").value = typedDelay(overview.unlock.delay);
-    notify("delay-notices");
+    delayField.set(overview.unlock.delay);
     renderSettings();
-    notify("settings-notices");
   }
   $("scroller").scrollTo(0, 0);
 }
+
+// A session shown on its own (never the only one): its name as the title and after Sessions in the
+// breadcrumb, and Show all under it.
+function showSingle() {
+  const session = single && overview.sessions.find((s) => s.id === single);
+  $("show-all").hidden = !session;
+  if (!session) return;
+  if ($("list-title").textContent !== session.name) $("list-title").textContent = session.name;
+  $("trail").toggleAttribute("no-trailing-slash", true);
+  const name = $("trail").querySelector(".single");
+  if (name) name.querySelector("cds-breadcrumb-link").textContent = session.name;
+  else $("trail").append(el("cds-breadcrumb-item", { class: "single" }, el("cds-breadcrumb-link", { "is-currentpage": true }, session.name)));
+}
+$("show-all-button").replaceChildren(t("sessions.showAll"), carbonIcon("list", "icon"));
 window.addEventListener("hashchange", route);
-$("new-item").addEventListener("click", () => (location.hash = KINDS[page].newPath));
+// A new session is asked in the modal (its name and targets), and its tile opens for the rest.
+$("new-item").addEventListener("click", () => (page === "sessions" ? newSession() : (location.hash = KINDS[page].newPath)));
 const PAGES = { sessions: "#/", targets: "#/targets", conditions: "#/conditions", settings: "#/settings" };
 // Below Carbon's md breakpoint (672 px) the tabs are icons only, each with its label as tooltip.
 const narrow = matchMedia("(max-width: 41.99rem)");

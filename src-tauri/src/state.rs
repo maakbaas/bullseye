@@ -52,23 +52,12 @@ pub struct SavedPart {
 }
 
 /// The ways a session is enforced, chosen when it starts and fixed while it runs, so turning one
-/// off is not a way around a timed session. A list with only one way to act on it has no switch of its
-/// own: the programs, the Store apps and the window titles are acted on when the list has entries
-/// (an empty list is "off"). The sites have one switch per browser and view, and Obsidian's web
-/// viewer, which has no list, has its own.
+/// off is not a way around a timed session. A list has no switch of its own: the sites, programs,
+/// Store apps and window titles are acted on when the list has entries (an empty list is "off"), the
+/// sites in every way a browser can show them (`tab_closer.rs`). Obsidian's web viewer, which has no
+/// list, has a switch.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct Actions {
-    /// Closes a Chromium tab whose page is on the target (`tab_closer.rs`).
-    pub chromium_tabs: bool,
-    /// Closes a blocked page shown in either half of a Chromium split view.
-    pub chromium_split_view: bool,
-    /// Closes a blocked page shown in an app window (`chrome --app=<url>`, or a popup): a Chromium
-    /// window with no tab strip and no address bar.
-    pub chromium_app_windows: bool,
-    /// Closes a Firefox tab whose page is on the target (`tab_closer.rs`).
-    pub firefox_tabs: bool,
-    /// Closes a blocked page shown in either half of a Firefox split view.
-    pub firefox_split_view: bool,
     /// The windows whose title is on the list of titles are minimized instead of closed: nothing is
     /// lost. Not an action of its own but how that list is acted on.
     #[serde(default)]
@@ -96,15 +85,11 @@ impl Actions {
     /// Every action as (turned on, what it needs). **The one place to list a new action**: add
     /// its field above (if it has a switch) and a line here; what may start and what runs follow
     /// from it. (A new kind of list also needs a `Uses` variant and an arm in `lists::Lists::has`.)
-    fn all(&self) -> Vec<(bool, Uses)> {
-        vec![
-            (self.chromium_tabs, Uses::Sites),
-            (self.chromium_split_view, Uses::Sites),
-            (self.chromium_app_windows, Uses::Sites),
-            (self.firefox_tabs, Uses::Sites),
-            (self.firefox_split_view, Uses::Sites),
+    fn all(&self) -> [(bool, Uses); 5] {
+        [
             (self.obsidian_web_viewer, Uses::Nothing),
             // Acted on whenever their list has entries.
+            (true, Uses::Sites),
             (true, Uses::Programs),
             (true, Uses::StoreApps),
             (true, Uses::Titles),
@@ -134,15 +119,7 @@ impl Actions {
 
 impl Default for Actions {
     fn default() -> Actions {
-        Actions {
-            chromium_tabs: true,
-            chromium_split_view: true,
-            obsidian_web_viewer: true,
-            chromium_app_windows: true,
-            firefox_tabs: true,
-            firefox_split_view: true,
-            window_titles_minimize: false,
-        }
+        Actions { obsidian_web_viewer: true, window_titles_minimize: false }
     }
 }
 
@@ -325,15 +302,7 @@ mod tests {
 
     #[test]
     fn what_can_run_depends_on_the_actions_and_the_lists() {
-        let only = |tabs, split, obsidian| Actions {
-            chromium_tabs: tabs,
-            chromium_split_view: split,
-            chromium_app_windows: false,
-            firefox_tabs: false,
-            firefox_split_view: false,
-            obsidian_web_viewer: obsidian,
-            window_titles_minimize: false,
-        };
+        let only = |obsidian| Actions { obsidian_web_viewer: obsidian, window_titles_minimize: false };
         // Which lists have entries.
         let lists = |sites: bool, programs: bool| {
             move |uses: Uses| match uses {
@@ -343,19 +312,15 @@ mod tests {
                 Uses::StoreApps | Uses::Titles => false,
             }
         };
-        // Sites need a switch for where they are closed, and entries.
-        assert!(only(true, false, false).can_run(lists(true, false)));
-        assert!(only(false, true, false).can_run(lists(true, false)));
-        assert!(!only(false, false, false).can_run(lists(true, false)), "sites, but closed nowhere");
-        // Obsidian's needs no list.
-        assert!(only(false, false, true).can_run(lists(false, false)));
-        // A list with no switch of its own (programs, Store apps, titles) is acted on by its entries.
-        assert!(only(false, false, false).can_run(lists(false, true)));
-        assert!(only(false, false, false).uses(Uses::Programs) && only(false, false, false).uses(Uses::Titles));
-        // Without any entries, only one that needs no list can run.
-        assert!(Actions::default().can_run(lists(false, false)));
-        assert!(!only(true, true, false).can_run(lists(false, false)));
-        assert!(only(true, false, false).uses(Uses::Sites) && !only(false, false, false).uses(Uses::Sites));
+        // Every list is acted on by its entries.
+        assert!(only(false).can_run(lists(true, false)));
+        assert!(only(false).can_run(lists(false, true)));
+        for list in [Uses::Sites, Uses::Programs, Uses::StoreApps, Uses::Titles] {
+            assert!(only(false).uses(list), "{list:?}");
+        }
+        // Obsidian's needs no list; without it and without entries, nothing runs.
+        assert!(only(true).can_run(lists(false, false)) && only(true).uses(Uses::Nothing));
+        assert!(!only(false).can_run(lists(false, false)) && !only(false).uses(Uses::Nothing));
     }
 
     #[test]
@@ -392,16 +357,7 @@ mod tests {
         assert!(!minimize(true).turned_off_by(&minimize(false)), "closing instead of minimizing is stricter");
         assert!(minimize(false).turned_off_by(&minimize(true)), "minimizing instead of closing is not");
         assert!(!minimize(false).turned_off_by(&minimize(false)));
-        assert!(Actions::default().turned_off_by(&Actions { firefox_tabs: false, ..Actions::default() }));
-        assert!(!Actions { firefox_tabs: false, ..Actions::default() }.turned_off_by(&Actions::default()));
-        // A file from before has switches for the lists that no longer have one, and none for
-        // minimizing: it reads, as closing.
-        let mut old = serde_json::to_value(Actions::default()).unwrap();
-        let fields = old.as_object_mut().unwrap();
-        fields.remove("window_titles_minimize");
-        for gone in ["exe_names", "store_apps", "window_titles"] {
-            fields.insert(gone.into(), serde_json::Value::Bool(false));
-        }
-        assert_eq!(serde_json::from_value::<Actions>(old).unwrap(), Actions::default());
+        let obsidian = |on| Actions { obsidian_web_viewer: on, ..Actions::default() };
+        assert!(obsidian(true).turned_off_by(&obsidian(false)) && !obsidian(false).turned_off_by(&obsidian(true)));
     }
 }

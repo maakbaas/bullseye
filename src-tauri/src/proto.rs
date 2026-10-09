@@ -9,11 +9,13 @@ use std::io::{Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::allowance::Terms;
 use crate::definitions::{Condition, Definition, Kind, Library, Target};
 use crate::lists::Entries;
 use crate::lock::Lock;
 use crate::session::Running;
 use crate::state::Actions;
+use crate::status::Status;
 
 /// The pipe the service listens on.
 pub const PIPE: &str = r"\\.\pipe\bullseye";
@@ -21,6 +23,23 @@ pub const PIPE: &str = r"\\.\pipe\bullseye";
 /// Larger messages are refused, so a request cannot make the service allocate without limit.
 /// Room for the status of everything defined (`definitions::MAX_ITEMS` of each) with long lists.
 const MAX_MESSAGE: usize = 1024 * 1024;
+
+/// A change to check (`Request::Check`): the same rules as making it (`handler::check_stricter`).
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[serde(tag = "what", rename_all = "snake_case")]
+pub enum Check {
+    /// The session's allowance set to this kind (`none`, `budget`, `pomodoro`, `delayed`).
+    AllowanceKind { id: String, kind: String },
+    /// The session's allowance set to these terms (none: taken away).
+    Allowance { id: String, allowance: Option<Terms> },
+    /// The session's lock set to this one: one that can be read (`Lock::check`), and on a locked
+    /// session a timed lock or a delay, longer. Any `id` that does not run is only read.
+    Lock { id: String, lock: Lock },
+    /// A target saved like this.
+    Target { target: Target },
+    /// A condition saved like this.
+    Condition { condition: Condition },
+}
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 #[serde(tag = "cmd", content = "args", rename_all = "snake_case")]
@@ -62,6 +81,13 @@ pub enum Request {
     Import { library: Library },
     /// Starts the session defined as `id`, as it is defined now.
     Start { id: String },
+    /// Gives the running session `id` this lock, as if it started with it now, and saves it as the
+    /// session's lock. Only while the session is not locked.
+    Lock { id: String, lock: Lock },
+    /// Whether a change to what a locked session holds would be accepted, asked before the window
+    /// asks the person to confirm it: answered `Done`, or why not, and nothing is changed. A change that
+    /// nothing locked holds is accepted.
+    Check { check: Check },
     /// Stops the running session `id`, unless it is locked right now. `password`: the password of its
     /// password lock, which stops that one; `text`: the text of its text lock, likewise.
     Stop {
@@ -74,6 +100,10 @@ pub enum Request {
     AskToStop { id: String },
     /// Ends that wait: the session is locked again.
     AbortStop { id: String },
+    /// Takes one of the running session `id`'s breaks now (`allowance::Terms::Breaks`).
+    TakeBreak { id: String },
+    /// Ends the break going on early; it stays used up.
+    EndBreak { id: String },
     /// Ends every session, whatever its time, once unlocking is ready: at once with no delay,
     /// otherwise when the countdown of `AskForUnlock` is over (`unlock::UnlockDelay`).
     Unlock,
@@ -140,7 +170,7 @@ pub struct UnlockStatus {
 }
 
 /// What the UI shows.
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Overview {
     /// Everything the user has defined, each kind in the order it was made (`definitions.rs`).
     pub targets: Vec<Target>,
@@ -153,6 +183,9 @@ pub struct Overview {
     /// Whether the time comes from the internet yet; until then, time with the service not
     /// running does not count.
     pub clock_synced: bool,
+    /// What each session's Condition, Allowance and Lock rows say now (`status.rs`), for its tile.
+    #[serde(default)]
+    pub status: Vec<Status>,
 }
 
 impl Overview {
@@ -240,6 +273,9 @@ mod tests {
             Request::SaveCondition { condition: weekly("s", "mon-fri 8-17") },
             Request::SaveSession { session: session("a", &["l"]) },
             Request::Start { id: "a".into() },
+            Request::Lock { id: "a".into(), lock: Lock::timed_for("2h") },
+            Request::Check { check: Check::AllowanceKind { id: "a".into(), kind: "budget".into() } },
+            Request::Check { check: Check::Lock { id: "a".into(), lock: Lock::timed_for("2h") } },
             Request::DeleteSession { id: "a".into() },
             Request::DeleteTarget { id: "l".into() },
             Request::DeleteCondition { id: "s".into() },

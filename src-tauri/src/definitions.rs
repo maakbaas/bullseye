@@ -1,17 +1,17 @@
 //! What the user has defined, in three kinds, each a list of its own (`Library`):
-//! - **targets** (`Target`): what to block and how: sites, always-allowed sites, programs,
-//!   and the actions that act on them;
-//! - **conditions** (`Condition`): when, as a weekly schedule or while a flash drive is not
-//!   connected (`condition.rs`); "always" is built in and is no entry here;
+//! - **targets** (`Target`): what to block and how: sites and always-allowed sites, programs, Store
+//!   apps, window titles and always-allowed titles, and the actions (`state::Actions`);
+//! - **conditions** (`Condition`): when, as a weekly schedule, while a flash drive is not connected,
+//!   by a webhook or a combination of those (`condition.rs`); "always" is built in and is no entry here;
 //! - **sessions** (`Definition`): one or more targets, a condition (or always), an allowance
-//!   (or none: a budget of time or a Pomodoro cycle, `allowance.rs`, set on the session itself like
-//!   its lock) and a lock (`lock.rs`). A session is what is started and runs.
+//!   (or none: a budget, a Pomodoro cycle, a delayed start or breaks, `allowance.rs`, set on the
+//!   session itself like its lock) and a lock (`lock.rs`). A session is what is started and runs.
 //!
 //! All of it is kept by the service (`%ProgramData%\bullseye\sessions.json`), so it survives
 //! restarts, and is only a template: starting a session copies its lists and condition into a running
 //! session (`session.rs`), which is then fixed until it ends. So that what is shown and what runs stay
-//! the same, a running session's definition cannot be changed or deleted until it ends, nor can a
-//! target or condition it uses be deleted. A target or condition can be changed, and the
+//! the same, a locked session's definition can only be made stricter (`handler::edit_session`) and
+//! not deleted until it can be stopped, nor can a target or condition it uses be deleted. A target or condition can be changed, and the
 //! change goes to the running sessions that use it; but while one of them is locked, only to be
 //! stricter (`Target::tightened_by`, `Rule::tightened_by`, `handler::edit_shared`). Deleting a
 //! target or condition takes it out of the sessions that use it (`Library::fallout`).
@@ -289,12 +289,10 @@ impl Library {
         Ok(())
     }
 
-    /// A session with its parts, ready to start. Refused if it has no target, or a part is gone.
+    /// A session with its parts, ready to start. Refused if a part is gone. A session may have no
+    /// target (it then does nothing): starting it is refused where it counts (`handler::start`).
     pub fn resolve(&self, id: &str) -> Result<Resolved, String> {
         let session = self.session(id).ok_or("No such session")?.clone();
-        if session.targets.is_empty() {
-            return Err(format!("{}: choose at least one target", session.name));
-        }
         let lists = session
             .targets
             .iter()
@@ -441,6 +439,10 @@ impl Definitions {
     pub fn save_session(&self, mut session: Definition) -> Result<(), String> {
         session.name = session.name.trim().to_string();
         session.allowance = session.allowance.map(Terms::checked).transpose()?;
+        // A random text is drawn when the session starts, never given.
+        if let Lock::RandomText { text, .. } = &mut session.lock {
+            *text = None;
+        }
         self.change(|library| {
             let old = library.session(&session.id).cloned();
             if let Lock::Password { password, hash } = &mut session.lock {
@@ -483,18 +485,16 @@ impl Definitions {
         })
     }
 
-    /// Deletes a target, and takes it out of the sessions that use it; a session that had no
-    /// other target is deleted with it (`Library::fallout`). Whether a running session uses it
-    /// is the handler's to refuse (`handler::edit`).
+    /// Deletes a target, and takes it out of the sessions that use it (`Library::fallout`); one that
+    /// had no other target is left with none. Whether a running session uses it is the handler's to
+    /// refuse (`handler::edit`).
     pub fn delete_target(&self, id: &str) -> Result<(), String> {
         self.change(|library| {
             library.target(id).ok_or("No such target")?;
             library.targets.retain(|l| l.id != id);
-            library.sessions.retain_mut(|session| {
-                let had = session.targets.len();
+            for session in &mut library.sessions {
                 session.targets.retain(|l| l != id);
-                !(had > 0 && session.targets.is_empty())
-            });
+            }
             Ok(())
         })
     }
@@ -618,9 +618,7 @@ impl Definitions {
 /// CLI say before it.
 #[derive(Serialize, Default, Debug, PartialEq)]
 pub struct Fallout {
-    /// Sessions that had only this target: deleted with it.
-    pub deleted: Vec<String>,
-    /// Sessions that keep their other targets.
+    /// Sessions that use this target: they go on without it.
     pub without_it: Vec<String>,
     /// Blocks it was the condition of: always active from then on.
     pub always: Vec<String>,
@@ -648,8 +646,7 @@ impl Library {
                 .collect()
         };
         Fallout {
-            deleted: names(&|b| b.targets.iter().all(|l| l == id) && !b.targets.is_empty()),
-            without_it: names(&|b| b.targets.iter().any(|l| l == id) && b.targets.iter().any(|l| l != id)),
+            without_it: names(&|b| b.targets.iter().any(|l| l == id)),
             always: names(&|b| has(b.condition.as_deref())),
             unlocked: names(&|b| has(b.lock.condition())),
             shrinks: combinations(false),
@@ -836,7 +833,7 @@ pub mod tests {
         definitions.save_condition(weekly("work", "mon-fri 8-17")).unwrap();
         let mut work = session("w", &["social", "games"]);
         work.condition = Some("work".into());
-        work.lock = Lock::Duration { duration: "1h".into() };
+        work.lock = Lock::timed_for("1h");
         definitions.save_session(work.clone()).unwrap();
         // Saving one with the same id replaces it, in its place.
         definitions.save_target(target("social", &["reddit.com"])).unwrap();
@@ -871,17 +868,18 @@ pub mod tests {
         let bad_sessions = [
             session("b", &["nope"]),
             Definition { condition: Some("nope".into()), ..session("b", &["l"]) },
-            Definition { lock: Lock::Duration { duration: "soon".into() }, ..session("b", &["l"]) },
-            Definition { lock: Lock::Duration { duration: "".into() }, ..session("b", &["l"]) },
+            Definition { lock: Lock::timed_for("soon"), ..session("b", &["l"]) },
+            Definition { lock: Lock::timed_for(""), ..session("b", &["l"]) },
             Definition { lock: Lock::Condition { condition: "nope".into() }, ..session("b", &["l"]) },
         ];
         for b in bad_sessions {
             assert!(definitions.save_session(b.clone()).is_err(), "{b:?}");
         }
         assert!(definitions.library().sessions.is_empty());
-        // Half done is fine to save: no lists yet. It is checked when it starts.
+        // Half done is fine to save: no targets yet. It resolves to nothing; starting it is refused
+        // (`handler::start`).
         definitions.save_session(session("b", &[])).unwrap();
-        assert!(definitions.library().resolve("b").is_err());
+        assert!(definitions.library().resolve("b").unwrap().lists.is_empty());
     }
 
     #[test]
@@ -902,17 +900,17 @@ pub mod tests {
             .unwrap();
         let library = definitions.library();
         let fallout = library.fallout("l");
-        assert_eq!((fallout.deleted, fallout.without_it), (vec!["Session a".to_string()], vec!["Session b".to_string()]));
+        assert_eq!(fallout.without_it, vec!["Session a".to_string(), "Session b".to_string()]);
         assert_eq!(
             (library.fallout("s").always, library.fallout("s2").unlocked),
             (vec!["Session b".to_string()], vec!["Session b".to_string()])
         );
         assert_eq!(library.fallout("nothing"), Fallout::default());
 
-        // The target: "a" goes with it, "b" keeps l2.
+        // The target: "a" is left with none, "b" keeps l2.
         definitions.delete_target("l").unwrap();
         let library = definitions.library();
-        assert!(library.session("a").is_none());
+        assert!(library.session("a").unwrap().targets.is_empty());
         assert_eq!(library.session("b").unwrap().targets, vec!["l2"]);
         // The conditions: "b" is always active, and has no lock.
         definitions.delete_condition("s").unwrap();
@@ -964,12 +962,12 @@ pub mod tests {
         let definitions = Definitions::at(Some(path("kept-lock-settings")));
         definitions.save_target(target("l", &["a.com"])).unwrap();
         let with = |lock: Lock| Definition { lock, ..session("b", &["l"]) };
-        definitions.save_session(with(Lock::Duration { duration: "5m".into() })).unwrap();
+        definitions.save_session(with(Lock::timed_for("5m"))).unwrap();
         definitions.save_session(with(Lock::Password { password: Some("secret".into()), hash: None })).unwrap();
         definitions.save_session(with(Lock::None)).unwrap();
         let kept = definitions.library().session("b").unwrap().kept_locks.clone();
         assert_eq!(kept.len(), 2);
-        assert!(kept.contains(&Lock::Duration { duration: "5m".into() }));
+        assert!(kept.contains(&Lock::timed_for("5m")));
         // What a client sees has the duration, and that there was a password, without its hash.
         let seen = definitions.library().redacted().session("b").unwrap().kept_locks.clone();
         assert!(seen.contains(&Lock::Password { password: None, hash: None }));
@@ -978,8 +976,7 @@ pub mod tests {
         let hash = definitions.library().session("b").unwrap().lock.password_hash().unwrap().to_string();
         assert!(unlock::check_hash("secret", &hash));
         // The current method is not kept twice; a client's kept locks are ignored.
-        let sent =
-            Definition { kept_locks: vec![Lock::Duration { duration: "1d".into() }], ..with(Lock::Duration { duration: "10m".into() }) };
+        let sent = Definition { kept_locks: vec![Lock::timed_for("1d")], ..with(Lock::timed_for("10m")) };
         definitions.save_session(sent).unwrap();
         let kept = definitions.library().session("b").unwrap().kept_locks.clone();
         assert_eq!(kept.len(), 1);
@@ -1035,7 +1032,7 @@ pub mod tests {
         here.save_condition(weekly("s", "Mon 08:00-09:00")).unwrap();
         let with = |id: &str, lock: Lock| Definition { condition: Some("s".into()), lock, ..session(id, &["l"]) };
         here.save_session(with("b", Lock::Password { password: Some("secret".into()), hash: None })).unwrap();
-        here.save_session(with("b", Lock::Duration { duration: "1h".into() })).unwrap();
+        here.save_session(with("b", Lock::timed_for("1h"))).unwrap();
         here.save_session(with("p", Lock::Password { password: Some("secret".into()), hash: None })).unwrap();
 
         let text = here.library().settings_text().unwrap();
@@ -1049,7 +1046,7 @@ pub mod tests {
         there.replace(read).unwrap();
         let library = there.library();
         assert!(library.target("other").is_none(), "replaced, not added to");
-        assert_eq!(library.session("b").unwrap().lock, Lock::Duration { duration: "1h".into() });
+        assert_eq!(library.session("b").unwrap().lock, Lock::timed_for("1h"));
         // A password lock comes with its hash, so the same password stops it there.
         assert!(unlock::check_hash("secret", library.session("p").unwrap().lock.password_hash().unwrap()));
         assert_eq!(library.condition("s").unwrap().rule, here.library().condition("s").unwrap().rule);
@@ -1084,13 +1081,13 @@ pub mod tests {
         // A password lock with no hash comes without a lock, and a kept one without a hash is dropped.
         let mut locked = session("b", &["l"]);
         locked.lock = Lock::Password { password: Some("sent".into()), hash: None };
-        locked.kept_locks = vec![Lock::Password { password: None, hash: None }, Lock::Duration { duration: "1h".into() }];
+        locked.kept_locks = vec![Lock::Password { password: None, hash: None }, Lock::timed_for("1h")];
         let library = Library { targets: vec![target("l", &[])], sessions: vec![locked], ..Library::default() };
         assert_eq!(library.contents().unlocked, vec!["Session b"]);
         definitions.replace(library).unwrap();
         let imported = definitions.library().sessions.remove(0);
         assert_eq!(imported.lock, Lock::None);
-        assert_eq!(imported.kept_locks, vec![Lock::Duration { duration: "1h".into() }]);
+        assert_eq!(imported.kept_locks, vec![Lock::timed_for("1h")]);
         // An allowance comes with its session, checked.
         let mut budget = session("a", &["l"]);
         budget.allowance = Some(Terms::Budget {

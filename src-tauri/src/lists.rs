@@ -8,7 +8,7 @@
 //! **A new list** is a field of both, a line in `Lists::parse`, `Lists::entries` and
 //! `Lists::has`, an arm in `Entries::field`, a `state::Uses` variant for the action that needs
 //! it, an entry in the window's `LISTS` and its key in a `SECTIONS` group, and an option in
-//! `cli::LIST_OPTIONS`.
+//! `LIST_OPTIONS` (`cli/parse.rs`).
 
 use serde::{Deserialize, Serialize};
 
@@ -100,6 +100,11 @@ impl Lists {
             titles: self.titles.entries(),
             allowed_titles: self.allowed_titles.entries(),
         }
+    }
+
+    /// Whether a page is to be closed by these lists: on the sites, and not always allowed.
+    pub fn blocks_site(&self, url: &str) -> bool {
+        self.sites.is_blocked(url) && !self.allowed.is_blocked(url)
     }
 
     /// Whether a window of this title is to be closed or minimized by these lists: one of the

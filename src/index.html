@@ -7,7 +7,7 @@
     <title>Bullseye</title>
     <!-- Every text the window shows (src/strings.js): edit the copy there. -->
     <script src="strings.js"></script>
-    <!-- The Carbon design system, vendored (scripts/vendor-carbon.mjs): IBM Plex, the themes and
+    <!-- The Carbon design system, vendored (`npm run vendor`, from scripts/carbon/entry.js): IBM Plex, the themes and
          tokens, and the cds-* web components. Nothing is loaded from the network. -->
     <link rel="stylesheet" href="vendor/fonts.css" />
     <link rel="stylesheet" href="vendor/carbon.css" />
@@ -65,10 +65,10 @@
         <div class="lane"><div class="cds--css-grid">
           <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
               <cds-tabs id="pages" data-t-aria-label="nav.label">
-                <cds-tab value="sessions" data-icon="locked"><span class="label" data-t="nav.sessions"></span></cds-tab>
-                <cds-tab value="targets" data-icon="list-checked-16"><span class="label" data-t="nav.targets"></span></cds-tab>
-                <cds-tab value="conditions" data-icon="rule-16"><span class="label" data-t="nav.conditions"></span></cds-tab>
-                <cds-tab value="settings" data-icon="settings"><span class="label" data-t="nav.settings"></span></cds-tab>
+                <cds-tab value="sessions" data-icon="locked"><span class="label" data-t="sessions.title"></span></cds-tab>
+                <cds-tab value="targets" data-icon="target-16"><span class="label" data-t="targets.title"></span></cds-tab>
+                <cds-tab value="conditions" data-icon="rule-16"><span class="label" data-t="conditions.title"></span></cds-tab>
+                <cds-tab value="settings" data-icon="settings"><span class="label" data-t="settings.title"></span></cds-tab>
               </cds-tabs>
           </div>
         </div></div>
@@ -83,13 +83,17 @@
           <div class="notices" id="list-notices"></div>
         </div>
         <div id="tiles"></div>
+        <!-- Under one session shown on its own: back to all of them. -->
+        <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16 show-all" id="show-all" hidden>
+          <cds-button kind="tertiary" size="md" href="#/" id="show-all-button"></cds-button>
+        </div>
         <cds-tile class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16 empty" id="empty" hidden>
           <h2 class="cds--type-productive-heading-03" id="empty-title"></h2>
           <p class="cds--type-body-01" id="empty-text"></p>
         </cds-tile>
       </div>
 
-      <!-- Making or changing a session, a target or a condition: the kind's form goes in #form. -->
+      <!-- Making or changing a target or a condition: the kind's form goes in #form. -->
       <div id="view-editor" class="cds--css-grid" hidden>
         <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
           <div class="notices" id="editor-notices"></div>
@@ -110,14 +114,14 @@
       <div id="view-settings" class="cds--css-grid" hidden>
         <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
           <div class="setting">
-            <h2 class="cds--type-productive-heading-03" data-t="settings.unlockTitle"></h2>
+            <h2 class="cds--type-productive-heading-03" data-t="settings.unlock"></h2>
             <p class="cds--type-body-01" id="unlock-text"></p>
             <div class="notices" id="settings-notices"></div>
-            <p class="cds--type-body-01" id="unlock-state"></p>
+            <cds-inline-notification id="unlock-state" class="form-note" kind="info" low-contrast hide-close-button></cds-inline-notification>
             <div class="row">
               <cds-button id="unlock" kind="danger" size="md"></cds-button>
               <cds-button id="unlock-answer" kind="tertiary" size="md" hidden></cds-button>
-              <cds-button id="abort-unlock" kind="tertiary" size="md" data-t="settings.abort"></cds-button>
+              <cds-button id="abort-unlock" kind="tertiary" size="md" data-t="common.keepLocked"></cds-button>
             </div>
           </div>
           <!-- How long unlocking takes: none to begin with, so unlock is free until a delay is set. -->
@@ -126,7 +130,7 @@
             <p class="cds--type-body-01" data-t="settings.delayText"></p>
             <div class="notices" id="delay-notices"></div>
             <div class="row">
-              <cds-text-input id="delay" data-t-label="settings.delayLabel" data-t-placeholder="settings.delayPlaceholder"></cds-text-input>
+              <div id="delay-field"></div>
               <cds-button id="set-delay" kind="tertiary" size="md" data-t="settings.setDelay"></cds-button>
             </div>
           </div>
@@ -136,7 +140,6 @@
             <p class="cds--type-body-01" data-t="settings.way.text"></p>
             <div class="notices" id="way-notices"></div>
             <div class="row" id="way-controls"></div>
-            <p class="cds--type-body-01" id="way-state"></p>
           </div>
           <!-- Everything defined, to a file and back: to move to another computer. -->
           <div class="setting">
@@ -161,7 +164,9 @@
       </cds-modal-header>
       <cds-modal-body>
         <cds-modal-body-content id="confirm-body"></cds-modal-body-content>
-        <!-- A form's fields: a lock's settings, or the password that stops a session. -->
+        <!-- Why a form was not accepted (a refusal of the service), in the dialog it was asked in. -->
+        <cds-inline-notification id="confirm-error" kind="error" low-contrast hide-close-button hidden></cds-inline-notification>
+        <!-- A form's fields: a lock's or allowance's settings, a list to choose from, or a text or password to stop with. -->
         <div id="confirm-fields" class="modal-fields" hidden></div>
       </cds-modal-body>
       <cds-modal-footer>

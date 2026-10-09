@@ -1,7 +1,7 @@
 //! Local time for schedules (`schedule.rs`): the weekday and time of day that a moment in internet
 //! time (`clock.rs`) is, in the session's time zone.
 //!
-//! It also goes the other way, for the "until" lock (`lock::Lock::Until`): the moment a local date
+//! It also goes the other way, for the "until" lock (`lock::Lock::Timed`): the moment a local date
 //! and time is (`Zone::instant`).
 //!
 //! The time zone is the one Windows had when the session started, and it stays the session's until the
@@ -146,7 +146,7 @@ impl Zone {
     }
 }
 
-/// An until lock's end (`lock::Lock::Until`) as the window and the CLI show it.
+/// An until lock's end (`lock::Lock::Timed`) as the window and the CLI show it.
 #[derive(Serialize, Debug, PartialEq)]
 pub struct Until {
     /// `Tuesday 6 October 2026, 18:00`.
@@ -161,8 +161,7 @@ pub fn until(text: &str) -> Result<Until, String> {
     let at = DateTime::parse(text)?;
     let end = Zone::current().instant(&at).ok_or_else(|| format!("Cannot tell when {at} is in this time zone"))?;
     let left = end.duration_since(SystemTime::now()).map_err(|_| format!("{at} has passed"))?;
-    // Rounded up to the minute, as the time was given in minutes.
-    Ok(Until { when: at.to_string(), left: duration::countdown(left.as_secs().div_ceil(60) * 60) })
+    Ok(Until { when: at.to_string(), left: duration::left(left.as_secs()) })
 }
 
 fn key_name(info: &DYNAMIC_TIME_ZONE_INFORMATION) -> String {

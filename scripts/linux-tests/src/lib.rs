@@ -6,7 +6,11 @@
 pub mod allowance;
 #[path = "../../../src-tauri/src/session.rs"]
 pub mod session;
-#[path = "../../../src-tauri/src/cli.rs"]
+#[path = "../../../src-tauri/src/status.rs"]
+pub mod status;
+#[path = "../../../src-tauri/src/strings.rs"]
+pub mod strings;
+#[path = "../../../src-tauri/src/cli/mod.rs"]
 pub mod cli;
 #[path = "../../../src-tauri/src/clock.rs"]
 pub mod clock;

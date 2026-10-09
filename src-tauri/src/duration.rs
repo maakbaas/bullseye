@@ -21,7 +21,7 @@ pub fn parse_allowing_zero(text: &str) -> Result<Option<Duration>, String> {
 }
 
 fn invalid_duration(text: &str) -> String {
-    format!("Invalid duration \"{text}\"; use e.g. 10m (10 minutes), 2h 30m (2 hours 30 minutes) or 1d (1 day)")
+    format!("Invalid duration “{text}”; use e.g. 10m (10 minutes), 2h 30m (2 hours 30 minutes) or 1d (1 day)")
 }
 
 fn read(text: &str) -> Result<Option<Duration>, String> {
@@ -71,9 +71,56 @@ pub fn countdown(seconds: u64) -> String {
     }
 }
 
+/// Time left, as a countdown shows it: one unit, rounded. A unit is used from one and a half of it
+/// on, so below that the next one down counts: `2 minutes` for 2 minutes and 5 seconds, `89 seconds`
+/// for 1 minute and 29 seconds, `36 hours` for a day and a half less a second, `2 days` from there.
+pub fn left(seconds: u64) -> String {
+    let units = [(86400, "day"), (3600, "hour"), (60, "minute"), (1, "second")];
+    let &(size, unit) = units.iter().find(|&&(size, _)| seconds * 2 >= size * 3).unwrap_or(&units[3]);
+    let n = (seconds + size / 2) / size;
+    format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
+}
+
+/// A countdown after "every": a lone one is left out (`day`, not `1 day`), `2 days` and
+/// `1 day and 12 hours` stay as they are.
+pub fn period(seconds: u64) -> String {
+    let words = countdown(seconds);
+    match words.strip_prefix("1 ") {
+        Some(rest) if !rest.contains(" and ") => rest.to_string(),
+        _ => words,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn time_left_is_one_unit_from_one_and_a_half_of_it() {
+        for (seconds, words) in [
+            (0, "0 seconds"),
+            (1, "1 second"),
+            (89, "89 seconds"),
+            (90, "2 minutes"),
+            (125, "2 minutes"),
+            (3599, "60 minutes"),
+            (5399, "90 minutes"),
+            (5400, "2 hours"),
+            (36 * 3600 - 1, "36 hours"),
+            (36 * 3600, "2 days"),
+        ] {
+            assert_eq!(left(seconds), words, "{seconds}");
+        }
+    }
+
+    #[test]
+    fn a_period_drops_a_lone_one() {
+        assert_eq!(period(86400), "day");
+        assert_eq!(period(3600), "hour");
+        assert_eq!(period(60), "minute");
+        assert_eq!(period(2 * 86400), "2 days");
+        assert_eq!(period(36 * 3600), "1 day and 12 hours");
+    }
 
     #[test]
     fn a_zero_is_a_duration_only_where_none_is_a_value() {

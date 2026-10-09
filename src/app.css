@@ -53,23 +53,23 @@ main { padding-block: var(--cds-spacing-06); }
 .trail cds-breadcrumb-item { display: inline-flex; }
 .notices:empty { display: none; }
 .notices { margin-bottom: var(--cds-spacing-05); }
-.notices cds-inline-notification, .webhook-result cds-inline-notification { max-width: none; }
+.notices cds-inline-notification, .webhook-result cds-inline-notification, .form-note { max-width: none; }
+/* A form's note (`errorNote`, `infoNote`): Carbon's notification keeps its margin otherwise. */
+.form-note { margin-block: 0; }
 
-/* The sessions, as tiles in the Carbon grid. */
+/* Sessions, targets and conditions, as tiles in the Carbon grid. */
 /* The tiles are columns of the page's grid itself (this wrapper only keeps them together), so
    they line up with the header above them. */
 #tiles { display: contents; }
-/* One session per row, full width. On wider windows its actions move to the right of the row. */
+/* One tile per row, full width: its head, its rows, and a session's buttons. */
 .session-tile.cds--css-grid-column { display: flex; flex-direction: column; gap: var(--cds-spacing-03); margin-bottom: var(--cds-spacing-05); }
-.session-tile .body { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
-.session-tile .info { display: flex; flex-direction: column; align-items: flex-start; gap: var(--cds-spacing-05); }
 .session-tile .top { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--cds-spacing-03); }
 /* The size of the overflow menu's button it stands in for. */
-.session-tile .lock { display: flex; align-items: center; justify-content: center; flex: none; inline-size: var(--cds-spacing-08); block-size: var(--cds-spacing-08); fill: var(--cds-icon-secondary); }
-.session-tile h2 { overflow-wrap: anywhere; padding-top: var(--cds-spacing-02); }
+.session-tile .lock { display: flex; align-items: center; justify-content: center; flex: none; inline-size: var(--cds-spacing-07); block-size: var(--cds-spacing-07); fill: var(--cds-icon-secondary); }
+.session-tile h2 { overflow-wrap: anywhere; }
 /* The title is a Carbon link that reads as the heading: the link's own tokens give it the heading's
    type and text colour, which hover does not change; its `link` part drops the hover underline, and
-   an edit icon after the title (the link's icon slot) shows on hover and keyboard focus instead. */
+   an edit icon after the title (the link's icon slot) shows on hover and keyboard focus instead, moving the tag aside. */
 .session-tile h2 cds-link {
   --cds-body-compact-01-font-size: var(--cds-productive-heading-03-font-size, 1.25rem);
   --cds-body-compact-01-font-weight: var(--cds-productive-heading-03-font-weight, 400);
@@ -80,32 +80,34 @@ main { padding-block: var(--cds-spacing-06); }
 }
 .session-tile h2 cds-link::part(link):hover { text-decoration: none; }
 /* The link centres the icon in its line box, which reads high next to the letters: a hair lower, and a hair closer. */
-.session-tile .title-edit { margin-block-start: calc(var(--cds-spacing-02) + var(--cds-spacing-01)); margin-inline-start: calc(-1 * var(--cds-spacing-02)); fill: var(--cds-icon-secondary); opacity: 0; transition: opacity var(--cds-duration-fast-01, 70ms); }
-.session-tile h2 cds-link:hover .title-edit, .session-tile h2 cds-link:focus-within .title-edit { opacity: 1; }
-.session-tile .summary { display: flex; flex-direction: column; gap: var(--cds-spacing-02); color: var(--cds-text-secondary); }
-/* An icon in front of a session's line, level with its first line of text. */
-.session-tile .summary .line { display: flex; align-items: flex-start; gap: var(--cds-spacing-03); }
-.session-tile .summary .line svg { flex: none; fill: var(--cds-icon-secondary); margin-block-start: var(--cds-spacing-01); }
-.session-tile .actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--cds-spacing-04); }
-/* A session's lock, next to Start: the method; its settings are in the modal. */
-.session-tile .lock-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--cds-spacing-04); }
-.session-tile .lock-method { inline-size: 12rem; }
+.session-tile .title-edit { margin-block-start: calc(var(--cds-spacing-02) + var(--cds-spacing-01)); margin-inline-start: calc(-1 * var(--cds-spacing-02)); fill: var(--cds-icon-secondary); display: none; }
+.session-tile h2 cds-link:is(:hover, :focus-within) .title-edit:not(.unavailable) { display: inline-block; }
+/* Show all sessions, under one shown on its own. */
+.show-all { margin-bottom: var(--cds-spacing-05); }
+/* A session's Start / Stop (and Keep locked), on the right under its rows. */
+.session-tile .actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--cds-spacing-04); margin-block-start: var(--cds-spacing-03); }
 /* The dropdown of the other way to unlock, in Settings: as wide as the lock dropdown on a tile. */
-.way-method { inline-size: 12rem; }
+.way-method { inline-size: 11rem; }
 /* A dropdown's list shows all its items where there is room (Carbon stops it at five and a half and scrolls),
    through the list's own part; where there is not, it still scrolls. */
 cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
+/* A refusal in the dialog, spaced from the fields under it as they are from each other. */
+#confirm-error { margin-block-end: var(--cds-spacing-06); }
 .modal-fields { display: flex; flex-direction: column; gap: var(--cds-spacing-06); }
+/* An allowance's form in the modal, its groups spaced as its fields. */
+.modal-fields .fields { display: flex; flex-direction: column; gap: var(--cds-spacing-06); }
 /* Carbon leaves 3rem under a modal's content, which looks high under a form field or a sentence: 1.5rem, the same everywhere. */
 #confirm cds-modal-body { padding-block-end: var(--cds-spacing-06); }
+/* A duration: its number and its unit side by side, the number taking the room the unit leaves. */
+.duration { display: flex; align-items: flex-start; gap: var(--cds-spacing-05); }
+.duration > cds-text-input { flex: 1 1 6rem; min-inline-size: 0; }
+/* Carbon's dropdown starts its title 2px lower than a text input its label: a hair up, so the two line up. */
+.duration > cds-dropdown { flex: 0 0 9rem; margin-block-start: -0.125rem; }
+.date-time-field > .form-note { margin-block-start: var(--cds-spacing-03); }
 /* The until lock's date and time, side by side as Carbon shows them. */
 .date-time { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--cds-spacing-05); }
 /* The time takes the room beside the date, so a message under it wraps there. */
 .date-time cds-time-picker { flex: 1 1 8rem; min-inline-size: 0; }
-@media (min-width: 42rem) { /* Carbon's md breakpoint */
-  .session-tile .body { flex-direction: row; align-items: flex-end; justify-content: space-between; }
-  .session-tile .actions { flex: none; }
-}
 .empty { display: flex; flex-direction: column; align-items: flex-start; gap: var(--cds-spacing-05); }
 
 /* The editor: sections stacked, lists side by side where there is room. */
@@ -116,7 +118,6 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 #view-editor:not([data-kind="targets"]) #form, #form .form { gap: var(--cds-spacing-09); }
 /* The fields of one choice inside a section (a session's allowance type), spaced as the section's own. */
 .form .fields { display: flex; flex-direction: column; gap: var(--cds-spacing-05); }
-.form .fields[hidden] { display: none; }
 /* Carbon keeps a quarter of the width free at the end of an accordion's content (to hold text to a readable line); the lists here use the whole width, as without the accordion. */
 .form cds-accordion-item::part(content) { padding-inline-end: var(--cds-spacing-05); }
 .form cds-accordion-item > * + * { margin-block-start: var(--cds-spacing-05); }
@@ -124,8 +125,6 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 .lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); align-items: start; gap: var(--cds-spacing-05); }
 .lists:empty { display: none; }
 .inline-action { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--cds-spacing-04); }
-.list-row { display: flex; align-items: center; gap: var(--cds-spacing-05); }
-.list-row cds-checkbox { margin: 0; }
 /* The weekly schedule: a column per day and a row per half hour, labelled every two hours.
    Carbon has no calendar grid, so this is layout in Carbon's tokens (see `weekEditor`). */
 /* As wide as the fields above it, whatever the window's width: the days share the room. */
@@ -136,8 +135,6 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 .week .cell { background: var(--cds-layer-01); border-inline-start: 1px solid var(--cds-border-subtle-01); cursor: pointer; }
 .week .cell.hour-start { border-block-start: 1px solid var(--cds-border-subtle-01); }
 .week .cell.last { border-block-end: 1px solid var(--cds-border-subtle-01); }
-.week-summary { color: var(--cds-text-secondary); }
-.week-summary.problem { color: var(--cds-text-error); }
 .week .cell.on { background: var(--cds-interactive); }
 .week.disabled .cell { cursor: default; }
 .week.disabled .cell.on { background: var(--cds-border-disabled); }
@@ -152,6 +149,9 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 .setting p { color: var(--cds-text-secondary); }
 .setting .row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--cds-spacing-05); }
 .setting .row cds-password-input, .setting .row cds-text-input { flex: 1 1 14rem; }
+/* A duration shares the room beside the button. */
+.setting .row .duration { flex: 1 1 18rem; }
+#delay-field { display: contents; }
 /* The Store apps of a target: the installed ones to tick, in a box that scrolls. */
 .app-picker { display: flex; flex-direction: column; gap: var(--cds-spacing-03); }
 .app-picker > .cds--type-label-01 { color: var(--cds-text-secondary); }
@@ -165,3 +165,46 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
    is dropped, so "a, b and c" has its underlines under the names only. */
 cds-link[inline] { display: inline-flex; }
 
+/* A tile's rows (a session's: `fields.js`; a target's or condition's: `tiles.js`): the label in a column of
+   its own, the value beside it; on a session, the edit button (as high as a row) is the row's action. */
+.tile-rows .row { display: grid; grid-template-columns: 5rem minmax(0, 1fr); gap: var(--cds-spacing-06); padding-inline-end: var(--cds-spacing-08); }
+.tile-rows .row-label { color: var(--cds-text-secondary); }
+/* The row's icon sits on the middle of the first line, which is 20px high. */
+.tile-rows cds-contained-list-item > [slot="icon"] { margin-block-start: var(--cds-spacing-01); }
+/* Its parts sit at the top of the row, so a dropdown stays on the first line when the status beside it wraps. */
+.tile-rows .row-text { display: grid; grid-template-columns: minmax(0, 1fr); justify-items: start; align-items: start; row-gap: var(--cds-spacing-03); overflow-wrap: anywhere; }
+/* A dropdown sits in the line of the text, without making the row taller than the text would (20px: its 32px less 6px above and below). */
+/* As wide as its widest choice ("Pomodoro cycle", 11rem), so the column it makes is as wide as what is in it. */
+.tile-rows .row-text cds-dropdown { margin-block: -0.375rem; inline-size: 11rem; max-inline-size: 100%; }
+/* Text in the column starts where the letters in an inline dropdown do (its left padding, 1rem), so they line up from row to row. */
+.tile-rows .row-value { padding-inline-start: var(--cds-spacing-05); }
+.tile-rows .row-value:empty { display: none; }
+/* What is happening now, lined up with the value's letters; under the value in a narrow window, beside
+   it from 48rem, a little past Carbon's md breakpoint so it has room for its words (the values in a
+   column as wide as a dropdown, so the lines start at one place on every row; a row without one,
+   Targets, keeps the whole width). */
+.tile-rows .row-now { color: var(--cds-text-helper); padding-inline-start: var(--cds-spacing-05); }
+.tile-rows .row-now:empty { display: none; }
+@media (min-width: 48rem) {
+  /* After the widest dropdown's chevron about as much room as after the widest label (some 54px). */
+  .tile-rows .row-text:has(> .row-now:not(:empty)) { grid-template-columns: 11rem minmax(0, 1fr); column-gap: var(--cds-spacing-07); }
+  .tile-rows .row-text > .row-now { grid-row: 1; grid-column: 2; line-height: 1.25rem; padding-inline-start: 0; }
+}
+/* The first line of a row is one text line (1.25rem), so a row is as high as its button (2.5rem): Carbon pads the content by what a line of that height leaves. */
+.tile-rows .row-label, .tile-rows .row-text > .row-value:first-child { line-height: 1.25rem; }
+/* A row's list in the dialog (`fields.js`): its New button on the right above it; no mark takes a mark's room. */
+.choices { display: flex; flex-direction: column; align-items: flex-end; gap: var(--cds-spacing-03); }
+.choices > cds-contained-list { align-self: stretch; }
+.no-mark { inline-size: 1rem; }
+
+/* The state tag beside the title, wrapping under it when the name is long; it sits on the letters'
+   middle, which is a little below the line's. */
+.session-tile .heading { display: flex; flex-wrap: wrap; align-items: center; column-gap: var(--cds-spacing-02); min-inline-size: 0; }
+.session-tile .heading > cds-tag { margin-block-start: var(--cds-spacing-01); }
+/* Carbon's overflow menu joins its open button with a strip over the seam (its `::after`), sized and
+   placed by rules for its CSS class that the web component's host does not match, so the strip is
+   there without a size and the menu's shadow shows across the seam. Carbon's own values, for a
+   menu that opens downwards or (no room below, `openTowardsRoom` in tiles.js) upwards. */
+cds-overflow-menu-body[open]::after { block-size: 0.1875rem; inline-size: var(--cds-layout-size-height-local); inset-block-start: -0.1875rem; inset-inline-start: 0; }
+cds-overflow-menu-body[open][direction="top"]::after { block-size: 0.5rem; inset-block: auto -0.5rem; }
+cds-overflow-menu-body[open][flipped]::after { inset-inline: auto 0; }

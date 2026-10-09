@@ -1,6 +1,6 @@
 //! The app, the service and the CLI share this library. `main.rs` is the tray app's exe (which also
 //! runs as the service and for the installer), `bin/bullseye.rs` the console exe of the CLI
-//! (`cli.rs`, `CLI.md`).
+//! (`cli/`, `CLI.md`).
 
 mod allowance;
 mod boot;
@@ -27,7 +27,9 @@ mod service;
 mod session;
 mod setup;
 mod state;
+mod status;
 mod store_apps;
+mod strings;
 mod sync;
 mod system_path;
 mod tab_closer;
@@ -106,6 +108,20 @@ fn start_session(id: String, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::Start { id })
 }
 
+/// Whether a change to what a locked session holds would be accepted, asked before the person is asked
+/// to confirm it (the service says why not, in its words).
+#[tauri::command]
+fn check_stricter(check: proto::Check, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::Check { check })
+}
+
+/// Locks a running session that is not locked, from now on, with this lock (also its lock for the
+/// next start).
+#[tauri::command]
+fn lock_session(id: String, lock: Lock, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::Lock { id, lock })
+}
+
 #[tauri::command]
 fn stop_session(id: String, password: Option<String>, text: Option<String>, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::Stop { id, password, text })
@@ -123,6 +139,18 @@ fn abort_stop(id: String, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::AbortStop { id })
 }
 
+/// Takes one of a running session's breaks now (`allowance::Terms::Breaks`).
+#[tauri::command]
+fn take_break(id: String, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::TakeBreak { id })
+}
+
+/// Ends the break going on early; it stays used up.
+#[tauri::command]
+fn end_break(id: String, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::EndBreak { id })
+}
+
 /// Asks a webhook condition once, as the editor Test button does: what the web address answered and what
 /// the match makes of it. The request is made off the main thread.
 #[tauri::command]
@@ -136,14 +164,14 @@ fn describe_schedule(week: Week) -> Result<String, String> {
     week.normalized().map(|week| week.describe())
 }
 
-/// A session's allowance in words, after checking them: in full (`30 minutes in total, reset every day`)
-/// for the session editor, and as the tile's short label (`Allowed 30 minutes a day`). Needs no service.
+/// A session's allowance in words, after checking them (`30 minutes in total, reset every day`), for its
+/// form and the Allowance row's question; or what is wrong, and in which field. Needs no service.
 #[tauri::command]
-fn describe_allowance(terms: allowance::Terms) -> Result<allowance::Described, String> {
+fn describe_allowance(terms: allowance::Terms) -> Result<allowance::Described, allowance::Problem> {
     terms.described()
 }
 
-/// A typed duration (`2h 30m`) in words, for a duration lock's summary and its confirmation. Needs no
+/// A typed duration (`2h 30m`) in words, for a duration lock's question and its confirmation. Needs no
 /// service: it only reads the text.
 #[tauri::command]
 fn describe_duration(text: String) -> Result<String, String> {
@@ -328,6 +356,7 @@ pub fn run() {
         .manage(ui::Ui::new())
         .invoke_handler(tauri::generate_handler![
             status,
+            check_stricter,
             save_session,
             delete_session,
             save_target,
@@ -336,9 +365,12 @@ pub fn run() {
             delete_condition,
             duplicate,
             start_session,
+            lock_session,
             stop_session,
             request_stop,
             abort_stop,
+            take_break,
+            end_break,
             unlock_all,
             unlock_with,
             set_unlock_way,
@@ -368,6 +400,7 @@ pub fn run() {
         .setup(|app| {
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
+                .tooltip(strings::t("app.name", &[]))
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click { button_state: MouseButtonState::Up, .. } = event {
                         ui::show_in_background(tray.app_handle().clone());

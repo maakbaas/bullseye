@@ -4,12 +4,12 @@ Bullseye is a Windows tray app (Tauri 2, Rust, a Carbon web page) that blocks di
 
 ## Concepts
 
-- **Target**: what to block. Lists of sites (with always-allowed sites), programs, Store apps and window titles (with always-allowed titles), plus **actions**: the ways it is closed (Chromium tabs, split view, app windows, Firefox tabs and split view, Obsidian's web viewer; titles closed or minimized).
+- **Target**: what to block. Lists of sites (with always-allowed sites), programs, Store apps and window titles (with always-allowed titles), plus **actions**: Obsidian's web viewer closed, titles closed or minimized. Every list acts by its entries; sites are closed wherever they open (Chromium and Firefox tabs, split views, app windows).
 - **Condition**: when. A weekly schedule, a flash drive that is unplugged, a webhook, or a combination (any / all) of those. "Always" is built in.
-- **Session**: what is started. One or more targets, a condition, at most one **allowance** (a time budget or a Pomodoro cycle that lets it go quiet) and a **lock** (none, duration, until a time, until restart, while a condition is active, a delay, a text to type, a password). Sessions run side by side; outside its condition a session still runs and stays locked, but enforces nothing.
-- **Unlock** (Settings): ends every session. The escape hatch, behind an optional countdown and one optional other way (a condition, text or password).
+- **Session**: what is started. One or more targets, a condition, at most one **allowance** (a time budget, a Pomodoro cycle, a delayed start or breaks taken by hand that let it go quiet) and a **lock** (none, timed (for a while, or until a date and time), until restart, while a condition is active, a delay, a text to type, a random text drawn at the start, a password). Sessions run side by side; outside its condition a session still runs and stays locked, but enforces nothing. A session has no editor page: it is set up on its tile (`fields.js`).
+- **Unlock** (Settings): ends every session. The escape hatch, behind an optional countdown and one optional other way (a condition, text, random text or password).
 
-**The sharing rule.** A running session that is locked cannot be changed (only renamed, and its allowance made stricter), and the targets and conditions it uses can only get stricter. Anything else can change, and running sessions follow at once. Deleting is refused while a locked session is involved; otherwise what used the deleted item follows (`Library::fallout` says how, and the delete question shows it).
+**The sharing rule.** A running session that is locked cannot be changed (only renamed, given more targets, its condition made Always, its allowance made stricter, and its lock too when it is timed or a delay: ending later, or longer: `Sessions::relock` via `stricter`, `handler::lock_running`), and the targets and conditions it uses can only get stricter. Anything else can change, and running sessions follow at once. A running session that is not locked can also be given a lock, as if it started with it now (`Request::Lock`, `Sessions::relock`): it could be stopped and started again with it anyway. Deleting is refused while a locked session is involved; otherwise what used the deleted item follows (`Library::fallout` says how, and the delete question shows it).
 
 ## Architecture
 
@@ -24,24 +24,26 @@ Bullseye is a Windows tray app (Tauri 2, Rust, a Carbon web page) that blocks di
 |---|---|
 | `lib.rs`, `main.rs`, `bin/bullseye.rs`, `ui.rs` | entry modes (`--service`, `--install`, `--uninstall`, app), tray, the page's commands; the window (made on a tray click, destroyed 5 min after hiding) |
 | `service.rs`, `handler.rs`, `registration.rs`, `setup.rs`, `system_path.rs` | the service, what it does per request (the sharing rule lives here), its registration and lock-down, install / uninstall and `PATH` |
+| `cli/` | the command line: `mod.rs` runs the commands, `parse.rs` reads them (and `HELP`), `output.rs` prints what the window shows |
 | `pipe.rs`, `proto.rs`, `client.rs` | the pipe, its messages, the app's side (`Remote`) |
 | `definitions.rs` | the `Library` (targets, conditions, sessions), saving, duplicating, export / import, fallout of deletes |
-| `session.rs`, `state.rs` | running sessions (`Sessions`), what is active now (`Active`), locks and allowances at run time; the files on disk and `Actions` |
+| `session.rs`, `state.rs`, `status.rs` | running sessions (`Sessions`), what is active now (`Active`), locks and allowances at run time; the files on disk and `Actions`; what a session's rows say now, for the tile and the CLI |
 | `allowance.rs`, `lock.rs`, `condition.rs`, `schedule.rs`, `webhook.rs`, `drives.rs` | allowances, lock methods, condition rules, weekly times, webhook polling, flash drives by serial number |
 | `lists.rs`, `filters.rs`, `patterns.rs`, `programs.rs`, `store_apps.rs` | a target's lists: sites, `*` patterns, programs (with a protected list), Store apps by package family name |
 | `tab_closer.rs`, `wake.rs` | the closing worker (UI Automation) and what wakes it early |
 | `unlock.rs` | the escape hatch and password hashing |
+| `strings.rs` | the window's texts (`src/strings.js`), built in and read for the service and the CLI (`t`, `joined`, `quoted`) |
 | `clock.rs`, `localtime.rs`, `datetime.rs`, `duration.rs`, `boot.rs` | internet time, time zones, dates, durations, which start of Windows this is |
 | `watchdog.rs`, `sync.rs` | the service's watch over the app, logging; crash-safe locks and threads |
 
-Frontend (`src/`, no build step): `index.html`, `app.css` (layout only), `strings.js` (every visible text), `js/main.js` (router, tabs, Settings), `core.js` (commands, texts, status, `ask`), `kinds.js` (`KINDS`: the three kinds, generic pages), `forms.js` (the editors), `locks.js` (`LOCKS`), `tiles.js`, `editor.js`, `detour.js` (a target or condition made from a session). `src/vendor/` is Carbon, generated by `npm run vendor`; never edit it.
+Frontend (`src/`, no build step): `index.html`, `app.css` (layout only), `strings.js` (every visible text, also read by Rust), `js/main.js` (router, tabs, Settings), `core.js` (commands, texts, status, `ask`), `kinds.js` (`KINDS`: the three kinds, generic pages), `forms.js` (the target and condition editors, and an allowance's form), `duration.js` (`durationField`: a number and a unit, the window never takes typed durations, the CLI does; `numberField`, digits only), `timing.js` (`timingFields`: a duration or a local date and time, shared by the timed lock and the delayed start), `locks.js` (`LOCKS`), `tiles.js` (the tiles), `fields.js` (a session's rows on its tile and their dialogs, the New session and Rename modals), `editor.js` (targets and conditions), `detour.js` (a target or condition made from a session's tile). `src/vendor/` is Carbon, generated by `npm run vendor` from `scripts/carbon/entry.js`; never edit it.
 
 ## Rules
 
 - **The service decides, the app enforces.** Locks, schedules, allowances and what is let through are decided in Rust; the page has no logic of its own for what the backend knows, and every word about times, schedules and errors comes from Rust (so the window and the CLI say the same).
-- **Every visible text is in `strings.js`**, looked up with `t("path")`; never inline.
+- **Every visible text is in `strings.js`**, looked up with `t("path")`; never inline. The service and the CLI read the same file (`strings.rs`), so a CLI text for anything the window shows uses the window's key; only what has no counterpart in the window (help, usage, the CLI's own messages) is written in `cli/`. The file stays objects, double-quoted strings without escapes, unquoted keys and `//` comments: `strings.rs` reads no more, and a test checks every key Rust asks for.
+- **Time left, and every time in a session's status (`status.rs`), is one unit, rounded** (`duration::left`: `2 minutes`, `89 seconds`; a date `18:00` today, `October 6` otherwise); elsewhere a set duration is exact (`duration::countdown`).
 - **The CLI stays level with the window**: a command in `generate_handler!` needs an entry in `cli::GUI_COMMANDS`, a CLI command, a help line and a line in `CLI.md`; a test fails otherwise.
-- **Faults open the hatch, never close it.** A broken `unlock.json` means no unlock delay; an unconfigured app can always unlock. The unlock tests are many on purpose; keep them passing.
 - **Err towards blocking elsewhere**: a condition that cannot be told (an unreadable drive, no webhook answer) counts as its fallback or as active.
 - **Only today's file formats are read.** Bullseye is installed on clean machines: no update path, no migration code.
 - **Nothing is hidden.** The service, app and logs (`%ProgramData%\bullseye\service.log`, `%LOCALAPPDATA%\bullseye\app.log`) go by their own names. The mechanism is friction, not secrecy.
@@ -49,9 +51,9 @@ Frontend (`src/`, no build step): `index.html`, `app.css` (layout only), `string
 
 ## User decisions (do not undo without asking)
 
-- Allowances and locks are set on the session, never pages of their own. A budget resets never, every so long (any duration, from the start or on the clock) or when the condition turns on.
+- Allowances and locks are set on the session, never pages of their own. A budget, and breaks, reset never, every so long (any duration, from the start or on the clock) or when the condition turns on. Breaks are only ever taken by hand.
 - Site lists are address prefixes with `*`, a domain covering its subdomains; no uBlock syntax. Always-allowed entries win.
-- Program, Store app and title lists have no on/off switch: entries act, an empty list does nothing. Titles are closed or minimized (a window that cannot be minimized is left alone). A lone `*` title is allowed; Bullseye's own and Windows' windows are spared. Programs refuse anything that would match a protected one.
+- Site, program, Store app and title lists have no on/off switch, and the window does not name the browsers a site is closed in: entries act, an empty list does nothing. Titles are closed or minimized (a window that cannot be minimized is left alone). A lone `*` title is allowed; Bullseye's own and Windows' windows are spared. Programs refuse anything that would match a protected one.
 - Store apps are exact package family names; on import, apps not installed here are dropped with a message, never matched by name.
 - Exports keep password locks as hashes only.
 - A webhook has a fallback state and one match (HTTP code or body) that turns it around.
@@ -62,11 +64,11 @@ Frontend (`src/`, no build step): `index.html`, `app.css` (layout only), `string
 
 The UI is built from tables, so these need no new markup:
 
-- **Action**: a field in `state::Actions` and a line in `Actions::all`; an entry in a `SECTIONS` group (`forms.js`); a method on `session::Active` if it acts per session.
-- **List** in a target: a field of `lists::Entries` and `lists::Lists` (with `parse`, `entries`, `has`, `Entries::field`), a `Uses` variant and an `Active` method; an entry in `LISTS` and a `SECTIONS` group; a line in `cli::LIST_OPTIONS`.
+- **Action**: a field in `state::Actions` and a line in `Actions::all`; an entry in a `SECTIONS` group (`forms.js` and `cli/output.rs`; a test holds them equal); a method on `session::Active` if it acts per session.
+- **List** in a target: a field of `lists::Entries` and `lists::Lists` (with `parse`, `entries`, `has`, `Entries::field`), a `Uses` variant and an `Active` method; an entry in `LISTS` and both `SECTIONS`; a line in `LIST_OPTIONS` (`cli/parse.rs`).
 - **Condition kind**: a variant of `condition::Rule` (`active`, `next_change`, `tightened_by`), an editor in `conditionForm`, an option in `condition new|edit`.
-- **Lock method**: a variant of `lock::Lock`, its `StartLock` / `RunLock` and meaning in `Session::locked`; an entry in `LOCKS` (form, describe, confirm); an option in `cli::parse_lock`.
-- **Allowance kind**: a variant of `allowance::Terms`, its meaning in `Run` / `Session::enforced`, fields in `allowanceSection`, a CLI option.
+- **Lock method**: a variant of `lock::Lock` (timed is one method, JSON `{"method":"timed","kind":"for|until","value":"..."}`, with `--lock-duration` and `--lock-until` as its CLI options), its `StartLock` / `RunLock` and meaning in `Session::locked` (and in `stricter` if it can be made stricter); an entry in `LOCKS` (form, describe, confirm); an option in `parse_lock` (`cli/parse.rs`).
+- **Allowance kind**: a variant of `allowance::Terms` (a delayed start: `type: delayed`, kind `after` / `from`, `--allowance delayed` with `--after` or `--from`; on a locked session it can only start sooner. Breaks: `type: breaks`, `count`, `length` and a budget's reset (`Terms::reset`, `checked_reset`, `rarer`), taken by `Request::TakeBreak` / `EndBreak` (`Sessions::take_break`, only while the condition is active; `Run::taken`, `break_until` kept on disk), `--allowance breaks` with `--breaks` and `--length`, and `bullseye break`), its meaning in `Run` / `Session::enforced`, fields in `allowanceSection` (durations and dates through `durationField` / `timingFields`; a problem names its field, `Terms::checked_at`), a CLI option.
 
 ## Development
 
@@ -86,9 +88,12 @@ All UI is IBM's Carbon design system through `@carbon/web-components`; a missing
 - Themes g10 (light) and g100 (dark), following Windows.
 - Layout: one full-width column per view in `main`, capped at 66rem and centred; the window is at least 456 × 480 px (Delete, Cancel and Save fit on one row); no horizontal scrolling. Only `#scroller` scrolls, with the scrollbar's room kept on both sides so content stays centred; the heading and tabs are fixed above it.
 - Navigation: line `cds-tabs` (icon-only below 672 px) and a breadcrumb on every view; no header actions, hamburger or side nav.
-- Buttons: `size="md"`, every button has an icon (except the modal's footer), no ghost buttons (except the small Edit beside each target in the session editor); `tertiary` for minor actions, `danger-tertiary` for destructive ones.
-- Editors: a name first, then sections with a heading and a line of text, spaced apart, no divider lines but the one above the buttons; the target editor uses an accordion. Every choice from a list is a `cds-dropdown` with `autoalign`. Forms are built anew each time (Carbon elements must not be re-attached).
-- Anything that cannot be undone asks first in the one `cds-modal` (`ask()`), which also holds short forms (lock settings, passwords). A session's lock is chosen on its tile, next to Start.
+- Buttons: `size="md"`, on a tile `sm` (a row's action keeps the list's `md`), every button has an icon (except the modal's footer), ghost only as a row's action; `tertiary` for minor actions, `danger-tertiary` for destructive ones.
+- Tiles: a `cds-tile` with its name, a tag and the ⋮ menu, then rows in a `cds-contained-list` (every contained list is `size="md"`): icon, label, value; a tile's name links to its editor (a session's renames it), an edit icon showing on hover. Target and condition tiles are read-only.
+- Sessions: rows Targets, Condition, Allowance, Lock, then Start / Stop on the right (with Take a break / End break before it for breaks). Targets and Condition open a list in the dialog (saved on Save, any number of targets; New target / New condition, a primary button above the list, go on a detour); Allowance and Lock are an inline `cds-dropdown` with a settings button. Condition, Allowance and Lock have a few words of status, and the tag its state, written by the service (`status.rs`, `Overview::status`; the CLI prints the same), beside the value, under it below 48rem. Each choice is saved as made. Locked: targets can be added, the condition made Always, and the allowance and a timed or delay lock's settings stay open (stricter only, confirmed first). `#/edit/<id>` shows that tile alone (Sessions / name, with Show all sessions), as a link to a session and a new one do; the only session is shown as the list.
+- Editors (targets, conditions): a name first, then sections with a heading and a line of text, spaced apart, no divider lines but the one above the buttons; the target editor uses an accordion. Every choice from a list is a `cds-dropdown` with `autoalign`; a duration is the `durationField` picker, never typed text. Forms are built anew each time (Carbon elements must not be re-attached).
+- Errors: a field's own (`invalid`); a group's or form's an error notification under it (`errorNote`); a refused action a notification at the top. Notifications belong to their page: leaving it clears them. What settings come to is an info notification under them (`infoNote`).
+- Anything that cannot be undone asks first in the one `cds-modal` (`ask()`), which also holds short forms (lock settings, passwords). A session's lock is its tile's fourth row: for the next start while it is stopped, at once after a yes while it runs unlocked (`lock_session`), read-only while it is locked.
 - The weekly schedule is the one hand-made control (`weekEditor`): Carbon has no time grid.
 
 ## Install

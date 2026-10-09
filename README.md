@@ -16,26 +16,24 @@ You set up three kinds of things, each on its own tab:
 
 Two more ideas complete the picture:
 
-- **Lock**: how hard a running session is to stop. None, for a duration, until a date and time, until Windows restarts, while a condition is active (a USB stick can be the key: locked while it is unplugged), after a delay you have to wait out, after typing a text you cannot paste, or with a password someone else keeps.
-- **Allowance**: a way for a session to go quiet for a while. A time budget (say 30 minutes a day, for the whole session or per site) or a Pomodoro cycle (50 minutes blocked, 10 minutes free).
+- **Lock**: how hard a running session is to stop. None, for a while, until a date and time, until Windows restarts, while a condition is active (a USB stick can be the key: locked while it is unplugged), after a delay you have to wait out, after typing a text you cannot paste (your own, or a random one drawn at the start), or with a password someone else keeps.
+- **Allowance**: a way for a session to go quiet for a while. A time budget (say 30 minutes a day, for the whole session or per site), a Pomodoro cycle (50 minutes blocked, 10 minutes free), a delayed start (nothing is enforced for the first hour, or until a date and time, and everything is from then on) or a few breaks you take by hand (say 3 of 10 minutes a day).
 
-Each target also has **actions**: the ways things are closed. Blocked tabs in Chrome, Edge, Brave and Firefox (split view and app windows too), programs by name, Store apps, windows by title (closed or minimized), and Obsidian's web viewer.
+A target acts by what its lists hold: pages of blocked sites are closed wherever they open (tabs, split views, app windows), programs by name, Store apps by package and windows by title (closed or minimized). Obsidian's web viewer can be closed too.
 
 ![A target](docs/screenshots/target-editor.png)
 
 ## Features
 
-- **Several sessions at once**, each started and stopped on its own, from the window or the command line.
+- **Sessions set up on their tiles**: each row (targets, condition, allowance, lock) is changed in place, from a list or a dropdown in the row. Several run at once, each started and stopped on its own, from the window or the command line, and a running session can be locked on the spot.
 - **Conditions** by weekly schedule (drawn on a week grid), USB flash drive, webhook (any URL that answers, so you can hook up a home automation or a calendar), or any / all of those combined.
-- **Locks that hold**: the rules live in a Windows service that runs as SYSTEM, so ending the app in Task Manager does not help, times are measured on internet time so changing the clock does not either, and sessions survive a restart. A locked session's targets and conditions can only be made stricter.
+- **Locks that hold**: the rules live in a Windows service that runs as SYSTEM, so ending the app in Task Manager does not help, times are measured on internet time so changing the clock does not either, and sessions survive a restart. A locked session's targets and conditions can only be made stricter (it can take more targets, and its condition can become Always), and so can its lock (a later end, a longer wait) and its allowance.
 - **A way out you choose**: Unlock in Settings ends every session, behind a countdown you set (none by default) and optionally another way, such as a password or the USB key.
 - **Nothing hidden**: the service and app go by their own names and log what they do. It is friction, not spyware.
 - **Export and import** everything to move to another computer.
 - **A command line** that can do everything the window does: `bullseye status`, `bullseye start "Deep work"`, `bullseye target add "Social media" --sites tiktok.com`. See [CLI.md](CLI.md).
 
-| | |
-|---|---|
-| ![A session](docs/screenshots/session-editor.png) | ![A condition](docs/screenshots/condition-editor.png) |
+![A condition](docs/screenshots/condition-editor.png)
 
 ## Install
 

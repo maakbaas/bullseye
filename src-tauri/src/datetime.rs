@@ -1,4 +1,4 @@
-//! A local date and time of day, as the "until" lock takes it (`lock::Lock::Until`): typed as
+//! A local date and time of day, as the "until" lock takes it (`lock::Lock::Timed`): typed as
 //! `2026-10-06 18:00`, written out as `Tuesday 6 October 2026, 18:00`. Which moment it is depends
 //! on the time zone it is read in (`localtime::Zone::instant`), so it stays local time until a
 //! session starts with it.
@@ -23,7 +23,7 @@ pub struct DateTime {
 impl DateTime {
     /// `2026-10-06 18:00`, also with a `T` between them, or without leading zeros (`2026-10-6 8:00`).
     pub fn parse(text: &str) -> Result<DateTime, String> {
-        let wrong = || format!("\"{}\" is not a date and time such as 2026-10-06 18:00", text.trim());
+        let wrong = || format!("“{}” is not a date and time such as 2026-10-06 18:00", text.trim());
         let (date, time) = text.trim().split_once([' ', 'T']).ok_or_else(wrong)?;
         let date: Vec<&str> = date.split('-').collect();
         let time: Vec<&str> = time.trim().split(':').collect();
@@ -51,6 +51,16 @@ impl DateTime {
     /// As typed, but always the same way: `2026-10-06 18:00`.
     pub fn text(&self) -> String {
         format!("{:04}-{:02}-{:02} {:02}:{:02}", self.year, self.month, self.day, self.hour, self.minute)
+    }
+
+    /// Short, for a status on a tile: the time on the day itself (`18:00`), the day otherwise
+    /// (`October 6`).
+    pub fn short(&self, today: bool) -> String {
+        if today {
+            format!("{:02}:{:02}", self.hour, self.minute)
+        } else {
+            format!("{} {}", MONTHS[usize::from(self.month) - 1], self.day)
+        }
     }
 
     /// Days since 1970-01-01 (negative before).
@@ -97,6 +107,13 @@ fn days_in_month(year: i32, month: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_is_the_time_today_and_the_day_otherwise() {
+        let at = DateTime::parse("2026-10-06 08:05").unwrap();
+        assert_eq!(at.short(true), "08:05");
+        assert_eq!(at.short(false), "October 6");
+    }
 
     #[test]
     fn a_date_and_time_is_read_and_written_out() {

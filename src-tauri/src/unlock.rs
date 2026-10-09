@@ -13,8 +13,8 @@
 //!
 //! The delay is always there as the fallback. Besides it there can be **one other way** to unlock
 //! (`Way`), chosen like a session's lock but never the delay: unlocking is ready when the delay is over
-//! **or** that way is satisfied (never both): a text typed in, a password, a time or date that has
-//! come, a restart of Windows, a condition that is active. Setting one makes unlocking easier, so
+//! **or** that way is satisfied (never both): a text or random text typed in, a password, or a
+//! condition that is not active. Setting one makes unlocking easier, so
 //! it needs unlocking to be ready or no session to be locked, like a shorter delay; removing it is
 //! always free.
 
@@ -30,7 +30,7 @@ use sha2::Sha256;
 use crate::condition::Rule;
 use crate::duration;
 use crate::localtime::Zone;
-use crate::lock::Lock;
+use crate::lock::{self, Lock};
 use crate::state;
 use crate::sync::LockExt;
 
@@ -54,7 +54,7 @@ fn same(a: &[u8], b: &[u8]) -> bool {
 /// (`lock::Lock::Password`).
 pub fn new_hash(password: &str) -> Result<String, String> {
     let mut salt = [0u8; 16];
-    getrandom::fill(&mut salt).map_err(|e| format!("cannot make a salt: {e}"))?;
+    getrandom::fill(&mut salt).map_err(|e| format!("Cannot make a salt: {e}"))?;
     Ok(format!("{}${}", hex(&salt), hex(&hash(password, &salt))))
 }
 
@@ -111,9 +111,10 @@ impl Way {
 
     /// Whether `password` or `text` is the answer of a text or password way.
     pub fn answered(&self, password: Option<&str>, text: Option<&str>) -> bool {
-        let same = |a: &str, b: &str| a.replace("\r\n", "\n") == b.replace("\r\n", "\n");
         match &self.lock {
-            Lock::Text { text: expected } => text.is_some_and(|given| same(expected, given)),
+            Lock::Text { text: expected } | Lock::RandomText { text: Some(expected), .. } => {
+                text.is_some_and(|given| lock::same_text(expected, given))
+            }
             Lock::Password { hash: Some(hash), .. } => password.is_some_and(|given| check_hash(given, hash)),
             _ => false,
         }
