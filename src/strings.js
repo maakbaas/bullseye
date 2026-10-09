@@ -111,7 +111,8 @@ window.STRINGS = {
       whenAny: "When any is true",
       whenAll: "When all are true",
       neverPaused: "Never paused",
-      cycle: "Allowed {allowed} after {blocked}",
+      // A Pomodoro cycle: blocked / allowed, as a cycle is told (25 minutes / 5 minutes).
+      cycle: "{blocked} / {allowed}",
       after: "After {time}",
       from: "From {date}",
       budget: "Allowed for {time}",
