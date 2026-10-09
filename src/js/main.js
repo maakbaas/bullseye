@@ -280,6 +280,9 @@ function showView(view) {
 
 function route() {
   const hash = location.hash || "#/";
+  // What a page said is for that page: gone once it is left, also when it is come back to. (A service
+  // that does not answer is said again at the next refresh; an editor's own notice when it opens.)
+  for (const box of document.querySelectorAll(".notices")) box.replaceChildren();
   let view = "list";
   let kind = "sessions";
   let edit = null;
@@ -329,7 +332,6 @@ function route() {
     $("new-item").hidden = !!single;
     $("empty-title").textContent = kindOf.empty[0];
     $("empty-text").textContent = kindOf.empty[1];
-    notify("list-notices");
     $("tiles").replaceChildren();
     tiles.clear();
     showOnly(single);
@@ -340,9 +342,7 @@ function route() {
   else closeEditor();
   if (view === "settings") {
     delayField.set(overview.unlock.delay);
-    notify("delay-notices");
     renderSettings();
-    notify("settings-notices");
   }
   $("scroller").scrollTo(0, 0);
 }
