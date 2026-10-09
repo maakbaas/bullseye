@@ -19,7 +19,7 @@
 //! its own actions and lists (`session::Active`).
 //!
 //! Where things are: this file is the loop and what the passes share (`Closer`); `chromium.rs`,
-//! `firefox.rs` read and close a browser's pages; `others.rs` closes programs, Obsidian and windows by
+//! `firefox.rs` read and close a browser's pages; `vscode.rs` VS Code's built-in browser; `others.rs` closes programs, Obsidian and windows by
 //! title; `win.rs` is the plain Windows calls; `ledger.rs` remembers what was tried, so a close that
 //! did not work is noticed (and not repeated at once).
 //!
@@ -31,6 +31,7 @@ mod chromium;
 mod firefox;
 mod ledger;
 mod others;
+mod vscode;
 mod win;
 
 use std::collections::{HashMap, HashSet};
@@ -182,6 +183,8 @@ enum Window {
     Browser(Browser),
     /// A Firefox window (its address bar found), whose pages are looked up each pass.
     Firefox(UIElement),
+    /// A VS Code window (`vscode.rs`): its editor tab strips, and when they were searched for.
+    VsCode(Vec<UIElement>, Instant),
     /// Not a browser window (Electron app, devtools, popup); searched again after `RECHECK`.
     Other(Instant),
 }

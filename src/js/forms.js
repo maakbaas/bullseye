@@ -18,7 +18,8 @@ const LISTS = Object.fromEntries(
     key,
     {
       label: t(`targets.${key}.label`),
-      placeholder: t(`targets.${key}.placeholder`),
+      // The Store apps are ticked from the installed ones, so they have no placeholder.
+      placeholder: key === "store_apps" ? "" : t(`targets.${key}.placeholder`),
       helper: t(`targets.${key}.helper`),
       count: (n) => t(`targets.${key}.count`, { n }),
       // The Store apps are ticked from the installed ones, not typed (`appPicker`).
@@ -559,7 +560,7 @@ function allowanceSection() {
     for (const key of keys) field.append(el("cds-dropdown-item", { value: key }, t(`${path}.${key}`)));
     return field;
   };
-  const type = dropdown(t("common.type"), t("allowance.typeHelper"), ["none", "budget", "pomodoro", "delayed", "breaks"], "allowance.type");
+  const type = dropdown(t("common.type"), null, ["none", "budget", "pomodoro", "delayed", "breaks"], "allowance.type");
   const text = (label, helper) => durationField({ label, helper });
   const allowed = text(t("allowance.budget.allowedLabel"), t("allowance.budget.allowedHelper"));
   const scope = dropdown(t("allowance.budget.scopeLabel"), t("allowance.budget.scopeHelper"), ["total", "each"], "allowance.budget");

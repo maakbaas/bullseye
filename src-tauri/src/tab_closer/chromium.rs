@@ -213,6 +213,10 @@ fn selected_tab_id(a: &UIAutomation, strip: &UIElement, window: &UIElement) -> O
 impl Closer {
     /// Looks at a Chromium window: its pages, and what to close in them.
     pub(super) fn tick_chromium(&mut self, handle: isize, active: &Active) {
+        // VS Code has this window class too, and a browser of its own in its tabs (`vscode.rs`).
+        if let Some(strips) = self.vscode_strips(handle) {
+            return self.tick_vscode(handle, &strips, active);
+        }
         let Some(browser) = self.browser(handle) else {
             self.close_panel(handle, active);
             return;

@@ -250,7 +250,6 @@ window.STRINGS = {
       for: "For a while",
       until: "Until a time",
       field: "Locked for",
-      helper: "",
     },
     delayed: {
       kind: "Enforcing starts",
@@ -386,7 +385,6 @@ window.STRINGS = {
     },
     store_apps: {
       label: "Microsoft Store apps to close",
-      placeholder: "",
       helper: "Tick the apps to close. Windows apps are not listed",
       loading: "Loading installed apps",
       // {why}: what Windows said.
@@ -549,7 +547,6 @@ window.STRINGS = {
 
   // A session's allowance, set on its tile (its settings in the modal).
   allowance: {
-    typeHelper: "As long as the session runs. A running session takes changes at once; a locked one only stricter ones",
     // The kinds, in the session's Allowance row and in the allowance's form.
     type: {
       none: "No allowance",
