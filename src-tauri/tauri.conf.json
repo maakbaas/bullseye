@@ -18,7 +18,7 @@
     "active": true,
     "targets": ["nsis"],
     "publisher": "Bullseye",
-    "shortDescription": "Blocks distracting sites in Chromium browsers and Obsidian",
+    "shortDescription": "A distraction blocker for Windows that you can hold yourself to",
     "windows": {
       "nsis": {
         "installMode": "perMachine",

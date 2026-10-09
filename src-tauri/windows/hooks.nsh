@@ -19,7 +19,7 @@
   ; finds nothing: the service has ended and has ended the app with it.
   ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" --uninstall' $0
   ${If} $0 = 2
-    MessageBox MB_ICONSTOP "A block is locked, so Bullseye cannot be uninstalled now.$\n$\nWait for its lock to end, or end it with the unlock password in the app, then uninstall again." /SD IDOK
+    MessageBox MB_ICONSTOP "A session is locked, so Bullseye cannot be uninstalled now.$\n$\nWait for its lock to end, or use Unlock in Bullseye's Settings, then uninstall again." /SD IDOK
     SetErrorLevel 2
     Quit
   ${ElseIf} $0 <> 0

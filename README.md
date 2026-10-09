@@ -42,6 +42,8 @@ A target acts by what its lists hold: pages of blocked sites are closed wherever
 
 Download the installer from the [Releases](../../releases) page and run it (it needs administrator rights, as it installs a service). Bullseye starts in the tray: click its icon to open the window. Uninstalling is refused while a session is locked.
 
+**To update**, export your settings first (**Export** in Settings), uninstall, install the new version and import them again: uninstalling removes everything Bullseye keeps, and there is no in-place update.
+
 **Windows may say "Windows protected your PC".**
 
 <img src="docs/smart-screen.png" alt="The Windows SmartScreen warning: Windows protected your PC" width="400">
