@@ -43,7 +43,7 @@ window.STRINGS = {
     // A target or condition that a session names but that no longer exists.
     gone: "(deleted)",
     // A name inside a sentence; {name}.
-    quoted: "“{name}”",
+    quoted: "{name}",
     // Between names in a list of them.
     separator: ", ",
     // Kept apart from strings that happen to read the same: these mean the same wherever they are.
@@ -493,7 +493,7 @@ window.STRINGS = {
       testing: "Asking …",
       testNot: "Not asked",
       testFailed: "No answer",
-      answer: "HTTP {status}, body “{body}”",
+      answer: "HTTP {status}. Body: {body}",
       matchedActive: "Matches: active",
       matchedInactive: "Matches: not active",
       unmatchedActive: "No match: active by default",
