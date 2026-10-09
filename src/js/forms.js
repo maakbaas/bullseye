@@ -39,8 +39,6 @@ const SECTIONS = [
   { key: "other", icon: "apps", lists: [], actions: [action("obsidian_web_viewer")] },
 ].map((section) => ({ ...section, title: t(`targets.sections.${section.key}.title`), short: t(`targets.sections.${section.key}.${window.STRINGS.targets.sections[section.key].short ? "short" : "title"}`), description: window.STRINGS.targets.sections[section.key].description && t(`targets.sections.${section.key}.description`) }));
 
-const ACTIONS = SECTIONS.flatMap((section) => section.actions);
-
 // ---- The editors. Each kind's form is built once and reused; every form has `nodes`,
 // `fill(item)`, `read(item)` (the item with the form's values), `disable(off)`, `settle()`
 // (finish what is being typed) and `error()` (what is wrong, or null).

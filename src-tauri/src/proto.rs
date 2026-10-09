@@ -15,6 +15,7 @@ use crate::lists::Entries;
 use crate::lock::Lock;
 use crate::session::Running;
 use crate::state::Actions;
+use crate::status::Status;
 
 /// The pipe the service listens on.
 pub const PIPE: &str = r"\\.\pipe\bullseye";
@@ -177,6 +178,9 @@ pub struct Overview {
     /// Whether the time comes from the internet yet; until then, time with the service not
     /// running does not count.
     pub clock_synced: bool,
+    /// What each session's Condition, Allowance and Lock rows say now (`status.rs`), for its tile.
+    #[serde(default)]
+    pub status: Vec<Status>,
 }
 
 impl Overview {

@@ -59,6 +59,15 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
             let status = sessions.status();
             // Password locks without their hashes: a client never sees them.
             let library = context.definitions.library().redacted();
+            // What each session's rows say, by the Windows clock and time zone (a date's "today").
+            let (zone, now) = (Zone::current(), std::time::SystemTime::now());
+            let rows = library
+                .sessions
+                .iter()
+                .map(|session| {
+                    crate::status::of(session, status.running.iter().find(|r| r.id == session.id), &library.conditions, &zone, now)
+                })
+                .collect();
             let overview = Overview {
                 targets: library.targets,
                 conditions: library.conditions,
@@ -66,6 +75,7 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
                 running: status.running,
                 unlock: unlock_status(context),
                 clock_synced: status.clock_synced,
+                status: rows,
             };
             (Response::Status(overview), None)
         }
@@ -879,6 +889,17 @@ mod tests {
         // Deleting it ends it.
         assert_eq!(handle(&context, 0, Request::DeleteSession { id: "a".into() }).0, Response::Done);
         assert!(overview(&context).running.is_empty() && overview(&context).sessions.is_empty());
+    }
+
+    #[test]
+    fn the_status_has_what_each_sessions_rows_say() {
+        let context = context("rows");
+        // Stopped: what is set; running: what is happening (`status.rs` tests each wording).
+        assert_eq!(save(&context, definition("a", &["a.com"])), Response::Done);
+        let row = |context: &Context| overview(context).status.into_iter().find(|s| s.id == "a").expect("its rows");
+        assert_eq!((row(&context).condition.text, row(&context).lock.text), ("At all times".to_string(), "Not locked".to_string()));
+        assert_eq!(handle(&context, 0, Request::Start { id: "a".into() }).0, Response::Done);
+        assert_eq!(row(&context).condition.text, "Active");
     }
 
     #[test]

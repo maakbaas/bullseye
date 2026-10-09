@@ -15,7 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value};
 
-use crate::allowance::{Anchor, DelayKind, Reset, Scope, Status as AllowanceStatus, Terms};
+use crate::allowance::{Anchor, DelayKind, Reset, Scope, Terms};
 use crate::client::Remote;
 use crate::condition::{Mode, Rule};
 use crate::definitions::{self, Condition, Definition, Kind, Library, Target};
@@ -27,6 +27,7 @@ use crate::proto::{Overview, Request, UnlockStatus};
 use crate::schedule::Week;
 use crate::session::Running;
 use crate::state::Actions;
+use crate::status;
 use crate::webhook::{self, Hook, Match, Matcher, Method};
 
 /// Each command the window can invoke, and the CLI commands that do the same. Empty: it is about
@@ -1787,67 +1788,23 @@ fn read_password(prompt: &str) -> Result<String, String> {
     Ok(password)
 }
 
-/// The state of a session in one line, as its tile shows it.
-fn state(running: Option<&Running>) -> String {
-    let Some(running) = running else { return "Not running".into() };
-    let mut parts = vec!["Running".to_string()];
-    parts.push(match (running.enforcing, &running.condition_change_words) {
-        (true, None) => "active".into(),
-        (true, Some(change)) => format!("active for the next {change}"),
-        (false, Some(change)) => format!("inactive for the next {change}"),
-        (false, None) => "inactive".into(),
-    });
-    parts.push(match (&running.remaining_words, running.locked) {
-        _ if running.password => "locked with a password".into(),
-        _ if running.lock_text.is_some() => "locked until its text is typed".into(),
-        _ if running.until_restart => "locked until Windows restarts".into(),
-        (Some(left), _) => format!("locked for the next {left}"),
-        (None, true) => match (&running.lock_condition, &running.lock_change_words) {
-            (Some(Rule::FlashDrive { drive, .. }), _) => format!("locked until the flash drive \"{drive}\" is connected"),
-            (_, Some(change)) => format!("locked for the next {change}"),
-            (_, None) => "locked".into(),
-        },
-        (None, false) if running.lock_condition.is_some() => match (&running.lock_condition, &running.lock_change_words) {
-            (Some(Rule::FlashDrive { drive, .. }), _) => format!("unlocked while the flash drive \"{drive}\" is connected"),
-            (_, Some(change)) => format!("unlocked for the next {change}"),
-            (_, None) => "unlocked".into(),
-        },
-        (None, false) => "no active lock".into(),
-    });
-    if let Some(allowance) = &running.allowance {
-        parts.push(allowance_words(allowance));
-    }
-    parts.join(" · ")
-}
-
-/// What a running session's allowance is doing, in a few words: a cycle's phase and how long it lasts,
-/// or what a budget has left.
-fn allowance_words(status: &AllowanceStatus) -> String {
-    match &status.terms {
-        Terms::Pomodoro { .. } => match (status.open, &status.change_words) {
-            (true, Some(change)) => format!("allowed for the next {change}"),
-            (false, Some(change)) => format!("blocked for the next {change}"),
-            (true, None) => "allowed".into(),
-            (false, None) => "blocked".into(),
-        },
-        Terms::Delayed { .. } => match &status.change_words {
-            Some(change) => format!("nothing enforced for the next {change}"),
-            None => "enforcing".into(),
-        },
-        Terms::Budget { allowed, scope, .. } => {
-            let total =
-                duration::parse(allowed).ok().flatten().map(|d| duration::countdown(d.as_secs())).unwrap_or_else(|| allowed.clone());
-            let reset = status.reset_words.as_ref().map(|left| format!(", reset in {left}")).unwrap_or_default();
-            match scope {
-                Scope::Total => format!("{} left of {total}{reset}", status.left_words.clone().unwrap_or_default()),
-                Scope::Each => {
-                    let used: Vec<String> = status.items.iter().map(|item| format!("{} {} left", item.item, item.left_words)).collect();
-                    let used = if used.is_empty() { String::new() } else { format!(" ({})", used.join(", ")) };
-                    format!("{total} for each item{reset}{used}")
-                }
-            }
-        }
-    }
+/// A session in one line, as its tile shows it: its tag, then what its Condition, Allowance and Lock
+/// rows say (`status.rs`, the same words as the window's).
+fn state(overview: &Overview, session: &Definition, running: Option<&Running>) -> String {
+    let tag = match running {
+        None => "Not running",
+        Some(running) if !running.enforcing => "Inactive",
+        Some(running) if running.locked => "Running · locked",
+        Some(_) => "Running",
+    };
+    // What the service wrote; worked out here as it would if it did not (an older overview, a test).
+    let status = overview
+        .status
+        .iter()
+        .find(|s| s.id == session.id)
+        .cloned()
+        .unwrap_or_else(|| status::of(session, running, &overview.conditions, &localtime::Zone::current(), SystemTime::now()));
+    format!("{tag} · {} · {} · {}", status.condition.plain(), status.allowance.plain(), status.lock.plain())
 }
 
 /// Names in rows, padded to the longest.
@@ -1891,7 +1848,7 @@ fn fallout(overview: &Overview, id: &str) -> String {
 /// Everything, as the window's pages show it: the sessions, the targets, the conditions.
 fn describe_overview(overview: &Overview) -> String {
     let sessions: Vec<(String, String)> =
-        overview.sessions.iter().map(|b| (b.name.clone(), state(overview.running.iter().find(|r| r.id == b.id)))).collect();
+        overview.sessions.iter().map(|b| (b.name.clone(), state(overview, b, overview.running.iter().find(|r| r.id == b.id)))).collect();
     let lists: Vec<(String, String)> =
         overview.targets.iter().map(|l| (l.name.clone(), format!("used by {}", users(overview, &l.id)))).collect();
     let conditions: Vec<(String, String)> =
@@ -1964,7 +1921,7 @@ fn describe_session(overview: &Overview, session: &Definition, running: Option<&
         "Name:        {}\nId:          {}\nState:       {}\nTargets:     {}\nCondition:   {condition}\nAllowance:   {allowance}\nLock:        {lock}\n",
         session.name,
         session.id,
-        state(running),
+        state(overview, session, running),
         entries(&lists.iter().map(|l| l.to_string()).collect::<Vec<_>>()),
     )
 }
@@ -2111,7 +2068,9 @@ mod tests {
 
         // Started and stopped.
         assert_eq!(ok(&["start", "Night"]), "Started \"Night\".\n");
-        assert!(ok(&["status"]).contains("  Night      Running"), "{}", ok(&["status"]));
+        // Running (its tag says Inactive outside its times).
+        let status = ok(&["status"]);
+        assert!(status.lines().any(|line| line.starts_with("  Night ") && !line.contains("Not running")), "{status}");
         assert_eq!(ok(&["stop", "Night"]), "Stopped \"Night\".\n");
 
         // Deleted.
@@ -2242,10 +2201,10 @@ mod tests {
         }
         let status = ok(&["status"]);
         for line in [
-            "Timed    Running · active · locked for the next",
-            "Typed    Running · active · locked until its text is typed",
-            "Restart  Running · active · locked until Windows restarts",
-            "Kept     Running · active · locked",
+            "Timed    Running · locked · Active · Never paused · ",
+            "Typed    Running · locked · Active · Never paused · Type text to stop",
+            "Restart  Running · locked · Active · Never paused · Until restart",
+            "Kept     Running · locked · Active · Never paused · Locked",
         ] {
             assert!(status.contains(line), "{line:?} in {status}");
         }
@@ -2260,7 +2219,7 @@ mod tests {
         // A password: set with start, as the tile sets it, and stopped with it.
         ok(&["new", "Pw", "--targets", "L"]);
         assert_eq!(ok(&["start", "Pw", "--lock-password", "secret", "--force"]), "Started \"Pw\".\n");
-        assert!(ok(&["status"]).contains("Pw       Running · active · locked with a password"));
+        assert!(ok(&["status"]).contains("Pw       Running · locked · Active · Never paused · Password to stop"));
         assert!(cli(&["stop", "Pw", "--password", "wrong"]).is_err());
         assert_eq!(ok(&["stop", "Pw", "--password", "secret"]), "Stopped \"Pw\".\n");
         // A running session that is not locked is locked now; one that is keeps its lock.
@@ -2268,7 +2227,7 @@ mod tests {
         assert_eq!(ok(&["lock", "Pw", "--no-lock"]), "\"Pw\" runs on without a lock.\n");
         assert!(refused(&["lock", "Pw", "--lock-duration", "1h"]).contains("No terminal to ask in; add --force"));
         assert_eq!(ok(&["lock", "Pw", "--lock-duration", "1h", "--force"]), "Locked \"Pw\" now.\n");
-        assert!(ok(&["status"]).contains("Pw       Running · active · locked for the next"));
+        assert!(ok(&["status"]).contains("Pw       Running · locked · Active · Never paused · 60 minutes left"));
         assert_eq!(
             refused(&["lock", "Pw", "--no-lock"]),
             "This session is locked, so its lock cannot be changed until it can be stopped, except to end later or to wait longer"
@@ -2390,7 +2349,7 @@ mod tests {
         // A lock until a date and time asks first, with the time it ends.
         ok(&["new", "Later", "--targets", "Media", "--lock-until", "2099-01-01 00:00"]);
         assert_eq!(ok(&["start", "Later", "--force"]), "Started \"Later\".\n");
-        assert!(ok(&["status"]).contains("Later  Running · active · locked for the next"));
+        assert!(ok(&["status"]).contains("Later  Running · locked · Active · Never paused · "));
     }
 
     #[test]
@@ -2451,51 +2410,31 @@ mod tests {
 
     #[test]
     fn a_running_session_reads_like_its_tile() {
-        let drive = Some(Rule::FlashDrive { serial: "x".into(), drive: "Key".into() });
-        let locked = Running { locked: true, lock_condition: drive.clone(), ..a_running("a") };
-        assert_eq!(state(Some(&locked)), "Running · active · locked until the flash drive \"Key\" is connected");
-        let open = Running { lock_condition: drive, ..a_running("a") };
-        assert_eq!(state(Some(&open)), "Running · active · unlocked while the flash drive \"Key\" is connected");
+        // Its tag, then its rows' words as the window has them (`status.rs` tests each of them).
+        let mut overview = library();
+        let session = overview.sessions[0].clone();
+        assert_eq!(state(&overview, &session, None), "Not running · Mon-Fri 08:00-17:00 · Never paused · During \"Work hours\"");
         let schedule = weekly("s", "mon 8-9").rule;
-        let timed =
-            Running { locked: true, lock_condition: Some(schedule.clone()), lock_change_words: Some("1 hour".into()), ..a_running("a") };
-        assert_eq!(state(Some(&timed)), "Running · active · locked for the next 1 hour");
-        let free = Running { lock_condition: Some(schedule.clone()), ..a_running("a") };
-        assert_eq!(state(Some(&free)), "Running · active · unlocked");
-        let quiet = Running { enforcing: false, locked: true, lock_condition: Some(schedule), ..a_running("a") };
-        assert_eq!(state(Some(&quiet)), "Running · inactive · locked");
-        assert_eq!(state(Some(&a_running("a"))), "Running · active · no active lock");
-        assert_eq!(state(None), "Not running");
-        // An allowance at the end: a cycle with no time to tell, a budget for each item.
-        let cycle = AllowanceStatus {
-            terms: Terms::Pomodoro { blocked: "50m".into(), allowed: "10m".into(), anchor: Anchor::Start },
-            open: true,
-            change: None,
-            change_words: None,
-            left: None,
-            left_words: None,
-            reset_in: None,
-            reset_words: None,
-            items: vec![],
+        let locked = Running {
+            locked: true,
+            condition: Some(schedule.clone()),
+            condition_change_words: Some("4 hours".into()),
+            lock_condition: Some(schedule.clone()),
+            lock_change_words: Some("1 hour".into()),
+            ..a_running("b1")
         };
-        assert_eq!(allowance_words(&cycle), "allowed");
-        assert_eq!(allowance_words(&AllowanceStatus { open: false, ..cycle.clone() }), "blocked");
-        let each = AllowanceStatus {
-            terms: Terms::Budget {
-                allowed: "10m".into(),
-                scope: Scope::Each,
-                reset: Reset::Every,
-                every: "1h".into(),
-                anchor: Anchor::Clock,
-            },
-            reset_words: Some("40 minutes".into()),
-            items: vec![crate::allowance::ItemLeft { item: "youtube.com".into(), left: 240, left_words: "4 minutes".into() }],
-            ..cycle.clone()
-        };
-        assert_eq!(allowance_words(&each), "10 minutes for each item, reset in 40 minutes (youtube.com 4 minutes left)");
-        assert_eq!(allowance_words(&AllowanceStatus { items: vec![], reset_words: None, ..each }), "10 minutes for each item");
-        let with = Running { allowance: Some(cycle), ..a_running("a") };
-        assert_eq!(state(Some(&with)), "Running · active · no active lock · allowed");
+        assert_eq!(state(&overview, &session, Some(&locked)), "Running · locked · Active for 4 hours · Never paused · Locked for 1 hour");
+        let quiet = Running { enforcing: false, ..locked.clone() };
+        assert_eq!(state(&overview, &session, Some(&quiet)), "Inactive · Inactive for 4 hours · Inactive condition · Locked for 1 hour");
+        assert_eq!(state(&overview, &session, Some(&a_running("b1"))), "Running · Active · Never paused · Not locked");
+        // What the service wrote, when it did.
+        overview.status.push(status::Status {
+            id: "b1".into(),
+            condition: status::Line { text: "a".into(), condition: None },
+            allowance: status::Line { text: "b".into(), condition: None },
+            lock: status::Line { text: "c".into(), condition: None },
+        });
+        assert_eq!(state(&overview, &session, None), "Not running · a · b · c");
     }
 
     #[test]
@@ -2575,6 +2514,7 @@ mod tests {
             running: vec![],
             unlock: UnlockStatus::default(),
             clock_synced: true,
+            status: vec![],
         }
     }
 
@@ -2924,6 +2864,7 @@ mod tests {
             running: vec![],
             unlock: UnlockStatus::default(),
             clock_synced: true,
+            status: vec![],
         };
         assert!(describe_overview(&empty).contains("Sessions:\n  None yet"));
         let mut overview = library();
@@ -2956,7 +2897,7 @@ mod tests {
         });
         overview.clock_synced = false;
         let text = describe_overview(&overview);
-        assert!(text.contains("  Work  Running · inactive for the next 1 hour · unlocked for the next 1 hour"), "{text}");
+        assert!(text.contains("  Work  Inactive · Inactive for 1 hour · Inactive condition · Unlocked for 1 hour"), "{text}");
         assert!(text.contains("Targets:\n  Social  used by Work"), "{text}");
         assert!(text.contains("Conditions:\n  Work hours  Mon-Fri 08:00-17:00"), "{text}");
         assert!(text.contains("Waiting for internet time"), "{text}");
@@ -3060,37 +3001,6 @@ mod tests {
         let shown = describe_session(&overview, &overview.sessions[0], None);
         assert!(shown.contains("Allowance:   Blocked for 50 minutes, then allowed for 10 minutes, on the clock"), "{shown}");
         assert!(describe_session(&library(), &library().sessions[0], None).contains("Allowance:   none\n"));
-        let status = AllowanceStatus {
-            terms: Terms::Pomodoro { blocked: "50m".into(), allowed: "10m".into(), anchor: Anchor::Clock },
-            open: true,
-            change: Some(240),
-            change_words: Some("4 minutes".into()),
-            left: None,
-            left_words: None,
-            reset_in: None,
-            reset_words: None,
-            items: vec![],
-        };
-        assert_eq!(allowance_words(&status), "allowed for the next 4 minutes");
-        assert_eq!(allowance_words(&AllowanceStatus { open: false, ..status }), "blocked for the next 4 minutes");
-        let used = AllowanceStatus {
-            terms: Terms::Budget {
-                allowed: "30m".into(),
-                scope: Scope::Total,
-                reset: Reset::Every,
-                every: "1d".into(),
-                anchor: Anchor::Clock,
-            },
-            open: true,
-            change: None,
-            change_words: None,
-            left: Some(720),
-            left_words: Some("12 minutes".into()),
-            reset_in: Some(10800),
-            reset_words: Some("3 hours".into()),
-            items: vec![],
-        };
-        assert_eq!(allowance_words(&used), "12 minutes left of 30 minutes, reset in 3 hours");
     }
 
     #[test]
@@ -3143,20 +3053,6 @@ mod tests {
         overview.sessions[0].allowance = delayed(DelayKind::From, "2026-10-06 18:00");
         let shown = describe_session(&overview, &overview.sessions[0], None);
         assert!(shown.contains("Allowance:   Nothing is enforced until Tuesday 6 October 2026, 18:00\n"), "{shown}");
-        let status = AllowanceStatus {
-            terms: Terms::Delayed { kind: DelayKind::After, value: "30m".into() },
-            open: true,
-            change: Some(240),
-            change_words: Some("4 minutes".into()),
-            left: None,
-            left_words: None,
-            reset_in: None,
-            reset_words: None,
-            items: vec![],
-        };
-        assert_eq!(allowance_words(&status), "nothing enforced for the next 4 minutes");
-        let begun = AllowanceStatus { open: false, change: None, change_words: None, ..status };
-        assert_eq!(allowance_words(&begun), "enforcing");
     }
 
     #[test]

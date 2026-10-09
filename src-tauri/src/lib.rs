@@ -27,6 +27,7 @@ mod service;
 mod session;
 mod setup;
 mod state;
+mod status;
 mod store_apps;
 mod sync;
 mod system_path;
@@ -157,12 +158,12 @@ fn describe_allowance(terms: allowance::Terms) -> Result<allowance::Described, S
     terms.described()
 }
 
-/// A typed duration (`2h 30m`) in words, exactly for a question and short for a tile's status
-/// (`duration::words`). Needs no service: it only reads the text.
+/// A typed duration (`2h 30m`) in words, for a duration lock's question and its confirmation. Needs no
+/// service: it only reads the text.
 #[tauri::command]
-fn describe_duration(text: String) -> Result<duration::Words, String> {
+fn describe_duration(text: String) -> Result<String, String> {
     match duration::parse(&text)? {
-        Some(length) => Ok(duration::words(length.as_secs())),
+        Some(length) => Ok(duration::countdown(length.as_secs())),
         None => Err("No duration given".into()),
     }
 }

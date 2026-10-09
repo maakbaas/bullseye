@@ -1,0 +1,410 @@
+//! What a session's Condition, Allowance and Lock rows say, in a few words: while it runs what is
+//! happening (`Active for 4 hours`, `12 minutes left`), while it is stopped what is set (`Mon-Fri
+//! 09:00-17:00`, `Allowed for 30 minutes`). Written once here, for the window's tile and the CLI, so
+//! both say the same. Times are one unit, rounded (`duration::left`); a date is the time today and
+//! the day otherwise (`DateTime::short`).
+
+use std::time::SystemTime;
+
+use serde::{Deserialize, Serialize};
+
+use crate::allowance::{DelayKind, Scope, Terms};
+use crate::condition::Rule;
+use crate::datetime::DateTime;
+use crate::definitions::{Condition, Definition};
+use crate::duration;
+use crate::localtime::Zone;
+use crate::lock::{Lock, TimedKind};
+use crate::session::Running;
+
+/// The three rows of one session (`Definition::id`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Status {
+    pub id: String,
+    pub condition: Line,
+    pub allowance: Line,
+    pub lock: Line,
+}
+
+/// One row's words. A condition named in them stands as `{condition}` in `text`, with its id and
+/// name, so the window can make it a link (`plain` is the text with the name in it).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Line {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<Named>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Named {
+    pub id: String,
+    pub name: String,
+}
+
+impl Line {
+    fn new(text: impl Into<String>) -> Line {
+        Line { text: text.into(), condition: None }
+    }
+
+    /// The text with the condition's name in it, as the CLI shows it.
+    pub fn plain(&self) -> String {
+        match &self.condition {
+            Some(named) => self.text.replace("{condition}", &format!("\"{}\"", named.name)),
+            None => self.text.clone(),
+        }
+    }
+}
+
+/// The rows of `session`, running as `running` or stopped, with `conditions` to name its lock's by.
+/// `zone` and `now` tell which day it is, for a date.
+pub fn of(session: &Definition, running: Option<&Running>, conditions: &[Condition], zone: &Zone, now: SystemTime) -> Status {
+    let (condition, allowance, lock) = match running {
+        Some(running) => running_lines(running),
+        None => stopped_lines(session, conditions, zone, now),
+    };
+    Status { id: session.id.clone(), condition, allowance, lock }
+}
+
+/// A time set as typed (`90m`) in one unit (`2 hours`); as typed if it cannot be read.
+fn short(text: &str) -> String {
+    match duration::parse(text) {
+        Ok(Some(length)) => duration::left(length.as_secs()),
+        _ => text.to_string(),
+    }
+}
+
+/// A date and time as typed in a few words: the time if it is today, the day otherwise.
+fn short_date(text: &str, zone: &Zone, now: SystemTime) -> String {
+    let Ok(at) = DateTime::parse(text) else { return text.to_string() };
+    // Today when the day's midnight has passed and the next has not.
+    let midnight = zone.instant(&DateTime { hour: 0, minute: 0, ..at });
+    let today = midnight.is_some_and(|midnight| midnight <= now && now.duration_since(midnight).is_ok_and(|d| d.as_secs() < 86400));
+    at.short(today)
+}
+
+/// A rule's state now (`state`: Active / Inactive, Locked / Unlocked): for how long when that is
+/// known, otherwise what has it so (a device, a webhook, a combination).
+fn rule_now(rule: &Rule, state: &str, change: Option<&String>) -> String {
+    if let Some(change) = change {
+        return format!("{state} for {change}");
+    }
+    match rule {
+        Rule::FlashDrive { .. } => format!("{state} by device"),
+        Rule::Webhook(_) => format!("{state} by webhook"),
+        Rule::Combined { .. } => format!("{state} by combination"),
+        Rule::Schedule { .. } => state.to_string(),
+    }
+}
+
+fn running_lines(running: &Running) -> (Line, Line, Line) {
+    let condition = match &running.condition {
+        None => "Active".to_string(),
+        Some(rule) => rule_now(rule, if running.enforcing { "Active" } else { "Inactive" }, running.condition_change_words.as_ref()),
+    };
+    // Nothing is blocked while the condition is off, so there is nothing for an allowance to allow.
+    let allowance = if !running.enforcing {
+        "Inactive condition".to_string()
+    } else {
+        match &running.allowance {
+            None => "Never paused".to_string(),
+            Some(state) => {
+                let change = state.change_words.clone().unwrap_or_default();
+                match &state.terms {
+                    // A cycle or a start whose time cannot be told is enforced: blocked, begun.
+                    Terms::Pomodoro { .. } if state.open => format!("Allowed for {change}"),
+                    Terms::Pomodoro { .. } if state.change_words.is_some() => format!("Allowed in {change}"),
+                    Terms::Pomodoro { .. } => "Blocked".to_string(),
+                    Terms::Delayed { .. } if state.open => format!("Starts in {change}"),
+                    Terms::Delayed { .. } => "Started".to_string(),
+                    Terms::Budget { .. } => match (state.left, &state.left_words, &state.reset_words) {
+                        (Some(left), Some(words), _) if left > 0 => format!("{words} left"),
+                        (Some(_), _, Some(reset)) => format!("Back in {reset}"),
+                        (Some(_), _, None) => "Used up".to_string(),
+                        // A budget for each item: how many have used theirs up, not each by name.
+                        (None, _, _) => match state.items.iter().filter(|item| item.left == 0).count() {
+                            0 => "None used up".to_string(),
+                            1 => "1 item used up".to_string(),
+                            n => format!("{n} items used up"),
+                        },
+                    },
+                }
+            }
+        }
+    };
+    let lock = if running.stop_delay.is_some() {
+        match (running.stop_remaining, &running.stop_remaining_words) {
+            (None, _) => format!("Delay {}", running.stop_delay.map(duration::left).unwrap_or_default()),
+            (Some(0), _) => "Unlocked".to_string(),
+            (Some(_), words) => format!("In {}", words.clone().unwrap_or_default()),
+        }
+    } else if let Some(left) = &running.remaining_words {
+        format!("{left} left")
+    } else if let Some(rule) = &running.lock_condition {
+        rule_now(rule, if running.locked { "Locked" } else { "Unlocked" }, running.lock_change_words.as_ref())
+    } else if running.until_restart {
+        "Until restart".to_string()
+    } else if running.lock_text.is_some() {
+        "Type text to stop".to_string()
+    } else if running.password {
+        "Password to stop".to_string()
+    } else {
+        "Not locked".to_string()
+    };
+    (Line::new(condition), Line::new(allowance), Line::new(lock))
+}
+
+fn stopped_lines(session: &Definition, conditions: &[Condition], zone: &Zone, now: SystemTime) -> (Line, Line, Line) {
+    let find = |id: &str| conditions.iter().find(|c| c.id == id);
+    let condition = match session.condition.as_deref().and_then(find) {
+        None => "At all times".to_string(),
+        Some(condition) => match &condition.rule {
+            Rule::Schedule { week } => week.describe(),
+            Rule::FlashDrive { .. } => "Active by device".to_string(),
+            Rule::Webhook(_) => "Active by webhook".to_string(),
+            Rule::Combined { .. } => "Active by combination".to_string(),
+        },
+    };
+    let allowance = match &session.allowance {
+        None => "Never paused".to_string(),
+        Some(Terms::Pomodoro { blocked, allowed, .. }) => format!("{} / {}", short(blocked), short(allowed)),
+        Some(Terms::Delayed { kind: DelayKind::After, value }) => format!("After {}", short(value)),
+        Some(Terms::Delayed { kind: DelayKind::From, value }) => format!("From {}", short_date(value, zone, now)),
+        Some(Terms::Budget { allowed, scope: Scope::Each, .. }) => format!("{} per item", short(allowed)),
+        Some(Terms::Budget { allowed, .. }) => format!("Allowed for {}", short(allowed)),
+    };
+    let lock = match &session.lock {
+        Lock::None => Line::new("Not locked"),
+        Lock::Timed { kind: TimedKind::For, value } => Line::new(format!("For {}", short(value))),
+        Lock::Timed { kind: TimedKind::Until, value } => Line::new(format!("Until {}", short_date(value, zone, now))),
+        Lock::UntilRestart => Line::new("Until restart"),
+        Lock::Delay { delay } => Line::new(format!("Delay {}", short(delay))),
+        Lock::Text { .. } => Line::new("Type text to stop"),
+        Lock::Password { .. } => Line::new("Password to stop"),
+        // "During" a schedule's times; "by" what has the others on.
+        Lock::Condition { condition } => match find(condition) {
+            None => Line::new("Condition"),
+            Some(c) => Line {
+                text: if matches!(c.rule, Rule::Schedule { .. }) { "During {condition}" } else { "By {condition}" }.to_string(),
+                condition: Some(Named { id: c.id.clone(), name: c.name.clone() }),
+            },
+        },
+    };
+    (Line::new(condition), Line::new(allowance), lock)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::allowance::{Anchor, ItemLeft, Reset, Status as AllowanceStatus};
+    use crate::condition::Mode;
+    use crate::schedule::Week;
+    use crate::webhook::{Hook, Match, Matcher, Method};
+    use std::time::{Duration, UNIX_EPOCH};
+
+    fn hook() -> Hook {
+        Hook {
+            url: "https://example.com".into(),
+            method: Method::Get,
+            interval: 60,
+            fallback: false,
+            matcher: Matcher { on: Match::Status, status: Some(200), body: None },
+        }
+    }
+
+    fn week(text: &str) -> Week {
+        Week::parse(text).unwrap().unwrap()
+    }
+
+    fn session(lock: Lock, condition: Option<&str>, allowance: Option<Terms>) -> Definition {
+        Definition {
+            id: "s".into(),
+            name: "S".into(),
+            targets: vec![],
+            condition: condition.map(Into::into),
+            allowance,
+            lock,
+            kept_locks: vec![],
+        }
+    }
+
+    fn conditions() -> Vec<Condition> {
+        let week = week("mon-fri 09:00-17:00");
+        vec![
+            Condition { id: "hours".into(), name: "Work hours".into(), rule: Rule::Schedule { week } },
+            Condition { id: "key".into(), name: "Key".into(), rule: Rule::FlashDrive { serial: "1".into(), drive: "Stick".into() } },
+            Condition { id: "hook".into(), name: "Home".into(), rule: Rule::Webhook(hook()) },
+            Condition { id: "both".into(), name: "Both".into(), rule: Rule::Combined { mode: Mode::Any, members: vec![], rules: vec![] } },
+        ]
+    }
+
+    // 1970-01-02 12:00 UTC, a zone at UTC: "today" is 2 January 1970.
+    fn noon() -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(86400 + 12 * 3600)
+    }
+
+    fn stopped(session: &Definition) -> (String, String, String) {
+        let status = of(session, None, &conditions(), &Zone::fixed(0), noon());
+        (status.condition.plain(), status.allowance.plain(), status.lock.plain())
+    }
+
+    fn running(run: Running) -> (String, String, String) {
+        let status = of(&session(Lock::None, None, None), Some(&run), &conditions(), &Zone::fixed(0), noon());
+        (status.condition.plain(), status.allowance.plain(), status.lock.plain())
+    }
+
+    fn run() -> Running {
+        Running {
+            id: "s".into(),
+            name: "S".into(),
+            targets: vec![],
+            remaining: None,
+            lock_condition: None,
+            until_restart: false,
+            lock_text: None,
+            stop_delay: None,
+            stop_delay_words: None,
+            stop_remaining: None,
+            stop_remaining_words: None,
+            password: false,
+            locked: false,
+            condition: None,
+            enforcing: true,
+            condition_change: None,
+            lock_change: None,
+            remaining_words: None,
+            condition_change_words: None,
+            lock_change_words: None,
+            allowance: None,
+        }
+    }
+
+    fn allowance(terms: Terms, open: bool, change: Option<&str>) -> AllowanceStatus {
+        AllowanceStatus {
+            terms,
+            open,
+            change: change.map(|_| 60),
+            change_words: change.map(Into::into),
+            left: None,
+            left_words: None,
+            reset_in: None,
+            reset_words: None,
+            items: vec![],
+        }
+    }
+
+    fn budget(scope: Scope) -> Terms {
+        Terms::Budget { allowed: "30m".into(), scope, reset: Reset::Never, every: String::new(), anchor: Anchor::Start }
+    }
+
+    #[test]
+    fn a_stopped_session_says_what_is_set() {
+        let pomodoro = Terms::Pomodoro { blocked: "25m".into(), allowed: "5m".into(), anchor: Anchor::Start };
+        assert_eq!(stopped(&session(Lock::None, None, None)), ("At all times".into(), "Never paused".into(), "Not locked".into()));
+        assert_eq!(stopped(&session(Lock::None, Some("hours"), Some(pomodoro))).0, "Mon-Fri 09:00-17:00");
+        for (id, words) in
+            [("key", "Active by device"), ("hook", "Active by webhook"), ("both", "Active by combination"), ("gone", "At all times")]
+        {
+            assert_eq!(stopped(&session(Lock::None, Some(id), None)).0, words);
+        }
+        let allowances = [
+            (Terms::Pomodoro { blocked: "25m".into(), allowed: "5m".into(), anchor: Anchor::Start }, "25 minutes / 5 minutes"),
+            (Terms::Delayed { kind: DelayKind::After, value: "90m".into() }, "After 2 hours"),
+            (Terms::Delayed { kind: DelayKind::From, value: "1970-01-02 18:00".into() }, "From 18:00"),
+            (Terms::Delayed { kind: DelayKind::From, value: "1970-01-03 18:00".into() }, "From January 3"),
+            (budget(Scope::Total), "Allowed for 30 minutes"),
+            (budget(Scope::Each), "30 minutes per item"),
+        ];
+        for (terms, words) in allowances {
+            assert_eq!(stopped(&session(Lock::None, None, Some(terms))).1, words);
+        }
+        let locks = [
+            (Lock::timed_for("90m"), "For 2 hours"),
+            (Lock::Timed { kind: TimedKind::Until, value: "1970-01-02 18:00".into() }, "Until 18:00"),
+            (Lock::Timed { kind: TimedKind::Until, value: "soon".into() }, "Until soon"),
+            (Lock::UntilRestart, "Until restart"),
+            (Lock::Delay { delay: "5m".into() }, "Delay 5 minutes"),
+            (Lock::Text { text: "x".into() }, "Type text to stop"),
+            (Lock::Password { password: None, hash: None }, "Password to stop"),
+            (Lock::Condition { condition: "hours".into() }, "During \"Work hours\""),
+            (Lock::Condition { condition: "key".into() }, "By \"Key\""),
+            (Lock::Condition { condition: "gone".into() }, "Condition"),
+        ];
+        for (lock, words) in locks {
+            assert_eq!(stopped(&session(lock, None, None)).2, words);
+        }
+        // The window links the condition: its id and name, apart from the text.
+        let status = of(&session(Lock::Condition { condition: "key".into() }, None, None), None, &conditions(), &Zone::fixed(0), noon());
+        assert_eq!(status.lock, Line { text: "By {condition}".into(), condition: Some(Named { id: "key".into(), name: "Key".into() }) });
+    }
+
+    #[test]
+    fn a_running_session_says_what_is_happening() {
+        assert_eq!(running(run()), ("Active".into(), "Never paused".into(), "Not locked".into()));
+        let schedule = Rule::Schedule { week: week("daily") };
+        let ruled = |rule: Rule, enforcing: bool, change: Option<&str>| {
+            running(Running { condition: Some(rule), enforcing, condition_change_words: change.map(Into::into), ..run() }).0
+        };
+        assert_eq!(ruled(schedule.clone(), true, Some("4 hours")), "Active for 4 hours");
+        assert_eq!(ruled(schedule.clone(), false, Some("3 hours")), "Inactive for 3 hours");
+        assert_eq!(ruled(schedule, true, None), "Active");
+        assert_eq!(ruled(Rule::FlashDrive { serial: "1".into(), drive: "Stick".into() }, false, None), "Inactive by device");
+        assert_eq!(ruled(Rule::Webhook(hook()), true, None), "Active by webhook");
+        assert_eq!(ruled(Rule::Combined { mode: Mode::All, members: vec![], rules: vec![] }, true, None), "Active by combination");
+    }
+
+    #[test]
+    fn a_running_allowance_says_what_it_allows() {
+        let with = |state: AllowanceStatus| running(Running { allowance: Some(state), ..run() }).1;
+        let pomodoro = Terms::Pomodoro { blocked: "25m".into(), allowed: "5m".into(), anchor: Anchor::Start };
+        assert_eq!(with(allowance(pomodoro.clone(), true, Some("4 minutes"))), "Allowed for 4 minutes");
+        assert_eq!(with(allowance(pomodoro.clone(), false, Some("20 minutes"))), "Allowed in 20 minutes");
+        assert_eq!(with(allowance(pomodoro, false, None)), "Blocked");
+        let delayed = Terms::Delayed { kind: DelayKind::After, value: "1h".into() };
+        assert_eq!(with(allowance(delayed.clone(), true, Some("10 minutes"))), "Starts in 10 minutes");
+        assert_eq!(with(allowance(delayed, false, None)), "Started");
+        let total = |left: u64, reset: Option<&str>| AllowanceStatus {
+            left: Some(left),
+            left_words: Some(duration::left(left)),
+            reset_words: reset.map(Into::into),
+            ..allowance(budget(Scope::Total), left > 0, None)
+        };
+        assert_eq!(with(total(720, Some("8 hours"))), "12 minutes left");
+        assert_eq!(with(total(0, Some("8 hours"))), "Back in 8 hours");
+        assert_eq!(with(total(0, None)), "Used up");
+        let each = |used_up: usize| AllowanceStatus {
+            items: (0..3)
+                .map(|i| ItemLeft { item: format!("site:{i}"), left: if i < used_up { 0 } else { 60 }, left_words: String::new() })
+                .collect(),
+            ..allowance(budget(Scope::Each), true, None)
+        };
+        assert_eq!(with(each(0)), "None used up");
+        assert_eq!(with(each(1)), "1 item used up");
+        assert_eq!(with(each(2)), "2 items used up");
+        // While the condition is off, whatever the allowance.
+        let off = Running { enforcing: false, condition: Some(Rule::FlashDrive { serial: "1".into(), drive: "Stick".into() }), ..run() };
+        assert_eq!(running(off).1, "Inactive condition");
+    }
+
+    #[test]
+    fn a_running_lock_says_how_it_stands() {
+        let lock = |run: Running| running(run).2;
+        assert_eq!(lock(Running { remaining_words: Some("83 minutes".into()), ..run() }), "83 minutes left");
+        assert_eq!(lock(Running { stop_delay: Some(300), ..run() }), "Delay 5 minutes");
+        assert_eq!(
+            lock(Running { stop_delay: Some(300), stop_remaining: Some(180), stop_remaining_words: Some("3 minutes".into()), ..run() }),
+            "In 3 minutes"
+        );
+        assert_eq!(lock(Running { stop_delay: Some(300), stop_remaining: Some(0), ..run() }), "Unlocked");
+        let drive = Rule::FlashDrive { serial: "1".into(), drive: "Stick".into() };
+        assert_eq!(lock(Running { lock_condition: Some(drive.clone()), locked: true, ..run() }), "Locked by device");
+        assert_eq!(lock(Running { lock_condition: Some(drive), ..run() }), "Unlocked by device");
+        let schedule = Rule::Schedule { week: week("daily") };
+        assert_eq!(
+            lock(Running { lock_condition: Some(schedule), locked: true, lock_change_words: Some("2 hours".into()), ..run() }),
+            "Locked for 2 hours"
+        );
+        assert_eq!(lock(Running { until_restart: true, ..run() }), "Until restart");
+        assert_eq!(lock(Running { lock_text: Some("x".into()), ..run() }), "Type text to stop");
+        assert_eq!(lock(Running { password: true, ..run() }), "Password to stop");
+    }
+}

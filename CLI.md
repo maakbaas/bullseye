@@ -169,8 +169,8 @@ bullseye condition edit "Work hours" --times "Mon-Fri 08:00-17:00; Sat 10:00-14:
 ```
 > bullseye status
 Sessions:
-  Work     Running · inactive for the next 15 hours · unlocked for the next 15 hours
-  Evening  Running · active · locked for the next 62 minutes
+  Work     Inactive · Inactive for 15 hours · Inactive condition · Unlocked for 15 hours
+  Evening  Running · locked · Active · Never paused · 62 minutes left
 Targets:
   Social media  used by Work
   Games         used by Work, Evening
@@ -178,7 +178,7 @@ Conditions:
   Work hours  Mon-Fri 08:00-17:00
 ```
 
-A running session with an allowance says what it is doing at the end of its line: `allowed for the next 4 minutes` or `blocked for the next 12 minutes` (a Pomodoro), `12 minutes left of 30 minutes, reset in 3 hours` (a budget for the session), or `10 minutes for each item, reset in 40 minutes (youtube.com 4 minutes left)`.
+Each session's line is its state as its tile's tag says it (Not running, Running, Running · locked, Inactive), then what its Condition, Allowance and Lock rows say, the same words as the window's: while it runs what is happening (`Active for 4 hours`, `Allowed for 4 minutes`, `12 minutes left`, `In 3 minutes`), while it is stopped what is set (`Mon-Fri 08:00-17:00`, `Allowed for 30 minutes`, `For 2 hours`). `show` has the same line as its State.
 
 `show <session>`, `target show <target>` and `condition show <condition>` give everything about one. With `--json`, `status`, `show` and `target show` print what the service says, for scripts: the same fields as the export file, plus `running` with each running session's state (`locked`, `enforcing`, the times left in seconds and in words).
 

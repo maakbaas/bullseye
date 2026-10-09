@@ -1,7 +1,7 @@
 // A page of tiles, one per session, target or condition: kept and updated in place, so an open menu
 // survives a refresh. A session's tile also has its lock and Start / Stop. Deleting is asked here.
 
-import { $, ask, confirmStricter, el, invalid, invoke, joined, targetName, newId, durationText, untilText, editHref, nodesOf, notify, overview, quoted, reachable, ref, refresh, runningOf, conditionOf, t, tn, usersOf, weekText } from "./core.js";
+import { $, ask, confirmStricter, el, invalid, invoke, joined, targetName, newId, editHref, notify, overview, quoted, reachable, ref, refresh, runningOf, conditionOf, t, tn, usersOf, weekText, nodesOf } from "./core.js";
 import { LOCKS } from "./locks.js";
 import { LISTS, SECTIONS } from "./forms.js";
 import { KINDS } from "./kinds.js";
@@ -72,84 +72,18 @@ function sessionLines(item) {
   return {
     block: names.length ? joined(names) : t("sessions.tile.noTargets"),
     when: condition ? ref(condition.name, editHref("conditions", condition.id)) : rule ? plain(ruleName(rule)) : t("sessions.fields.always"),
-    now: running ? runningNow(item, running) : stoppedNow(item),
+    // What its Condition, Allowance and Lock rows say now, as the service writes it (`status.rs`).
+    now: ((status) => ({ when: statusLine(status && status.condition), unless: statusLine(status && status.allowance), lock: statusLine(status && status.lock) }))((overview.status || []).find((s) => s.id === item.id)),
   };
 }
 
-// A running session's rows in a few words each (`sessions.now`): whether its condition has it active
-// and for how long, what its allowance allows, how its lock stands.
-function runningNow(item, running) {
-  const now = (key, change, values = {}) => t(`sessions.now.${key}${change ? "For" : ""}`, { change, ...values });
-  const when = !running.condition ? t("sessions.now.active") : ruleNow(running.condition, running.enforcing ? "active" : "inactive", running.condition_change_words);
-  let unless = t("sessions.now.neverPaused");
-  const state = running.allowance;
-  // A cycle or a delayed start whose time cannot be told is enforced (`Clock::phase`): blocked, begun.
-  if (state && state.terms.type === "pomodoro") unless = state.open ? t("sessions.now.allowedFor", { change: state.change_words }) : now("blocked", state.change_words);
-  else if (state && state.terms.type === "delayed") unless = state.open ? t("sessions.now.delayedFor", { change: state.change_words }) : t("sessions.now.begun");
-  else if (state && state.left !== null) unless = state.left > 0 ? t("sessions.now.left", { left: state.left_words }) : state.reset_words ? t("sessions.now.back", { reset: state.reset_words }) : t("sessions.now.usedUp");
-  // A budget for each item: how many have used theirs up, not each by name.
-  else if (state && state.terms.type === "budget") {
-    const usedUp = state.items.filter((i) => i.left === 0).length;
-    unless = usedUp ? t("sessions.now.itemsUsedUp", { n: usedUp }) : t("sessions.now.noneUsedUp");
-  }
-  let lock = null;
-  if (running.stop_delay) {
-    const left = running.stop_remaining;
-    lock = left === null ? t("sessions.now.delay", { delay: durationText(`${running.stop_delay}s`, "short") }) : left === 0 ? t("sessions.now.unlocked") : t("sessions.now.in", { left: running.stop_remaining_words });
-  } else if (running.remaining_words) lock = t("sessions.now.timeLeft", { left: running.remaining_words });
-  else if (running.lock_condition) lock = ruleNow(running.lock_condition, running.locked ? "locked" : "unlocked", running.lock_change_words);
-  else lock = plainLock(running.until_restart ? "until_restart" : running.lock_text ? "text" : running.password ? "password" : "none");
-  // Nothing is blocked while the condition is off, so there is nothing for an allowance to allow.
-  if (!running.enforcing) unless = t("sessions.now.inactiveCondition");
-  return { when, unless, lock };
+// A row's words from the service (`status::Line`): text, with the condition it names as a link.
+function statusLine(line) {
+  if (!line) return null;
+  if (!line.condition) return line.text;
+  const [before, after] = line.text.split("{condition}");
+  return [before, ref(line.condition.name, editHref("conditions", line.condition.id)), after].filter((part) => part !== "");
 }
-
-// A stopped session's rows in a few words, in the style of a running one's: when its condition is on,
-// what its allowance gives, what its lock holds by. Times in one unit (`duration::Words`).
-function stoppedNow(item) {
-  const condition = conditionOf(item);
-  return { when: condition ? stoppedCondition(condition) : t("sessions.now.always"), unless: stoppedAllowance(item.allowance), lock: stoppedLock(item.lock) };
-}
-
-// A rule's state now (`state`: active / inactive, locked / unlocked): for how long when that is known,
-// otherwise what has it so: a device, a webhook, a combination.
-function ruleNow(rule, state, change) {
-  if (change) return t(`sessions.now.${state}For`, { change });
-  const by = { flash_drive: "Device", webhook: "Webhook", combined: "Combination" }[rule.type];
-  return t(`sessions.now.${state}${by ? `By${by}` : ""}`);
-}
-
-function stoppedCondition(condition) {
-  if (condition.type === "flash_drive") return t("sessions.now.activeByDevice");
-  if (condition.type === "webhook") return t("sessions.now.activeByWebhook");
-  if (condition.type === "combined") return t("sessions.now.activeByCombination");
-  return weekText(condition.days);
-}
-
-function stoppedAllowance(terms) {
-  if (!terms) return t("sessions.now.neverPaused");
-  const short = (text) => durationText(text, "short");
-  if (terms.type === "pomodoro") return t("sessions.now.cycle", { allowed: short(terms.allowed), blocked: short(terms.blocked) });
-  if (terms.type === "delayed") return terms.kind === "from" ? t("sessions.now.from", { date: untilText(terms.value, true) }) : t("sessions.now.after", { time: short(terms.value) });
-  // A budget: how much, for the session or each item (when it is given back is in its settings).
-  return t(`sessions.now.${terms.scope === "each" ? "perItem" : "budget"}`, { time: short(terms.allowed) });
-}
-
-// The Lock row says it is the lock: what it holds by, as briefly as the dropdown leaves it to say.
-function stoppedLock(lock) {
-  if (lock.method === "timed") return lock.kind === "until" ? t("sessions.now.until", { date: untilText(lock.value, true) }) : t("sessions.now.for", { time: durationText(lock.value, "short") });
-  if (lock.method === "delay") return t("sessions.now.delay", { delay: durationText(lock.delay, "short") });
-  if (lock.method === "condition") {
-    const condition = overview.conditions.find((c) => c.id === lock.condition);
-    if (!condition) return null;
-    // "During" a schedule's times; "by" what has the others on.
-    return tn(`sessions.now.${condition.type === "schedule" ? "during" : "by"}`, { condition: ref(condition.name, editHref("conditions", condition.id)) });
-  }
-  return plainLock(lock.method);
-}
-
-// The locks that hold by no time: the same words running or not.
-const plainLock = (method) => t(`sessions.now.${{ until_restart: "restart", text: "text", password: "password" }[method] || "notLocked"}`);
 
 // ---- A page of tiles. Tiles are kept and updated in place, so an open menu or a lock being
 // typed survives a refresh.
