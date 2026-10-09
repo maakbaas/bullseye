@@ -163,9 +163,11 @@ fn running_lines(running: &Running) -> (Line, Line, Line) {
                 Terms::Delayed { .. } => now("started", &[]),
                 // A break going on: what is left of it; otherwise how many are left.
                 Terms::Breaks { .. } if state.open => now("left", &[("left", &change)]),
-                Terms::Breaks { .. } => match state.breaks_left.unwrap_or(0) {
-                    0 => now("noneLeft", &[]),
-                    n => now("breaksLeft", &[("n", &n.to_string())]),
+                // None left: back when the reset gives them back, as a budget's time.
+                Terms::Breaks { .. } => match (state.breaks_left.unwrap_or(0), &state.reset_words) {
+                    (0, Some(reset)) => now("back", &[("reset", reset)]),
+                    (0, None) => now("noneLeft", &[]),
+                    (n, _) => now("breaksLeft", &[("n", &n.to_string())]),
                 },
                 Terms::Budget { .. } => match (state.left, &state.left_words, &state.reset_words) {
                     (Some(left), Some(words), _) if left > 0 => now("left", &[("left", words)]),
@@ -451,6 +453,8 @@ mod tests {
         assert_eq!(with(left(3)), "3 breaks left");
         assert_eq!(with(left(1)), "1 break left");
         assert_eq!(with(left(0)), "None left");
+        let back = AllowanceStatus { reset_words: Some("3 hours".into()), ..left(0) };
+        assert_eq!(with(back), "Back in 3 hours");
         // While the condition is off, the same.
         let off = Running { enforcing: false, condition: Some(Rule::FlashDrive { serial: "1".into(), drive: "Stick".into() }), ..run() };
         assert_eq!(running(off).1, "Never paused");

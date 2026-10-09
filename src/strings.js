@@ -143,7 +143,7 @@ window.STRINGS = {
       usedUp: "Used up",
       noneUsedUp: "None used up",
       itemsUsedUp: { one: "{n} item used up", other: "{n} items used up" },
-      // Breaks: how many are left (one going on: what is left of it, as `left`).
+      // Breaks: how many are left (one going on: what is left of it, as `left`; none, with a reset coming: `back`).
       breaksLeft: { one: "{n} break left", other: "{n} breaks left" },
       noneLeft: "None left",
       // The lock: the same words running or stopped where no time is in them.
