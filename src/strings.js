@@ -101,6 +101,72 @@ window.STRINGS = {
       renameHeading: "Rename {name}",
     },
 
+    // What a session's Condition, Allowance and Lock rows say beside their value, written by the
+    // service (`status.rs`) for the tile and the CLI. Stopped: what is set; running: what is
+    // happening. {change}, {left}, {reset}, {delay}, {time}: times in one unit, rounded; {date}: 18:00
+    // today, October 6 otherwise; {n}: a number of items; {condition}: a condition's name (a link).
+    now: {
+      // Stopped: what switches it on and off.
+      always: "At all times",
+      bySchedule: "By schedule",
+      byDevice: "By device",
+      byWebhook: "By webhook",
+      byCombination: "By combination",
+      // Running: whether it is on, for how long or by what.
+      active: "Active",
+      activeFor: "Active for {change}",
+      inactive: "Inactive",
+      inactiveFor: "Inactive for {change}",
+      activeByDevice: "Active by device",
+      inactiveByDevice: "Inactive by device",
+      activeByWebhook: "Active by webhook",
+      inactiveByWebhook: "Inactive by webhook",
+      activeByCombination: "Active by combination",
+      inactiveByCombination: "Inactive by combination",
+      // The allowance. Stopped: what it gives ({blocked} / {allowed} a Pomodoro cycle's).
+      neverPaused: "Never paused",
+      cycle: "{blocked} / {allowed}",
+      after: "After {time}",
+      from: "From {date}",
+      budget: "Allowed for {time}",
+      perItem: "{time} per item",
+      // Running; while the condition is off, nothing is blocked for it to allow.
+      inactiveCondition: "Inactive condition",
+      allowedFor: "Allowed for {change}",
+      allowedIn: "Allowed in {change}",
+      blocked: "Blocked",
+      startsIn: "Starts in {change}",
+      started: "Started",
+      left: "{left} left",
+      back: "Back in {reset}",
+      usedUp: "Used up",
+      noneUsedUp: "None used up",
+      itemsUsedUp: { one: "{n} item used up", other: "{n} items used up" },
+      // The lock: the same words running or stopped where no time is in them.
+      notLocked: "Not locked",
+      restart: "Until restart",
+      text: "Type text to stop",
+      password: "Password to stop",
+      // Stopped.
+      for: "For {time}",
+      until: "Until {date}",
+      delay: "Delay {delay}",
+      during: "During {condition}",
+      by: "By {condition}",
+      // Running: a timed lock's time left, a delay's wait once stopping is asked for, a condition's.
+      timeLeft: "{left} left",
+      in: "In {left}",
+      locked: "Locked",
+      lockedFor: "Locked for {change}",
+      unlocked: "Unlocked",
+      unlockedFor: "Unlocked for {change}",
+      lockedByDevice: "Locked by device",
+      unlockedByDevice: "Unlocked by device",
+      lockedByWebhook: "Locked by webhook",
+      unlockedByWebhook: "Unlocked by webhook",
+      lockedByCombination: "Locked by combination",
+      unlockedByCombination: "Unlocked by combination",
+    },
     // A session's tile: its Targets row with none, and its Condition row for a running session whose
     // condition was deleted (it keeps the rule it started with). {drive}: a flash drive's name, quoted.
     tile: {

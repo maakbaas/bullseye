@@ -165,7 +165,7 @@ pub struct UnlockStatus {
 }
 
 /// What the UI shows.
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Overview {
     /// Everything the user has defined, each kind in the order it was made (`definitions.rs`).
     pub targets: Vec<Target>,

@@ -1,8 +1,8 @@
-//! What a session's Condition, Allowance and Lock rows say, in a few words: while it runs what is
-//! happening (`Active for 4 hours`, `12 minutes left`), while it is stopped what is set (`Mon-Fri
-//! 09:00-17:00`, `Allowed for 30 minutes`). Written once here, for the window's tile and the CLI, so
-//! both say the same. Times are one unit, rounded (`duration::left`); a date is the time today and
-//! the day otherwise (`DateTime::short`).
+//! What a session's Condition, Allowance and Lock rows say, in a few words, and the state its tag
+//! shows: while it runs what is happening (`Active for 4 hours`, `12 minutes left`), while it is
+//! stopped what is set (`By schedule`, `Allowed for 30 minutes`). Worked out once here, in the
+//! window's words (`strings.rs`, `sessions.now`), for the tile and the CLI. Times are one unit,
+//! rounded (`duration::left`); a date is the time today and the day otherwise (`DateTime::short`).
 
 use std::time::SystemTime;
 
@@ -16,14 +16,41 @@ use crate::duration;
 use crate::localtime::Zone;
 use crate::lock::{Lock, TimedKind};
 use crate::session::Running;
+use crate::strings::t;
 
-/// The three rows of one session (`Definition::id`).
+/// One session (`Definition::id`): its state and its three rows.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Status {
     pub id: String,
+    pub state: State,
     pub condition: Line,
     pub allowance: Line,
     pub lock: Line,
+}
+
+/// What a session's tag says (`sessions.state`).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum State {
+    NotRunning,
+    Running,
+    /// Running and locked.
+    Locked,
+    /// Running, its condition off: nothing is blocked.
+    Inactive,
+}
+
+impl State {
+    /// The tag's words, as on the tile.
+    pub fn words(self) -> String {
+        let key = match self {
+            State::NotRunning => "notRunning",
+            State::Running => "running",
+            State::Locked => "runningLocked",
+            State::Inactive => "inactive",
+        };
+        t(&format!("sessions.state.{key}"), &[])
+    }
 }
 
 /// One row's words. A condition named in them stands as `{condition}` in `text`, with its id and
@@ -42,27 +69,41 @@ pub struct Named {
 }
 
 impl Line {
-    fn new(text: impl Into<String>) -> Line {
-        Line { text: text.into(), condition: None }
+    fn new(text: String) -> Line {
+        Line { text, condition: None }
     }
 
-    /// The text with the condition's name in it, as the CLI shows it.
+    /// The text with the condition's name in it, quoted, as the CLI shows it.
     pub fn plain(&self) -> String {
         match &self.condition {
-            Some(named) => self.text.replace("{condition}", &format!("\"{}\"", named.name)),
+            Some(named) => self.text.replace("{condition}", &crate::strings::quoted(&named.name)),
             None => self.text.clone(),
         }
     }
 }
 
-/// The rows of `session`, running as `running` or stopped, with `conditions` to name its lock's by.
-/// `zone` and `now` tell which day it is, for a date.
-pub fn of(session: &Definition, running: Option<&Running>, conditions: &[Condition], zone: &Zone, now: SystemTime) -> Status {
-    let (condition, allowance, lock) = match running {
-        Some(running) => running_lines(running),
-        None => stopped_lines(session, conditions, zone, now),
+/// A text of `sessions.now`.
+fn now(key: &str, values: &[(&str, &str)]) -> String {
+    t(&format!("sessions.now.{key}"), values)
+}
+
+/// The rows of `session`, running as `running` or stopped, with `conditions` to name its condition and
+/// its lock's by. `zone` and `at` tell which day it is, for a date.
+pub fn of(session: &Definition, running: Option<&Running>, conditions: &[Condition], zone: &Zone, at: SystemTime) -> Status {
+    let (state, (condition, allowance, lock)) = match running {
+        Some(running) => {
+            let state = if !running.enforcing {
+                State::Inactive
+            } else if running.locked {
+                State::Locked
+            } else {
+                State::Running
+            };
+            (state, running_lines(running))
+        }
+        None => (State::NotRunning, stopped_lines(session, conditions, zone, at)),
     };
-    Status { id: session.id.clone(), condition, allowance, lock }
+    Status { id: session.id.clone(), state, condition, allowance, lock }
 }
 
 /// A time set as typed (`90m`) in one unit (`2 hours`); as typed if it cannot be read.
@@ -74,117 +115,115 @@ fn short(text: &str) -> String {
 }
 
 /// A date and time as typed in a few words: the time if it is today, the day otherwise.
-fn short_date(text: &str, zone: &Zone, now: SystemTime) -> String {
-    let Ok(at) = DateTime::parse(text) else { return text.to_string() };
+fn short_date(text: &str, zone: &Zone, at: SystemTime) -> String {
+    let Ok(date) = DateTime::parse(text) else { return text.to_string() };
     // Today when the day's midnight has passed and the next has not.
-    let midnight = zone.instant(&DateTime { hour: 0, minute: 0, ..at });
-    let today = midnight.is_some_and(|midnight| midnight <= now && now.duration_since(midnight).is_ok_and(|d| d.as_secs() < 86400));
-    at.short(today)
+    let midnight = zone.instant(&DateTime { hour: 0, minute: 0, ..date });
+    let today = midnight.is_some_and(|midnight| at.duration_since(midnight).is_ok_and(|since| since.as_secs() < 86400));
+    date.short(today)
 }
 
-/// A rule's state now (`state`: Active / Inactive, Locked / Unlocked): for how long when that is
-/// known, otherwise what has it so (a device, a webhook, a combination).
-fn rule_now(rule: &Rule, state: &str, change: Option<&String>) -> String {
-    if let Some(change) = change {
-        return format!("{state} for {change}");
-    }
+/// What has a rule on or off: a schedule, a device, a webhook, a combination.
+fn by(rule: &Rule) -> &'static str {
     match rule {
-        Rule::FlashDrive { .. } => format!("{state} by device"),
-        Rule::Webhook(_) => format!("{state} by webhook"),
-        Rule::Combined { .. } => format!("{state} by combination"),
-        Rule::Schedule { .. } => state.to_string(),
+        Rule::Schedule { .. } => "Schedule",
+        Rule::FlashDrive { .. } => "Device",
+        Rule::Webhook(_) => "Webhook",
+        Rule::Combined { .. } => "Combination",
+    }
+}
+
+/// A rule's state now (`state`: active / inactive, locked / unlocked): for how long when that is
+/// known, otherwise what has it so; a schedule always knows.
+fn rule_now(rule: &Rule, state: &str, change: Option<&String>) -> String {
+    match (change, rule) {
+        (Some(change), _) => now(&format!("{state}For"), &[("change", change)]),
+        (None, Rule::Schedule { .. }) => now(state, &[]),
+        (None, rule) => now(&format!("{state}By{}", by(rule)), &[]),
     }
 }
 
 fn running_lines(running: &Running) -> (Line, Line, Line) {
     let condition = match &running.condition {
-        None => "Active".to_string(),
-        Some(rule) => rule_now(rule, if running.enforcing { "Active" } else { "Inactive" }, running.condition_change_words.as_ref()),
+        None => now("active", &[]),
+        Some(rule) => rule_now(rule, if running.enforcing { "active" } else { "inactive" }, running.condition_change_words.as_ref()),
     };
     // Nothing is blocked while the condition is off, so there is nothing for an allowance to allow.
-    let allowance = if !running.enforcing {
-        "Inactive condition".to_string()
-    } else {
-        match &running.allowance {
-            None => "Never paused".to_string(),
-            Some(state) => {
-                let change = state.change_words.clone().unwrap_or_default();
-                match &state.terms {
-                    // A cycle or a start whose time cannot be told is enforced: blocked, begun.
-                    Terms::Pomodoro { .. } if state.open => format!("Allowed for {change}"),
-                    Terms::Pomodoro { .. } if state.change_words.is_some() => format!("Allowed in {change}"),
-                    Terms::Pomodoro { .. } => "Blocked".to_string(),
-                    Terms::Delayed { .. } if state.open => format!("Starts in {change}"),
-                    Terms::Delayed { .. } => "Started".to_string(),
-                    Terms::Budget { .. } => match (state.left, &state.left_words, &state.reset_words) {
-                        (Some(left), Some(words), _) if left > 0 => format!("{words} left"),
-                        (Some(_), _, Some(reset)) => format!("Back in {reset}"),
-                        (Some(_), _, None) => "Used up".to_string(),
-                        // A budget for each item: how many have used theirs up, not each by name.
-                        (None, _, _) => match state.items.iter().filter(|item| item.left == 0).count() {
-                            0 => "None used up".to_string(),
-                            1 => "1 item used up".to_string(),
-                            n => format!("{n} items used up"),
-                        },
+    let allowance = match &running.allowance {
+        _ if !running.enforcing => now("inactiveCondition", &[]),
+        None => now("neverPaused", &[]),
+        Some(state) => {
+            let change = state.change_words.clone().unwrap_or_default();
+            match &state.terms {
+                // A cycle or a start whose time cannot be told is enforced: blocked, begun.
+                Terms::Pomodoro { .. } if state.open => now("allowedFor", &[("change", &change)]),
+                Terms::Pomodoro { .. } if state.change_words.is_some() => now("allowedIn", &[("change", &change)]),
+                Terms::Pomodoro { .. } => now("blocked", &[]),
+                Terms::Delayed { .. } if state.open => now("startsIn", &[("change", &change)]),
+                Terms::Delayed { .. } => now("started", &[]),
+                Terms::Budget { .. } => match (state.left, &state.left_words, &state.reset_words) {
+                    (Some(left), Some(words), _) if left > 0 => now("left", &[("left", words)]),
+                    (Some(_), _, Some(reset)) => now("back", &[("reset", reset)]),
+                    (Some(_), _, None) => now("usedUp", &[]),
+                    // A budget for each item: how many have used theirs up, not each by name.
+                    (None, _, _) => match state.items.iter().filter(|item| item.left == 0).count() {
+                        0 => now("noneUsedUp", &[]),
+                        n => now("itemsUsedUp", &[("n", &n.to_string())]),
                     },
-                }
+                },
             }
         }
     };
-    let lock = if running.stop_delay.is_some() {
+    let lock = if let Some(delay) = running.stop_delay {
         match (running.stop_remaining, &running.stop_remaining_words) {
-            (None, _) => format!("Delay {}", running.stop_delay.map(duration::left).unwrap_or_default()),
-            (Some(0), _) => "Unlocked".to_string(),
-            (Some(_), words) => format!("In {}", words.clone().unwrap_or_default()),
+            (None, _) => now("delay", &[("delay", &duration::left(delay))]),
+            (Some(0), _) => now("unlocked", &[]),
+            (Some(_), words) => now("in", &[("left", words.as_deref().unwrap_or_default())]),
         }
     } else if let Some(left) = &running.remaining_words {
-        format!("{left} left")
+        now("timeLeft", &[("left", left)])
     } else if let Some(rule) = &running.lock_condition {
-        rule_now(rule, if running.locked { "Locked" } else { "Unlocked" }, running.lock_change_words.as_ref())
+        rule_now(rule, if running.locked { "locked" } else { "unlocked" }, running.lock_change_words.as_ref())
     } else if running.until_restart {
-        "Until restart".to_string()
+        now("restart", &[])
     } else if running.lock_text.is_some() {
-        "Type text to stop".to_string()
+        now("text", &[])
     } else if running.password {
-        "Password to stop".to_string()
+        now("password", &[])
     } else {
-        "Not locked".to_string()
+        now("notLocked", &[])
     };
     (Line::new(condition), Line::new(allowance), Line::new(lock))
 }
 
-fn stopped_lines(session: &Definition, conditions: &[Condition], zone: &Zone, now: SystemTime) -> (Line, Line, Line) {
+fn stopped_lines(session: &Definition, conditions: &[Condition], zone: &Zone, at: SystemTime) -> (Line, Line, Line) {
     let find = |id: &str| conditions.iter().find(|c| c.id == id);
+    // What switches it on and off, not whether it is on: it does not run.
     let condition = match session.condition.as_deref().and_then(find) {
-        None => "At all times".to_string(),
-        Some(condition) => match &condition.rule {
-            Rule::Schedule { week } => week.describe(),
-            Rule::FlashDrive { .. } => "Active by device".to_string(),
-            Rule::Webhook(_) => "Active by webhook".to_string(),
-            Rule::Combined { .. } => "Active by combination".to_string(),
-        },
+        None => now("always", &[]),
+        Some(condition) => now(&format!("by{}", by(&condition.rule)), &[]),
     };
     let allowance = match &session.allowance {
-        None => "Never paused".to_string(),
-        Some(Terms::Pomodoro { blocked, allowed, .. }) => format!("{} / {}", short(blocked), short(allowed)),
-        Some(Terms::Delayed { kind: DelayKind::After, value }) => format!("After {}", short(value)),
-        Some(Terms::Delayed { kind: DelayKind::From, value }) => format!("From {}", short_date(value, zone, now)),
-        Some(Terms::Budget { allowed, scope: Scope::Each, .. }) => format!("{} per item", short(allowed)),
-        Some(Terms::Budget { allowed, .. }) => format!("Allowed for {}", short(allowed)),
+        None => now("neverPaused", &[]),
+        Some(Terms::Pomodoro { blocked, allowed, .. }) => now("cycle", &[("blocked", &short(blocked)), ("allowed", &short(allowed))]),
+        Some(Terms::Delayed { kind: DelayKind::After, value }) => now("after", &[("time", &short(value))]),
+        Some(Terms::Delayed { kind: DelayKind::From, value }) => now("from", &[("date", &short_date(value, zone, at))]),
+        Some(Terms::Budget { allowed, scope: Scope::Each, .. }) => now("perItem", &[("time", &short(allowed))]),
+        Some(Terms::Budget { allowed, .. }) => now("budget", &[("time", &short(allowed))]),
     };
     let lock = match &session.lock {
-        Lock::None => Line::new("Not locked"),
-        Lock::Timed { kind: TimedKind::For, value } => Line::new(format!("For {}", short(value))),
-        Lock::Timed { kind: TimedKind::Until, value } => Line::new(format!("Until {}", short_date(value, zone, now))),
-        Lock::UntilRestart => Line::new("Until restart"),
-        Lock::Delay { delay } => Line::new(format!("Delay {}", short(delay))),
-        Lock::Text { .. } => Line::new("Type text to stop"),
-        Lock::Password { .. } => Line::new("Password to stop"),
+        Lock::None => Line::new(now("notLocked", &[])),
+        Lock::Timed { kind: TimedKind::For, value } => Line::new(now("for", &[("time", &short(value))])),
+        Lock::Timed { kind: TimedKind::Until, value } => Line::new(now("until", &[("date", &short_date(value, zone, at))])),
+        Lock::UntilRestart => Line::new(now("restart", &[])),
+        Lock::Delay { delay } => Line::new(now("delay", &[("delay", &short(delay))])),
+        Lock::Text { .. } => Line::new(now("text", &[])),
+        Lock::Password { .. } => Line::new(now("password", &[])),
         // "During" a schedule's times; "by" what has the others on.
         Lock::Condition { condition } => match find(condition) {
-            None => Line::new("Condition"),
+            None => Line::new(t("locks.condition.label", &[])),
             Some(c) => Line {
-                text: if matches!(c.rule, Rule::Schedule { .. }) { "During {condition}" } else { "By {condition}" }.to_string(),
+                text: now(if matches!(c.rule, Rule::Schedule { .. }) { "during" } else { "by" }, &[]),
                 condition: Some(Named { id: c.id.clone(), name: c.name.clone() }),
             },
         },
@@ -300,10 +339,8 @@ mod tests {
     fn a_stopped_session_says_what_is_set() {
         let pomodoro = Terms::Pomodoro { blocked: "25m".into(), allowed: "5m".into(), anchor: Anchor::Start };
         assert_eq!(stopped(&session(Lock::None, None, None)), ("At all times".into(), "Never paused".into(), "Not locked".into()));
-        assert_eq!(stopped(&session(Lock::None, Some("hours"), Some(pomodoro))).0, "Mon-Fri 09:00-17:00");
-        for (id, words) in
-            [("key", "Active by device"), ("hook", "Active by webhook"), ("both", "Active by combination"), ("gone", "At all times")]
-        {
+        assert_eq!(stopped(&session(Lock::None, Some("hours"), Some(pomodoro))).0, "By schedule");
+        for (id, words) in [("key", "By device"), ("hook", "By webhook"), ("both", "By combination"), ("gone", "At all times")] {
             assert_eq!(stopped(&session(Lock::None, Some(id), None)).0, words);
         }
         let allowances = [
@@ -319,14 +356,15 @@ mod tests {
         }
         let locks = [
             (Lock::timed_for("90m"), "For 2 hours"),
+            (Lock::timed_for("soon"), "For soon"),
             (Lock::Timed { kind: TimedKind::Until, value: "1970-01-02 18:00".into() }, "Until 18:00"),
             (Lock::Timed { kind: TimedKind::Until, value: "soon".into() }, "Until soon"),
             (Lock::UntilRestart, "Until restart"),
             (Lock::Delay { delay: "5m".into() }, "Delay 5 minutes"),
             (Lock::Text { text: "x".into() }, "Type text to stop"),
             (Lock::Password { password: None, hash: None }, "Password to stop"),
-            (Lock::Condition { condition: "hours".into() }, "During \"Work hours\""),
-            (Lock::Condition { condition: "key".into() }, "By \"Key\""),
+            (Lock::Condition { condition: "hours".into() }, "During “Work hours”"),
+            (Lock::Condition { condition: "key".into() }, "By “Key”"),
             (Lock::Condition { condition: "gone".into() }, "Condition"),
         ];
         for (lock, words) in locks {
@@ -335,6 +373,19 @@ mod tests {
         // The window links the condition: its id and name, apart from the text.
         let status = of(&session(Lock::Condition { condition: "key".into() }, None, None), None, &conditions(), &Zone::fixed(0), noon());
         assert_eq!(status.lock, Line { text: "By {condition}".into(), condition: Some(Named { id: "key".into(), name: "Key".into() }) });
+    }
+
+    #[test]
+    fn the_tag_says_whether_it_runs_is_locked_or_has_nothing_to_block() {
+        let state = |run: Option<Running>| of(&session(Lock::None, None, None), run.as_ref(), &[], &Zone::fixed(0), noon()).state;
+        assert_eq!(state(None), State::NotRunning);
+        assert_eq!(state(Some(run())), State::Running);
+        assert_eq!(state(Some(Running { locked: true, ..run() })), State::Locked);
+        assert_eq!(state(Some(Running { locked: true, enforcing: false, ..run() })), State::Inactive);
+        let words = [State::NotRunning, State::Running, State::Locked, State::Inactive].map(State::words);
+        assert_eq!(words, ["Not running", "Running", "Running · locked", "Inactive"].map(String::from));
+        // Sent to the window by these names.
+        assert_eq!(serde_json::to_string(&State::NotRunning).unwrap(), "\"not_running\"");
     }
 
     #[test]

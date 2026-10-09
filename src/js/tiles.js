@@ -316,10 +316,12 @@ async function setLock(id, method) {
 
 function renderSessionControls(parts, session) {
   const running = runningOf(session.id);
-  const quiet = running && running.enforcing === false;
+  // The service says what the tag shows (`status::State`); its colour and words are the window's.
+  const status = (overview.status || []).find((s) => s.id === session.id);
+  const state = (status && status.state) || "not_running";
   parts.tag.hidden = false;
-  parts.tag.setAttribute("type", running ? (quiet ? "cool-gray" : running.locked ? "green" : "blue") : "gray");
-  parts.tag.textContent = t(`sessions.state.${running ? (quiet ? "inactive" : running.locked ? "runningLocked" : "running") : "notRunning"}`);
+  parts.tag.setAttribute("type", { not_running: "gray", running: "blue", locked: "green", inactive: "cool-gray" }[state]);
+  parts.tag.textContent = t(`sessions.state.${{ not_running: "notRunning", running: "running", locked: "runningLocked", inactive: "inactive" }[state]}`);
   const busy = parts.toggle.dataset.busy === "1";
   // A session locked with a delay is asked to stop first, then waited out.
   const asking = running && running.stop_delay && running.stop_remaining === null;
@@ -434,7 +436,7 @@ async function confirmDelete(kind, id) {
     body: [
       t("delete.body", { name: quoted(item.name), noun: kindOf.noun }),
       ...(kind === "sessions" ? (runningOf(id) ? [t("delete.stopsIt")] : []) : await fallout(id)),
-    ].join(" "),
+    ].join(". "),
     action: t("common.delete"),
     kind: "danger",
   });

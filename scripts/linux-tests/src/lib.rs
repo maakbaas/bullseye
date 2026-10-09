@@ -8,6 +8,8 @@ pub mod allowance;
 pub mod session;
 #[path = "../../../src-tauri/src/status.rs"]
 pub mod status;
+#[path = "../../../src-tauri/src/strings.rs"]
+pub mod strings;
 #[path = "../../../src-tauri/src/cli.rs"]
 pub mod cli;
 #[path = "../../../src-tauri/src/clock.rs"]

@@ -172,15 +172,24 @@ Sessions:
   Work     Inactive · Inactive for 15 hours · Inactive condition · Unlocked for 15 hours
   Evening  Running · locked · Active · Never paused · 62 minutes left
 Targets:
-  Social media  used by Work
-  Games         used by Work, Evening
+  Social media  Used by Work
+  Games         Used by Work and Evening
 Conditions:
-  Work hours  Mon-Fri 08:00-17:00
+  Work hours  Active Mon-Fri 08:00-17:00 · Used by Work and Evening
+
+> bullseye show Evening
+Name:        Evening
+Id:          4f1c…
+State:       Running · locked
+Targets:     Social media and Games
+Condition:   Always · Active
+Allowance:   No allowance · Never paused
+Lock:        Timed · 62 minutes left (2 hours)
 ```
 
-Each session's line is its state as its tile's tag says it (Not running, Running, Running · locked, Inactive), then what its Condition, Allowance and Lock rows say, the same words as the window's: while it runs what is happening (`Active for 4 hours`, `Allowed for 4 minutes`, `12 minutes left`, `In 3 minutes`), while it is stopped what is set (`Mon-Fri 08:00-17:00`, `Allowed for 30 minutes`, `For 2 hours`). `show` has the same line as its State.
+The CLI uses the window's words (`src/strings.js`, read by the program itself), so it says what the window says. Each session's line in `status` is its tile's tag (Not running, Running, Running · locked, Inactive), then what its Condition, Allowance and Lock rows say beside their value: while it runs what is happening (`Active for 4 hours`, `Allowed for 4 minutes`, `12 minutes left`, `In 3 minutes`), while it is stopped what is set (`By schedule`, `Allowed for 30 minutes`, `For 2 hours`). A target's and a condition's line are their tiles' rows.
 
-`show <session>`, `target show <target>` and `condition show <condition>` give everything about one. With `--json`, `status`, `show` and `target show` print what the service says, for scripts: the same fields as the export file, plus `running` with each running session's state (`locked`, `enforcing`, the times left in seconds and in words).
+`show <session>` is its tile's rows, each value with its status, and after them in brackets the exact settings the tile keeps in its dialogs. `target show <target>` lists what the target editor has in each of its sections; `condition show <condition>` its tile's line, a schedule day by day, a webhook's request. With `--json`, `status`, `show` and `target show` print what the service says, for scripts: the same fields as the export file, plus `running` with each running session's state (`locked`, `enforcing`, the times left in seconds and in words) and `status` with what its rows say.
 
 ### `lock`
 

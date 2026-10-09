@@ -29,6 +29,7 @@ mod setup;
 mod state;
 mod status;
 mod store_apps;
+mod strings;
 mod sync;
 mod system_path;
 mod tab_closer;

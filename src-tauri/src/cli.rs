@@ -25,9 +25,9 @@ use crate::localtime;
 use crate::lock::{Lock, TimedKind};
 use crate::proto::{Overview, Request, UnlockStatus};
 use crate::schedule::Week;
-use crate::session::Running;
 use crate::state::Actions;
-use crate::status;
+use crate::status::{Line, Status};
+use crate::strings::{joined, quoted, t};
 use crate::webhook::{self, Hook, Match, Matcher, Method};
 
 /// Each command the window can invoke, and the CLI commands that do the same. Empty: it is about
@@ -1055,10 +1055,10 @@ fn execute(command: Command) -> Result<(), Failure> {
             let session = find(&overview.sessions, &session, "session", |b| (&b.id, &b.name))?;
             let running = overview.running.iter().find(|r| r.id == session.id);
             if json {
-                let both = serde_json::json!({ "session": session, "running": running });
+                let both = serde_json::json!({ "session": session, "running": running, "status": status_of(&overview, session) });
                 say!("{}", serde_json::to_string_pretty(&both).map_err(|e| failed(e.to_string()))?);
             } else {
-                out(&describe_session(&overview, session, running));
+                out(&describe_session(&overview, session));
             }
         }
         Command::New { name, changes } => {
@@ -1088,7 +1088,7 @@ fn execute(command: Command) -> Result<(), Failure> {
         Command::Delete { session, force } => {
             let overview = overview()?;
             let session = find(&overview.sessions, &session, "session", |b| (&b.id, &b.name))?;
-            if !confirm(&format!("Delete the session \"{}\"? This cannot be undone.", session.name), force)? {
+            if !confirm(&delete_question(&overview, "sessions", &session.name, &session.id), force)? {
                 return Err(failed("Not deleted."));
             }
             send(Request::DeleteSession { id: session.id.clone() })?;
@@ -1104,8 +1104,8 @@ fn execute(command: Command) -> Result<(), Failure> {
                 send(Request::SaveSession { session: session.clone() })?;
             }
             // As in the window: a session that cannot be stopped is only started after a second yes.
-            if let Some(how) = lock_warning(&overview, &session) {
-                let question = format!("Start \"{}\"? {how} Only unlocking ends it early.", session.name);
+            if let Some((heading, body)) = lock_question(&overview, &session) {
+                let question = format!("{heading} {body}");
                 if !confirm(&question, force)? {
                     return Err(failed("Not started."));
                 }
@@ -1118,8 +1118,8 @@ fn execute(command: Command) -> Result<(), Failure> {
             let mut session = find(&overview.sessions, &session, "session", |b| (&b.id, &b.name))?.clone();
             session.lock = resolve_lock(&overview, lock)?;
             // As in the window: a lock that holds is only given after a second yes.
-            if let Some(how) = lock_warning(&overview, &session) {
-                let question = format!("Lock \"{}\" now? {how} Only unlocking ends it early.", session.name);
+            if let Some((_, body)) = lock_question(&overview, &session) {
+                let question = format!("{} {body}", t("sessions.lockNow.heading", &[("name", &quoted(&session.name))]));
                 if !confirm(&question, force)? {
                     return Err(failed("Not locked."));
                 }
@@ -1224,7 +1224,7 @@ fn execute(command: Command) -> Result<(), Failure> {
         Command::TargetDelete { target: list, force } => {
             let overview = overview()?;
             let list = find(&overview.targets, &list, "target", |l| (&l.id, &l.name))?;
-            if !confirm(&format!("Delete the target \"{}\"?{} This cannot be undone.", list.name, fallout(&overview, &list.id)), force)? {
+            if !confirm(&delete_question(&overview, "targets", &list.name, &list.id), force)? {
                 return Err(failed("Not deleted."));
             }
             send(Request::DeleteTarget { id: list.id.clone() })?;
@@ -1242,11 +1242,13 @@ fn execute(command: Command) -> Result<(), Failure> {
             let overview = overview()?;
             let condition = find(&overview.conditions, &condition, "condition", |c| (&c.id, &c.name))?;
             say!("{}", condition.name);
+            say!("{}", condition_words(&overview, &condition.rule));
             match &condition.rule {
                 Rule::Schedule { week } => out(&per_day(week)),
-                rule => say!("{}", describe_rule(&overview, rule)),
+                Rule::Webhook(hook) => say!("{}", describe_webhook(hook)),
+                _ => {}
             }
-            say!("Used by: {}", users(&overview, &condition.id));
+            say!("{}: {}", t("tiles.usedBy", &[]), users(&overview, &condition.id));
         }
         Command::ConditionNew { name, rule } => {
             let rule = resolve_rule(&overview()?, rule)?;
@@ -1323,17 +1325,14 @@ fn execute(command: Command) -> Result<(), Failure> {
         Command::ConditionDelete { condition, force } => {
             let overview = overview()?;
             let condition = find(&overview.conditions, &condition, "condition", |c| (&c.id, &c.name))?;
-            if !confirm(
-                &format!("Delete the condition \"{}\"?{} This cannot be undone.", condition.name, fallout(&overview, &condition.id)),
-                force,
-            )? {
+            if !confirm(&delete_question(&overview, "conditions", &condition.name, &condition.id), force)? {
                 return Err(failed("Not deleted."));
             }
             send(Request::DeleteCondition { id: condition.id.clone() })?;
             say!("Deleted the condition \"{}\".", condition.name);
         }
         Command::ConditionCheck { times } => match Week::parse(&times).map_err(Failure::Usage)? {
-            Some(week) => out(&per_day(&week)),
+            Some(week) => out(&format!("{}\n{}", week.describe(), per_day(&week))),
             None => say!("Always active: a session without a condition"),
         },
         Command::Export { file } => {
@@ -1533,14 +1532,6 @@ fn combination(overview: &Overview, mode: Mode, given: &[String]) -> Result<Rule
 
 /// What a session's lock says of its condition besides its name: nothing for a schedule (the times are
 /// on the Conditions page, and only there), and the drive for a flash drive, which is what makes
-/// "active" mean something.
-fn drive_detail(rule: &Rule) -> String {
-    match rule {
-        Rule::Schedule { .. } | Rule::Combined { .. } | Rule::Webhook(_) => String::new(),
-        Rule::FlashDrive { drive, .. } => format!(" (the flash drive \"{drive}\" is not connected)"),
-    }
-}
-
 /// A webhook condition as words.
 fn describe_webhook(hook: &Hook) -> String {
     let matched = match (hook.matcher.on, hook.matcher.status, &hook.matcher.body) {
@@ -1557,19 +1548,29 @@ fn describe_webhook(hook: &Hook) -> String {
     )
 }
 
-/// A condition as words: its times, the drive it waits for, or the conditions it combines.
-fn describe_rule(overview: &Overview, rule: &Rule) -> String {
+/// A condition as its tile's Active row says it.
+fn condition_words(overview: &Overview, rule: &Rule) -> String {
     match rule {
-        Rule::Schedule { week } => week.describe(),
-        Rule::FlashDrive { drive, .. } => format!("while the flash drive \"{drive}\" is not connected"),
-        Rule::Webhook(hook) => describe_webhook(hook),
+        Rule::Schedule { week } => t("conditions.active", &[("times", &week.describe())]),
+        Rule::FlashDrive { drive, .. } => t("conditions.activeDrive", &[("drive", &quoted(drive))]),
+        Rule::Webhook(hook) => t("conditions.activeWebhook", &[("url", &hook.url)]),
         Rule::Combined { mode, members, .. } => {
             let names: Vec<String> = members
                 .iter()
-                .map(|id| overview.conditions.iter().find(|c| &c.id == id).map_or("(gone)".to_string(), |c| format!("\"{}\"", c.name)))
+                .map(|id| overview.conditions.iter().find(|c| &c.id == id).map_or_else(|| t("common.gone", &[]), |c| c.name.clone()))
                 .collect();
-            format!("{} of {}", if *mode == Mode::Any { "any" } else { "all" }, names.join(", "))
+            t(if *mode == Mode::Any { "conditions.activeAny" } else { "conditions.activeAll" }, &[("names", &joined(&names))])
         }
+    }
+}
+
+/// A target's or condition's Used by row, label and all; or that no session uses it.
+fn used_by(overview: &Overview, id: &str) -> String {
+    let library = Library { sessions: overview.sessions.clone(), ..Library::default() };
+    if library.users_of(id).is_empty() {
+        users(overview, id)
+    } else {
+        format!("{} {}", t("tiles.usedBy", &[]), users(overview, id))
     }
 }
 
@@ -1656,36 +1657,39 @@ fn resolve_lock(overview: &Overview, lock: Lock) -> Result<Lock, Failure> {
     }
 }
 
-/// What the start of a locked session asks about, as the window's confirmation; `None`: not locked.
-fn lock_warning(overview: &Overview, session: &Definition) -> Option<String> {
+/// The question before starting a session with a lock that holds, as the window asks it (`locks.js`):
+/// its heading and its body; none for no lock, or an end that has passed (the service says why).
+fn lock_question(overview: &Overview, session: &Definition) -> Option<(String, String)> {
+    let name = quoted(&session.name);
+    let ask = |method: &str, heading: &str, body: &str, values: &[(&str, &str)]| {
+        let values: Vec<(&str, &str)> = [("name", name.as_str())].into_iter().chain(values.iter().copied()).collect();
+        Some((t(&format!("locks.{method}.{heading}"), &values), t(&format!("locks.{method}.{body}"), &values)))
+    };
     match &session.lock {
         Lock::None => None,
         Lock::Timed { kind: TimedKind::For, .. } => {
-            let words = duration::countdown(session.lock.duration().ok()??.as_secs());
-            Some(format!("It cannot be stopped, changed or deleted for {words}."))
+            let duration = duration::countdown(session.lock.duration().ok()??.as_secs());
+            ask("timed", "forConfirmHeading", "forConfirmBody", &[("duration", &duration)])
         }
-        Lock::Timed { kind: TimedKind::Until, value } => match localtime::until(value) {
-            Ok(end) => Some(format!("It cannot be stopped, changed or deleted until {} ({} from now).", end.when, end.left)),
-            // It will not start; the service says why.
-            Err(_) => None,
-        },
-        Lock::UntilRestart => {
-            Some("It cannot be stopped, changed or deleted until Windows restarts (a shut down with Fast Startup is not a restart).".into())
+        Lock::Timed { kind: TimedKind::Until, value } => {
+            let end = localtime::until(value).ok()?;
+            ask("timed", "untilConfirmHeading", "untilConfirmBody", &[("when", &end.when), ("left", &end.left)])
         }
+        Lock::UntilRestart => ask("until_restart", "confirmHeading", "confirmBody", &[]),
         Lock::Condition { condition } => {
             let condition = overview.conditions.iter().find(|c| &c.id == condition)?;
-            Some(format!(
-                "It cannot be stopped while its lock condition \"{}\" is active{}.",
-                condition.name,
-                drive_detail(&condition.rule)
-            ))
+            let detail = match &condition.rule {
+                Rule::FlashDrive { drive, .. } => t("locks.condition.driveDetail", &[("drive", &quoted(drive))]),
+                _ => String::new(),
+            };
+            ask("condition", "confirmHeading", "confirmBody", &[("condition", &quoted(&condition.name)), ("detail", &detail)])
         }
         Lock::Delay { .. } => {
-            let words = duration::countdown(session.lock.delay().ok()??.as_secs());
-            Some(format!("It can only be stopped by asking to and then waiting {words}."))
+            let delay = duration::countdown(session.lock.delay().ok()??.as_secs());
+            ask("delay", "confirmHeading", "confirmBody", &[("delay", &delay)])
         }
-        Lock::Text { .. } => Some("It can only be stopped by typing its text in, in the window.".into()),
-        Lock::Password { .. } => Some("It can only be stopped with its password.".into()),
+        Lock::Text { .. } => ask("text", "confirmHeading", "confirmBody", &[]),
+        Lock::Password { .. } => ask("password", "confirmHeading", "confirmBody", &[]),
     }
 }
 
@@ -1789,22 +1793,18 @@ fn read_password(prompt: &str) -> Result<String, String> {
 }
 
 /// A session in one line, as its tile shows it: its tag, then what its Condition, Allowance and Lock
-/// rows say (`status.rs`, the same words as the window's).
-fn state(overview: &Overview, session: &Definition, running: Option<&Running>) -> String {
-    let tag = match running {
-        None => "Not running",
-        Some(running) if !running.enforcing => "Inactive",
-        Some(running) if running.locked => "Running · locked",
-        Some(_) => "Running",
-    };
-    // What the service wrote; worked out here as it would if it did not (an older overview, a test).
-    let status = overview
-        .status
-        .iter()
-        .find(|s| s.id == session.id)
-        .cloned()
-        .unwrap_or_else(|| status::of(session, running, &overview.conditions, &localtime::Zone::current(), SystemTime::now()));
-    format!("{tag} · {} · {} · {}", status.condition.plain(), status.allowance.plain(), status.lock.plain())
+/// rows say (`status.rs`), as the service wrote them.
+fn state(overview: &Overview, session: &Definition) -> String {
+    match status_of(overview, session) {
+        Some(status) => {
+            format!("{} · {} · {} · {}", status.state.words(), status.condition.plain(), status.allowance.plain(), status.lock.plain())
+        }
+        None => String::new(),
+    }
+}
+
+fn status_of<'a>(overview: &'a Overview, session: &Definition) -> Option<&'a Status> {
+    overview.status.iter().find(|status| status.id == session.id)
 }
 
 /// Names in rows, padded to the longest.
@@ -1813,51 +1813,66 @@ fn table(rows: &[(String, String)]) -> String {
     rows.iter().map(|(name, what)| format!("  {name:width$}  {what}\n")).collect()
 }
 
-/// The names of the sessions that use a target or condition (`Library::users_of`).
+/// What a target's or condition's tile says in its Used by row: the sessions that use it, or that
+/// none does (`Library::users_of`).
 fn users(overview: &Overview, id: &str) -> String {
     let library = Library { sessions: overview.sessions.clone(), ..Library::default() };
-    let names: Vec<&str> = library.users_of(id).iter().map(|b| b.name.as_str()).collect();
+    let names: Vec<String> = library.users_of(id).iter().map(|b| b.name.clone()).collect();
     if names.is_empty() {
-        "(no session)".into()
+        t("tiles.none", &[])
     } else {
-        names.join(", ")
+        joined(&names)
     }
 }
 
-/// What deleting a target or condition does to the sessions that use it, in sentences each with a
-/// space in front, as the window's question says it; empty when no session uses it.
-fn fallout(overview: &Overview, id: &str) -> String {
+/// The question before deleting, as the window asks it (`tiles.js`): what goes, and what that does to
+/// the sessions that use it (`Library::fallout`), or that a running session is stopped.
+fn delete_question(overview: &Overview, kind: &str, name: &str, id: &str) -> String {
+    let values = [("name", quoted(name)), ("noun", t(&format!("{kind}.noun"), &[]))];
+    let values: Vec<(&str, &str)> = values.iter().map(|(key, value)| (*key, value.as_str())).collect();
+    let mut sentences = vec![t("delete.body", &values)];
+    if kind == "sessions" {
+        if overview.running.iter().any(|r| r.id == id) {
+            sentences.push(t("delete.stopsIt", &[]));
+        }
+    } else {
+        sentences.extend(fallout(overview, id));
+    }
+    format!("{} {}", t("delete.heading", &values), sentences.join(". "))
+}
+
+/// What deleting a target or condition does to the sessions that use it, a sentence each, as the
+/// window's question says it; none when no session uses it.
+fn fallout(overview: &Overview, id: &str) -> Vec<String> {
     let library = Library { sessions: overview.sessions.clone(), conditions: overview.conditions.clone(), ..Library::default() };
     let fallout = library.fallout(id);
-    let quoted = |names: &[String]| names.iter().map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ");
-    let mut text = String::new();
-    for (names, what) in [
-        (&fallout.without_it, "goes on without this target"),
-        (&fallout.always, "is always active from then on"),
-        (&fallout.unlocked, "has no lock from then on"),
-        (&fallout.shrinks, "goes on without it"),
-        (&fallout.removed, "is deleted too, as only one condition is left in it"),
-    ] {
-        if !names.is_empty() {
-            text.push_str(&format!(" {} {what}.", quoted(names)));
-        }
-    }
-    text
+    [
+        (&fallout.without_it, "losesTarget"),
+        (&fallout.always, "becomesAlways"),
+        (&fallout.unlocked, "losesLock"),
+        (&fallout.shrinks, "shrinksCombination"),
+        (&fallout.removed, "removesCombination"),
+    ]
+    .into_iter()
+    .filter(|(names, _)| !names.is_empty())
+    .map(|(names, key)| t(&format!("delete.{key}"), &[("names", &joined(&names.iter().map(|n| quoted(n)).collect::<Vec<_>>()))]))
+    .collect()
 }
 
 /// Everything, as the window's pages show it: the sessions, the targets, the conditions.
 fn describe_overview(overview: &Overview) -> String {
-    let sessions: Vec<(String, String)> =
-        overview.sessions.iter().map(|b| (b.name.clone(), state(overview, b, overview.running.iter().find(|r| r.id == b.id)))).collect();
-    let lists: Vec<(String, String)> =
-        overview.targets.iter().map(|l| (l.name.clone(), format!("used by {}", users(overview, &l.id)))).collect();
-    let conditions: Vec<(String, String)> =
-        overview.conditions.iter().map(|c| (c.name.clone(), describe_rule(overview, &c.rule))).collect();
+    let sessions: Vec<(String, String)> = overview.sessions.iter().map(|b| (b.name.clone(), state(overview, b))).collect();
+    let lists: Vec<(String, String)> = overview.targets.iter().map(|l| (l.name.clone(), used_by(overview, &l.id))).collect();
+    let conditions: Vec<(String, String)> = overview
+        .conditions
+        .iter()
+        .map(|c| (c.name.clone(), format!("{} · {}", condition_words(overview, &c.rule), used_by(overview, &c.id))))
+        .collect();
     let mut text = String::new();
     for (title, rows, empty) in [
-        ("Sessions", sessions, "  None yet. Make one with: bullseye new <name> --targets <targets>\n"),
-        ("Targets", lists, "  None yet. Make one with: bullseye target new <name> --sites <sites>\n"),
-        ("Conditions", conditions, "  None (sessions without one are always active).\n"),
+        (t("sessions.title", &[]), sessions, "  None yet. Make one with: bullseye new <name> --targets <targets>\n"),
+        (t("targets.title", &[]), lists, "  None yet. Make one with: bullseye target new <name> --sites <sites>\n"),
+        (t("conditions.title", &[]), conditions, "  None (sessions without one are always active).\n"),
     ] {
         text.push_str(&format!("{title}:\n"));
         text.push_str(&if rows.is_empty() { empty.to_string() } else { table(&rows) });
@@ -1868,14 +1883,6 @@ fn describe_overview(overview: &Overview) -> String {
     text
 }
 
-fn entries(entries: &[String]) -> String {
-    if entries.is_empty() {
-        "(none)".to_string()
-    } else {
-        entries.join(", ")
-    }
-}
-
 fn actions_on(actions: Actions) -> Vec<String> {
     match serde_json::to_value(actions) {
         Ok(Value::Object(fields)) => fields.iter().filter(|(_, on)| **on == Value::Bool(true)).map(|(name, _)| name.clone()).collect(),
@@ -1883,75 +1890,120 @@ fn actions_on(actions: Actions) -> Vec<String> {
     }
 }
 
-/// One session, everything about it.
-fn describe_session(overview: &Overview, session: &Definition, running: Option<&Running>) -> String {
-    let lists: Vec<&str> =
-        session.targets.iter().map(|l| overview.targets.iter().find(|n| &n.id == l).map(|n| n.name.as_str()).unwrap_or("(gone)")).collect();
+/// `Label:` then its value, the values lined up.
+fn field(label: &str, value: &str) -> String {
+    format!("{:<13}{value}\n", format!("{label}:"))
+}
+
+/// One session, as its tile shows it, with what only the CLI shows: its id, and the exact settings of
+/// its allowance and lock.
+fn describe_session(overview: &Overview, session: &Definition) -> String {
+    let status = status_of(overview, session);
+    // A row's value, then what its status says.
+    let row = |value: String, line: Option<&Line>| match line {
+        Some(line) => format!("{value} · {}", line.plain()),
+        None => value,
+    };
+    let gone = || t("common.gone", &[]);
+    let targets: Vec<String> =
+        session.targets.iter().map(|l| overview.targets.iter().find(|n| &n.id == l).map_or_else(gone, |n| n.name.clone())).collect();
     let condition = match &session.condition {
-        None => "always active".to_string(),
-        Some(id) => match overview.conditions.iter().find(|c| &c.id == id) {
-            Some(c) => c.name.clone(),
-            None => "(gone)".into(),
-        },
+        None => t("sessions.fields.always", &[]),
+        Some(id) => overview.conditions.iter().find(|c| &c.id == id).map_or_else(gone, |c| c.name.clone()),
     };
-    let allowance = session.allowance.as_ref().map_or("none".to_string(), Terms::describe);
-    let lock = match &session.lock {
-        Lock::None => "none: can be stopped at any time".to_string(),
-        Lock::Timed { kind: TimedKind::For, value: duration } => match session.lock.duration() {
-            Ok(Some(d)) => format!("duration, {} (cannot be stopped for that long once started)", duration::countdown(d.as_secs())),
-            _ => format!("duration, {duration}"),
-        },
-        Lock::Timed { kind: TimedKind::Until, value: until } => match session.lock.until() {
-            Ok(Some(at)) => format!("until {at} (cannot be stopped until then once started)"),
-            _ => format!("until {until}"),
-        },
-        Lock::UntilRestart => "until restart: cannot be stopped until Windows restarts, and ends then".into(),
-        Lock::Condition { condition } => match overview.conditions.iter().find(|c| &c.id == condition) {
-            Some(c) => format!("condition: cannot be stopped while \"{}\" is active{}", c.name, drive_detail(&c.rule)),
-            None => "condition: (condition gone)".into(),
-        },
-        Lock::Delay { delay } => match session.lock.delay() {
-            Ok(Some(d)) => format!("delay, {} (stopping is asked for, then waited out)", duration::countdown(d.as_secs())),
-            _ => format!("delay, {delay}"),
-        },
-        Lock::Text { .. } => "text: can only be stopped by typing its text in, in the window".into(),
-        Lock::Password { .. } => "password: can only be stopped with its password".into(),
+    let allowance = match &session.allowance {
+        None => t("allowance.type.none", &[]),
+        Some(terms) => {
+            let kind = match terms {
+                Terms::Budget { .. } => "budget",
+                Terms::Pomodoro { .. } => "pomodoro",
+                Terms::Delayed { .. } => "delayed",
+            };
+            t(&format!("allowance.type.{kind}"), &[])
+        }
     };
-    format!(
-        "Name:        {}\nId:          {}\nState:       {}\nTargets:     {}\nCondition:   {condition}\nAllowance:   {allowance}\nLock:        {lock}\n",
-        session.name,
-        session.id,
-        state(overview, session, running),
-        entries(&lists.iter().map(|l| l.to_string()).collect::<Vec<_>>()),
-    )
+    let (method, exact) = match &session.lock {
+        Lock::None => ("none", None),
+        Lock::Timed { kind: TimedKind::For, .. } => {
+            ("timed", session.lock.duration().ok().flatten().map(|d| duration::countdown(d.as_secs())))
+        }
+        Lock::Timed { kind: TimedKind::Until, .. } => ("timed", session.lock.until().ok().flatten().map(|at| at.to_string())),
+        Lock::UntilRestart => ("until_restart", None),
+        Lock::Condition { .. } => ("condition", None),
+        Lock::Delay { .. } => ("delay", session.lock.delay().ok().flatten().map(|d| duration::countdown(d.as_secs()))),
+        Lock::Text { .. } => ("text", None),
+        Lock::Password { .. } => ("password", None),
+    };
+    let detail = |text: Option<String>| text.map(|text| format!(" ({text})")).unwrap_or_default();
+    let mut text = field("Name", &session.name) + &field("Id", &session.id);
+    if let Some(status) = status {
+        text += &field("State", &status.state.words());
+    }
+    text += &field(&t("sessions.fields.blockCount", &[("n", &targets.len().to_string())]), &joined(&targets));
+    text += &field(&t("sessions.fields.when", &[]), &row(condition, status.map(|s| &s.condition)));
+    text += &field(
+        &t("sessions.fields.unless", &[]),
+        &(row(allowance, status.map(|s| &s.allowance)) + &detail(session.allowance.as_ref().map(Terms::describe))),
+    );
+    text +=
+        &field(&t("sessions.fields.lock", &[]), &(row(t(&format!("locks.{method}.label"), &[]), status.map(|s| &s.lock)) + &detail(exact)));
+    text
 }
 
-/// One target, everything about it.
+/// The target editor's sections (`forms.js`, `SECTIONS`): the lists and actions in each, by key.
+const SECTIONS: [(&str, &[&str], &[&str]); 5] = [
+    (
+        "websites",
+        &["filters", "allowed"],
+        &["chromium_tabs", "chromium_split_view", "chromium_app_windows", "firefox_tabs", "firefox_split_view"],
+    ),
+    ("programs", &["programs"], &[]),
+    ("store", &["store_apps"], &[]),
+    ("titles", &["titles", "allowed_titles"], &["window_titles_minimize"]),
+    ("other", &[], &["obsidian_web_viewer"]),
+];
+
+/// One target, as its editor has it: each section with something in it, its lists by their labels and
+/// the actions it has on; then the sessions that use it.
 fn describe_target(overview: &Overview, list: &Target) -> String {
-    format!(
-        "Name:           {}\nId:             {}\nSites:          {}\nAlways allowed: {}\nPrograms:       {}\nStore apps:     {}\nWindow titles:  {}\nAllowed titles: {}\nActions:        {}\nUsed by:        {}\n",
-        list.name,
-        list.id,
-        entries(&list.entries.filters),
-        entries(&list.entries.allowed),
-        entries(&list.entries.programs),
-        entries(&list.entries.store_apps),
-        entries(&list.entries.titles),
-        entries(&list.entries.allowed_titles),
-        entries(&actions_on(list.actions)),
-        users(overview, &list.id),
-    )
+    let on = actions_on(list.actions);
+    let mut entries = list.entries.clone();
+    let mut text = field("Name", &list.name) + &field("Id", &list.id);
+    let mut empty = true;
+    for (section, lists, actions) in SECTIONS {
+        let mut lines = String::new();
+        for key in lists {
+            let items = entries.field(key).cloned().unwrap_or_default();
+            if !items.is_empty() {
+                lines += &format!("  {}: {}\n", t(&format!("targets.{key}.label"), &[]), items.join(", "));
+            }
+        }
+        // A section's actions act on its lists: shown with them, or alone where it has none.
+        if !lines.is_empty() || lists.is_empty() {
+            for action in actions.iter().filter(|action| on.iter().any(|o| o == *action)) {
+                lines += &format!("  {}\n", t(&format!("targets.actions.{action}.label"), &[]));
+            }
+        }
+        if !lines.is_empty() {
+            empty = false;
+            text += &format!("{}\n{lines}", t(&format!("targets.sections.{section}.title"), &[]));
+        }
+    }
+    if empty {
+        text += &format!("{}\n", t("targets.nothing", &[]));
+    }
+    text + &field(&t("tiles.usedBy", &[]), &users(overview, &list.id))
 }
 
-/// A weekly schedule as one line, then each day on a line of its own.
+/// A weekly schedule, each day on a line of its own, named as the week grid names it.
 fn per_day(week: &Week) -> String {
-    const NAMES: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-    let mut text = format!("{}\n", week.describe());
-    for (name, spans) in NAMES.iter().zip(&week.days) {
+    const DAYS: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+    let mut text = String::new();
+    for (key, spans) in DAYS.iter().zip(&week.days) {
         let mut day = Week::default();
         day.days[0] = spans.clone();
-        let times = if spans.is_empty() { "inactive".to_string() } else { day.describe().trim_start_matches("Mon ").to_string() };
-        text.push_str(&format!("  {name}  {times}\n"));
+        let times = if spans.is_empty() { t("sessions.now.inactive", &[]) } else { day.describe().trim_start_matches("Mon ").to_string() };
+        text.push_str(&format!("  {}  {times}\n", t(&format!("conditions.days.{key}"), &[])));
     }
     text
 }
@@ -1962,8 +2014,9 @@ mod tests {
     use crate::definitions::tests::{session, target, weekly};
     use crate::definitions::Definitions;
     use crate::handler::{handle, Context};
-    use crate::session::{RunningTarget, Sessions};
+    use crate::session::{Running, RunningTarget, Sessions};
     use crate::state::Store;
+    use crate::status;
     use crate::watchdog::AppSlot;
     use std::cell::RefCell;
     use std::sync::Arc;
@@ -2028,24 +2081,32 @@ mod tests {
 
         // Shown as the pages show them, and as JSON for scripts.
         let shown = ok(&["show", "evening"]);
-        assert!(shown.contains("Targets:     Social\nCondition:   Work\nAllowance:   30 minutes in total, never reset\n"), "{shown}");
+        assert!(
+            shown.contains(
+                "Target:      Social\nCondition:   Work · By schedule\nAllowance:   Time budget · Allowed for 30 minutes (30 minutes in total, never reset)\n"
+            ),
+            "{shown}"
+        );
         let json: Value = serde_json::from_str(&ok(&["show", "Evening", "--json"])).unwrap();
         assert_eq!(json["session"]["allowance"]["type"], "budget");
         assert!(json["running"].is_null());
+        assert_eq!(json["status"]["state"], "not_running");
         let status = ok(&["status"]);
         assert!(
-            status.contains("  Evening  Not running")
-                && status.contains("  Social  used by Evening")
-                && status.contains("  Work  Mon-Fri 08:00-17:00")
+            status.contains("  Evening  Not running · By schedule")
+                && status.contains("  Social  Used by Evening")
+                && status.contains("  Work  Active Mon-Fri 08:00-17:00 · Used by Evening")
         );
         let json: Value = serde_json::from_str(&ok(&["status", "--json"])).unwrap();
         assert_eq!(json["sessions"].as_array().map(Vec::len), Some(1));
         assert!(ok(&["target", "show", "Social"]).contains("Always allowed: music.youtube.com"));
-        assert!(ok(&["target", "show", "Social"]).contains("Allowed titles: (none)"));
+        // Only the editor's sections with something in them.
+        assert!(!ok(&["target", "show", "Social"]).contains("Windows by title"));
         let json: Value = serde_json::from_str(&ok(&["target", "show", "Social", "--json"])).unwrap();
         assert_eq!(json["filters"][0], "youtube.com");
         let condition = ok(&["condition", "show", "Work"]);
-        assert!(condition.starts_with("Work\nMon-Fri 08:00-17:00\n") && condition.ends_with("Used by: Evening\n"), "{condition}");
+        assert!(condition.starts_with("Work\nActive Mon-Fri 08:00-17:00\n  Mon  08:00-17:00\n"), "{condition}");
+        assert!(condition.ends_with("Used by: Evening\n"), "{condition}");
         assert!(ok(&["condition", "check", "Mon 8-9"]).starts_with("Mon 08:00-09:00\n"));
         assert_eq!(ok(&["condition", "check", "always"]), "Always active: a session without a condition\n");
         assert!(cli(&["condition", "check", "Mon 25-26"]).is_err());
@@ -2063,7 +2124,7 @@ mod tests {
         assert!(copy.contains("reddit.com") && !copy.contains("music.youtube.com"), "{copy}");
         assert_eq!(ok(&["condition", "edit", "Work (2)", "--name", "Weekend", "--times", "Sat-Sun"]), "Saved the condition \"Weekend\".\n");
         ok(&["condition", "new", "Either", "--any", "Work", "Weekend"]);
-        assert!(ok(&["condition", "show", "Either"]).contains("any of \"Work\", \"Weekend\""));
+        assert!(ok(&["condition", "show", "Either"]).contains("Active when any of Work and Weekend is true"));
         assert!(refused(&["condition", "new", "Pair", "--any", "Work"]).contains("at least two"));
 
         // Started and stopped.
@@ -2101,15 +2162,17 @@ mod tests {
             "Saved the target \"Social\".\n"
         );
         let shown = list("Social");
-        assert!(shown.contains("Sites:          reddit.com, x.com, youtube.com"), "{shown}");
+        assert!(shown.contains("  Sites to block: reddit.com, x.com, youtube.com\n"), "{shown}");
         assert!(
-            shown.contains("Window titles:  Inbox, 3 unread") && shown.contains("firefox_tabs") && shown.contains("chromium_tabs"),
+            shown.contains("Windows by title\n  Window titles: Inbox, 3 unread\n")
+                && shown.contains("  Close blocked tabs in Firefox\n")
+                && shown.contains("  Close blocked tabs in Chromium\n"),
             "{shown}"
         );
         ok(&["target", "remove", "Social", "--sites", "Reddit.com", "--programs", "steam.exe", "--actions", "chromium_tabs"]);
         let shown = list("Social");
-        assert!(shown.contains("Sites:          x.com, youtube.com") && shown.contains("Programs:       (none)"), "{shown}");
-        assert!(!shown.contains("chromium_tabs") && shown.contains("firefox_tabs"), "{shown}");
+        assert!(shown.contains("  Sites to block: x.com, youtube.com\n") && !shown.contains("Programs to close"), "{shown}");
+        assert!(!shown.contains("in Chromium") && shown.contains("Close blocked tabs in Firefox"), "{shown}");
         // What is not there is a typo, and nothing is saved.
         assert_eq!(
             refused(&["target", "remove", "Social", "--sites", "x.com", "tiktok.com"]),
@@ -2124,16 +2187,21 @@ mod tests {
         assert_eq!(refused(&["target", "add", "Social"]), "Give what to add: --sites, --programs, --titles, … or --actions");
         // All the actions, on and off.
         ok(&["target", "add", "Social", "--actions", "all"]);
-        assert!(list("Social").contains("chromium_tabs"));
+        let shown = list("Social");
+        assert!(
+            shown.contains("  Close blocked tabs in Chromium\n") && shown.contains("Other\n  Close Obsidian when web viewer is active\n"),
+            "{shown}"
+        );
         ok(&["target", "remove", "Social", "--actions", "all"]);
-        assert!(list("Social").contains("Actions:        (none)"), "{}", list("Social"));
+        let shown = list("Social");
+        assert!(!shown.contains("Close ") && !shown.contains("Other"), "{shown}");
 
         // A session's targets.
         ok(&["new", "Work", "--targets", "Social"]);
         ok(&["add", "work", "--targets", "Games", "News", "Social"]);
-        assert!(ok(&["show", "Work"]).contains("Targets:     Social, Games, News"), "{}", ok(&["show", "Work"]));
+        assert!(ok(&["show", "Work"]).contains("Targets:     Social, Games and News"), "{}", ok(&["show", "Work"]));
         ok(&["remove", "Work", "--targets", "social"]);
-        assert!(ok(&["show", "Work"]).contains("Targets:     Games, News"));
+        assert!(ok(&["show", "Work"]).contains("Targets:     Games and News"));
         assert_eq!(refused(&["remove", "Work", "--targets", "Social"]), "\"Social\" is not a target of \"Work\"");
         assert!(refused(&["add", "Work", "--targets", "Nope"]).starts_with("No target called \"Nope\""));
         assert_eq!(refused(&["add", "Work"]), "Give the targets to add: --targets <targets>");
@@ -2145,12 +2213,12 @@ mod tests {
         ok(&["condition", "new", "Either", "--any", "Mornings", "Evenings"]);
         ok(&["condition", "add", "Either", "--conditions", "Weekend"]);
         assert!(
-            ok(&["condition", "show", "Either"]).contains("any of \"Mornings\", \"Evenings\", \"Weekend\""),
+            ok(&["condition", "show", "Either"]).contains("Active when any of Mornings, Evenings and Weekend is true"),
             "{}",
             ok(&["condition", "show", "Either"])
         );
         ok(&["condition", "remove", "Either", "--conditions", "Mornings"]);
-        assert!(ok(&["condition", "show", "Either"]).contains("any of \"Evenings\", \"Weekend\""));
+        assert!(ok(&["condition", "show", "Either"]).contains("Active when any of Evenings and Weekend is true"));
         assert_eq!(refused(&["condition", "remove", "Either", "--conditions", "Mornings"]), "\"Mornings\" is not in \"Either\"");
         assert_eq!(
             refused(&["condition", "add", "Weekend", "--conditions", "Mornings"]),
@@ -2189,12 +2257,13 @@ mod tests {
         new("Restart", &["--lock-until-restart"]);
         new("Later", &["--lock-until", "2099-01-01 00:00"]);
         let lock_of = |name: &str| ok(&["show", name]).lines().find(|l| l.starts_with("Lock:")).unwrap_or_default().to_string();
-        assert_eq!(lock_of("Timed"), "Lock:        duration, 1 hour (cannot be stopped for that long once started)");
-        assert_eq!(lock_of("Slow"), "Lock:        delay, 1 hour (stopping is asked for, then waited out)");
-        assert_eq!(lock_of("Typed"), "Lock:        text: can only be stopped by typing its text in, in the window");
-        assert_eq!(lock_of("Kept"), "Lock:        condition: cannot be stopped while \"Always\" is active");
-        assert_eq!(lock_of("Restart"), "Lock:        until restart: cannot be stopped until Windows restarts, and ends then");
-        assert!(lock_of("Later").starts_with("Lock:        until Thursday 1 January 2099, 00:00"), "{}", lock_of("Later"));
+        // The method as the Lock row's dropdown names it, its status, and its exact setting.
+        assert_eq!(lock_of("Timed"), "Lock:        Timed · For 60 minutes (1 hour)");
+        assert_eq!(lock_of("Slow"), "Lock:        Delay · Delay 60 minutes (1 hour)");
+        assert_eq!(lock_of("Typed"), "Lock:        Custom text · Type text to stop");
+        assert_eq!(lock_of("Kept"), "Lock:        Condition · During “Always”");
+        assert_eq!(lock_of("Restart"), "Lock:        Until restart · Until restart");
+        assert_eq!(lock_of("Later"), "Lock:        Timed · Until January 1 (Thursday 1 January 2099, 00:00)");
 
         for name in ["Timed", "Slow", "Typed", "Kept", "Restart"] {
             assert_eq!(ok(&["start", name, "--force"]), format!("Started \"{name}\".\n"));
@@ -2285,7 +2354,7 @@ mod tests {
         // (The file has no Store apps, so none are left out and nothing is said of them.)
         assert_eq!(ok(&["import", &path, "--force"]), format!("Imported {path}.\n"));
         let shown = ok(&["show", "B"]);
-        assert!(shown.contains("Lock:        password") && shown.contains("Allowance:   Blocked for 50 minutes"), "{shown}");
+        assert!(shown.contains("Lock:        Password · ") && shown.contains("(Blocked for 50 minutes"), "{shown}");
         assert!(refused(&["import", &dir.join("missing.json").to_string_lossy()]).starts_with("Cannot read"));
     }
 
@@ -2345,7 +2414,7 @@ mod tests {
         ok(&["condition", "new", "Work", "--times", "Mon-Fri 08:00-17:00"]);
         ok(&["condition", "new", "Late", "--times", "Mon-Sun 16:00-18:00"]);
         ok(&["condition", "new", "Both", "--all", "Work", "Late"]);
-        assert!(ok(&["condition", "show", "Both"]).contains("all of \"Work\", \"Late\""));
+        assert!(ok(&["condition", "show", "Both"]).contains("Active when all of Work and Late are true"));
         // A lock until a date and time asks first, with the time it ends.
         ok(&["new", "Later", "--targets", "Media", "--lock-until", "2099-01-01 00:00"]);
         assert_eq!(ok(&["start", "Later", "--force"]), "Started \"Later\".\n");
@@ -2362,7 +2431,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         definitions::write_settings(&file, library).unwrap();
         ok(&["import", &file.to_string_lossy(), "--force"]);
-        assert!(ok(&["show", "Session b"]).contains("Lock:        none"));
+        assert!(ok(&["show", "Session b"]).contains("Lock:        No lock · Not locked"));
     }
 
     #[test]
@@ -2410,31 +2479,30 @@ mod tests {
 
     #[test]
     fn a_running_session_reads_like_its_tile() {
-        // Its tag, then its rows' words as the window has them (`status.rs` tests each of them).
+        // Its tag, then its rows' words, as the service wrote them (`status.rs` tests each wording).
         let mut overview = library();
         let session = overview.sessions[0].clone();
-        assert_eq!(state(&overview, &session, None), "Not running · Mon-Fri 08:00-17:00 · Never paused · During \"Work hours\"");
+        assert_eq!(state(&with_status(overview.clone()), &session), "Not running · By schedule · Never paused · During “Work hours”");
         let schedule = weekly("s", "mon 8-9").rule;
-        let locked = Running {
+        overview.running.push(Running {
             locked: true,
             condition: Some(schedule.clone()),
             condition_change_words: Some("4 hours".into()),
-            lock_condition: Some(schedule.clone()),
+            lock_condition: Some(schedule),
             lock_change_words: Some("1 hour".into()),
             ..a_running("b1")
-        };
-        assert_eq!(state(&overview, &session, Some(&locked)), "Running · locked · Active for 4 hours · Never paused · Locked for 1 hour");
-        let quiet = Running { enforcing: false, ..locked.clone() };
-        assert_eq!(state(&overview, &session, Some(&quiet)), "Inactive · Inactive for 4 hours · Inactive condition · Locked for 1 hour");
-        assert_eq!(state(&overview, &session, Some(&a_running("b1"))), "Running · Active · Never paused · Not locked");
-        // What the service wrote, when it did.
-        overview.status.push(status::Status {
-            id: "b1".into(),
-            condition: status::Line { text: "a".into(), condition: None },
-            allowance: status::Line { text: "b".into(), condition: None },
-            lock: status::Line { text: "c".into(), condition: None },
         });
-        assert_eq!(state(&overview, &session, None), "Not running · a · b · c");
+        assert_eq!(
+            state(&with_status(overview.clone()), &session),
+            "Running · locked · Active for 4 hours · Never paused · Locked for 1 hour"
+        );
+        overview.running[0].enforcing = false;
+        assert_eq!(
+            state(&with_status(overview.clone()), &session),
+            "Inactive · Inactive for 4 hours · Inactive condition · Locked for 1 hour"
+        );
+        // Without the service's words (an overview from no service), nothing to say.
+        assert_eq!(state(&overview, &session), "");
     }
 
     #[test]
@@ -2442,41 +2510,32 @@ mod tests {
         let mut overview = library();
         let mut b = session("b2", &["gone"]);
         b.condition = Some("gone".into());
-        let lock_of = |lock: Lock| {
-            let shown = describe_session(&overview, &Definition { lock, ..b.clone() }, None);
+        let lock_of = |overview: &Overview, lock: Lock| {
+            let shown = describe_session(overview, &Definition { lock, ..b.clone() });
             shown.lines().find(|l| l.starts_with("Lock:")).unwrap_or_default().to_string()
         };
-        assert_eq!(lock_of(Lock::timed_for("soon")), "Lock:        duration, soon");
-        assert_eq!(lock_of(Lock::timed_until("someday")), "Lock:        until someday");
-        assert_eq!(lock_of(Lock::Delay { delay: "a while".into() }), "Lock:        delay, a while");
-        assert_eq!(lock_of(Lock::Condition { condition: "gone".into() }), "Lock:        condition: (condition gone)");
-        assert_eq!(lock_of(Lock::Password { password: None, hash: None }), "Lock:        password: can only be stopped with its password");
-        let shown = describe_session(&overview, &b, None);
-        assert!(shown.contains("Targets:     (gone)\nCondition:   (gone)\n"), "{shown}");
-        // A flash drive, as a lock's condition and as a condition.
-        let drive =
-            Condition { id: "d".into(), name: "Key".into(), rule: Rule::FlashDrive { serial: "x".into(), drive: "Kingston".into() } };
-        overview.conditions.push(drive.clone());
-        let shown = describe_session(&overview, &Definition { lock: Lock::Condition { condition: "d".into() }, ..b.clone() }, None);
-        assert!(shown.contains("cannot be stopped while \"Key\" is active (the flash drive \"Kingston\" is not connected)"), "{shown}");
-        assert_eq!(describe_rule(&overview, &drive.rule), "while the flash drive \"Kingston\" is not connected");
-        assert_eq!(
-            lock_warning(&overview, &Definition { lock: Lock::Condition { condition: "d".into() }, ..b.clone() }).unwrap(),
-            "It cannot be stopped while its lock condition \"Key\" is active (the flash drive \"Kingston\" is not connected)."
+        // Without the service's words: the method, and what can be read of its settings.
+        assert_eq!(lock_of(&overview, Lock::timed_for("soon")), "Lock:        Timed");
+        assert_eq!(lock_of(&overview, Lock::timed_for("90m")), "Lock:        Timed (1 hour and 30 minutes)");
+        assert_eq!(lock_of(&overview, Lock::timed_until("someday")), "Lock:        Timed");
+        assert_eq!(lock_of(&overview, Lock::timed_until("2026-10-06 18:00")), "Lock:        Timed (Tuesday 6 October 2026, 18:00)");
+        assert_eq!(lock_of(&overview, Lock::Delay { delay: "5m".into() }), "Lock:        Delay (5 minutes)");
+        assert_eq!(lock_of(&overview, Lock::Condition { condition: "gone".into() }), "Lock:        Condition");
+        assert_eq!(lock_of(&overview, Lock::Password { password: None, hash: None }), "Lock:        Password");
+        assert_eq!(lock_of(&overview, Lock::Text { text: "x".into() }), "Lock:        Custom text");
+        assert_eq!(lock_of(&overview, Lock::UntilRestart), "Lock:        Until restart");
+        let shown = describe_session(&overview, &b);
+        assert!(
+            shown.contains("Target:      (deleted)\nCondition:   (deleted)\nAllowance:   No allowance\nLock:        No lock\n"),
+            "{shown}"
         );
-        assert_eq!(lock_warning(&overview, &Definition { lock: Lock::timed_until("2001-01-01 00:00"), ..b.clone() }), None);
-        // A combination with one of its conditions gone.
-        let combined = Rule::Combined { mode: Mode::Any, members: vec!["s1".into(), "gone".into()], rules: vec![] };
-        assert_eq!(describe_rule(&overview, &combined), "any of \"Work hours\", (gone)");
-        // A webhook matcher not set (as saved by hand).
-        let hook = Hook {
-            url: "https://x.io".into(),
-            method: Method::Get,
-            interval: 60,
-            fallback: true,
-            matcher: Matcher { on: Match::Status, status: None, body: None },
-        };
-        assert_eq!(describe_webhook(&hook), "GET https://x.io every minute: active, not active on (not set)");
+        assert!(!shown.contains("State:"), "{shown}");
+        // With them: its state, and each row's status beside its value.
+        overview.sessions.push(b.clone());
+        let shown = describe_session(&with_status(overview), &b);
+        assert!(shown.contains("State:       Not running\n"), "{shown}");
+        assert!(shown.contains("Condition:   (deleted) · At all times\n"), "{shown}");
+        assert!(shown.contains("Lock:        No lock · Not locked\n"), "{shown}");
     }
 
     #[test]
@@ -2496,6 +2555,17 @@ mod tests {
         let help = cli(&["help"]).unwrap();
         assert!(help.starts_with("Bullseye command line") && help.contains("chromium_tabs") && !help.contains("{actions}"));
         assert_eq!(cli(&["version"]).unwrap(), format!("bullseye {}\n", env!("CARGO_PKG_VERSION")));
+    }
+
+    /// What the service adds to an overview: each session's rows (`status.rs`), with these as running.
+    fn with_status(mut overview: Overview) -> Overview {
+        let zone = localtime::Zone::fixed(0);
+        overview.status = overview
+            .sessions
+            .iter()
+            .map(|b| status::of(b, overview.running.iter().find(|r| r.id == b.id), &overview.conditions, &zone, SystemTime::now()))
+            .collect();
+        overview
     }
 
     fn library() -> Overview {
@@ -2659,14 +2729,36 @@ mod tests {
         );
         assert!(parse(&args(&["start", "Work", "--lock-until", "tomorrow"])).is_err());
         assert!(parse(&args(&["start", "Work", "--lock-until-restart", "--no-lock"])).is_err());
-        // What starting asks, per lock.
-        let overview = library();
-        let warning = lock_warning(&overview, &overview.sessions[0]).unwrap();
-        assert!(warning.contains("while its lock condition \"Work hours\" is active."), "{warning}");
-        assert!(!warning.contains("08:00"), "{warning}");
-        let timed = Definition { lock: Lock::timed_for("2h5m"), ..overview.sessions[0].clone() };
-        assert!(lock_warning(&overview, &timed).unwrap().contains("for 2 hours and 5 minutes."));
-        assert_eq!(lock_warning(&overview, &Definition { lock: Lock::None, ..timed }), None);
+        // What starting asks, per lock: the window's question, heading and body.
+        let mut overview = library();
+        let ask = |overview: &Overview, lock: Lock| lock_question(overview, &Definition { lock, ..overview.sessions[0].clone() });
+        let (heading, body) = ask(&overview, overview.sessions[0].lock.clone()).unwrap();
+        assert_eq!(heading, "Start “Work” locked during “Work hours”?");
+        assert!(body.starts_with("Locked while “Work hours” is active. "), "{body}");
+        let (heading, body) = ask(&overview, Lock::timed_for("2h5m")).unwrap();
+        assert_eq!(
+            (heading.as_str(), body.as_str()),
+            ("Start “Work” for 2 hours and 5 minutes?", "Locked for 2 hours and 5 minutes. Only unlocking in Settings ends it early")
+        );
+        assert!(ask(&overview, Lock::timed_until("2099-01-01 00:00"))
+            .unwrap()
+            .1
+            .starts_with("Locked until Thursday 1 January 2099, 00:00, "));
+        assert_eq!(ask(&overview, Lock::timed_until("2001-01-01 00:00")), None);
+        assert!(ask(&overview, Lock::UntilRestart).unwrap().0.contains("until Windows restarts"));
+        assert!(ask(&overview, Lock::Delay { delay: "5m".into() }).unwrap().1.starts_with("Stopping takes 5 minutes"));
+        assert!(ask(&overview, Lock::Text { text: "x".into() }).unwrap().0.contains("custom text"));
+        assert!(ask(&overview, Lock::Password { password: None, hash: None }).unwrap().0.contains("password"));
+        assert_eq!(ask(&overview, Lock::None), None);
+        assert_eq!(ask(&overview, Lock::Condition { condition: "gone".into() }), None);
+        // A flash drive says which one is the key.
+        overview.conditions.push(Condition {
+            id: "d".into(),
+            name: "Key".into(),
+            rule: Rule::FlashDrive { serial: "x".into(), drive: "Kingston".into() },
+        });
+        let (_, body) = ask(&overview, Lock::Condition { condition: "d".into() }).unwrap();
+        assert!(body.starts_with("Locked while “Key” is active (while “Kingston” is unplugged)."), "{body}");
     }
 
     #[test]
@@ -2832,10 +2924,21 @@ mod tests {
 
     #[test]
     fn deleting_says_what_it_does_to_the_sessions() {
-        let overview = library();
-        assert_eq!(fallout(&overview, "l1"), " \"Work\" goes on without this target.");
-        assert_eq!(fallout(&overview, "s1"), " \"Work\" is always active from then on. \"Work\" has no lock from then on.");
-        assert_eq!(fallout(&overview, "other"), "");
+        // In the window's words, a sentence each, then all of it as the window's question.
+        let mut overview = library();
+        assert_eq!(fallout(&overview, "l1"), ["Goes on without it: “Work”"]);
+        assert_eq!(fallout(&overview, "s1"), ["Always active from now: “Work”", "No lock from now: “Work”"]);
+        assert_eq!(fallout(&overview, "other"), Vec::<String>::new());
+        assert_eq!(
+            delete_question(&overview, "targets", "Social", "l1"),
+            "Delete “Social”? Deletes the target for good. Goes on without it: “Work”"
+        );
+        assert_eq!(delete_question(&overview, "sessions", "Work", "b1"), "Delete “Work”? Deletes the session for good");
+        overview.running.push(a_running("b1"));
+        assert_eq!(
+            delete_question(&overview, "sessions", "Work", "b1"),
+            "Delete “Work”? Deletes the session for good. It is running and will be stopped"
+        );
     }
 
     #[test]
@@ -2896,22 +2999,30 @@ mod tests {
             allowance: None,
         });
         overview.clock_synced = false;
+        let overview = with_status(overview);
         let text = describe_overview(&overview);
         assert!(text.contains("  Work  Inactive · Inactive for 1 hour · Inactive condition · Unlocked for 1 hour"), "{text}");
-        assert!(text.contains("Targets:\n  Social  used by Work"), "{text}");
-        assert!(text.contains("Conditions:\n  Work hours  Mon-Fri 08:00-17:00"), "{text}");
+        assert!(text.contains("Targets:\n  Social  Used by Work"), "{text}");
+        assert!(text.contains("Conditions:\n  Work hours  Active Mon-Fri 08:00-17:00 · Used by Work"), "{text}");
         assert!(text.contains("Waiting for internet time"), "{text}");
 
-        let session = describe_session(&overview, &overview.sessions[0], overview.running.first());
-        assert!(session.contains("Targets:     Social") && session.contains("Condition:   Work hours\n"), "{session}");
-        assert!(!session.contains("08:00-17:00"), "{session}");
-        assert!(session.contains("Lock:        condition: cannot be stopped while \"Work hours\" is active"), "{session}");
+        let session = describe_session(&overview, &overview.sessions[0]);
+        assert!(session.contains("State:       Inactive\n"), "{session}");
+        assert!(
+            session.contains("Target:      Social\n") && session.contains("Condition:   Work hours · Inactive for 1 hour\n"),
+            "{session}"
+        );
+        assert!(session.contains("Lock:        Condition · Unlocked for 1 hour\n"), "{session}");
         assert_eq!(
             resolve_lock(&overview, Lock::Condition { condition: "work HOURS".into() }).ok(),
             Some(Lock::Condition { condition: "s1".into() })
         );
+        // A target as its editor has it: its sections with something in them, by the window's labels.
+        let none = switched(Actions::default(), &["all".to_string()], false).unwrap();
+        let empty = Target { entries: Entries::default(), actions: none, ..overview.targets[0].clone() };
+        assert!(describe_target(&overview, &empty).contains("Nothing to block\n"));
         let list = describe_target(&overview, &overview.targets[0]);
-        assert!(list.contains("Sites:          youtube.com") && list.contains("Used by:        Work"), "{list}");
+        assert!(list.contains("Websites\n  Sites to block: youtube.com\n") && list.ends_with("Used by:     Work\n"), "{list}");
     }
 
     /// What `new` and `edit` say of the allowance, as terms over the ones the session has.
@@ -2996,11 +3107,18 @@ mod tests {
         }
 
         // It is shown on the session, and what it is doing with a running one.
-        let mut overview = library();
-        overview.sessions[0].allowance = cycle("50m", "10m", Anchor::Clock);
-        let shown = describe_session(&overview, &overview.sessions[0], None);
-        assert!(shown.contains("Allowance:   Blocked for 50 minutes, then allowed for 10 minutes, on the clock"), "{shown}");
-        assert!(describe_session(&library(), &library().sessions[0], None).contains("Allowance:   none\n"));
+        let overview = {
+            let mut overview = library();
+            overview.sessions[0].allowance = cycle("50m", "10m", Anchor::Clock);
+            with_status(overview)
+        };
+        let shown = describe_session(&overview, &overview.sessions[0]);
+        assert!(
+            shown.contains(
+                "Allowance:   Pomodoro cycle · 50 minutes / 10 minutes (Blocked for 50 minutes, then allowed for 10 minutes, on the clock"
+            ),
+            "{shown}"
+        );
     }
 
     #[test]
@@ -3048,18 +3166,30 @@ mod tests {
         // It is shown on the session, and what it is doing with a running one.
         let mut overview = library();
         overview.sessions[0].allowance = delayed(DelayKind::After, "30m");
-        let shown = describe_session(&overview, &overview.sessions[0], None);
-        assert!(shown.contains("Allowance:   Nothing is enforced for the first 30 minutes\n"), "{shown}");
+        let shown = describe_session(&overview, &overview.sessions[0]);
+        assert!(shown.contains("Allowance:   Delayed start (Nothing is enforced for the first 30 minutes)\n"), "{shown}");
         overview.sessions[0].allowance = delayed(DelayKind::From, "2026-10-06 18:00");
-        let shown = describe_session(&overview, &overview.sessions[0], None);
-        assert!(shown.contains("Allowance:   Nothing is enforced until Tuesday 6 October 2026, 18:00\n"), "{shown}");
+        let shown = describe_session(&overview, &overview.sessions[0]);
+        assert!(shown.contains("Allowance:   Delayed start (Nothing is enforced until Tuesday 6 October 2026, 18:00)\n"), "{shown}");
+    }
+
+    #[test]
+    fn every_list_and_action_has_one_section() {
+        let lists: Vec<&str> = SECTIONS.iter().flat_map(|(_, lists, _)| lists.iter().copied()).collect();
+        assert_eq!(lists, LIST_OPTIONS.map(|(_, field)| field));
+        let mut actions: Vec<&str> = SECTIONS.iter().flat_map(|(_, _, actions)| actions.iter().copied()).collect();
+        actions.sort_unstable();
+        let all = serde_json::to_value(Actions::default()).unwrap();
+        let mut known: Vec<&str> = all.as_object().unwrap().keys().map(String::as_str).collect();
+        known.sort_unstable();
+        assert_eq!(actions, known);
     }
 
     #[test]
     fn a_schedule_is_shown_per_day() {
         let text = per_day(&Week::parse("mon-fri 8-12, 13-17; sat 10-12").unwrap().unwrap());
-        assert!(text.starts_with("Mon-Fri 08:00-12:00, 13:00-17:00; Sat 10:00-12:00\n"), "{text}");
+        assert!(text.starts_with("  Mon  08:00-12:00, 13:00-17:00\n"), "{text}");
         assert!(text.contains("  Tue  08:00-12:00, 13:00-17:00\n"), "{text}");
-        assert!(text.contains("  Sun  inactive\n"), "{text}");
+        assert!(text.ends_with("  Sun  Inactive\n"), "{text}");
     }
 }
