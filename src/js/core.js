@@ -78,11 +78,12 @@ function described(command, args, standIn) {
   return texts.get(key);
 }
 const weekText = (days) => described("describe_schedule", { week: { days } }, t("common.weeklyStandIn"));
-// A duration as typed (`2h 30m`) written out, as the service writes it: exactly (`1 hour and 30
-// minutes`), or `short` in one unit for a tile's status (`2 hours`). As typed until the answer is in.
-const durationText = (text, short = false) => {
+// A duration as typed (`2h 30m`) written out, as the service writes it (`duration::Words`): `words`
+// exactly (`1 hour and 30 minutes`), `short` in one unit for a tile's status (`2 hours`), `period`
+// after "every" (`day`). As typed until the answer is in.
+const durationText = (text, form = "words") => {
   const words = described("describe_duration", { text: text || "" }, null);
-  return words ? words[short ? "short" : "words"] : text || "";
+  return words ? words[form] : text || "";
 };
 // An until lock's end written out (`Tuesday 6 October 2026, 18:00`), or `short` for a tile's status
 // (`18:00` today, `October 6` another day); as typed until then, or once it has passed.

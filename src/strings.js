@@ -104,6 +104,32 @@ window.STRINGS = {
     // Under a session's Condition, Allowance and Lock rows, in a few words: what is happening now while
     // it runs. {change}, {left}, {reset}, {delay}: times in one unit, rounded; {n}: a number of items.
     now: {
+      // Stopped: when its condition is on ({times}: a schedule's, from the service), what its allowance
+      // gives ({allowed}, {blocked}, {time}: times in one unit; {period}: after "every", "day"; {date}),
+      // and the locks that hold by no time, running or not.
+      always: "At all times",
+      whileOut: "While unplugged",
+      whileOn: "While true",
+      whenAny: "When any is true",
+      whenAll: "When all are true",
+      neverPaused: "Never paused",
+      cycle: "Allowed {allowed} after {blocked}",
+      after: "After {time}",
+      from: "From {date}",
+      budgetTotal: "{time} in total",
+      budgetEvery: "{time} every {period}",
+      budgetActive: "{time} each time active",
+      itemTotal: "{time} per item",
+      itemEvery: "{time} per item every {period}",
+      itemActive: "{time} per item each time active",
+      notLocked: "Not locked",
+      restart: "Until restart",
+      text: "Type text to stop",
+      password: "Password to stop",
+      noneUsedUp: "None used up",
+      // An allowance while the condition has nothing blocked.
+      inactiveCondition: "Inactive condition",
+      // Running.
       active: "Active",
       activeFor: "Active for {change}",
       inactive: "Inactive",
