@@ -1,8 +1,10 @@
 # Bullseye
 
-A distraction blocker for Windows that you can hold yourself to. Bullseye closes the sites, programs, apps and windows you choose, when you choose, and it can lock itself so that stopping takes more than one click.
+Bullseye is an open source alternative to [Cold Turkey Blocker](https://getcoldturkey.com/), an awesome program that I paid for. I wanted something that is easier to extend, so Bullseye covers its core mechanisms and its anti-tamper approach, and is built to be bent to fit (see [Make it your own](#make-it-your-own)).
 
-![Sessions](docs/screenshots/sessions.png)
+It is a distraction blocker for Windows that you can hold yourself to. Bullseye closes the sites, programs, apps and windows you choose, when you choose, and it can lock itself so that stopping takes more than one click.
+
+![Sessions](docs/sessions.png)
 
 ## How it works
 
@@ -19,12 +21,13 @@ Two more ideas complete the picture:
 - **Lock**: how hard a running session is to stop. None, for a while, until a date and time, until Windows restarts, while a condition is active (a USB stick can be the key: locked while it is unplugged), after a delay you have to wait out, after typing a text you cannot paste (your own, or a random one drawn at the start), or with a password someone else keeps.
 - **Allowance**: a way for a session to go quiet for a while. A time budget (say 30 minutes a day, for the whole session or per site), a Pomodoro cycle (50 minutes blocked, 10 minutes free), a delayed start (nothing is enforced for the first hour, or until a date and time, and everything is from then on) or a few breaks you take by hand (say 3 of 10 minutes a day).
 
-A target acts by what its lists hold: pages of blocked sites are closed wherever they open (tabs, split views, app windows), programs by name, Store apps by package and windows by title (closed or minimized). Obsidian's web viewer can be closed too.
+A target acts by what its lists hold: pages of blocked sites are closed wherever they open (tabs, split views, app windows), programs by name, Store apps by package and windows by title (closed or minimized). Obsidian's web viewer and Steam's browser can be closed too.
 
-![A target](docs/screenshots/target-editor.png)
+![A target](docs/target-editor.png)
 
 ## Features
 
+- **No browser plugins needed**: nothing is installed in your browsers, and they are not started in any special way. Bullseye looks at the open windows through Windows' accessibility interface (UI Automation) and closes what is blocked. It works with Chromium-based browsers (Chrome, Edge, Brave, Opera, Vivaldi and others built on Chromium) and Firefox-based ones (Firefox, Zen), in tabs, split views and app windows, and in Opera's sidebar apps and Vivaldi's web panels.
 - **Sessions set up on their tiles**: each row (targets, condition, allowance, lock) is changed in place, from a list or a dropdown in the row. Several run at once, each started and stopped on its own, from the window or the command line, and a running session can be locked on the spot.
 - **Conditions** by weekly schedule (drawn on a week grid), USB flash drive, webhook (any URL that answers, so you can hook up a home automation or a calendar), or any / all of those combined.
 - **Locks that hold**: the rules live in a Windows service that runs as SYSTEM, so ending the app in Task Manager does not help, times are measured on internet time so changing the clock does not either, and sessions survive a restart. A locked session's targets and conditions can only be made stricter (it can take more targets, and its condition can become Always), and so can its lock (a later end, a longer wait) and its allowance.
@@ -33,11 +36,19 @@ A target acts by what its lists hold: pages of blocked sites are closed wherever
 - **Export and import** everything to move to another computer.
 - **A command line** that can do everything the window does: `bullseye status`, `bullseye start "Deep work"`, `bullseye target add "Social media" --sites tiktok.com`. See [CLI.md](CLI.md).
 
-![A condition](docs/screenshots/condition-editor.png)
+![A condition](docs/condition-editor.png)
 
 ## Install
 
 Download the installer from the [Releases](../../releases) page and run it (it needs administrator rights, as it installs a service). Bullseye starts in the tray: click its icon to open the window. Uninstalling is refused while a session is locked.
+
+**Windows may say "Windows protected your PC".**
+
+<img src="docs/smart-screen.png" alt="The Windows SmartScreen warning: Windows protected your PC" width="400">
+
+SmartScreen warns about any installer that is new or not signed with a code-signing certificate (which costs money each year), whatever it does. Bullseye's installer is not signed, so Windows does not recognise it. To install anyway, click **More info**, then **Run anyway**.
+
+You can ignore the warning if the installer comes from this repository's Releases page: the whole source is here to read, and [Build it yourself](#build-it-yourself) makes the same installer from it. Do not ignore it for an installer from anywhere else.
 
 **Try a short lock first.** A locked session is meant to be hard to end. Keep the unlock delay short (or zero) until you know how you want to use it.
 
