@@ -78,13 +78,17 @@ function described(command, args, standIn) {
   return texts.get(key);
 }
 const weekText = (days) => described("describe_schedule", { week: { days } }, t("common.weeklyStandIn"));
-// A duration as typed (`2h 30m`) written out, as the service writes it.
-const durationText = (text) => described("describe_duration", { text: text || "" }, text || "");
-// An until lock's end written out (`Tuesday 6 October 2026, 18:00`); as typed until then, or
-// once it has passed.
-const untilText = (text) => {
+// A duration as typed (`2h 30m`) written out, as the service writes it: exactly (`1 hour and 30
+// minutes`), or `short` in one unit for a tile's status (`2 hours`). As typed until the answer is in.
+const durationText = (text, short = false) => {
+  const words = described("describe_duration", { text: text || "" }, null);
+  return words ? words[short ? "short" : "words"] : text || "";
+};
+// An until lock's end written out (`Tuesday 6 October 2026, 18:00`), or `short` for a tile's status
+// (`18:00` today, `October 6` another day); as typed until then, or once it has passed.
+const untilText = (text, short = false) => {
   const end = described("describe_until", { text: text || "" }, null);
-  return end ? end.when : text || "";
+  return end ? end[short ? "short" : "when"] : text || "";
 };
 // A day as the date picker writes it: 2026-10-06, in local time.
 const localDate = (day) => `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;

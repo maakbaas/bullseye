@@ -153,6 +153,8 @@ pub struct Until {
     pub when: String,
     /// How long from now, in words, by the Windows clock (the service measures on internet time).
     pub left: String,
+    /// `18:00` if it is today, `October 6` if not (`DateTime::short`).
+    pub short: String,
 }
 
 /// An until lock's end as typed (`2026-10-06 18:00`), in Windows' time zone now; refused when it is
@@ -161,7 +163,10 @@ pub fn until(text: &str) -> Result<Until, String> {
     let at = DateTime::parse(text)?;
     let end = Zone::current().instant(&at).ok_or_else(|| format!("Cannot tell when {at} is in this time zone"))?;
     let left = end.duration_since(SystemTime::now()).map_err(|_| format!("{at} has passed"))?;
-    Ok(Until { when: at.to_string(), left: duration::left(left.as_secs()) })
+    // Today when the day's midnight has passed: the end is still to come.
+    let midnight = Zone::current().instant(&DateTime { hour: 0, minute: 0, ..at });
+    let today = midnight.is_some_and(|midnight| midnight <= SystemTime::now());
+    Ok(Until { when: at.to_string(), left: duration::left(left.as_secs()), short: at.short(today) })
 }
 
 fn key_name(info: &DYNAMIC_TIME_ZONE_INFORMATION) -> String {

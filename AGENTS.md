@@ -40,7 +40,7 @@ Frontend (`src/`, no build step): `index.html`, `app.css` (layout only), `string
 
 - **The service decides, the app enforces.** Locks, schedules, allowances and what is let through are decided in Rust; the page has no logic of its own for what the backend knows, and every word about times, schedules and errors comes from Rust (so the window and the CLI say the same).
 - **Every visible text is in `strings.js`**, looked up with `t("path")`; never inline.
-- **Time left is one unit, rounded** (`duration::left`: `2 minutes`, `89 seconds`); a set duration is exact (`duration::countdown`).
+- **Time left, and every time in a tile's status, is one unit, rounded** (`duration::left`: `2 minutes`, `89 seconds`; a date `18:00` today, `October 6` otherwise); elsewhere a set duration is exact (`duration::countdown`).
 - **The CLI stays level with the window**: a command in `generate_handler!` needs an entry in `cli::GUI_COMMANDS`, a CLI command, a help line and a line in `CLI.md`; a test fails otherwise.
 - **Faults open the hatch, never close it.** A broken `unlock.json` means no unlock delay; an unconfigured app can always unlock. The unlock tests are many on purpose; keep them passing.
 - **Err towards blocking elsewhere**: a condition that cannot be told (an unreadable drive, no webhook answer) counts as its fallback or as active.

@@ -53,6 +53,16 @@ impl DateTime {
         format!("{:04}-{:02}-{:02} {:02}:{:02}", self.year, self.month, self.day, self.hour, self.minute)
     }
 
+    /// Short, for a status on a tile: the time on the day itself (`18:00`), the day otherwise
+    /// (`October 6`).
+    pub fn short(&self, today: bool) -> String {
+        if today {
+            format!("{:02}:{:02}", self.hour, self.minute)
+        } else {
+            format!("{} {}", MONTHS[usize::from(self.month) - 1], self.day)
+        }
+    }
+
     /// Days since 1970-01-01 (negative before).
     pub fn days(&self) -> i64 {
         // Howard Hinnant's days_from_civil.
@@ -97,6 +107,13 @@ fn days_in_month(year: i32, month: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_is_the_time_today_and_the_day_otherwise() {
+        let at = DateTime::parse("2026-10-06 08:05").unwrap();
+        assert_eq!(at.short(true), "08:05");
+        assert_eq!(at.short(false), "October 6");
+    }
 
     #[test]
     fn a_date_and_time_is_read_and_written_out() {

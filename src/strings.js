@@ -102,7 +102,7 @@ window.STRINGS = {
     },
 
     // Under a session's Condition, Allowance and Lock rows, in a few words: what is happening now while
-    // it runs. {change}, {left}, {reset}, {delay}: times in words; {item}: a site, program or title.
+    // it runs. {change}, {left}, {reset}, {delay}: times in one unit, rounded; {n}: a number of items.
     now: {
       active: "Active now",
       activeFor: "Active for {change}",
@@ -119,8 +119,9 @@ window.STRINGS = {
       leftReset: "{left} left, refilled in {reset}",
       usedUp: "Used up",
       usedUpReset: "Used up, back in {reset}",
-      itemLeft: "{item} {left} left",
-      itemUsedUp: "{item} used up",
+      // A budget for each item.
+      itemsLeft: "Time left for every item",
+      itemsUsedUp: { one: "1 item used up", other: "{n} items used up" },
       lockedFor: "Locked for {change}",
       locked: "Locked now",
       unlocked: "Unlocked now",
@@ -251,8 +252,6 @@ window.STRINGS = {
       describe: "Locks during {name}",
       describeDrive: "Locks while {name} is unplugged",
       describeCombined: "Locks while {name} is true",
-      // The condition has been deleted.
-      describeGone: "Condition deleted",
       confirmHeading: "Start {name} locked during {condition}?",
       // {detail}: nothing for a schedule, the drive for a flash drive.
       confirmBody: "Locked while {condition} is active{detail}. Otherwise you can stop it. Only unlocking in Settings ends it early",

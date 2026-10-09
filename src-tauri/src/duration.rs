@@ -71,6 +71,18 @@ pub fn countdown(seconds: u64) -> String {
     }
 }
 
+/// A set duration in words both ways (`describe_duration`): exactly (`1 hour and 30 minutes`), for a
+/// question, and in one unit as time left is (`2 hours`), for a status on a tile.
+#[derive(serde::Serialize, Debug, PartialEq)]
+pub struct Words {
+    pub words: String,
+    pub short: String,
+}
+
+pub fn words(seconds: u64) -> Words {
+    Words { words: countdown(seconds), short: left(seconds) }
+}
+
 /// Time left, as a countdown shows it: one unit, rounded. A unit is used from one and a half of it
 /// on, so below that the next one down counts: `2 minutes` for 2 minutes and 5 seconds, `89 seconds`
 /// for 1 minute and 29 seconds, `36 hours` for a day and a half less a second, `2 days` from there.
@@ -94,6 +106,12 @@ pub fn period(seconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_set_duration_is_written_exactly_and_short() {
+        assert_eq!(words(5400), Words { words: "1 hour and 30 minutes".into(), short: "2 hours".into() });
+        assert_eq!(words(300), Words { words: "5 minutes".into(), short: "5 minutes".into() });
+    }
 
     #[test]
     fn time_left_is_one_unit_from_one_and_a_half_of_it() {

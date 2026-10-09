@@ -46,7 +46,7 @@ const LOCKS = {
         },
       };
     },
-    describe: (lock) => (lock.kind === "until" ? t("locks.timed.describeUntil", { when: untilText(lock.value) }) : t("locks.timed.describeFor", { duration: durationText(lock.value) })),
+    describe: (lock, short) => (lock.kind === "until" ? t("locks.timed.describeUntil", { when: untilText(lock.value, short) }) : t("locks.timed.describeFor", { duration: durationText(lock.value, short) })),
     confirm: async (session) => {
       const { kind, value } = session.lock;
       if (kind === "until") {
@@ -56,7 +56,7 @@ const LOCKS = {
         const values = { name: quoted(session.name), when: end.when, left: end.left };
         return { heading: t("locks.timed.untilConfirmHeading", values), body: t("locks.timed.untilConfirmBody", values), action: t("locks.confirmAction", values) };
       }
-      const duration = await invoke("describe_duration", { text: value || "" }).catch(() => value);
+      const duration = await invoke("describe_duration", { text: value || "" }).then((words) => words.words, () => value);
       const values = { name: quoted(session.name), duration };
       return { heading: t("locks.timed.forConfirmHeading", values), body: t("locks.timed.forConfirmBody", values), action: t("locks.confirmAction", values) };
     },
@@ -86,7 +86,8 @@ const LOCKS = {
     },
     describe: (lock) => {
       const condition = overview.conditions.find((c) => c.id === lock.condition);
-      if (!condition) return t("locks.condition.describeGone");
+      // (Deleting a condition takes it out of the locks that use it: only for a moment until the next refresh.)
+      if (!condition) return t("locks.condition.label");
       return conditionLockText(wordingOf(condition), ref(condition.name, editHref("conditions", condition.id)));
     },
     confirm: async (session) => {
@@ -117,9 +118,9 @@ const LOCKS = {
         },
       };
     },
-    describe: (lock) => t("locks.delay.describe", { delay: durationText(lock.delay) }),
+    describe: (lock, short) => t("locks.delay.describe", { delay: durationText(lock.delay, short) }),
     confirm: async (session) => {
-      const delay = await invoke("describe_duration", { text: session.lock.delay || "" }).catch(() => session.lock.delay);
+      const delay = await invoke("describe_duration", { text: session.lock.delay || "" }).then((words) => words.words, () => session.lock.delay);
       const values = { name: quoted(session.name), delay };
       return {
         heading: t("locks.delay.confirmHeading", values),
