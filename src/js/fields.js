@@ -3,7 +3,7 @@
 // lock's settings, a new session and a new name are asked in the modal. New target and New
 // condition go to that kind's editor and come back with it chosen (`detour`).
 
-import { ask, confirmStricter, dismiss, editHref, el, invalid, invoke, newId, nodesOf, notify, overview, quoted, refresh, runningOf, t } from "./core.js";
+import { ask, confirmStricter, dismiss, editHref, el, invalid, invoke, joined, newId, nodesOf, notify, overview, quoted, refresh, runningOf, t } from "./core.js";
 import { LOCKS } from "./locks.js";
 import { allowanceSection } from "./forms.js";
 import { KINDS, freeName } from "./kinds.js";
@@ -96,9 +96,12 @@ function addRows(parts, id) {
       edit = button("edit", t(`sessions.fields.${key === "block" ? "changeBlock" : "changeWhen"}`), async () => {
         const { node, chosen } = choices(id, key);
         const heading = t("sessions.fields.panelHeading", { what: t(`sessions.fields.${key}`), name: quoted(current(id).name) });
+        const locked = !!runningOf(id)?.locked;
+        const changed = (next, session) => Object.entries(next).some(([field, value]) => JSON.stringify(value) !== JSON.stringify(session[field] ?? null));
         // Saved on Save; what the service refuses (a running session left with nothing to block) is
-        // said in the dialog, which stays open to choose again.
-        const saved = await ask({
+        // said in the dialog, which stays open to choose again. A locked session's choice, which can
+        // only be stricter, is asked about first (`saveStricter`).
+        const next = await ask({
           heading,
           fields: [node],
           action: t("common.save"),
@@ -106,13 +109,12 @@ function addRows(parts, id) {
           read: async () => {
             const next = chosen();
             const session = current(id);
-            if (Object.entries(next).some(([field, value]) => JSON.stringify(value) !== JSON.stringify(session[field] ?? null))) {
-              await invoke("save_session", { session: { ...session, ...next } });
-            }
-            return true;
+            if (!locked && changed(next, session)) await invoke("save_session", { session: { ...session, ...next } });
+            return next;
           },
         });
-        if (saved) await refresh();
+        if (next && locked && changed(next, current(id))) await saveStricter(current(id), next);
+        else if (next) await refresh();
       });
     } else {
       select = el("cds-dropdown", { type: "inline", size: "sm", "aria-label": t(`sessions.fields.${key}`) });
@@ -185,10 +187,11 @@ function renderRows(parts, session, lines) {
       // Fixed while locked; the allowance only stricter, so none stays none (`allowance::kind_allowed`).
       select.disabled = locked && (key !== "unless" || !session.allowance);
     }
-    // The button: targets and the condition's page, the settings of the allowance or lock it has. A
-    // locked session's targets cannot change; its lock settings only to end later or wait longer.
+    // The button: targets and the condition's list, the settings of the allowance or lock it has. A
+    // locked session's lock settings only to end later or wait longer.
     let open = true;
-    if (key === "block" || key === "when") open = !locked;
+    // Locked: targets can be added, and a condition be made Always (`choices`).
+    if (key === "when") open = !locked || chosenOf(key, session) !== ALWAYS;
     if (key === "unless") open = chosenOf(key, session) !== "none";
     if (key === "lock") open = !!(LOCKS[session.lock.method] && LOCKS[session.lock.method].form) && (!locked || lengthens(running));
     edit.hidden = !open;
@@ -200,6 +203,8 @@ function renderRows(parts, session, lines) {
 // what to save.
 function choices(id, key) {
   const session = current(id);
+  // Locked: what it has stays, and only stricter can be chosen: more targets, or Always.
+  const locked = !!runningOf(id)?.locked;
   const many = key === "block";
   const kind = many ? "targets" : "conditions";
   const options = many ? overview.targets.map((target) => [target.id, target.name]) : optionsOf("when");
@@ -208,7 +213,8 @@ function choices(id, key) {
   const marks = new Map();
   const items = options.map(([value, text]) => {
     marks.set(value, mark(picked.has(value)));
-    const item = el("cds-contained-list-item", { clickable: true }, marks.get(value), text);
+    const fixed = locked && (many ? session.targets.includes(value) : value !== ALWAYS);
+    const item = el("cds-contained-list-item", { clickable: true, disabled: fixed }, marks.get(value), text);
     item.addEventListener("cds-contained-list-item-click", () => {
       // Targets are marked and unmarked; a condition is one of them.
       if (many && picked.has(value)) picked.delete(value);
@@ -229,16 +235,32 @@ function choices(id, key) {
     const [value] = picked;
     return { condition: value === ALWAYS ? null : value };
   };
-  const more = el("cds-button", { kind: "primary", size: "sm" }, t(`${kind}.newLabel`), carbonIcon("add", "icon"));
-  more.addEventListener("click", () => {
+  // A new condition is not Always: none for a locked session.
+  const more = locked && !many ? null : el("cds-button", { kind: "primary", size: "sm" }, t(`${kind}.newLabel`), carbonIcon("add", "icon"));
+  more?.addEventListener("click", () => {
     dismiss();
-    make(id, kind, (made) => save(current(id), many ? { targets: [...chosen().targets, made.id] } : { condition: made.id }));
+    make(id, kind, (made) => {
+      const next = many ? { targets: [...chosen().targets, made.id] } : { condition: made.id };
+      return locked ? saveStricter(current(id), next) : save(current(id), next);
+    });
   });
   const list = el("cds-contained-list", { kind: "disclosed", size: "md", "aria-label": t(`${kind}.title`) }, ...items);
   return { node: el("div", { class: "choices" }, more, list), chosen };
 }
 
 const current = (id) => overview.sessions.find((s) => s.id === id);
+
+// A locked session made stricter (more targets, or the condition Always), once that is confirmed: it
+// cannot be taken back.
+async function saveStricter(session, next) {
+  // A target just made on a detour is known by its name once the service's view has it.
+  await refresh();
+  const added = (next.targets || []).filter((id) => !session.targets.includes(id));
+  const names = added.map((id) => quoted(overview.targets.find((target) => target.id === id)?.name || id));
+  const words = [added.length ? t("stricter.moreTargets", { targets: joined(names).join("") }) : "", "condition" in next && next.condition === null ? t("stricter.always") : ""];
+  if (await confirmStricter(quoted(session.name), words.filter(Boolean).join(" "))) await save(session, next);
+  else await refresh();
+}
 
 // Made on the way: that kind's editor, then back here with it chosen.
 function make(id, kind, onSaved) {

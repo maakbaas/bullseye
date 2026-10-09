@@ -227,12 +227,20 @@ fn edit_session(context: &Context, session: Definition) -> Result<(), String> {
         // (A password lock comes back from the service without its hash, so two of them are the same.)
         let same_lock =
             session.lock == old.lock || (matches!(session.lock, Lock::Password { .. }) && matches!(old.lock, Lock::Password { .. }));
-        if session.targets != old.targets || session.condition != old.condition || !same_lock {
-            return Err("A locked session cannot be changed until it can be stopped, except for its name and a stricter allowance".into());
+        // Stricter only: more targets (none taken out), the condition Always, a stricter allowance.
+        let kept_targets = old.targets.iter().all(|target| session.targets.contains(target));
+        let condition = session.condition == old.condition || session.condition.is_none();
+        if !kept_targets || !condition || !same_lock {
+            return Err("A locked session cannot be changed until it can be stopped, except for its name, more targets, the condition Always and a stricter allowance".into());
         }
         allowance::tightened(old.allowance.as_ref(), session.allowance.as_ref())?;
         let id = session.id.clone();
-        context.definitions.save_session(Definition { name: session.name, allowance: session.allowance, ..old })?;
+        let library = context.definitions.library();
+        if let Some(gone) = session.targets.iter().find(|target| library.target(target).is_none()) {
+            return Err(format!("No such target: {gone}"));
+        }
+        let Definition { name, targets, condition, allowance, .. } = session;
+        context.definitions.save_session(Definition { name, targets, condition, allowance, ..old })?;
         return refresh_running(context, &[id]);
     }
     if session.lock != old.lock {
@@ -1397,6 +1405,45 @@ mod tests {
         let mut more = renamed;
         more.condition = Some("somewhere".into());
         assert!(failed(ask(Request::SaveSession { session: more })));
+    }
+
+    #[test]
+    fn a_locked_session_takes_more_targets_and_the_condition_always() {
+        let context = context("locked-stricter");
+        let ask = |session: &Definition| handle(&context, 0, Request::SaveSession { session: session.clone() }).0;
+        for list in [target("social", &["youtube.com"]), target("games", &["steam.com"])] {
+            assert_eq!(handle(&context, 0, Request::SaveTarget { target: list }).0, Response::Done);
+        }
+        for condition in [weekly("office", "mon-fri 8-17"), weekly("weekend", "sat-sun 0-24")] {
+            assert_eq!(handle(&context, 0, Request::SaveCondition { condition }).0, Response::Done);
+        }
+        let mut work = session("work", &["social"]);
+        work.condition = Some("office".into());
+        work.lock = Lock::timed_for("1h");
+        assert_eq!(ask(&work), Response::Done);
+        assert_eq!(handle(&context, 0, Request::Start { id: "work".into() }).0, Response::Done);
+        let locked = || overview(&context).sessions[0].clone();
+
+        // Another condition, a target taken out, or one that does not exist: refused.
+        let mut other = locked();
+        other.condition = Some("weekend".into());
+        assert!(failed(ask(&other)));
+        let mut fewer = locked();
+        fewer.targets = vec!["games".into()];
+        assert!(failed(ask(&fewer)));
+        let mut missing = locked();
+        missing.targets.push("nowhere".into());
+        assert_eq!(ask(&missing), Response::Failed("No such target: nowhere".into()));
+
+        // A target more, and Always: taken, and the running session follows at once.
+        let mut more = locked();
+        more.targets.push("games".into());
+        more.condition = None;
+        assert_eq!(ask(&more), Response::Done);
+        assert_eq!(locked().targets, ["social", "games"]);
+        assert_eq!(locked().condition, None);
+        let running = &overview(&context).running[0];
+        assert_eq!((running.targets.len(), running.condition.is_none(), running.locked), (2, true, true));
     }
 
     #[test]

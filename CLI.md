@@ -71,7 +71,7 @@ Exit codes: `0` done, `1` failed, refused or cancelled (the reason is printed), 
 | `--no-lock` | Not locked. | yes |
 | `--name <name>` | (`edit` only) A new name. | |
 
-With `edit`, an option replaces only what it names: `--targets` replaces all its targets with the ones given, and what is not named stays. A running session takes the change at once (its lock aside: `lock` gives a running session that is not locked a lock); while it is locked, only its name, a stricter allowance and a stricter lock (`lock`). `start` takes the lock options too: they set the session's lock before it starts, as the Lock field on its tile in the window does.
+With `edit`, an option replaces only what it names: `--targets` replaces all its targets with the ones given, and what is not named stays. A running session takes the change at once (its lock aside: `lock` gives a running session that is not locked a lock); while it is locked, only its name, more targets (`add --targets`), the condition `always`, a stricter allowance and a stricter lock (`lock`). `start` takes the lock options too: they set the session's lock before it starts, as the Lock field on its tile in the window does.
 
 ### Targets: `target new`, `target edit`
 
@@ -201,7 +201,7 @@ The CLI uses the window's words (`src/strings.js`, read by the program itself), 
 
 ### `add` and `remove`
 
-`edit` replaces a whole set (`edit Work --targets Games` leaves Games as its only target); `add` and `remove` change only the items named and keep the rest: a session's targets (`--targets`), a target's entries (its list options, `--sites`, `--programs`, …, and `--actions` to turn on or off) and a combination's conditions (`--conditions`). Adding what is there already changes nothing. Taking out what is not there is refused, as a typo, and then nothing is saved; an entry is found however it is written (`Steam` is `steam.exe`, `YouTube.com` is `youtube.com`). The service checks the result like any other save: while a locked session uses a target, adding entries to block goes through and taking them out is refused; a combination keeps at least two conditions, and a session at least one target.
+`edit` replaces a whole set (`edit Work --targets Games` leaves Games as its only target); `add` and `remove` change only the items named and keep the rest: a session's targets (`--targets`), a target's entries (its list options, `--sites`, `--programs`, …, and `--actions` to turn on or off) and a combination's conditions (`--conditions`). Adding what is there already changes nothing. Taking out what is not there is refused, as a typo, and then nothing is saved; an entry is found however it is written (`Steam` is `steam.exe`, `YouTube.com` is `youtube.com`). The service checks the result like any other save: while a locked session uses a target, adding entries to block goes through and taking them out is refused; a combination keeps at least two conditions, and a running session something to block.
 
 ### `duplicate`, `target duplicate`, `condition duplicate`
 

@@ -214,6 +214,8 @@ window.STRINGS = {
     body: "{what} It cannot be loosened until {names} can be stopped. Only unlocking in Settings ends it early",
     action: "Make stricter",
     noAllowance: "Its allowance is taken away, so nothing pauses it.",
+    moreTargets: "It also blocks {targets}.",
+    always: "It is active at all times.",
     shared: "These changes only make what it uses stricter.",
   },
   // The units of a duration field (`duration.js`).
