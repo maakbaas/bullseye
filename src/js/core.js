@@ -179,8 +179,8 @@ function formNote(kind, title = "") {
 // Why a form cannot be saved: an error under its fields.
 const errorNote = () => formNote("error", t("common.cannotSave"));
 // What the form's settings come to (an allowance's terms, a schedule's times), as the webhook's test
-// answer is shown: information under them.
-const infoNote = () => formNote("info");
+// answer is shown: information under them (with a title, if it has one).
+const infoNote = (title = "") => formNote("info", title);
 
 // The one dialog: a question before anything that cannot be taken back, or a short form (a
 // lock's settings, a password). Resolves false for Cancel, the X or Escape; otherwise true,

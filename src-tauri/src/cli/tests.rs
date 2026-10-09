@@ -618,6 +618,17 @@ fn windows_by_title_are_closed_unless_minimized() {
 }
 
 #[test]
+fn steams_browser_is_an_action_by_its_own_name_and_not_one_of_all() {
+    let parse = |names: &str| parse_actions(&names.split(' ').map(str::to_string).collect::<Vec<_>>());
+    let steam = parse("steam_browser").unwrap();
+    assert!(steam.steam_browser && !steam.obsidian_web_viewer && !steam.window_titles_minimize);
+    // `all` is what a new target has: Steam's browser is left alone unless asked for.
+    assert!(!parse("all").unwrap().steam_browser);
+    assert!(parse("all steam_browser").unwrap().steam_browser);
+    assert!(parse("steam_browser obsidian_web_viewer").unwrap().obsidian_web_viewer);
+}
+
+#[test]
 fn a_new_target_with_everything() {
     let line = args(&[
         "target",
@@ -649,7 +660,7 @@ fn a_new_target_with_everything() {
     assert_eq!(list.entries.store_apps, vec!["Microsoft.XboxApp_8wekyb3d8bbwe"]);
     assert_eq!(list.entries.titles, vec!["*YouTube*"]);
     assert_eq!(list.entries.allowed_titles, vec!["*Visual Studio Code"]);
-    assert_eq!(list.actions, Actions { obsidian_web_viewer: false, window_titles_minimize: true });
+    assert_eq!(list.actions, Actions { obsidian_web_viewer: false, window_titles_minimize: true, steam_browser: false });
 }
 
 #[test]

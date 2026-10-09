@@ -326,7 +326,7 @@ window.STRINGS = {
       field: "Number of characters",
       helper: "Letters and digits, new each time it locks. They have to be typed over, no pasting",
       // A text of the chosen length, to show how long it is; not the one that is drawn.
-      example: "Example",
+      example: "Example:",
       // {n}: the number of characters.
       describe: { one: "Locks until {n} random character is typed", other: "Locks until {n} random characters are typed" },
       confirmHeading: "Start {name} locked by a random text?",
@@ -440,6 +440,7 @@ window.STRINGS = {
       close: "Close these windows",
       window_titles_minimize: { label: "Minimize these windows" },
       obsidian_web_viewer: { label: "Close Obsidian when web viewer is active", short: "Closes Obsidian's web viewer" },
+      steam_browser: { label: "Steam Browser", short: "Closes Steam Browser" },
     },
   },
 
@@ -527,7 +528,7 @@ window.STRINGS = {
     // The heading of a weekly schedule's grid; its line is `gridHelp`.
     weekTitle: "Week",
     gridHelp: "Drag over the week to mark active times, start on a marked time to clear it",
-    // The week grid's column heads, Monday first.
+    // The week grid's column heads (the grid starts on Sunday).
     days: { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" },
     // A flash drive condition: the drive is the key. The connected drives are looked up when the
     // editor opens and on "Scan again".

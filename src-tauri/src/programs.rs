@@ -96,6 +96,14 @@ impl ProgramList {
     }
 }
 
+/// The title of Steam's built-in browser window, whatever page it shows.
+pub const STEAM_BROWSER_TITLE: &str = "Steam - Browser";
+
+/// Whether a window is Steam's built-in browser.
+pub fn is_steam_browser(title: &str, class: &str, program: &str) -> bool {
+    title == STEAM_BROWSER_TITLE && class == "SDL_app" && program.eq_ignore_ascii_case("steamwebhelper.exe")
+}
+
 /// Whether a program (by file name, any case) is one of those that are never closed.
 pub fn is_protected(file_name: &str) -> bool {
     PROTECTED.contains(&file_name.to_lowercase().as_str())
@@ -194,5 +202,17 @@ mod tests {
         let programs = ProgramList { entries: vec!["explorer.exe".into()], matchers: RegexSet::new(["^explorer\\.exe$"]).unwrap() };
         assert!(!programs.is_blocked("explorer.exe"));
         assert!(!programs.is_blocked("Explorer.EXE"));
+    }
+
+    #[test]
+    fn steams_browser_is_told_by_its_title_its_class_and_its_program() {
+        assert!(is_steam_browser(STEAM_BROWSER_TITLE, "SDL_app", "steamwebhelper.exe"));
+        assert!(is_steam_browser("Steam - Browser", "SDL_app", "SteamWebHelper.EXE"), "letter case aside in the program");
+        // The main window (just "Steam"), another program with that title, or another kind of window: not it.
+        assert!(!is_steam_browser("Steam", "SDL_app", "steamwebhelper.exe"));
+        assert!(!is_steam_browser("Steam - Browser", "SDL_app", "chrome.exe"));
+        assert!(!is_steam_browser("Steam - Browser", "Chrome_WidgetWin_1", "steamwebhelper.exe"));
+        assert!(!is_steam_browser("steam - browser", "SDL_app", "steamwebhelper.exe"), "the title is exact");
+        assert!(!is_steam_browser("", "", ""));
     }
 }

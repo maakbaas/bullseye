@@ -37,7 +37,7 @@ const SECTIONS = [
   { key: "store", icon: "shopping-bag", lists: ["store_apps"], actions: [] },
   // Closing (`choice`, the default: off) or minimizing: radio buttons, not a checkbox.
   { key: "titles", icon: "text-font", lists: ["titles", "allowed_titles"], choice: "close", actions: [action("window_titles_minimize")] },
-  { key: "other", icon: "apps", lists: [], actions: [action("obsidian_web_viewer")] },
+  { key: "other", icon: "apps", lists: [], actions: [action("obsidian_web_viewer"), action("steam_browser")] },
 ].map((section) => ({ ...section, title: t(`targets.sections.${section.key}.title`), short: t(`targets.sections.${section.key}.${window.STRINGS.targets.sections[section.key].short ? "short" : "title"}`), description: window.STRINGS.targets.sections[section.key].description && t(`targets.sections.${section.key}.description`) }));
 
 // ---- The editors. Each kind's form is built anew each time an editor opens; every form has `nodes`,
@@ -711,6 +711,8 @@ function allowanceSection() {
 // the week is plain layout in Carbon's tokens; the text field is the accessible way to set it,
 // and the week mirrors it.
 const DAY_NAMES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"].map((day) => t(`conditions.days.${day}`));
+// The grid starts on Sunday; days are Monday-first everywhere else, so a column maps to its day.
+const COLUMNS = [6, 0, 1, 2, 3, 4, 5];
 const SLOT = 30; // minutes per cell
 
 function weekEditor() {
@@ -732,23 +734,23 @@ function weekEditor() {
   // label spans the two rows above its line and the two below, and is centred on that line:
   // 00:00 on the top edge of the grid, 24:00 on its bottom edge.
   const SLOTS = (24 * 60) / SLOT;
-  DAY_NAMES.forEach((name, day) => place(el("div", { class: "day cds--type-label-01" }, name), day + 2, 1, 3));
+  COLUMNS.forEach((day, column) => place(el("div", { class: "day cds--type-label-01" }, DAY_NAMES[day]), column + 2, 1, 3));
   for (let hour = 0; hour <= 24; hour += 2) place(el("div", { class: "hour cds--type-label-01" }, `${String(hour).padStart(2, "0")}:00`), 1, hour * 2 + 2, 4);
   for (let slot = 0; slot < SLOTS; slot++) {
-    DAY_NAMES.forEach((_, day) => {
+    COLUMNS.forEach((_, column) => {
       const edges = [slot % 2 === 0 ? "hour-start" : "", slot === SLOTS - 1 ? "last" : ""].join(" ");
-      const cell = el("div", { class: `cell ${edges}`.trim(), "data-day": day, "data-slot": slot });
-      cells[day].push(cell);
-      place(cell, day + 2, slot + 4, 1);
+      const cell = el("div", { class: `cell ${edges}`.trim(), "data-day": column, "data-slot": slot });
+      cells[column].push(cell);
+      place(cell, column + 2, slot + 4, 1);
     });
   }
 
   // A cell is marked when any of its half hour is in the schedule (a typed one can be finer).
   function draw() {
-    cells.forEach((column, day) =>
+    cells.forEach((column, index) =>
       column.forEach((cell, slot) => {
         const [start, end] = [slot * SLOT, slot * SLOT + SLOT];
-        cell.classList.toggle("on", days[day].some(([from, to]) => from < end && to > start));
+        cell.classList.toggle("on", days[COLUMNS[index]].some(([from, to]) => from < end && to > start));
       }),
     );
     grid.classList.toggle("disabled", disabled);
@@ -821,7 +823,7 @@ function weekEditor() {
   });
   const finish = () => {
     if (!painting) return;
-    for (const day of painting.days) days[day] = spansOf(day);
+    for (const column of painting.days) days[COLUMNS[column]] = spansOf(column);
     painting = null;
     draw();
     describe();
