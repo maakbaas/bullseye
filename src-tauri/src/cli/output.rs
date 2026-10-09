@@ -242,6 +242,7 @@ pub(super) fn describe_session(overview: &Overview, session: &Definition) -> Str
                 Terms::Budget { .. } => "budget",
                 Terms::Pomodoro { .. } => "pomodoro",
                 Terms::Delayed { .. } => "delayed",
+                Terms::Breaks { .. } => "breaks",
             };
             t(&format!("allowance.type.{kind}"), &[])
         }

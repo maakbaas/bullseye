@@ -26,10 +26,11 @@ Sessions:
       --targets <targets>           The targets it enforces.
       --condition <condition>       When it is active: a condition's name, or 'always' (the
                                     default).
-      --allowance <budget|pomodoro|delayed|none>
+      --allowance <budget|pomodoro|delayed|breaks|none>
                                     What lets it go quiet for a while (none by default): a budget of
-                                    use, a Pomodoro cycle, or a delayed start; use is what the app
-                                    sees: a page shown in a tab, a window, a program that runs.
+                                    use, a Pomodoro cycle, a delayed start, or breaks taken by hand
+                                    (`break`); use is what the app sees: a page shown in a tab, a
+                                    window, a program that runs.
                                     Given with the options below, it can be left out (they say
                                     which); edit changes only what they name.
       --allowed <duration>          Budget: the time allowed, e.g. 30m. Pomodoro: how long
@@ -37,15 +38,18 @@ Sessions:
       --scope <total|each>          Budget: for the whole session (the default) or for each site,
                                     program, Store app and window title on its own.
       --reset <never|condition|duration>
-                                    Budget: when what was used is given back: never while the
-                                    session runs (the default), each time the session's condition
-                                    turns on, or every so long, e.g. 1d or 12h, counted by --anchor.
+                                    Budget and breaks: when what was used is given back: never
+                                    while the session runs (the default), each time the session's
+                                    condition turns on, or every so long, e.g. 1d or 12h, counted
+                                    by --anchor.
+      --breaks <n>                  Breaks: how many (1 to 100).
+      --length <duration>           Breaks: how long each one is, e.g. 10m.
       --blocked <duration>          Pomodoro: how long it is blocked for before it allows.
       --after <duration>            Delayed start: nothing is enforced for this long after the
                                     session starts, e.g. 30m, and everything is from then on.
       --from <date time>            Delayed start: nothing is enforced until then, e.g.
                                     \"2026-10-06 18:00\" (local time).
-      --anchor <start|clock>        What a Pomodoro, or a budget's reset every so long, is counted
+      --anchor <start|clock>        What a Pomodoro, or a reset every so long, is counted
                                     from: the session's start (the default), or midnight on the
                                     clock, so an hour starts at xx:00 (it must then fit a day
                                     evenly).
@@ -96,6 +100,9 @@ Sessions:
                                     text. One locked with a delay: the first stop asks for it and
                                     starts the wait, the next one, once it is over, stops the
                                     session; `stop <session> --abort` ends the wait.
+  break <session> [--end]           Take one of a running session's breaks (its allowance, while its
+                                    condition is active): nothing is enforced until it ends. --end
+                                    ends it early; it stays used up.
 
 Targets:
   target show <target> [--json]     One target, and the sessions that use it.
@@ -246,6 +253,10 @@ pub(super) enum Command {
         password: Option<String>,
         abort: bool,
     },
+    Break {
+        session: String,
+        end: bool,
+    },
     TargetShow {
         target: String,
         json: bool,
@@ -366,7 +377,7 @@ pub(super) struct SessionChanges {
 /// it (with no allowance yet, the default). Read when the command runs (`build_terms`).
 #[derive(Debug, PartialEq, Default)]
 pub(super) struct AllowanceChanges {
-    /// `budget`, `pomodoro`, `delayed` or `none`.
+    /// `budget`, `pomodoro`, `delayed`, `breaks` or `none`.
     pub(super) kind: Option<String>,
     pub(super) allowed: Option<String>,
     pub(super) scope: Option<Scope>,
@@ -378,6 +389,9 @@ pub(super) struct AllowanceChanges {
     /// A delayed start: how long after the session starts, or the date and time, enforcing begins.
     pub(super) after: Option<String>,
     pub(super) from: Option<String>,
+    /// Breaks: how many, as typed, and how long each is.
+    pub(super) breaks: Option<String>,
+    pub(super) length: Option<String>,
 }
 
 /// What `target new` and `target edit` set on a target; `None` leaves it.
@@ -461,6 +475,7 @@ pub(super) fn parse(args: &[String]) -> Result<Command, String> {
             lock: parse_lock(&mut options)?.ok_or("Give the lock, with one of the lock options of new: --lock-duration 2h")?,
             force: options.flag("--force"),
         },
+        "break" => Command::Break { session: named(&mut options, "session")?, end: options.flag("--end") },
         "stop" => Command::Stop {
             session: named(&mut options, "session")?,
             password: options.value("--password")?,
@@ -591,8 +606,8 @@ pub(super) fn parse_session_changes(options: &mut Options, editing: bool) -> Res
 pub(super) fn parse_allowance_changes(options: &mut Options) -> Result<Option<AllowanceChanges>, String> {
     let kind = options.value("--allowance")?.map(|kind| kind.to_lowercase());
     if let Some(kind) = &kind {
-        if !["budget", "pomodoro", "delayed", "none"].contains(&kind.as_str()) {
-            return Err(format!("--allowance takes budget, pomodoro, delayed or none, not “{kind}”"));
+        if !["budget", "pomodoro", "delayed", "breaks", "none"].contains(&kind.as_str()) {
+            return Err(format!("--allowance takes budget, pomodoro, delayed, breaks or none, not “{kind}”"));
         }
     }
     let allowed = options.value("--allowed")?;
@@ -627,12 +642,16 @@ pub(super) fn parse_allowance_changes(options: &mut Options) -> Result<Option<Al
         .transpose()?;
     let after = options.value("--after")?;
     let from = options.value("--from")?;
-    let changes = AllowanceChanges { kind, allowed, scope, reset, every, blocked, anchor, after, from };
+    let breaks = options.value("--breaks")?;
+    let length = options.value("--length")?;
+    let changes = AllowanceChanges { kind, allowed, scope, reset, every, blocked, anchor, after, from, breaks, length };
     if changes == AllowanceChanges::default() {
         return Ok(None);
     }
     let delayed_given = changes.after.is_some() || changes.from.is_some();
-    let terms_given = changes.allowed.is_some()
+    let breaks_given = changes.breaks.is_some() || changes.length.is_some();
+    let terms_given = breaks_given
+        || changes.allowed.is_some()
         || changes.scope.is_some()
         || changes.reset.is_some()
         || changes.blocked.is_some()
@@ -655,6 +674,13 @@ pub(super) fn parse_allowance_changes(options: &mut Options) -> Result<Option<Al
     }
     if changes.after.is_some() && changes.from.is_some() {
         return Err("Give --after or --from, not both".into());
+    }
+    let is_breaks = changes.kind.as_deref() == Some("breaks");
+    if (breaks_given || is_breaks) && (changes.allowed.is_some() || changes.scope.is_some() || changes.blocked.is_some() || delayed_given) {
+        return Err("Breaks take only --breaks, --length, --reset and --anchor".into());
+    }
+    if breaks_given && changes.kind.as_deref().is_some_and(|kind| kind != "breaks") {
+        return Err("--breaks and --length go with --allowance breaks".into());
     }
     Ok(Some(changes))
 }
@@ -680,6 +706,32 @@ pub(super) fn build_terms(changes: AllowanceChanges, old: Option<&Terms>) -> Res
             (None, None) => old.ok_or("Give --after, how long to wait before enforcing, e.g. 30m, or --from, a date and time")?,
         };
         return Terms::Delayed { kind, value }.checked();
+    }
+    let breaks = match changes.kind.as_deref() {
+        Some(kind) => kind == "breaks",
+        None if changes.breaks.is_some() || changes.length.is_some() => true,
+        None if changes.allowed.is_some() || changes.scope.is_some() || changes.blocked.is_some() => false,
+        None => matches!(old, Some(Terms::Breaks { .. })),
+    };
+    if breaks {
+        let (old_count, old_length, old_reset, old_every, old_anchor) = match old {
+            Some(Terms::Breaks { count, length, reset, every, anchor }) => {
+                (Some(*count), Some(length.clone()), Some(*reset), Some(every.clone()), Some(*anchor))
+            }
+            _ => (None, None, None, None, None),
+        };
+        let count = match changes.breaks {
+            Some(count) => count.trim().parse().map_err(|_| format!("--breaks takes a number of breaks, not “{count}”"))?,
+            None => old_count.ok_or("Give --breaks, how many breaks, e.g. 3")?,
+        };
+        return Terms::Breaks {
+            count,
+            length: changes.length.or(old_length).ok_or("Give --length, how long a break is, e.g. 10m")?,
+            reset: changes.reset.or(old_reset).unwrap_or(Reset::Never),
+            every: changes.every.or(old_every).unwrap_or_default(),
+            anchor: changes.anchor.or(old_anchor).unwrap_or(Anchor::Start),
+        }
+        .checked();
     }
     let pomodoro = match changes.kind.as_deref() {
         Some(kind) => kind == "pomodoro",

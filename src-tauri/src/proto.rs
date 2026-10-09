@@ -99,6 +99,10 @@ pub enum Request {
     AskToStop { id: String },
     /// Ends that wait: the session is locked again.
     AbortStop { id: String },
+    /// Takes one of the running session `id`'s breaks now (`allowance::Terms::Breaks`).
+    TakeBreak { id: String },
+    /// Ends the break going on early; it stays used up.
+    EndBreak { id: String },
     /// Ends every session, whatever its time, once unlocking is ready: at once with no delay,
     /// otherwise when the countdown of `AskForUnlock` is over (`unlock::UnlockDelay`).
     Unlock,

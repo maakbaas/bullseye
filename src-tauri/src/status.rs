@@ -161,6 +161,12 @@ fn running_lines(running: &Running) -> (Line, Line, Line) {
                 Terms::Pomodoro { .. } => now("blocked", &[]),
                 Terms::Delayed { .. } if state.open => now("startsIn", &[("change", &change)]),
                 Terms::Delayed { .. } => now("started", &[]),
+                // A break going on: what is left of it; otherwise how many are left.
+                Terms::Breaks { .. } if state.open => now("left", &[("left", &change)]),
+                Terms::Breaks { .. } => match state.breaks_left.unwrap_or(0) {
+                    0 => now("noneLeft", &[]),
+                    n => now("breaksLeft", &[("n", &n.to_string())]),
+                },
                 Terms::Budget { .. } => match (state.left, &state.left_words, &state.reset_words) {
                     (Some(left), Some(words), _) if left > 0 => now("left", &[("left", words)]),
                     (Some(_), _, Some(reset)) => now("back", &[("reset", reset)]),
@@ -207,6 +213,7 @@ fn stopped_lines(session: &Definition, conditions: &[Condition], zone: &Zone, at
         None => now("neverPaused", &[]),
         Some(Terms::Pomodoro { blocked, allowed, .. }) => now("cycle", &[("blocked", &short(blocked)), ("allowed", &short(allowed))]),
         Some(Terms::Delayed { kind: DelayKind::After, value }) => now("after", &[("time", &short(value))]),
+        Some(Terms::Breaks { count, length, .. }) => now("breaks", &[("n", &count.to_string()), ("time", &short(length))]),
         Some(Terms::Delayed { kind: DelayKind::From, value }) => now("from", &[("date", &short_date(value, zone, at))]),
         Some(Terms::Budget { allowed, scope: Scope::Each, .. }) => now("perItem", &[("time", &short(allowed))]),
         Some(Terms::Budget { allowed, .. }) => now("budget", &[("time", &short(allowed))]),
@@ -328,7 +335,12 @@ mod tests {
             reset_in: None,
             reset_words: None,
             items: vec![],
+            breaks_left: None,
         }
+    }
+
+    fn breaks(count: u32) -> Terms {
+        Terms::Breaks { count, length: "10m".into(), reset: Reset::Never, every: String::new(), anchor: Anchor::Start }
     }
 
     fn budget(scope: Scope) -> Terms {
@@ -350,6 +362,8 @@ mod tests {
             (Terms::Delayed { kind: DelayKind::From, value: "1970-01-03 18:00".into() }, "From January 3"),
             (budget(Scope::Total), "Allowed for 30 minutes"),
             (budget(Scope::Each), "30 minutes per item"),
+            (breaks(3), "3 breaks of 10 minutes"),
+            (breaks(1), "1 break of 10 minutes"),
         ];
         for (terms, words) in allowances {
             assert_eq!(stopped(&session(Lock::None, None, Some(terms))).1, words);
@@ -431,6 +445,12 @@ mod tests {
         assert_eq!(with(each(0)), "None used up");
         assert_eq!(with(each(1)), "1 item used up");
         assert_eq!(with(each(2)), "2 items used up");
+        // Breaks: one going on, then how many are left.
+        assert_eq!(with(allowance(breaks(3), true, Some("7 minutes"))), "7 minutes left");
+        let left = |n| AllowanceStatus { breaks_left: Some(n), ..allowance(breaks(3), false, None) };
+        assert_eq!(with(left(3)), "3 breaks left");
+        assert_eq!(with(left(1)), "1 break left");
+        assert_eq!(with(left(0)), "None left");
         // While the condition is off, the same.
         let off = Running { enforcing: false, condition: Some(Rule::FlashDrive { serial: "1".into(), drive: "Stick".into() }), ..run() };
         assert_eq!(running(off).1, "Never paused");

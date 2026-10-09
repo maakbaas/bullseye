@@ -23,6 +23,7 @@ It sends the same requests to the Bullseye service as the window, so the service
 | `bullseye start <session> [lock option] [--force]` | the Lock row on the session's tile, then **Start** (a locked session asks first, unless `--force`) |
 | `bullseye lock <session> <lock option> [--force]` | the Lock row of a running session that is not locked: it is locked from now on, and that is its lock for the next start too (asks first, unless `--force`) |
 | `bullseye stop <session> [--password <pw>] [--abort]` | **Stop** (a session locked with a password asks for it, as the window does; one locked with a delay is asked to stop first, `--abort` ends the wait) |
+| `bullseye break <session> [--end]` | **Take a break** on a session with breaks, while its condition is active (`--end`: **End break**, early; it stays used up) |
 | `bullseye target show <target> [--json]` | a target's tile and its editor |
 | `bullseye target apps [--json]` | the installed Store apps the editor offers to tick, by name and package family name |
 | `bullseye target new <name> [options]` | **New target**, then **Save** |
@@ -59,8 +60,8 @@ Exit codes: `0` done, `1` failed, refused or cancelled (the reason is printed), 
 |---|---|---|
 | `--targets <targets>` | The targets it enforces. | none (it cannot start without one) |
 | `--condition <condition>` | When it is active: a condition, or `always`. | `always` |
-| `--allowance <budget\|pomodoro\|delayed\|none>` | Its allowance, with the options below (see [Allowances](#allowances---allowance-and-its-options)). | `none` |
-| `--allowed`, `--scope`, `--reset`, `--blocked`, `--anchor`, `--after`, `--from` | The allowance's terms. | |
+| `--allowance <budget\|pomodoro\|delayed\|breaks\|none>` | Its allowance, with the options below (see [Allowances](#allowances---allowance-and-its-options)). | `none` |
+| `--allowed`, `--scope`, `--reset`, `--blocked`, `--anchor`, `--after`, `--from`, `--breaks`, `--length` | The allowance's terms. | |
 | `--lock-duration <duration>` | Lock: timed, for this long once started. | |
 | `--lock-until <date time>` | Lock: timed, until then, e.g. `"2026-10-06 18:00"` (local time). A time that has passed when the session starts is refused. | |
 | `--lock-until-restart` | Lock: until Windows restarts. | |
@@ -96,21 +97,24 @@ An allowance lets a session go quiet for a while. A session has at most one, set
 - A **budget** is a time of use. It is for the session as a whole (`--scope total`) or for each of its items on its own (`--scope each`: each site, program, Store app and window title in its targets). While time is left, what is covered is not closed; it is only watched, and the time it is in use is counted. When the time is used up it is closed again, until the budget is reset.
 - A **Pomodoro** is a fixed cycle: blocked for `--blocked`, then everything allowed for `--allowed`, over and over. While it allows, the session enforces nothing, Obsidian's web viewer included.
 - A **delayed start** enforces nothing for the first `--after` of the session (e.g. `30m`), or until `--from` a local date and time; from then on everything is enforced, for good. The session is running and locked all along; only the enforcing waits.
+- **Breaks** are a number of breaks (`--breaks`) of a length (`--length`), taken by hand with `bullseye break <session>` (or **Take a break** on the tile), only while the session's condition is active, never by themselves. During a break nothing is enforced until it ends; ending one early (`--end`) still uses it up. They are given back by `--reset`, as a budget's time is. What is taken, and a break going on, survive a restart.
 
 **Use** is what the app sees: a page shown in a visible tab (a page in a background tab is not seen), an open window or app, a program that is running. The service counts it, on internet time.
 
 | Option | Meaning | Default |
 |---|---|---|
-| `--allowance <budget\|pomodoro\|delayed\|none>` | Which kind, or `none` to take it away. Without it, `--blocked` makes a Pomodoro, `--scope` or `--reset` a budget, `--after` or `--from` a delayed start, and `--allowed` or `--anchor` alone keep the kind the session has (a budget if none). Another kind starts from its defaults. | `budget` |
+| `--allowance <budget\|pomodoro\|delayed\|breaks\|none>` | Which kind, or `none` to take it away. Without it, `--blocked` makes a Pomodoro, `--scope` or `--reset` a budget, `--after` or `--from` a delayed start, `--breaks` or `--length` breaks, and `--allowed` or `--anchor` alone keep the kind the session has (a budget if none). Another kind starts from its defaults. | `budget` |
 | `--allowed <duration>` | Budget: the time allowed, e.g. `30m`. Pomodoro: how long everything is allowed each cycle. | required |
 | `--scope <total\|each>` | Budget: the session as a whole, or each item on its own. | `total` |
-| `--reset <never\|condition\|duration>` | Budget: when what was used is given back: `never` while the session runs, each time the session's `condition` turns it on (a time block of a schedule, a flash drive being unplugged; a session with no condition is always on, so never resets), or every so long, a duration such as `1d`, `12h` or `90m`, counted as `--anchor` says. | `never` |
+| `--reset <never\|condition\|duration>` | Budget and breaks: when what was used is given back: `never` while the session runs, each time the session's `condition` turns it on (a time block of a schedule, a flash drive being unplugged; a session with no condition is always on, so never resets), or every so long, a duration such as `1d`, `12h` or `90m`, counted as `--anchor` says. | `never` |
 | `--blocked <duration>` | Pomodoro: how long it is blocked each cycle, e.g. `50m`. | required |
 | `--after <duration>` | Delayed start: how long after the session starts enforcing begins, e.g. `30m`. | one of `--after` and `--from` |
 | `--from <date time>` | Delayed start: the local date and time enforcing begins, e.g. `"2026-10-06 18:00"`. Not together with `--after`, nor with the budget and Pomodoro options. | |
+| `--breaks <n>` | Breaks: how many, 1 to 100. | required |
+| `--length <duration>` | Breaks: how long each one is, e.g. `10m`. | required |
 | `--anchor <start\|clock>` | What a Pomodoro, or a budget's reset every so long, is counted from: the start of the session (a cycle is blocked first), or midnight on the clock, so a cycle or reset of an hour comes at every xx:00 and `1d` at midnight. On the clock it has to fit a day evenly: 30 minutes, 1 hour, 1 day. | `start` |
 
-With `edit`, an option replaces only what it names. While the session is locked, its allowance can only get stricter: a budget's time shorter or reset less often (every so long only longer and counted from the same point, or never; a reset by condition stays), its scope and a Pomodoro's cycle stay as they are, a delayed start can only come sooner (a shorter `--after`, an earlier `--from`, of the same kind), and `--allowance none` takes it away; a session without one cannot be given one.
+With `edit`, an option replaces only what it names. While the session is locked, its allowance can only get stricter: a budget's time shorter or reset less often (every so long only longer and counted from the same point, or never; a reset by condition stays), its scope and a Pomodoro's cycle stay as they are, a delayed start can only come sooner (a shorter `--after`, an earlier `--from`, of the same kind), breaks can only be fewer, shorter or given back less often, and `--allowance none` takes it away; a session without one cannot be given one.
 
 Obsidian's web viewer action has no items to count, so a budget (total or for each item) never lets it through: Obsidian is closed on web content all the time. Only a Pomodoro's allowed time lets it be.
 
@@ -119,6 +123,8 @@ bullseye new "Social time" --targets "Social media" --allowance budget --allowed
 bullseye edit "Social time" --allowed 10m --scope each --reset 2h
 bullseye new "Focus" --targets "Social media" --allowance pomodoro --blocked 50m --allowed 10m --anchor clock
 bullseye new "Settle in" --targets "Social media" --allowance delayed --after 30m
+bullseye new "Workday" --targets "Social media" --allowance breaks --breaks 3 --length 10m --reset 1d --anchor clock
+bullseye break "Workday"
 bullseye edit "Settle in" --from "2026-10-06 18:00"
 bullseye edit "Focus" --allowance none
 ```

@@ -44,7 +44,7 @@ function optionsOf(key) {
     return [[ALWAYS, t("sessions.fields.always")], ...overview.conditions.map((c) => [c.id, c.name])];
   }
   if (key === "unless") {
-    return ["none", "budget", "pomodoro", "delayed"].map((type) => [type, t(`allowance.type.${type}`)]);
+    return ["none", "budget", "pomodoro", "delayed", "breaks"].map((type) => [type, t(`allowance.type.${type}`)]);
   }
   return Object.entries(LOCKS).map(([value, lock]) => [value, lock.label]);
 }

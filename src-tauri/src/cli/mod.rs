@@ -43,7 +43,7 @@ use parse::*;
 
 /// Each command the window can invoke, and the CLI commands that do the same. Empty: it is about
 /// the window itself.
-pub const GUI_COMMANDS: [(&str, &[&str]); 32] = [
+pub const GUI_COMMANDS: [(&str, &[&str]); 34] = [
     ("status", &["status", "show", "target show", "condition show"]),
     ("save_session", &["new", "edit"]),
     ("delete_session", &["delete"]),
@@ -61,6 +61,8 @@ pub const GUI_COMMANDS: [(&str, &[&str]); 32] = [
     ("stop_session", &["stop"]),
     ("request_stop", &["stop"]),
     ("abort_stop", &["stop"]),
+    ("take_break", &["break"]),
+    ("end_break", &["break"]),
     ("unlock_all", &["unlock"]),
     ("unlock_with", &["unlock"]),
     ("set_unlock_way", &["unlock-way"]),
@@ -257,6 +259,21 @@ fn execute(command: Command) -> Result<(), Failure> {
             };
             send(Request::Stop { id: session.id.clone(), password, text: None })?;
             say!("Stopped “{}”.", session.name);
+        }
+        Command::Break { session, end } => {
+            let overview = overview()?;
+            let session = find(&overview.sessions, &session, "session", |b| (&b.id, &b.name))?;
+            if end {
+                send(Request::EndBreak { id: session.id.clone() })?;
+                say!("Ended the break of “{}”.", session.name);
+            } else {
+                send(Request::TakeBreak { id: session.id.clone() })?;
+                let length = match &session.allowance {
+                    Some(Terms::Breaks { length, .. }) => duration::parse(length).ok().flatten().map(|d| duration::countdown(d.as_secs())),
+                    _ => None,
+                };
+                say!("“{}” is on a break for {}.", session.name, length.unwrap_or_default());
+            }
         }
         Command::TargetShow { target: list, json } => {
             let overview = overview()?;

@@ -139,6 +139,18 @@ fn abort_stop(id: String, remote: State<Remote>) -> Result<(), String> {
     remote.command(Request::AbortStop { id })
 }
 
+/// Takes one of a running session's breaks now (`allowance::Terms::Breaks`).
+#[tauri::command]
+fn take_break(id: String, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::TakeBreak { id })
+}
+
+/// Ends the break going on early; it stays used up.
+#[tauri::command]
+fn end_break(id: String, remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::EndBreak { id })
+}
+
 /// Asks a webhook condition once, as the editor Test button does: what the web address answered and what
 /// the match makes of it. The request is made off the main thread.
 #[tauri::command]
@@ -357,6 +369,8 @@ pub fn run() {
             stop_session,
             request_stop,
             abort_stop,
+            take_break,
+            end_break,
             unlock_all,
             unlock_with,
             set_unlock_way,

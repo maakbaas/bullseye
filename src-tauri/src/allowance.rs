@@ -9,7 +9,10 @@
 //!   counted from the start of the session or from the clock (cycles from midnight, so a cycle that fits
 //!   a day evenly starts at the same times every day);
 //! - a **delayed start**: nothing is enforced until a while after the session starts, or from a
-//!   date and time, and everything is from then on. The session is running, and locked, all along.
+//!   date and time, and everything is from then on. The session is running, and locked, all along;
+//! - **breaks**: a number of breaks of a set length, taken by hand (never by themselves) while the
+//!   condition is active; during one nothing is enforced. They are given back by a reset like a
+//!   budget's; ending one early still uses it up.
 //!
 //! What is allowed is decided by the service (`session.rs`), never by the app: an item with budget left
 //! is taken out of what the app closes and handed to it as something to watch, and the app says what
@@ -99,6 +102,56 @@ pub enum Terms {
     Pomodoro { blocked: String, allowed: String, anchor: Anchor },
     /// Nothing is enforced until `value` says (`kind`); from then on everything is, for good.
     Delayed { kind: DelayKind, value: String },
+    /// `count` breaks of `length` (`10m`), taken by hand, given back by `reset` as a budget is.
+    Breaks {
+        count: u32,
+        length: String,
+        reset: Reset,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        every: String,
+        #[serde(default)]
+        anchor: Anchor,
+    },
+}
+
+/// The most breaks an allowance can have.
+pub const MAX_BREAKS: u32 = 100;
+
+/// A reset every so long, checked: its `every` read and, on the clock, fitting a day evenly; any other
+/// reset has no `every` and counts from the start.
+fn checked_reset(reset: Reset, every: &str, anchor: Anchor, what: &str) -> Result<(String, Anchor), String> {
+    if reset != Reset::Every {
+        return Ok((String::new(), Anchor::Start));
+    }
+    let period = seconds(every, &format!("how often {what}"))?;
+    if anchor == Anchor::Clock && !DAY.is_multiple_of(period) {
+        return Err(format!(
+            "On the clock {what} in a way that fits a day evenly, such as every hour or every day; every {} does not",
+            duration::period(period)
+        ));
+    }
+    Ok((every.to_string(), anchor))
+}
+
+/// Whether a reset comes no more often than before: never; or every so long, longer, counted from the
+/// same point (another one would bring the next reset nearer); a reset by condition only stays.
+fn rarer(old: (Reset, &str, Anchor), new: (Reset, &str, Anchor)) -> bool {
+    match (old.0, new.0) {
+        (Reset::Condition, _) | (_, Reset::Condition) => old.0 == new.0,
+        (_, Reset::Never) => true,
+        (Reset::Never, Reset::Every) => false,
+        (Reset::Every, Reset::Every) => old.2 == new.2 && secs(new.1) >= secs(old.1),
+    }
+}
+
+/// A reset in words: `never reset`, `reset every day, on the clock, from midnight`.
+fn reset_words(reset: Reset, every: &str, anchor: Anchor) -> String {
+    match (reset, anchor) {
+        (Reset::Never, _) => "never reset".to_string(),
+        (Reset::Condition, _) => "reset each time its condition turns on".to_string(),
+        (Reset::Every, Anchor::Start) => format!("reset every {}, from the start of the session", duration::period(secs(every))),
+        (Reset::Every, Anchor::Clock) => format!("reset every {}, on the clock, from midnight", duration::period(secs(every))),
+    }
 }
 
 /// A date and time already checked, as it is worded (`Tuesday 6 October 2026, 18:00`).
@@ -129,22 +182,18 @@ impl Terms {
             }
             Terms::Budget { allowed, scope, reset, every, anchor } => {
                 seconds(allowed, "how long is allowed")?;
-                if *reset != Reset::Every {
-                    return Ok(Terms::Budget {
-                        allowed: allowed.clone(),
-                        scope: *scope,
-                        reset: *reset,
-                        every: String::new(),
-                        anchor: Anchor::Start,
-                    });
+                let (every, anchor) = checked_reset(*reset, every, *anchor, "the time has to be given back")?;
+                return Ok(Terms::Budget { allowed: allowed.clone(), scope: *scope, reset: *reset, every, anchor });
+            }
+            Terms::Breaks { count, length, reset, every, anchor } => {
+                if !(1..=MAX_BREAKS).contains(count) {
+                    return Err(format!("Enter how many breaks, 1 to {MAX_BREAKS}"));
                 }
-                let period = seconds(every, "how often the time is given back")?;
-                if *anchor == Anchor::Clock && !DAY.is_multiple_of(period) {
-                    return Err(format!(
-                        "On the clock the time has to be given back in a way that fits a day evenly, such as every hour or every day; every {} does not",
-                        duration::period(period)
-                    ));
+                if seconds(length, "how long a break is")? > DAY {
+                    return Err("A break can be at most 24 hours".into());
                 }
+                let (every, anchor) = checked_reset(*reset, every, *anchor, "the breaks have to be given back")?;
+                return Ok(Terms::Breaks { count: *count, length: length.clone(), reset: *reset, every, anchor });
             }
             Terms::Pomodoro { blocked, allowed, anchor } => {
                 let cycle = seconds(blocked, "how long to block for")?.saturating_add(seconds(allowed, "how long to allow for")?);
@@ -183,15 +232,23 @@ impl Terms {
                 if secs(new_allowed) > secs(old_allowed) {
                     return Err("The session is locked, so its allowed time can get shorter but not longer".into());
                 }
-                // Rarer: never; or every so long, longer, counted from the same point (another one
-                // would bring the next reset nearer); a reset by condition only stays as it is.
-                let rarer = match (old_reset, new_reset) {
-                    (Reset::Condition, _) | (_, Reset::Condition) => old_reset == new_reset,
-                    (_, Reset::Never) => true,
-                    (Reset::Never, Reset::Every) => false,
-                    (Reset::Every, Reset::Every) => old_anchor == new_anchor && secs(new_every) >= secs(old_every),
-                };
-                if rarer {
+                if rarer((*old_reset, old_every, *old_anchor), (*new_reset, new_every, *new_anchor)) {
+                    Ok(())
+                } else {
+                    Err("The session is locked, so its allowance can be reset less often but not more often".into())
+                }
+            }
+            (
+                Terms::Breaks { count: old_count, length: old_length, reset: old_reset, every: old_every, anchor: old_anchor },
+                Terms::Breaks { count: new_count, length: new_length, reset: new_reset, every: new_every, anchor: new_anchor },
+            ) => {
+                if new_count > old_count {
+                    return Err("The session is locked, so it can have fewer breaks but not more".into());
+                }
+                if secs(new_length) > secs(old_length) {
+                    return Err("The session is locked, so its breaks can get shorter but not longer".into());
+                }
+                if rarer((*old_reset, old_every, *old_anchor), (*new_reset, new_every, *new_anchor)) {
                     Ok(())
                 } else {
                     Err("The session is locked, so its allowance can be reset less often but not more often".into())
@@ -226,12 +283,21 @@ impl Terms {
         }
     }
 
-    /// The kind, as its `type` is written in the file: `budget`, `pomodoro` or `delayed`.
+    /// The kind, as its `type` is written in the file: `budget`, `pomodoro`, `delayed` or `breaks`.
     pub fn kind(&self) -> &'static str {
         match self {
             Terms::Budget { .. } => "budget",
             Terms::Pomodoro { .. } => "pomodoro",
             Terms::Delayed { .. } => "delayed",
+            Terms::Breaks { .. } => "breaks",
+        }
+    }
+
+    /// A budget's or the breaks' reset, its `every` and what that counts from; `None` for the others.
+    fn reset(&self) -> Option<(Reset, &str, Anchor)> {
+        match self {
+            Terms::Budget { reset, every, anchor, .. } | Terms::Breaks { reset, every, anchor, .. } => Some((*reset, every, *anchor)),
+            Terms::Pomodoro { .. } | Terms::Delayed { .. } => None,
         }
     }
 
@@ -239,7 +305,7 @@ impl Terms {
     pub fn scope(&self) -> Option<Scope> {
         match self {
             Terms::Budget { scope, .. } => Some(*scope),
-            Terms::Pomodoro { .. } | Terms::Delayed { .. } => None,
+            Terms::Pomodoro { .. } | Terms::Delayed { .. } | Terms::Breaks { .. } => None,
         }
     }
 
@@ -252,17 +318,11 @@ impl Terms {
                     Scope::Total => "in total",
                     Scope::Each => "for each item",
                 };
-                let reset = match (reset, anchor) {
-                    (Reset::Never, _) => "never reset".to_string(),
-                    (Reset::Condition, _) => "reset each time its condition turns on".to_string(),
-                    (Reset::Every, Anchor::Start) => {
-                        format!("reset every {}, from the start of the session", duration::period(secs(every)))
-                    }
-                    (Reset::Every, Anchor::Clock) => {
-                        format!("reset every {}, on the clock, from midnight", duration::period(secs(every)))
-                    }
-                };
-                format!("{} {scope}, {reset}", duration::countdown(secs(allowed)))
+                format!("{} {scope}, {}", duration::countdown(secs(allowed)), reset_words(*reset, every, *anchor))
+            }
+            Terms::Breaks { count, length, reset, every, anchor } => {
+                let breaks = if *count == 1 { "break" } else { "breaks" };
+                format!("{count} {breaks} of {}, {}", duration::countdown(secs(length)), reset_words(*reset, every, *anchor))
             }
             Terms::Delayed { kind, value } => match kind {
                 DelayKind::After => format!("Nothing is enforced for the first {}", duration::countdown(secs(value))),
@@ -299,7 +359,7 @@ impl Terms {
 }
 
 /// Whether a locked session whose allowance is `old` may be set to the kind `to` (`none`, `budget`,
-/// `pomodoro` or `delayed`): taking it away, or the kind it has; asked before its terms are, so a
+/// `pomodoro`, `delayed` or `breaks`): taking it away, or the kind it has; asked before its terms are, so a
 /// change that cannot be made is not asked about (`tightened` then judges the terms).
 pub fn kind_allowed(old: Option<&Terms>, to: &str) -> Result<(), String> {
     match (old, to) {
@@ -338,11 +398,11 @@ pub fn key_text(key: &str) -> &str {
     key.split_once(':').map_or(key, |(_, text)| text)
 }
 
-/// Seconds into the period of a budget's reset every so long, and how long it is: from the session's
+/// Seconds into the period of a budget's (or the breaks') reset every so long, and how long it is: from the session's
 /// start (`started`, milliseconds since the Unix epoch) or from local midnight. `None` for the other
 /// resets, or if the time cannot be told.
 fn into_period(terms: &Terms, started: u64, zone: &Zone, now: SystemTime) -> Option<(u64, u64)> {
-    let Terms::Budget { reset: Reset::Every, every, anchor, .. } = terms else { return None };
+    let Some((Reset::Every, every, anchor)) = terms.reset() else { return None };
     let length = secs(every);
     if length == 0 {
         return None;
@@ -384,11 +444,29 @@ pub struct Run {
     pub was_active: bool,
     /// When the session started, milliseconds since the Unix epoch: what a cycle from the start counts from.
     pub started: u64,
+    /// Breaks: how many are taken in the current period, also the one going on.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub taken: u32,
+    /// Breaks: when the one going on ends (milliseconds since the Unix epoch); `None` when none is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub break_until: Option<u64>,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 impl Run {
     pub fn new(terms: Terms, now: SystemTime) -> Run {
-        Run { terms, used: BTreeMap::new(), period: None, was_active: false, started: state::to_unix(now).unwrap_or(0) }
+        Run {
+            terms,
+            used: BTreeMap::new(),
+            period: None,
+            was_active: false,
+            started: state::to_unix(now).unwrap_or(0),
+            taken: 0,
+            break_until: None,
+        }
     }
 
     /// Gives it other terms, as its allowance was edited: what is used stays, unless it was counted
@@ -413,19 +491,23 @@ impl Run {
     fn allowed_ms(&self) -> u64 {
         match &self.terms {
             Terms::Budget { allowed, .. } => secs(allowed).saturating_mul(1000),
-            Terms::Pomodoro { .. } | Terms::Delayed { .. } => 0,
+            Terms::Pomodoro { .. } | Terms::Delayed { .. } | Terms::Breaks { .. } => 0,
         }
     }
 
     /// Gives back what is used when its reset has come. `active`: whether the session's condition has
     /// it on now. To be called whenever time has passed, at least about once a second while the session runs.
     pub fn advance(&mut self, zone: &Zone, now: SystemTime, active: bool) {
-        let Terms::Budget { reset, .. } = &self.terms else { return };
+        // A break that is over is over (it stays taken).
+        if self.break_until.is_some_and(|until| state::to_unix(now).is_some_and(|now| now >= until)) {
+            self.break_until = None;
+        }
+        let Some((reset, ..)) = self.terms.reset() else { return };
         match reset {
             Reset::Never => {}
             Reset::Condition => {
                 if active && !self.was_active {
-                    self.used.clear();
+                    self.give_back();
                 }
                 self.was_active = active;
             }
@@ -434,7 +516,7 @@ impl Run {
                     // Not known yet (a new run, or new terms): this period is taken as it is.
                     Some(start) if self.period.is_none() => self.period = Some(start),
                     Some(start) if Some(start) != self.period => {
-                        self.used.clear();
+                        self.give_back();
                         self.period = Some(start);
                     }
                     _ => {}
@@ -443,10 +525,51 @@ impl Run {
         }
     }
 
+    /// A reset: the budget's time and the breaks given back (a break going on goes on).
+    fn give_back(&mut self) {
+        self.used.clear();
+        self.taken = 0;
+    }
+
+    /// Breaks: how many are left to take.
+    pub fn breaks_left(&self) -> Option<u32> {
+        match &self.terms {
+            Terms::Breaks { count, .. } => Some(count.saturating_sub(self.taken)),
+            _ => None,
+        }
+    }
+
+    /// Takes a break now: one of those left, for its length. Not while one is going on.
+    pub fn take_break(&mut self, now: SystemTime) -> Result<(), String> {
+        let Terms::Breaks { length, .. } = &self.terms else { return Err("This session's allowance has no breaks".into()) };
+        let now = state::to_unix(now).ok_or("Cannot tell the time")?;
+        if self.break_until.is_some_and(|until| now < until) {
+            return Err("A break is going on already".into());
+        }
+        if self.breaks_left() == Some(0) {
+            return Err("No breaks left".into());
+        }
+        self.taken += 1;
+        self.break_until = Some(now.saturating_add(secs(length).saturating_mul(1000)));
+        Ok(())
+    }
+
+    /// Ends the break going on, early: it stays used up.
+    pub fn end_break(&mut self, now: SystemTime) -> Result<(), String> {
+        let now = state::to_unix(now).ok_or("Cannot tell the time")?;
+        match self.break_until {
+            Some(until) if now < until => {
+                self.break_until = None;
+                Ok(())
+            }
+            _ => Err("No break is going on".into()),
+        }
+    }
+
     /// When the period of a reset every so long that `now` is in began, in seconds since the Unix
     /// epoch: worked out from the period's number, so it is the same at every moment of it.
     fn period_start(&self, zone: &Zone, now: SystemTime) -> Option<u64> {
-        let Terms::Budget { reset: Reset::Every, every, anchor, .. } = &self.terms else { return None };
+        let Some((Reset::Every, every, anchor)) = self.terms.reset() else { return None };
         let length = secs(every);
         if length == 0 {
             return None;
@@ -478,6 +601,11 @@ impl Run {
     /// Where a Pomodoro cycle stands, or how long a delayed start has to go (`None` once it has begun); `None` for a budget, or if the local time cannot be told (a
     /// cycle on the clock), when it is blocked.
     pub fn phase(&self, zone: &Zone, now: SystemTime) -> Option<Phase> {
+        // A break going on: allowed for what is left of it.
+        if let Terms::Breaks { .. } = &self.terms {
+            let left = self.break_until?.saturating_sub(state::to_unix(now)?).div_ceil(1000);
+            return (left > 0).then_some(Phase { allowed: true, change: left });
+        }
         if let Terms::Delayed { kind, value } = &self.terms {
             // Allowed until the start, for the time that is left; enforced after, or if the start
             // cannot be told.
@@ -509,7 +637,7 @@ impl Run {
         Some(begins.saturating_sub(state::to_unix(now)?).div_ceil(1000))
     }
 
-    /// Whether everything is allowed now, by a Pomodoro cycle or before a delayed start.
+    /// Whether everything is allowed now, by a Pomodoro cycle, before a delayed start or during a break.
     pub fn everything_allowed(&self, zone: &Zone, now: SystemTime) -> bool {
         self.phase(zone, now).is_some_and(|phase| phase.allowed)
     }
@@ -533,7 +661,7 @@ impl Run {
         Status {
             terms: self.terms.clone(),
             open: match &self.terms {
-                Terms::Pomodoro { .. } | Terms::Delayed { .. } => phase.is_some_and(|phase| phase.allowed),
+                Terms::Pomodoro { .. } | Terms::Delayed { .. } | Terms::Breaks { .. } => phase.is_some_and(|phase| phase.allowed),
                 Terms::Budget { .. } => total.is_none_or(|left| left > 0),
             },
             change: phase.map(|phase| phase.change),
@@ -543,6 +671,7 @@ impl Run {
             reset_in,
             reset_words: reset_in.map(words),
             items,
+            breaks_left: self.breaks_left(),
         }
     }
 }
@@ -573,6 +702,9 @@ pub struct Status {
     pub reset_words: Option<String>,
     /// A budget for each item: the items that have used some, and what they have left.
     pub items: Vec<ItemLeft>,
+    /// Breaks: how many are left to take (a break going on is `open`, for `change` seconds).
+    #[serde(default)]
+    pub breaks_left: Option<u32>,
 }
 
 #[cfg(test)]
@@ -630,6 +762,86 @@ mod tests {
         assert!(cycle.tightened_by(&pomodoro("50m", "10m", Anchor::Start)).is_ok());
         assert!(cycle.tightened_by(&pomodoro("50m", "5m", Anchor::Start)).is_err());
         assert!(cycle.tightened_by(&pomodoro("50m", "10m", Anchor::Clock)).is_err());
+    }
+
+    fn breaks(count: u32, length: &str, reset: Reset, every: &str, anchor: Anchor) -> Terms {
+        Terms::Breaks { count, length: length.into(), reset, every: every.into(), anchor }
+    }
+
+    #[test]
+    fn breaks_are_checked_described_and_only_get_stricter_while_locked() {
+        let daily = breaks(3, "10m", Reset::Every, "1d", Anchor::Clock);
+        assert_eq!(daily.clone().checked(), Ok(daily.clone()));
+        assert_eq!(daily.describe(), "3 breaks of 10 minutes, reset every day, on the clock, from midnight");
+        assert_eq!(breaks(1, "1h", Reset::Never, "", Anchor::Start).describe(), "1 break of 1 hour, never reset");
+        assert_eq!(daily.kind(), "breaks");
+        assert_eq!(daily.scope(), None);
+        // Another reset than every so long keeps no `every`.
+        assert_eq!(
+            breaks(3, "10m", Reset::Condition, "1d", Anchor::Clock).checked(),
+            Ok(breaks(3, "10m", Reset::Condition, "", Anchor::Start))
+        );
+        for (bad, why) in [
+            (breaks(0, "10m", Reset::Never, "", Anchor::Start), "how many breaks"),
+            (breaks(MAX_BREAKS + 1, "10m", Reset::Never, "", Anchor::Start), "how many breaks"),
+            (breaks(3, "", Reset::Never, "", Anchor::Start), "how long a break is"),
+            (breaks(3, "25h", Reset::Never, "", Anchor::Start), "at most 24 hours"),
+            (breaks(3, "10m", Reset::Every, "", Anchor::Start), "how often"),
+            (breaks(3, "10m", Reset::Every, "7h", Anchor::Clock), "fits a day evenly"),
+        ] {
+            let error = bad.clone().checked().unwrap_err();
+            assert!(error.contains(why), "{bad:?}: {error}");
+        }
+        // Locked: fewer, shorter, rarer; never more, longer or more often.
+        assert!(daily.tightened_by(&breaks(2, "5m", Reset::Every, "1d", Anchor::Clock)).is_ok());
+        let from_start = breaks(3, "10m", Reset::Every, "1d", Anchor::Start);
+        assert!(from_start.tightened_by(&breaks(3, "10m", Reset::Every, "2d", Anchor::Start)).is_ok());
+        assert!(daily.tightened_by(&breaks(3, "10m", Reset::Never, "", Anchor::Start)).is_ok());
+        assert!(daily.tightened_by(&breaks(4, "10m", Reset::Every, "1d", Anchor::Clock)).unwrap_err().contains("fewer breaks"));
+        assert!(daily.tightened_by(&breaks(3, "11m", Reset::Every, "1d", Anchor::Clock)).unwrap_err().contains("shorter"));
+        assert!(daily.tightened_by(&breaks(3, "10m", Reset::Every, "12h", Anchor::Clock)).unwrap_err().contains("less often"));
+        assert!(daily.tightened_by(&budget("10m", Scope::Total, Reset::Never)).unwrap_err().contains("type"));
+        assert!(kind_allowed(Some(&daily), "breaks").is_ok() && kind_allowed(Some(&daily), "budget").is_err());
+    }
+
+    #[test]
+    fn a_break_is_taken_ended_early_and_given_back() {
+        let zone = Zone::fixed(0);
+        let mut run = Run::new(breaks(2, "10m", Reset::Every, "1h", Anchor::Clock), at(0));
+        run.advance(&zone, at(1), true);
+        assert_eq!((run.breaks_left(), run.everything_allowed(&zone, at(1))), (Some(2), false));
+        assert_eq!(run.status(&zone, at(1)).breaks_left, Some(2));
+        // Taken: everything allowed for its length, one fewer left; not twice at once.
+        run.take_break(at(60)).unwrap();
+        assert_eq!(run.phase(&zone, at(120)), Some(Phase { allowed: true, change: 540 }));
+        let status = run.status(&zone, at(120));
+        assert!(status.open && status.change == Some(540) && status.breaks_left == Some(1));
+        assert_eq!(run.take_break(at(120)), Err("A break is going on already".into()));
+        // Ended early: over, and still used.
+        run.end_break(at(180)).unwrap();
+        assert!(!run.everything_allowed(&zone, at(181)) && run.breaks_left() == Some(1));
+        assert_eq!(run.end_break(at(181)), Err("No break is going on".into()));
+        // The last one runs out by itself.
+        run.take_break(at(200)).unwrap();
+        run.advance(&zone, at(200 + 600), true);
+        assert_eq!((run.break_until, run.breaks_left()), (None, Some(0)));
+        assert_eq!(run.take_break(at(900)), Err("No breaks left".into()));
+        // Kept as it is on disk: what is taken, and a break going on.
+        let kept: Run = serde_json::from_value(serde_json::to_value(&run).unwrap()).unwrap();
+        assert_eq!(kept, run);
+        // Given back on the hour.
+        run.advance(&zone, at(3600), true);
+        assert_eq!(run.breaks_left(), Some(2));
+        // By condition: each time it turns on.
+        let mut by_condition = Run::new(breaks(1, "5m", Reset::Condition, "", Anchor::Start), at(0));
+        by_condition.take_break(at(0)).unwrap();
+        by_condition.advance(&zone, at(400), false);
+        assert_eq!(by_condition.breaks_left(), Some(0));
+        by_condition.advance(&zone, at(500), true);
+        assert_eq!(by_condition.breaks_left(), Some(1));
+        // Other allowances have no breaks.
+        let mut budget_run = Run::new(budget("1m", Scope::Total, Reset::Never), at(0));
+        assert!(budget_run.take_break(at(0)).is_err() && budget_run.breaks_left().is_none());
     }
 
     #[test]

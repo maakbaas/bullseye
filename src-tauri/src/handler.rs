@@ -147,6 +147,8 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
         }
         Request::AskToStop { id } => (done(sessions.ask_to_stop(&id)), None),
         Request::AbortStop { id } => (done(sessions.abort_stop(&id)), None),
+        Request::TakeBreak { id } => (done(sessions.take_break(&id)), None),
+        Request::EndBreak { id } => (done(sessions.end_break(&id)), None),
         Request::Unlock => (done(unlock(context)), None),
         Request::UnlockWith { password, text } => (done(unlock_with(context, password.as_deref(), text.as_deref())), None),
         Request::SetUnlockWay { way } => (done(set_unlock_way(context, way)), None),
@@ -1282,6 +1284,39 @@ mod tests {
         assert_ne!(text(), first, "a new one for the next unlock");
         // Not a way to unlock: a delay, or a lock of no answer.
         assert!(failed(ask(Request::SetUnlockWay { way: Some(Lock::UntilRestart) })));
+    }
+
+    #[test]
+    fn breaks_are_taken_through_the_service_and_only_get_stricter_while_locked() {
+        use crate::allowance::{Anchor, Reset, Terms};
+        let context = context("breaks");
+        let ask = |request: Request| handle(&context, 0, request).0;
+        let breaks = |count, length: &str| Terms::Breaks {
+            count,
+            length: length.into(),
+            reset: Reset::Never,
+            every: String::new(),
+            anchor: Anchor::Start,
+        };
+        let mut one = timed("a", &["a.com"], "1h");
+        one.session.allowance = Some(breaks(2, "10m"));
+        assert_eq!(run(&context, one), Response::Done);
+        assert_eq!(ask(Request::TakeBreak { id: "a".into() }), Response::Done);
+        assert!(policies(&context).is_empty(), "nothing enforced during a break");
+        assert_eq!(ask(Request::EndBreak { id: "a".into() }), Response::Done);
+        assert!(!policies(&context).is_empty());
+        assert!(failed(ask(Request::EndBreak { id: "a".into() })));
+        // Locked: fewer or shorter breaks, or none; not more.
+        let with = |terms: Option<Terms>| {
+            let mut session = overview(&context).sessions[0].clone();
+            session.allowance = terms;
+            ask(Request::SaveSession { session })
+        };
+        assert!(failed(with(Some(breaks(3, "10m")))));
+        assert_eq!(with(Some(breaks(2, "5m"))), Response::Done);
+        assert_eq!(overview(&context).running[0].allowance.as_ref().and_then(|status| status.breaks_left), Some(1), "what is taken stays");
+        assert_eq!(with(None), Response::Done);
+        assert!(failed(ask(Request::TakeBreak { id: "a".into() })));
     }
 
     #[test]

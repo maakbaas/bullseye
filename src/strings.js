@@ -96,6 +96,7 @@ window.STRINGS = {
       budgetHeading: "Time budget of {name}",
       pomodoroHeading: "Pomodoro cycle of {name}",
       delayedHeading: "Delayed start of {name}",
+      breaksHeading: "Breaks of {name}",
       saveFailed: "Could not save {name}",
       rename: "Rename",
       renameHeading: "Rename {name}",
@@ -130,6 +131,7 @@ window.STRINGS = {
       from: "From {date}",
       budget: "Allowed for {time}",
       perItem: "{time} per item",
+      breaks: { one: "{n} break of {time}", other: "{n} breaks of {time}" },
       // Running; while the condition is off, nothing is blocked for it to allow.
       allowedFor: "Allowed for {change}",
       allowedIn: "Allowed in {change}",
@@ -141,6 +143,9 @@ window.STRINGS = {
       usedUp: "Used up",
       noneUsedUp: "None used up",
       itemsUsedUp: { one: "{n} item used up", other: "{n} items used up" },
+      // Breaks: how many are left (one going on: what is left of it, as `left`).
+      breaksLeft: { one: "{n} break left", other: "{n} breaks left" },
+      noneLeft: "None left",
       // The lock: the same words running or stopped where no time is in them.
       notLocked: "Not locked",
       restart: "Until restart",
@@ -197,6 +202,9 @@ window.STRINGS = {
     },
     startFailed: "Could not start {name}",
     stopFailed: "Could not stop {name}",
+    takeBreak: "Take a break",
+    endBreak: "End break",
+    breakFailed: "Could not change the break of {name}",
     // Stopping a session locked with a password.
     stopHeading: "Stop {name}?",
     stopBody: "Enter the password to stop this session",
@@ -543,6 +551,7 @@ window.STRINGS = {
       budget: "Time budget",
       pomodoro: "Pomodoro cycle",
       delayed: "Delayed start",
+      breaks: "Breaks",
     },
     // What a budget's reset every so long, or a Pomodoro cycle, is counted from.
     anchor: {
@@ -567,6 +576,15 @@ window.STRINGS = {
       everyHelper: "Counted from the point chosen below",
       anchorLabel: "Counted from",
       anchorHelper: "On the clock, every 1d comes at midnight and every 1h on the hour. It has to fit a day evenly",
+    },
+    // Breaks, taken by hand from the session's tile; given back as a budget's time is.
+    breaks: {
+      countLabel: "Number of breaks",
+      countHelper: "Taken with Take a break on the session, while its condition is active",
+      lengthLabel: "Each break lasts",
+      lengthHelper: "Nothing is enforced during a break. Ending one early still uses it up",
+      resetLabel: "Breaks are given back",
+      missing: "Enter a number from 1 to 100",
     },
     // A Pomodoro cycle: blocked first, then everything is allowed, over and over.
     cycle: {

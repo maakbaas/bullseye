@@ -556,7 +556,7 @@ function allowanceSection() {
     for (const key of keys) field.append(el("cds-dropdown-item", { value: key }, t(`${path}.${key}`)));
     return field;
   };
-  const type = dropdown(t("common.type"), t("allowance.typeHelper"), ["none", "budget", "pomodoro", "delayed"], "allowance.type");
+  const type = dropdown(t("common.type"), t("allowance.typeHelper"), ["none", "budget", "pomodoro", "delayed", "breaks"], "allowance.type");
   const text = (label, helper) => durationField({ label, helper });
   const allowed = text(t("allowance.budget.allowedLabel"), t("allowance.budget.allowedHelper"));
   const scope = dropdown(t("allowance.budget.scopeLabel"), t("allowance.budget.scopeHelper"), ["total", "each"], "allowance.budget");
@@ -568,7 +568,17 @@ function allowanceSection() {
   const blocked = text(t("allowance.cycle.blockedLabel"), t("allowance.cycle.helper"));
   const cycleAllowed = text(t("allowance.cycle.allowedLabel"), t("allowance.cycle.helper"));
   const anchor = dropdown(t("allowance.cycle.anchorLabel"), t("allowance.cycle.anchorHelper"), ["start", "clock"], "allowance.anchor");
-  const budgetPart = el("div", { class: "fields" }, allowed.node, scope, reset, everyPart);
+  const budgetPart = el("div", { class: "fields" }, allowed.node, scope);
+  // Breaks: how many (digits only, as a duration's number) and how long each.
+  const count = el("cds-text-input", { label: t("allowance.breaks.countLabel"), "helper-text": t("allowance.breaks.countHelper"), inputmode: "numeric" });
+  count.addEventListener("input", () => {
+    const digits = String(count.value).replace(/\D/g, "").slice(0, 3);
+    if (digits !== count.value) count.value = digits;
+  });
+  const length = text(t("allowance.breaks.lengthLabel"), t("allowance.breaks.lengthHelper"));
+  const breaksPart = el("div", { class: "fields" }, count, length.node);
+  // When a budget's time, or the breaks, are given back: the same picker for both.
+  const resetPart = el("div", { class: "fields" }, reset, everyPart);
   const cyclePart = el("div", { class: "fields" }, blocked.node, cycleAllowed.node, anchor);
   // Nothing enforced for a while after the start, or until a time (`timing.js`).
   const delayed = timingFields(["after", "from"], "delayed");
@@ -584,10 +594,9 @@ function allowanceSection() {
   const terms = () => {
     if (type.value === "pomodoro") return { type: "pomodoro", blocked: blocked.text(), allowed: cycleAllowed.text(), anchor: anchor.value };
     if (type.value === "delayed") return { type: "delayed", ...delayed.value() };
-    if (type.value === "budget") {
-      const often = reset.value === "every" ? { every: every.text(), anchor: resetAnchor.value } : {};
-      return { type: "budget", allowed: allowed.text(), scope: scope.value, reset: reset.value, ...often };
-    }
+    const often = reset.value === "every" ? { every: every.text(), anchor: resetAnchor.value } : {};
+    if (type.value === "budget") return { type: "budget", allowed: allowed.text(), scope: scope.value, reset: reset.value, ...often };
+    if (type.value === "breaks") return { type: "breaks", count: Number(count.value) || 0, length: length.text(), reset: reset.value, ...often };
     return null;
   };
   // The terms in words; or why they cannot be saved. Only the latest answer counts.
@@ -614,6 +623,9 @@ function allowanceSection() {
   };
   const show = () => {
     budgetPart.hidden = type.value !== "budget";
+    breaksPart.hidden = type.value !== "breaks";
+    resetPart.hidden = !["budget", "breaks"].includes(type.value);
+    reset.setAttribute("title-text", t(type.value === "breaks" ? "allowance.breaks.resetLabel" : "allowance.budget.resetLabel"));
     cyclePart.hidden = type.value !== "pomodoro";
     delayedPart.hidden = type.value !== "delayed";
     everyPart.hidden = reset.value !== "every";
@@ -622,7 +634,8 @@ function allowanceSection() {
       note.show(null);
     }
   };
-  for (const field of [allowed, blocked, cycleAllowed, every, delayed]) field.onChange(soon);
+  for (const field of [allowed, blocked, cycleAllowed, every, delayed, length]) field.onChange(soon);
+  count.addEventListener("input", soon);
   for (const field of [scope, anchor, resetAnchor]) field.addEventListener("cds-dropdown-selected", describe);
   reset.addEventListener("cds-dropdown-selected", () => {
     show();
@@ -633,19 +646,25 @@ function allowanceSection() {
     describe();
   });
   return {
-    nodes: [type, budgetPart, cyclePart, delayedPart, summary.node, note.node],
+    nodes: [type, budgetPart, breaksPart, resetPart, cyclePart, delayedPart, summary.node, note.node],
     // Both types' fields start from what the session has, else from an example of each.
     fill(allowance) {
       type.value = (allowance && allowance.type) || "none";
       const budget = allowance && allowance.type === "budget" ? allowance : {};
       const cycle = allowance && allowance.type === "pomodoro" ? allowance : {};
       const delay = allowance && allowance.type === "delayed" ? allowance : null;
+      const breaks = allowance && allowance.type === "breaks" ? allowance : {};
+      // The reset is the budget's or the breaks', whichever it has.
+      const given = allowance && allowance.reset ? allowance : {};
       delayed.fill(delay);
       allowed.set(budget.allowed || 0);
       scope.value = budget.scope || "total";
-      reset.value = budget.reset || "never";
-      every.set(budget.every || 0);
-      resetAnchor.value = budget.reset === "every" ? budget.anchor : "clock";
+      reset.value = given.reset || "never";
+      every.set(given.every || 0);
+      resetAnchor.value = given.reset === "every" ? given.anchor : "clock";
+      // A new one: three breaks of ten minutes.
+      count.value = String(breaks.count || 3);
+      length.set(breaks.length || "10m");
       // A new cycle is the classic one; the rest start empty.
       blocked.set(cycle.blocked || "25m");
       cycleAllowed.set(cycle.allowed || "5m");

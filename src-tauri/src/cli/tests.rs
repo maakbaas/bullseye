@@ -1086,6 +1086,65 @@ fn a_session_has_its_allowance_set_by_its_options() {
 }
 
 #[test]
+fn breaks_are_set_by_their_options_and_taken_with_break() {
+    let breaks = |count, length: &str, reset, every: &str, anchor| {
+        Some(Terms::Breaks { count, length: length.into(), reset, every: every.into(), anchor })
+    };
+    assert_eq!(
+        allowance_of(
+            &["new", "A", "--allowance", "breaks", "--breaks", "3", "--length", "10m", "--reset", "1d", "--anchor", "clock"],
+            None
+        ),
+        Ok(breaks(3, "10m", Reset::Every, "1d", Anchor::Clock))
+    );
+    // Without --allowance, --breaks or --length say it; edit keeps what is not named.
+    let old = breaks(3, "10m", Reset::Never, "", Anchor::Start);
+    assert_eq!(allowance_of(&["new", "A", "--breaks", "2", "--length", "5m"], None), Ok(breaks(2, "5m", Reset::Never, "", Anchor::Start)));
+    assert_eq!(allowance_of(&["edit", "Work", "--breaks", "1"], old.clone()), Ok(breaks(1, "10m", Reset::Never, "", Anchor::Start)));
+    assert_eq!(
+        allowance_of(&["edit", "Work", "--reset", "condition"], old.clone()),
+        Ok(breaks(3, "10m", Reset::Condition, "", Anchor::Start))
+    );
+    assert_eq!(
+        allowance_of(&["new", "A", "--allowance", "breaks", "--length", "5m"], None),
+        Err("Give --breaks, how many breaks, e.g. 3".into())
+    );
+    assert_eq!(
+        allowance_of(&["new", "A", "--allowance", "breaks", "--breaks", "2"], None),
+        Err("Give --length, how long a break is, e.g. 10m".into())
+    );
+    assert_eq!(
+        allowance_of(&["new", "A", "--breaks", "many", "--length", "5m"], None),
+        Err("--breaks takes a number of breaks, not “many”".into())
+    );
+    assert!(allowance_of(&["new", "A", "--breaks", "0", "--length", "5m"], None).unwrap_err().contains("how many breaks"));
+    assert_eq!(
+        allowance_of(&["new", "A", "--breaks", "2", "--allowed", "5m"], None),
+        Err("Breaks take only --breaks, --length, --reset and --anchor".into())
+    );
+    assert_eq!(
+        allowance_of(&["new", "A", "--allowance", "budget", "--breaks", "2"], None),
+        Err("--breaks and --length go with --allowance breaks".into())
+    );
+    assert_eq!(parse(&args(&["break", "Work"])), Ok(Command::Break { session: "Work".into(), end: false }));
+    assert_eq!(parse(&args(&["break", "Work", "--end"])), Ok(Command::Break { session: "Work".into(), end: true }));
+
+    // Through the service: taken, refused while one goes on, ended early, and none left.
+    serve("breaks");
+    ok(&["target", "new", "Social", "--sites", "youtube.com"]);
+    ok(&["new", "Pause", "--targets", "Social", "--allowance", "breaks", "--breaks", "1", "--length", "10m"]);
+    assert!(refused(&["break", "Pause"]).contains("not running"));
+    ok(&["start", "Pause"]);
+    assert!(ok(&["show", "Pause"]).contains("Allowance:   Breaks · 1 break left"), "{}", ok(&["show", "Pause"]));
+    assert_eq!(ok(&["break", "Pause"]), "“Pause” is on a break for 10 minutes.\n");
+    assert!(ok(&["show", "Pause"]).contains("Allowance:   Breaks · 10 minutes left"));
+    assert_eq!(refused(&["break", "Pause"]), "A break is going on already");
+    assert_eq!(ok(&["break", "Pause", "--end"]), "Ended the break of “Pause”.\n");
+    assert!(ok(&["show", "Pause"]).contains("Allowance:   Breaks · None left"));
+    assert_eq!(refused(&["break", "Pause"]), "No breaks left");
+}
+
+#[test]
 fn a_delayed_start_is_set_by_after_or_from() {
     let delayed = |kind, value: &str| Some(Terms::Delayed { kind, value: value.into() });
     assert_eq!(allowance_of(&["new", "A", "--after", "30m"], None), Ok(delayed(DelayKind::After, "30m")));

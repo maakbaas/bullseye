@@ -808,6 +808,33 @@ impl Sessions {
         Ok(())
     }
 
+    /// Takes one of the session's breaks now (`allowance::Run::take_break`): only while its condition
+    /// has it on, as nothing is enforced otherwise. Kept on disk, so a restart does not give it back.
+    pub fn take_break(&self, id: &str) -> Result<(), String> {
+        let mut inner = self.inner.locked();
+        self.expire(&mut inner);
+        let now = self.clock.now();
+        let session = inner.sessions.iter_mut().find(|b| b.id == id).ok_or("This session is not running")?;
+        if !session.in_condition(now) {
+            return Err("A break can only be taken while the session's condition is active".into());
+        }
+        session.advance(now);
+        session.allowance.as_mut().ok_or("This session has no breaks")?.take_break(now)?;
+        self.save_all(&mut inner);
+        Ok(())
+    }
+
+    /// Ends the break going on, early: it stays used up.
+    pub fn end_break(&self, id: &str) -> Result<(), String> {
+        let mut inner = self.inner.locked();
+        self.expire(&mut inner);
+        let now = self.clock.now();
+        let session = inner.sessions.iter_mut().find(|b| b.id == id).ok_or("This session is not running")?;
+        session.allowance.as_mut().ok_or("This session has no breaks")?.end_break(now)?;
+        self.save_all(&mut inner);
+        Ok(())
+    }
+
     /// Picks up the sessions left behind by an earlier run, so restarting Windows does not end them.
     /// A session whose time is up while the service was not running is not resumed.
     pub fn restore(&self) {
@@ -1750,6 +1777,45 @@ mod tests {
         start(&list, "b", sites(&["b.com"]), None).unwrap();
         list.reset();
         assert!(!list.is_running() && store.load().is_empty());
+    }
+
+    #[test]
+    fn a_break_is_taken_by_hand_while_the_condition_is_active_and_survives_a_restart() {
+        let list = sessions("breaks");
+        list.clock.at_least(monday(16 * 3600));
+        let terms = Terms::Breaks {
+            count: 1,
+            length: "10m".into(),
+            reset: allowance::Reset::Never,
+            every: String::new(),
+            anchor: allowance::Anchor::Start,
+        };
+        let parts = vec![part(sites(&["a.com"]), Actions::default())];
+        let office = weekly("mon-fri 08:00-17:00");
+        list.start_with("a", "A", parts, office, Some(terms), StartLock::For(Duration::from_secs(2 * 3600))).unwrap();
+        start(&list, "plain", sites(&["b.com"]), None).unwrap();
+        assert!(list.active().unwrap().blocks_page("https://a.com/"));
+        // Only a session with breaks takes one; one that does not run takes nothing.
+        assert_eq!(list.take_break("plain"), Err("This session has no breaks".into()));
+        assert_eq!(list.take_break("gone"), Err("This session is not running".into()));
+        assert_eq!(list.end_break("plain"), Err("This session has no breaks".into()));
+        assert_eq!(list.end_break("gone"), Err("This session is not running".into()));
+        // Taken, locked as it is: nothing of it is enforced until it ends.
+        list.take_break("a").unwrap();
+        assert!(!list.active().unwrap().blocks_page("https://a.com/") && list.active().unwrap().blocks_page("https://b.com/"));
+        assert_eq!(running(&list, "a").allowance.and_then(|status| status.breaks_left), Some(0));
+        // A restart keeps the break going and the one taken.
+        let resumed = reopened("breaks");
+        resumed.clock.at_least(monday(16 * 3600 + 60));
+        resumed.restore();
+        assert!(!resumed.active().unwrap().blocks_page("https://a.com/"));
+        // Ended early: enforced again, and still used up.
+        resumed.end_break("a").unwrap();
+        assert!(resumed.active().unwrap().blocks_page("https://a.com/"));
+        assert_eq!(resumed.take_break("a"), Err("No breaks left".into()));
+        // Outside its condition there is nothing to take a break from.
+        resumed.clock.at_least(monday(17 * 3600));
+        assert_eq!(resumed.take_break("a"), Err("A break can only be taken while the session's condition is active".into()));
     }
 
     fn budget(allowed: &str, scope: Scope) -> Terms {

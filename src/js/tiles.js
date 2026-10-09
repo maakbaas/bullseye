@@ -220,9 +220,12 @@ function addSessionControls(parts, id) {
   const toggle = el("cds-button", { kind: "primary", size: "sm" });
   // A delay lock's wait can be ended while it counts down or waits to be used.
   const abort = el("cds-button", { kind: "tertiary", size: "sm", hidden: true }, t("common.keepLocked"), carbonIcon("locked", "icon"));
-  parts.actions.append(abort, toggle);
+  // Breaks are taken by hand: Take a break, and End break while one goes on.
+  const pause = el("cds-button", { kind: "tertiary", size: "sm", hidden: true });
+  parts.actions.append(pause, abort, toggle);
+  pause.addEventListener("click", () => takeOrEndBreak(id));
   // The Lock row's menu chooses the method, or the settings of the one it has (`fields.js`).
-  Object.assign(parts, { toggle, abort, setLock: (method) => setLock(id, method) });
+  Object.assign(parts, { toggle, abort, pause, setLock: (method) => setLock(id, method) });
   abort.addEventListener("click", () => abortStop(id));
   toggle.addEventListener("click", () => startOrStop(id));
 }
@@ -338,6 +341,27 @@ function renderSessionControls(parts, session) {
   }
   // A session locked with a password stops with it, one locked with a text by typing it (asked for on Stop).
   parts.toggle.disabled = busy || (running && running.locked && !asking && !running.password && !running.lock_text) || !reachable;
+  // Breaks: one to take while the condition is active and one is left; or the one going on, to end.
+  const breaks = running && running.allowance && running.allowance.terms.type === "breaks" ? running.allowance : null;
+  parts.pause.hidden = !breaks;
+  if (breaks) {
+    const label = t(breaks.open ? "sessions.endBreak" : "sessions.takeBreak");
+    if (parts.pause.textContent.trim() !== label) parts.pause.replaceChildren(label, carbonIcon(breaks.open ? "play" : "cafe", "icon"));
+    parts.pause.disabled = !reachable || (!breaks.open && (!running.enforcing || !breaks.breaks_left));
+  }
+}
+
+// Takes one of a session's breaks, or ends the one going on (it stays used up).
+async function takeOrEndBreak(id) {
+  const session = overview.sessions.find((b) => b.id === id);
+  const on = runningOf(id)?.allowance?.open;
+  try {
+    await invoke(on ? "end_break" : "take_break", { id });
+    notify("list-notices");
+  } catch (e) {
+    notify("list-notices", "error", t("sessions.breakFailed", { name: quoted(session.name) }), String(e));
+  }
+  await refresh();
 }
 
 // The dialog of a text lock: the text, and an input to type it into. Pasting and dropping text

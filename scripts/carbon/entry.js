@@ -78,6 +78,7 @@ import textFont16 from '@carbon/icons/es/text--font/16.js';
 import apps16 from '@carbon/icons/es/apps/16.js';
 import list16 from '@carbon/icons/es/list/16.js';
 import webhook16 from '@carbon/icons/es/webhook/16.js';
+import cafe16 from '@carbon/icons/es/cafe/16.js';
 
 const icons = {
   add: add16,
@@ -106,6 +107,8 @@ const icons = {
   time: time16,
   // A session's Allowance row.
   'pause-16': pause16,
+  // Take a break on a session with breaks.
+  cafe: cafe16,
   'trash-can': trashCan16,
   unlocked: unlocked16,
   // A target tile's rows, one per part of the target editor.
