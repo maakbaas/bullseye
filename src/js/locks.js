@@ -46,7 +46,7 @@ const LOCKS = {
         },
       };
     },
-    describe: (lock, short) => (lock.kind === "until" ? t("locks.timed.describeUntil", { when: untilText(lock.value, short) }) : t("locks.timed.describeFor", { duration: durationText(lock.value, short) })),
+    describe: (lock) => (lock.kind === "until" ? t("locks.timed.describeUntil", { when: untilText(lock.value) }) : t("locks.timed.describeFor", { duration: durationText(lock.value) })),
     confirm: async (session) => {
       const { kind, value } = session.lock;
       if (kind === "until") {
@@ -118,7 +118,7 @@ const LOCKS = {
         },
       };
     },
-    describe: (lock, short) => t("locks.delay.describe", { delay: durationText(lock.delay, short) }),
+    describe: (lock) => t("locks.delay.describe", { delay: durationText(lock.delay) }),
     confirm: async (session) => {
       const delay = await invoke("describe_duration", { text: session.lock.delay || "" }).then((words) => words.words, () => session.lock.delay);
       const values = { name: quoted(session.name), delay };

@@ -104,31 +104,37 @@ window.STRINGS = {
     // Under a session's Condition, Allowance and Lock rows, in a few words: what is happening now while
     // it runs. {change}, {left}, {reset}, {delay}: times in one unit, rounded; {n}: a number of items.
     now: {
-      active: "Active now",
+      active: "Active",
       activeFor: "Active for {change}",
-      inactive: "Inactive now",
+      inactive: "Inactive",
       inactiveFor: "Inactive for {change}",
-      allowed: "Allowed now",
       allowedFor: "Allowed for {change}",
-      blocked: "Blocked now",
+      blocked: "Blocked",
       blockedFor: "Allowed in {change}",
-      delayed: "Not started yet",
       delayedFor: "Starts in {change}",
       begun: "Started",
+      // A budget for the whole session ({reset}: when it is given back), or for each item.
       left: "{left} left",
-      leftReset: "{left} left, refilled in {reset}",
+      back: "Back in {reset}",
       usedUp: "Used up",
-      usedUpReset: "Used up, back in {reset}",
-      // A budget for each item.
-      itemsLeft: "Time left for every item",
       itemsUsedUp: { one: "1 item used up", other: "{n} items used up" },
+      // The Lock row says it is the lock: running, a timed one's time left, a delay's wait, a
+      // condition's state; stopped, a timed one's time ({date}: 18:00 today, October 6 otherwise), a
+      // delay, a condition (its name, a link).
+      timeLeft: "{left} left",
       lockedFor: "Locked for {change}",
-      locked: "Locked now",
-      unlocked: "Unlocked now",
+      locked: "Locked",
+      unlocked: "Unlocked",
       unlockedFor: "Unlocked for {change}",
       stopTakes: "Stopping takes {delay}",
       stopIn: "Can be stopped in {left}",
       stopReady: "Can be stopped now",
+      for: "For {time}",
+      until: "Until {date}",
+      waits: "Until stopping has waited {delay}",
+      during: "During {condition}",
+      whileUnplugged: "While {condition} is unplugged",
+      whileTrue: "While {condition} is true",
     },
     // A session's tile: its Targets row with none, and its Condition row for a running session whose
     // condition was deleted (it keeps the rule it started with). {drive}: a flash drive's name, quoted.
