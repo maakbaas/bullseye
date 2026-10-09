@@ -87,7 +87,7 @@ main { padding-block: var(--cds-spacing-06); }
 /* A session's Start / Stop (and Keep locked), on the right under its rows. */
 .session-tile .actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--cds-spacing-04); margin-block-start: var(--cds-spacing-03); }
 /* The dropdown of the other way to unlock, in Settings: as wide as the lock dropdown on a tile. */
-.way-method { inline-size: 12rem; }
+.way-method { inline-size: 11rem; }
 /* A dropdown's list shows all its items where there is room (Carbon stops it at five and a half and scrolls),
    through the list's own part; where there is not, it still scrolls. */
 cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
@@ -174,7 +174,8 @@ cds-link[inline] { display: inline-flex; }
 /* Its parts sit at the top of the row, so a dropdown stays on the first line when the status beside it wraps. */
 .tile-rows .row-text { display: grid; grid-template-columns: minmax(0, 1fr); justify-items: start; align-items: start; row-gap: var(--cds-spacing-03); overflow-wrap: anywhere; }
 /* A dropdown sits in the line of the text, without making the row taller than the text would (20px: its 32px less 6px above and below). */
-.tile-rows .row-text cds-dropdown { margin-block: -0.375rem; inline-size: 16rem; max-inline-size: 100%; }
+/* As wide as its widest choice ("Pomodoro cycle", 11rem), so the column it makes is as wide as what is in it. */
+.tile-rows .row-text cds-dropdown { margin-block: -0.375rem; inline-size: 11rem; max-inline-size: 100%; }
 /* Text in the column starts where the letters in an inline dropdown do (its left padding, 1rem), so they line up from row to row. */
 .tile-rows .row-value { padding-inline-start: var(--cds-spacing-05); }
 .tile-rows .row-value:empty { display: none; }
@@ -185,7 +186,8 @@ cds-link[inline] { display: inline-flex; }
 .tile-rows .row-now { color: var(--cds-text-helper); padding-inline-start: var(--cds-spacing-05); }
 .tile-rows .row-now:empty { display: none; }
 @media (min-width: 48rem) {
-  .tile-rows .row-text:has(> .row-now:not(:empty)) { grid-template-columns: 16rem minmax(0, 1fr); column-gap: var(--cds-spacing-05); }
+  /* After the widest dropdown's chevron about as much room as after the widest label (some 45px). */
+  .tile-rows .row-text:has(> .row-now:not(:empty)) { grid-template-columns: 11rem minmax(0, 1fr); column-gap: var(--cds-spacing-06); }
   .tile-rows .row-text > .row-now { grid-row: 1; grid-column: 2; line-height: 1.25rem; padding-inline-start: 0; }
 }
 /* The first line of a row is one text line (1.25rem), so a row is as high as its button (2.5rem): Carbon pads the content by what a line of that height leaves. */
