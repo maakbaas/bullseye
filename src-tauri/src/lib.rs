@@ -386,6 +386,7 @@ pub fn run() {
         .setup(|app| {
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
+                .tooltip(strings::t("app.name", &[]))
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click { button_state: MouseButtonState::Up, .. } = event {
                         ui::show_in_background(tray.app_handle().clone());
