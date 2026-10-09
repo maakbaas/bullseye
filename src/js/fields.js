@@ -114,7 +114,10 @@ function addRows(parts, id) {
           },
         });
         if (next && locked && changed(next, current(id))) await saveStricter(current(id), next);
-        else if (next) await refresh();
+        else if (next) {
+          notify("list-notices");
+          await refresh();
+        }
       });
     } else {
       select = el("cds-dropdown", { type: "inline", size: "sm", "aria-label": t(`sessions.fields.${key}`) });
@@ -182,8 +185,9 @@ function renderRows(parts, session, lines) {
         select.replaceChildren(...options.map(([choice, name]) => el("cds-dropdown-item", { value: choice }, name)));
         select.value = "";
       }
+      // What is being chosen stays shown while its dialog is open (`choosing`).
       const chosen = chosenOf(key, session);
-      if (select.value !== chosen) select.value = chosen;
+      if (!parts.choosing && select.value !== chosen) select.value = chosen;
       // Fixed while locked; the allowance only stricter, so none stays none (`allowance::kind_allowed`).
       select.disabled = locked && (key !== "unless" || !session.allowance);
     }
@@ -323,13 +327,16 @@ async function newSession() {
     action: t("common.save"),
     kind: "primary",
     fields: [name],
+    // Saved here, so a refusal is said in the dialog, which stays open.
     read: async () => {
       if (!name.value.trim()) return invalid(name, t("sessions.nameMissing")) && null;
-      return { id: newId(), name: name.value.trim(), targets: [], condition: null, allowance: null, lock: { method: "none" } };
+      const session = { id: newId(), name: name.value.trim(), targets: [], condition: null, allowance: null, lock: { method: "none" } };
+      await invoke("save_session", { session });
+      return session;
     },
   });
   if (!made) return;
-  await save(made, {});
+  await refresh();
   location.hash = editHref("sessions", made.id);
 }
 
@@ -342,9 +349,14 @@ async function renameSession(id) {
     action: t("common.save"),
     kind: "primary",
     fields: [name],
-    read: async () => (name.value.trim() ? name.value.trim() : invalid(name, t("sessions.nameMissing")) && null),
+    // Saved here, as a new one is.
+    read: async () => {
+      if (!name.value.trim()) return invalid(name, t("sessions.nameMissing")) && null;
+      await invoke("save_session", { session: { ...session, name: name.value.trim() } });
+      return true;
+    },
   });
-  if (given) await save(session, { name: given });
+  if (given) await refresh();
 }
 
 export { addRows, renderRows, newSession, renameSession };

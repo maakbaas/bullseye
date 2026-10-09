@@ -25,6 +25,7 @@ use crate::datetime::DateTime;
 use crate::duration;
 use crate::lists::{Entries, Lists};
 use crate::localtime::Zone;
+use crate::lock;
 use crate::state::{self, Actions, Store, Uses};
 use crate::sync::LockExt;
 use crate::unlock;
@@ -98,7 +99,7 @@ impl Enforced {
     /// allowed blocks every site but that one. Each session's allowed sites are exceptions to its
     /// own target only.
     pub fn blocks_site(&self, url: &str) -> bool {
-        self.lists.sites.is_blocked(url) && !self.lists.allowed.is_blocked(url)
+        self.lists.blocks_site(url)
     }
 }
 
@@ -156,30 +157,27 @@ impl Active {
         false
     }
 
-    /// Whether a page is on a target and not allowed (`Enforced::blocks_site`), for the free items.
-    fn site_in_use(lists: &Lists, url: &str) -> bool {
-        lists.sites.is_blocked(url) && !lists.allowed.is_blocked(url)
-    }
-
     /// Whether a page shown in a browser is to be closed, however it shows (a tab, a split view, an
     /// app window): by any session whose target has its site.
     pub fn blocks_page(&self, url: &str) -> bool {
-        self.judge(|b| b.actions.uses(Uses::Sites), |b| b.blocks_site(url), |lists| Active::site_in_use(lists, url))
+        self.judge(|b| b.actions.uses(Uses::Sites), |b| b.blocks_site(url), |lists| lists.blocks_site(url))
     }
 
     /// Whether any session has sites to look for, so the browsers are worth looking at: to close, or
     /// to see in use for an allowance.
     pub fn watches_sites(&self) -> bool {
-        self.sessions
-            .iter()
-            .any(|b| b.actions.uses(Uses::Sites) && (!b.lists.sites.is_empty() || b.free.iter().any(|f| !f.lists.sites.is_empty())))
+        self.watches(Uses::Sites)
+    }
+
+    /// Whether any session acts on this kind of list and has entries in it, to act on or (let through
+    /// by an allowance) to see in use.
+    fn watches(&self, list: Uses) -> bool {
+        self.sessions.iter().any(|b| b.actions.uses(list) && (b.lists.has(list) || b.free.iter().any(|f| f.lists.has(list))))
     }
 
     /// Whether any session closes programs and has some to close (or to see in use).
     pub fn closes_programs(&self) -> bool {
-        self.sessions.iter().any(|b| {
-            b.actions.uses(Uses::Programs) && (!b.lists.programs.is_empty() || b.free.iter().any(|f| !f.lists.programs.is_empty()))
-        })
+        self.watches(Uses::Programs)
     }
 
     /// Whether a program (by file name) is closed by any session that closes programs.
@@ -193,9 +191,7 @@ impl Active {
 
     /// Whether any session closes Store apps and has some to close (or to see in use).
     pub fn closes_store_apps(&self) -> bool {
-        self.sessions.iter().any(|b| {
-            b.actions.uses(Uses::StoreApps) && (!b.lists.store_apps.is_empty() || b.free.iter().any(|f| !f.lists.store_apps.is_empty()))
-        })
+        self.watches(Uses::StoreApps)
     }
 
     /// Whether a Store app (by package family name) is closed by any session that closes them. Never
@@ -212,9 +208,7 @@ impl Active {
     /// Whether any session closes or minimizes windows by their title and has some titles (or to see
     /// in use).
     pub fn watches_titles(&self) -> bool {
-        self.sessions
-            .iter()
-            .any(|b| b.actions.uses(Uses::Titles) && (!b.lists.titles.is_empty() || b.free.iter().any(|f| !f.lists.titles.is_empty())))
+        self.watches(Uses::Titles)
     }
 
     /// Whether any session minimizes windows by their title, so any window coming up is worth a look
@@ -407,9 +401,10 @@ impl Session {
         }
     }
 
-    /// Whether it has something to keep on disk besides its lock: a budget that is being used up.
+    /// Whether it has something to keep on disk besides its lock: a budget that is being used up, or
+    /// breaks that a reset gives back.
     fn keeps_count(&self) -> bool {
-        self.allowance.as_ref().is_some_and(|run| run.scope().is_some())
+        self.allowance.as_ref().is_some_and(|run| run.scope().is_some() || run.breaks_left().is_some())
     }
 
     /// What of it the app is to enforce at `now`, by its allowance: all of it with none; nothing while a
@@ -596,7 +591,7 @@ pub struct Running {
     pub condition_change: Option<u64>,
     /// Seconds until its lock condition locks or frees it, if it has one that ever does.
     pub lock_change: Option<u64>,
-    /// The three times above in words (`duration::countdown`), so the window and the CLI show them the
+    /// The three times above in words (`duration::left`), so the window and the CLI show them the
     /// same way without a formatter of their own.
     pub remaining_words: Option<String>,
     pub condition_change_words: Option<String>,
@@ -996,15 +991,14 @@ impl Sessions {
         self.save_all(&mut inner);
     }
 
-    /// Whether `password` is the password of the running session `id`'s password lock.
     /// Whether `text` is exactly the text of the running session `id`'s text lock (line breaks
     /// whichever way they were typed).
     pub fn text_matches(&self, id: &str, text: &str) -> bool {
         let inner = self.inner.locked();
-        let same = |a: &str, b: &str| a.replace("\r\n", "\n") == b.replace("\r\n", "\n");
-        inner.sessions.iter().find(|b| b.id == id).and_then(|b| b.lock_text()).is_some_and(|expected| same(expected, text))
+        inner.sessions.iter().find(|b| b.id == id).and_then(|b| b.lock_text()).is_some_and(|expected| lock::same_text(expected, text))
     }
 
+    /// Whether `password` is the password of the running session `id`'s password lock.
     pub fn password_matches(&self, id: &str, password: &str) -> bool {
         let inner = self.inner.locked();
         let hash = inner.sessions.iter().find(|b| b.id == id).and_then(|b| b.password_hash().map(str::to_string));

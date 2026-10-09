@@ -513,7 +513,6 @@ fn execute(command: Command) -> Result<(), Failure> {
                 say!("Unlocked: every session has ended.");
             } else if status.remaining == Some(0) || status.way_open {
                 send(Request::Unlock)?;
-                // The service tells the app to quit at its next policy request, within a second.
                 say!("Unlocked: every session has ended.");
             } else if let Some(left) = status.remaining_words {
                 say!("Unlocking is not ready yet: {left} to go. Run `bullseye unlock` again then, or `bullseye unlock --abort` to stop.");

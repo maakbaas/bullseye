@@ -4,7 +4,7 @@
 
 import { durationText, el, invalid, invoke, overview, quoted, editHref, ref, t, tn, untilText, wordingOf } from "./core.js";
 import { timingFields } from "./timing.js";
-import { durationField } from "./duration.js";
+import { durationField, numberField } from "./duration.js";
 
 // A condition lock in words, the condition's name (`name`, a link to it) worded as the condition is:
 // "Locks during …", "Locks while … is unplugged" for a drive, "Locks while … is true" for a combination
@@ -152,21 +152,15 @@ const LOCKS = {
     label: t("locks.random_text.label"),
     // A number of characters: the service draws the text itself when the session starts (or, as the
     // other way to unlock, when it is set and after each unlock), so it cannot be learnt before.
-    // Digits only, as a duration's number (`duration.js`).
     form: (session) => {
-      const count = el("cds-text-input", { label: t("locks.random_text.field"), "helper-text": t("locks.random_text.helper"), inputmode: "numeric" });
-      count.value = String(settingsOf(session, "random_text").length || 30);
+      const count = numberField({ label: t("locks.random_text.field"), helper: t("locks.random_text.helper"), length: 4, value: String(settingsOf(session, "random_text").length || 30) });
       // How long that is, as a text of that length (drawn here, only to be looked at).
       const example = el("cds-textarea", { label: t("locks.random_text.example"), readonly: true, rows: 4 });
       const show = () => {
         const length = Math.min(Number(count.value) || 0, 1000);
         example.value = Array.from(crypto.getRandomValues(new Uint8Array(length)), (byte) => CHARACTERS[byte % 36]).join("");
       };
-      count.addEventListener("input", () => {
-        const digits = String(count.value).replace(/\D/g, "").slice(0, 4);
-        if (digits !== count.value) count.value = digits;
-        show();
-      });
+      count.addEventListener("input", show);
       show();
       return {
         fields: [count, example],

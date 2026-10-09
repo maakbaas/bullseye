@@ -7,7 +7,7 @@
     <title>Bullseye</title>
     <!-- Every text the window shows (src/strings.js): edit the copy there. -->
     <script src="strings.js"></script>
-    <!-- The Carbon design system, vendored (scripts/vendor-carbon.mjs): IBM Plex, the themes and
+    <!-- The Carbon design system, vendored (`npm run vendor`, from scripts/carbon/entry.js): IBM Plex, the themes and
          tokens, and the cds-* web components. Nothing is loaded from the network. -->
     <link rel="stylesheet" href="vendor/fonts.css" />
     <link rel="stylesheet" href="vendor/carbon.css" />
@@ -93,7 +93,7 @@
         </cds-tile>
       </div>
 
-      <!-- Making or changing a session, a target or a condition: the kind's form goes in #form. -->
+      <!-- Making or changing a target or a condition: the kind's form goes in #form. -->
       <div id="view-editor" class="cds--css-grid" hidden>
         <div class="cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16">
           <div class="notices" id="editor-notices"></div>
@@ -166,7 +166,7 @@
         <cds-modal-body-content id="confirm-body"></cds-modal-body-content>
         <!-- Why a form was not accepted (a refusal of the service), in the dialog it was asked in. -->
         <cds-inline-notification id="confirm-error" kind="error" low-contrast hide-close-button hidden></cds-inline-notification>
-        <!-- A form's fields: a lock's settings, or the password that stops a session. -->
+        <!-- A form's fields: a lock's or allowance's settings, a list to choose from, or a text or password to stop with. -->
         <div id="confirm-fields" class="modal-fields" hidden></div>
       </cds-modal-body>
       <cds-modal-footer>

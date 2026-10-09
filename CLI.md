@@ -33,7 +33,7 @@ It sends the same requests to the Bullseye service as the window, so the service
 | `bullseye target delete <target> [--force]` | **Delete** a target |
 | `bullseye target duplicate <target>` | **Duplicate** a target |
 | `bullseye condition show <condition>` | a condition's tile and its editor |
-| `bullseye condition new <name> (--times <times> \| --drive <drive> \| --webhook <url> [webhook options] \| --any <conditions> \| --all <conditions>)` | **New condition**, of the type Weekly schedule, Flash drive or Combination, then **Save** |
+| `bullseye condition new <name> (--times <times> \| --drive <drive> \| --webhook <url> [webhook options] \| --any <conditions> \| --all <conditions>)` | **New condition**, of the type Weekly schedule, Flash drive, Webhook or Combination, then **Save** |
 | `bullseye condition edit <condition> [--name <name>] [--times <times> \| --drive <drive> \| --webhook <url> [webhook options] \| --any <conditions> \| --all <conditions>]` | **Edit** a condition, then **Save** |
 | `bullseye condition add <condition> --conditions <conditions>` | ticking more conditions in a combination's editor, then **Save** |
 | `bullseye condition remove <condition> --conditions <conditions>` | unticking conditions in a combination's editor, then **Save** |
@@ -92,7 +92,7 @@ With `edit`, an option replaces only what it names: `--targets` replaces all its
 
 ### Allowances: `--allowance` and its options
 
-An allowance lets a session go quiet for a while. A session has at most one, set on the session itself with the options of `new` and `edit` (as in the window, where it is the Allowance row on the session's tile). Three kinds:
+An allowance lets a session go quiet for a while. A session has at most one, set on the session itself with the options of `new` and `edit` (as in the window, where it is the Allowance row on the session's tile). Four kinds:
 
 - A **budget** is a time of use. It is for the session as a whole (`--scope total`) or for each of its items on its own (`--scope each`: each site, program, Store app and window title in its targets). While time is left, what is covered is not closed; it is only watched, and the time it is in use is counted. When the time is used up it is closed again, until the budget is reset.
 - A **Pomodoro** is a fixed cycle: blocked for `--blocked`, then everything allowed for `--allowed`, over and over. While it allows, the session enforces nothing, Obsidian's web viewer included.
@@ -179,10 +179,10 @@ Sessions:
   Work     Inactive · Inactive for 15 hours · Never paused · Unlocked for 15 hours
   Evening  Running · locked · Active · Never paused · 62 minutes left
 Targets:
-  Social media  Used by Work
+  Social media  Used by Work and Evening
   Games         Used by Work and Evening
 Conditions:
-  Work hours  Active Mon-Fri 08:00-17:00 · Used by Work and Evening
+  Work hours  Active Mon-Fri 08:00-17:00 · Used by Work
 
 > bullseye show Evening
 Name:        Evening
@@ -238,7 +238,7 @@ Ready, you can still `--abort` instead. Unlocking uses the request up: the next 
 
 ### `unlock-delay`
 
-Shows how long unlocking takes, or sets it: `0` (none, the default) to `24h`, typed like a duration (`30m`, `2h 30m`). A longer delay can be set at any time; a shorter one only once unlocking is ready or while no session is locked, because setting it low would be a way around the wait.
+Shows how long unlocking takes, or sets it: `0` (none, the default) to `24h`, typed like a duration (`30m`, `"2h 30m"`: quoted, as it is one word). A longer delay can be set at any time; a shorter one only once unlocking is ready or while no session is locked, because setting it low would be a way around the wait.
 
 ```powershell
 bullseye unlock-delay

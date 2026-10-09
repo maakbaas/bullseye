@@ -54,7 +54,9 @@ function renderSettings() {
         ? t(remaining === 0 ? "settings.unlockReady" : "settings.unlockReadyWay")
         : t("settings.unlockWait", { left });
   $("unlock").hidden = !locked;
-  $("unlock").replaceChildren(t(free || ready ? "settings.unlock" : "settings.request"), carbonIcon(free || ready ? "unlocked" : "time", "icon"));
+  // Redrawn only when it changes: a new label under the pointer can swallow a click.
+  const unlockLabel = t(free || ready ? "settings.unlock" : "settings.request");
+  if ($("unlock").textContent.trim() !== unlockLabel) $("unlock").replaceChildren(unlockLabel, carbonIcon(free || ready ? "unlocked" : "time", "icon"));
   // Counting down: nothing to press but Abort.
   $("unlock").disabled = requested && !ready;
   $("abort-unlock").hidden = free || !requested;

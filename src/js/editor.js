@@ -52,9 +52,14 @@ function renderEditorLock() {
   const held = !editing.isNew && kind.held(editing.item);
   // Locked: what is used may only get stricter, which is for the service to judge.
   const limited = !held && !editing.isNew && kind.limited(editing.item);
-  forms[editing.kind].disable(!!held);
-  // No example entries where entries are fixed or limited, or they read as entries.
-  if (forms[editing.kind].examples) forms[editing.kind].examples(!held && !limited);
+  // The form follows only when that changes (this runs every second).
+  const state = `${!!held} ${!!limited}`;
+  if (editing.lockState !== state) {
+    editing.lockState = state;
+    forms[editing.kind].disable(!!held);
+    // No example entries where entries are fixed or limited, or they read as entries.
+    if (forms[editing.kind].examples) forms[editing.kind].examples(!held && !limited);
+  }
   // Only the name can be changed on something a locked session holds; it never loosens anything.
   $("delete").disabled = !!held || (!editing.isNew && kind.inUse(editing.item));
   const box = $("editor-notices");
@@ -100,10 +105,13 @@ $("save").addEventListener("click", async () => {
     await KINDS[kind].save(saved);
     const { via } = editing;
     if (via) {
-      // Back where it was made from, with it: the service's view first, so it is there.
-      await via.onSaved(saved);
-      await refresh();
+      // Back where it was made from first (going there clears the page's notices, so what is said
+      // of the session it was made for stays), then the service's view, so it is there, then it is chosen.
+      const back = new Promise((resolve) => addEventListener("hashchange", resolve, { once: true }));
       location.hash = via.back;
+      await back;
+      await refresh();
+      await via.onSaved(saved);
     } else location.hash = KINDS[kind].path;
   } catch (e) {
     notify("editor-notices", "error", t("editor.saveFailed", { noun: KINDS[kind].noun }), String(e));

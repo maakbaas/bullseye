@@ -1,5 +1,5 @@
-//! Closes Chromium-browser tabs (Chrome, Edge, Brave, ...) whose URL is blocked by the filter
-//! list, using Windows UI Automation.
+//! Closes the browser pages (Chromium browsers and Firefox) whose URL is blocked by a target's
+//! sites, using Windows UI Automation.
 //!
 //! Only the visible tab(s) of each browser window expose their URL (via each page's root
 //! document, or the address bar), so a blocked tab is closed once it is shown in its window,
@@ -14,9 +14,9 @@
 //! App windows (`chrome --app=<url>`, popups) have no tab strip and an address bar with no room
 //! on screen, but their page's document still carries its URL; the window is closed whole.
 //!
-//! Each of these is an action a session can turn on or off (`state::Actions`): blocked
-//! tabs, blocked pages in a split view (a window showing two pages), blocked app windows, and Obsidian. With several
-//! sessions running, each goes by its own actions and lists (`session::Active`).
+//! A target's sites are closed in all of these ways whenever it has any; only Obsidian's is an
+//! action a target turns on or off (`state::Actions`). With several sessions running, each goes by
+//! its own actions and lists (`session::Active`).
 
 use std::collections::{HashMap, HashSet};
 use std::thread;
@@ -370,8 +370,9 @@ impl Closer {
                 }
                 _ => None,
             };
+            // Each page judged once: the same page is the app window's or the tab's, the bar only the tab's.
             let app_page = pages.iter().find(|p| active.blocks_page(&p.url));
-            let tab_page = pages.iter().find(|p| active.blocks_page(&p.url)).or(bar.as_ref().filter(|p| active.blocks_page(&p.url)));
+            let tab_page = app_page.or_else(|| bar.as_ref().filter(|p| active.blocks_page(&p.url)));
             match tab_page {
                 Some(page) if self.first_seen.get(&handle).is_none_or(|(url, _)| *url != page.url) => {
                     self.first_seen.insert(handle, (page.url.clone(), Instant::now()));
@@ -574,7 +575,8 @@ impl Closer {
         }
         // Where a page is on screen and whether it is in a split view costs a few calls each, so
         // only when some page is blocked, split or not.
-        if !read.iter().any(|(_, url, _)| active.blocks_page(url)) {
+        let blocked: Vec<bool> = read.iter().map(|(_, url, _)| active.blocks_page(url)).collect();
+        if !blocked.contains(&true) {
             return Ok(None);
         }
         let documents: Vec<FirefoxPage> = read
@@ -591,7 +593,7 @@ impl Closer {
         let names: Vec<String> = tabs.iter().map(|t| t.get_name().unwrap_or_default()).collect();
         let button = a.create_property_condition(UIProperty::ControlType, (ControlType::Button as i32).into(), None)?;
         for (index, page) in documents.iter().enumerate() {
-            if page.title.is_empty() || !active.blocks_page(&page.url) {
+            if page.title.is_empty() || !blocked[index] {
                 continue;
             }
             let Some(tab) = firefox_tab_of(&documents, index, &names) else { continue };

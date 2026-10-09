@@ -85,8 +85,8 @@ impl Actions {
     /// Every action as (turned on, what it needs). **The one place to list a new action**: add
     /// its field above (if it has a switch) and a line here; what may start and what runs follow
     /// from it. (A new kind of list also needs a `Uses` variant and an arm in `lists::Lists::has`.)
-    fn all(&self) -> Vec<(bool, Uses)> {
-        vec![
+    fn all(&self) -> [(bool, Uses); 5] {
+        [
             (self.obsidian_web_viewer, Uses::Nothing),
             // Acted on whenever their list has entries.
             (true, Uses::Sites),

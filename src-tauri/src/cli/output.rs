@@ -36,8 +36,6 @@ pub(super) fn describe_unlock_way(status: &UnlockStatus) -> String {
     }
 }
 
-/// What a session's lock says of its condition besides its name: nothing for a schedule (the times are
-/// on the Conditions page, and only there), and the drive for a flash drive, which is what makes
 /// A webhook condition as words.
 pub(super) fn describe_webhook(hook: &Hook) -> String {
     let matched = match (hook.matcher.on, hook.matcher.status, &hook.matcher.body) {
@@ -237,15 +235,7 @@ pub(super) fn describe_session(overview: &Overview, session: &Definition) -> Str
     };
     let allowance = match &session.allowance {
         None => t("allowance.type.none", &[]),
-        Some(terms) => {
-            let kind = match terms {
-                Terms::Budget { .. } => "budget",
-                Terms::Pomodoro { .. } => "pomodoro",
-                Terms::Delayed { .. } => "delayed",
-                Terms::Breaks { .. } => "breaks",
-            };
-            t(&format!("allowance.type.{kind}"), &[])
-        }
+        Some(terms) => t(&format!("allowance.type.{}", terms.kind()), &[]),
     };
     let method = match &session.lock {
         Lock::None => "none",

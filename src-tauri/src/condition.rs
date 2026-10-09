@@ -1,9 +1,11 @@
 //! Conditions: when a session is active, and what a condition lock locks by. A condition has a name
-//! (`definitions::Condition`) and a rule, of one of three kinds:
+//! (`definitions::Condition`) and a rule, of one of four kinds:
 //! - a **weekly schedule** (`schedule.rs`): active at the times it has;
 //! - a **flash drive** (`drives.rs`): active while that drive is *not* connected, so the drive is
 //!   the key that switches a session off (as a lock, the session can only be stopped while it is
 //!   plugged in);
+//! - a **webhook** (`webhook.rs`): active or not by what a web address answers, its fallback without
+//!   an answer;
 //! - a **combination** of two or more of the others: active when any of them is, or when all are
 //!   (`Mode`). Never a combination of combinations. A session can use one anywhere it can use a
 //!   condition, as its condition or its lock's.
@@ -11,8 +13,8 @@
 //! A session that is not active keeps running, and stays locked, but enforces nothing. A running
 //! session holds a copy of the rule it started with (`session::Session`).
 //!
-//! **A new kind of condition** is a variant of `Rule`, with what it means in `active` and
-//! `next_change`, an editor in the window (`src/js/forms.js`) and an option in the CLI (`cli/`).
+//! **A new kind of condition** is a variant of `Rule`, with what it means in `active`,
+//! `next_change` and `tightened_by`, an editor in the window (`src/js/forms.js`) and an option in the CLI (`cli/`).
 
 use std::time::{Duration, SystemTime};
 

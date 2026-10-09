@@ -2,7 +2,7 @@
 //! administrator, as `bullseye-app.exe --install` after copying the app and `--uninstall` before
 //! removing it. Installing is from a clean machine only; there is no update path. Both also put the
 //! installation folder on the system `PATH` and take it off again (`system_path.rs`), so the CLI,
-//! `bullseye-app.exe`, runs from any terminal.
+//! `bullseye.exe`, runs from any terminal.
 //!
 //! The installer cannot stop the service itself (nobody but SYSTEM can), so it asks it, over the
 //! pipe. The service refuses while a session is locked, so this is no way around a session: the way out

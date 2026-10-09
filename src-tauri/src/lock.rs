@@ -174,11 +174,16 @@ impl Lock {
                 return Err("Give the text that has to be typed to stop the session".into());
             }
             if text.chars().count() > MAX_TEXT {
-                return Err(format!("Keep the text under {MAX_TEXT} characters"));
+                return Err(format!("A custom text has at most {MAX_TEXT} characters"));
             }
         }
         Ok(())
     }
+}
+
+/// Whether a text typed in is the text of a text lock: the same, line breaks whichever way they were typed.
+pub fn same_text(expected: &str, typed: &str) -> bool {
+    expected.replace("\r\n", "\n") == typed.replace("\r\n", "\n")
 }
 
 /// `length` random characters of a-z and 0-9, each as likely as the others.
@@ -187,7 +192,7 @@ pub fn random_text(length: u32) -> Result<String, String> {
     let mut text = String::new();
     while text.len() < length as usize {
         let mut bytes = [0u8; 64];
-        getrandom::fill(&mut bytes).map_err(|e| format!("cannot draw a random text: {e}"))?;
+        getrandom::fill(&mut bytes).map_err(|e| format!("Cannot draw a random text: {e}"))?;
         // 252 is 7 × 36: a byte at or above it would favour the first characters.
         for byte in bytes.into_iter().filter(|&b| b < 252).take(length as usize - text.len()) {
             text.push(CHARACTERS[usize::from(byte % 36)] as char);

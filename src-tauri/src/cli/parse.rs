@@ -15,8 +15,9 @@ items takes the words after it, up to the next option: --sites youtube.com reddi
 with a space in it goes in double quotes: --titles \"Team chat\" *YouTube*.
 
 A session is what you start: one or more targets (what to block), a condition (when it is
-active; 'always', a weekly schedule, or a flash drive that is not connected), at most one
-allowance (what lets it go quiet for a while) and a lock (how it is kept from being stopped).
+active; 'always', a weekly schedule, a flash drive that is not connected, a webhook, or a
+combination of those), at most one allowance (what lets it go quiet for a while) and a lock
+(how it is kept from being stopped).
 
 Sessions:
   status [--json]                   Every session (running or not, active or not, locked or not),
@@ -53,7 +54,7 @@ Sessions:
                                     from: the session's start (the default), or midnight on the
                                     clock, so an hour starts at xx:00 (it must then fit a day
                                     evenly).
-      --lock-duration <duration>    Locked for this long once started, e.g. 2h 30m: it cannot be
+      --lock-duration <duration>    Locked for this long once started, e.g. \"2h 30m\": it cannot be
                                     stopped and ends by itself.
       --lock-until <date time>      Locked until then, e.g. \"2026-10-06 18:00\" (local time): it
                                     cannot be stopped and ends by itself.
@@ -76,14 +77,16 @@ Sessions:
   edit <session> [options]          Change a session: the options of new, which replace what they
                                     name (--targets replaces all its targets), and --name <name>. A
                                     running session takes the change at once (not its lock); while
-                                    it is locked, only its name and a stricter allowance: a budget
-                                    shorter or reset less often, or none; a cycle cannot change.
+                                    it is locked, only its name, more targets, the condition
+                                    'always' and a stricter allowance: a budget shorter or reset
+                                    less often, fewer or shorter breaks, a delayed start sooner, or
+                                    none; a cycle cannot change.
   add <session> --targets <targets>
                                     Add targets to a session, keeping the ones it has.
   remove <session> --targets <targets>
                                     Take targets out of a session.
-  delete <session> [--force]        Delete a session that is not running. Asks first, unless
-                                    --force.
+  delete <session> [--force]        Delete a session that is not locked (a running one is stopped).
+                                    Asks first, unless --force.
   duplicate <session>               Make a copy of a session, named after it with a number:
                                     \"Work (2)\".
   start <session> [--force]         Start a session. The lock options of new set its lock first, as
@@ -94,7 +97,8 @@ Sessions:
                                     on, with one of the lock options of new (--no-lock takes its
                                     lock away). It is also the lock its next start has. Asks first,
                                     unless --force.
-  stop <session> [--password <pw>]  Stop a running session that is not locked right now; one locked
+  stop <session> [--password <pw>] [--abort]
+                                    Stop a running session that is not locked right now; one locked
                                     with a password with its password (asked for when not given).
                                     One locked with a text is stopped in the window, by typing the
                                     text. One locked with a delay: the first stop asks for it and
@@ -137,7 +141,7 @@ Targets:
   target remove <target> [options]  Take entries out of a target, however they are written (Steam is
                                     steam.exe), and turn --actions off. One that is not in it is
                                     refused, as a typo.
-  target delete <target> [--force]  Delete a target that no running session uses; it is taken out of
+  target delete <target> [--force]  Delete a target that no locked session uses; it is taken out of
                                     the sessions that use it (one left with none does
                                     nothing).
   target duplicate <target>         Make a copy of a target, named after it with a number.
@@ -166,7 +170,7 @@ Conditions:
   condition remove <condition> --conditions <conditions>
                                     Take conditions out of a combination (at least two stay).
   condition delete <condition> [--force]
-                                    Delete a condition that no running session uses, directly or in
+                                    Delete a condition that no locked session uses, directly or in
                                     a combination; sessions it was the condition of are always
                                     active, and those it locked are not locked any more. It is taken
                                     out of its combinations, and one left with a single condition is
@@ -206,7 +210,7 @@ Other:
                                     Setting one needs unlocking to be ready, or no session to be
                                     locked; removing it is free.
   unlock-delay [<time>]             Show how long unlocking takes, or set it: 0 to 24 hours, e.g.
-                                    30m or 2h 30m, or 0 for none. A longer delay is free; a shorter
+                                    30m or \"2h 30m\", or 0 for none. A longer delay is free; a shorter
                                     one needs unlocking to be ready, or no session to be locked.
   help                              Show this.
   version                           Show the version.
@@ -439,7 +443,7 @@ pub(super) fn parse(args: &[String]) -> Result<Command, String> {
         ("target" | "condition", None) => {
             return Err(format!(
                 "`{command}` needs show, new, edit, add, remove, delete, duplicate{}",
-                if command == "condition" { " or check" } else { "" }
+                if command == "condition" { ", check or test" } else { " or apps" }
             ))
         }
         _ => (command.clone(), rest),
@@ -503,7 +507,7 @@ pub(super) fn parse(args: &[String]) -> Result<Command, String> {
         "condition new" => {
             let name = options.positional().ok_or("Give the new condition a name")?;
             let rule = parse_rule(&mut options)?.ok_or(
-                "Give --times \"Mon-Fri 08:00-17:00\" for a weekly schedule, --drive <flash drive>, or --any / --all <condition> (twice or more) to combine conditions",
+                "Give --times \"Mon-Fri 08:00-17:00\" for a weekly schedule, --drive <flash drive>, --webhook <url>, or --any / --all <condition> (twice or more) to combine conditions",
             )?;
             Command::ConditionNew { name, rule }
         }
@@ -534,7 +538,8 @@ pub(super) fn parse(args: &[String]) -> Result<Command, String> {
 }
 
 /// `--lock-duration <duration>`, `--lock-until <date time>`, `--lock-until-restart`,
-/// `--lock-condition <condition>`, `--lock-password <pw>`, `--lock-text <text>`, `--lock-random <n>` or `--no-lock`, at most one. A lock
+/// `--lock-condition <condition>`, `--lock-delay <time>`, `--lock-password <pw>`, `--lock-text <text>`, `--lock-random <n>` or
+/// `--no-lock`, at most one. A lock
 /// condition by name or id, looked up when the command runs (`resolve_lock`).
 pub(super) fn parse_lock(options: &mut Options) -> Result<Option<Lock>, String> {
     let duration = options.value("--lock-duration")?.map(Lock::timed_for);
@@ -600,7 +605,8 @@ pub(super) fn parse_session_changes(options: &mut Options, editing: bool) -> Res
     })
 }
 
-/// `--allowance`, `--allowed`, `--scope`, `--reset`, `--blocked` and `--anchor` of a session; `None` when
+/// `--allowance`, `--allowed`, `--scope`, `--reset`, `--blocked`, `--anchor`, `--after`, `--from`, `--breaks`
+/// and `--length` of a session; `None` when
 /// none of them is given. The words are checked here; whether they make terms is `build_terms`'s to
 /// say when the command runs.
 pub(super) fn parse_allowance_changes(options: &mut Options) -> Result<Option<AllowanceChanges>, String> {
@@ -688,7 +694,8 @@ pub(super) fn parse_allowance_changes(options: &mut Options) -> Result<Option<Al
 /// An allowance's terms from what was given, over the ones it has (`old`, when editing): what is not
 /// named stays, and a new one has defaults (the whole session, never reset, counted from the start).
 /// `--blocked` makes a Pomodoro, `--scope` or `--reset` a budget, `--after` or `--from` a delayed
-/// start, and `--allowed` or `--anchor` alone keep the kind there is. Checked, so a mistake is told
+/// start, `--breaks` or `--length` breaks, and `--allowed`, `--reset` or `--anchor` alone keep the kind
+/// there is. Checked, so a mistake is told
 /// before anything is sent.
 pub(super) fn build_terms(changes: AllowanceChanges, old: Option<&Terms>) -> Result<Terms, String> {
     let delayed = match changes.kind.as_deref() {
@@ -767,8 +774,8 @@ pub(super) fn build_terms(changes: AllowanceChanges, old: Option<&Terms>) -> Res
     terms.checked()
 }
 
-/// `--times <times>`, `--drive <drive>`, `--any <conditions>` or `--all <conditions>` of a
-/// condition, at most one kind.
+/// `--times <times>`, `--drive <drive>`, `--webhook <url>` (`parse_webhook`), `--any <conditions>` or
+/// `--all <conditions>` of a condition, at most one kind.
 pub(super) fn parse_rule(options: &mut Options) -> Result<Option<RuleChoice>, String> {
     let mut given: Vec<RuleChoice> = Vec::new();
     given.extend(options.value("--times")?.map(RuleChoice::Times));
@@ -863,8 +870,6 @@ pub(super) fn parse_list_entries(options: &mut Options, cleared: &[String]) -> R
     Ok(lists)
 }
 
-/// The names of the actions, as `Actions` calls its fields: a new action is known here
-/// without a change.
 /// The help, with the action names where `{actions}` stands: as many to a line as fit, under the
 /// text above them (the descriptions start in column `HELP_COLUMN`).
 pub(super) fn help() -> String {
@@ -882,6 +887,8 @@ pub(super) fn help() -> String {
     HELP.replace("{actions}", &lines.join(&format!(",\n{indent}")))
 }
 
+/// The names of the actions, as `Actions` calls its fields: a new action is known here
+/// without a change.
 pub(super) fn action_names() -> Vec<String> {
     match serde_json::to_value(Actions::default()) {
         Ok(Value::Object(fields)) => fields.keys().cloned().collect(),
@@ -979,7 +986,7 @@ impl Options {
     }
 
     /// The first argument that is not an option. Taken before the options are, so it must come
-    /// first: `edit Work --list Social`.
+    /// first: `edit Work --targets Social`.
     pub(super) fn positional(&mut self) -> Option<String> {
         match self.args.first() {
             Some(arg) if !arg.starts_with("--") => Some(self.args.remove(0)),

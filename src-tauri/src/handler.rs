@@ -199,9 +199,10 @@ fn delete_shared(context: &Context, id: &str, delete: impl FnOnce(&Definitions) 
     let _editing = context.editing.locked();
     let running = context.sessions.running_ids();
     let library = context.definitions.library();
-    let users: Vec<String> = library.users_of(id).into_iter().filter(|b| running.contains(&b.id)).map(|b| b.id.clone()).collect();
+    let using = library.users_of(id);
+    let users: Vec<String> = using.iter().filter(|b| running.contains(&b.id)).map(|b| b.id.clone()).collect();
     let locked = context.sessions.locked_ids();
-    if let Some(session) = library.users_of(id).into_iter().find(|b| users.contains(&b.id) && locked.contains(&b.id)) {
+    if let Some(session) = using.into_iter().find(|b| locked.contains(&b.id)) {
         return Err(format!("“{}” is locked and uses this; it can be deleted once that can be stopped", session.name));
     }
     delete(&context.definitions)?;
@@ -215,8 +216,8 @@ fn delete_shared(context: &Context, id: &str, delete: impl FnOnce(&Definitions) 
 }
 
 /// Saving a session. One that runs can be changed (its name, targets, condition and allowance)
-/// unless it is locked right now (then only its name, and its allowance only to be stricter:
-/// `allowance::tightened`), and the running session follows; its lock stays as it is: a running
+/// unless it is locked right now (then only its name, more targets, the condition Always, and its
+/// allowance only to be stricter: `allowance::tightened`), and the running session follows; its lock stays as it is: a running
 /// session that is not locked is given another lock by `lock_running` (`Request::Lock`), never by saving.
 fn edit_session(context: &Context, session: Definition) -> Result<(), String> {
     let _editing = context.editing.locked();
@@ -309,8 +310,8 @@ fn check_shared(context: &Context, proposed: &Proposed) -> Result<(), String> {
         Proposed::List(new) => &new.id,
         Proposed::Condition(new) => &new.id,
     };
-    let running = context.sessions.running_ids();
-    let locked: Vec<String> = context.sessions.locked_ids().into_iter().filter(|b| running.contains(b)).collect();
+    // Only running sessions are locked.
+    let locked = context.sessions.locked_ids();
     let locked: Vec<String> = library.users_of(id).into_iter().filter(|b| locked.contains(&b.id)).map(|b| b.id.clone()).collect();
     if locked.is_empty() {
         return Ok(());
@@ -450,8 +451,8 @@ fn start_lock(resolved: &Resolved) -> Result<StartLock, String> {
 /// Where unlocking stands now.
 fn unlock_status(context: &Context) -> UnlockStatus {
     let delay = context.unlock.delay();
-    let remaining = context.unlock.remaining(context.sessions.now());
     let now = context.sessions.now();
+    let remaining = context.unlock.remaining(now);
     let way = context.unlock.way();
     let way_open = way.as_ref().is_some_and(|way| way.is_open(now));
     let way_left = way.as_ref().and_then(|way| way.left(now));
@@ -467,9 +468,9 @@ fn unlock_status(context: &Context) -> UnlockStatus {
     }
 }
 
-/// Sets the other way to unlock (`unlock::Way`), from a lock method as the user chose it: what it
-/// depends on is looked up now (a duration becomes a moment, a condition its rule, a restart this start
-/// of Windows). Never the delay, which is always there. Setting one needs unlocking to be ready, or no
+/// Sets the other way to unlock (`unlock::Way`), from a lock method as the user chose it: a condition
+/// (its rule looked up now), a text, a random text (drawn now) or a password (only its hash kept).
+/// Never the delay, which is always there. Setting one needs unlocking to be ready, or no
 /// session to be locked; removing it is always free.
 fn set_unlock_way(context: &Context, lock: Option<Lock>) -> Result<(), String> {
     let _editing = context.editing.locked();
@@ -489,11 +490,12 @@ fn set_unlock_way(context: &Context, lock: Option<Lock>) -> Result<(), String> {
         // Its text is drawn now, and again after each unlock (`unlock_with`).
         Lock::RandomText { length, .. } => (Lock::RandomText { length, text: Some(lock::random_text(length)?) }, None),
         // Only its hash is kept; a password lock without a new password keeps the one it has.
-        Lock::Password { password, hash } => {
-            let hash = match (password, hash) {
-                (Some(password), _) => unlock::new_hash(&password)?,
-                (None, Some(hash)) => hash,
-                (None, None) => match context.unlock.way().map(|way| way.lock) {
+        // As a session's: a hash from a client is not taken, only the one kept from before.
+        Lock::Password { password, .. } => {
+            let hash = match password {
+                Some(password) if password.is_empty() => return Err("The password to unlock with cannot be empty".into()),
+                Some(password) => unlock::new_hash(&password)?,
+                None => match context.unlock.way().map(|way| way.lock) {
                     Some(Lock::Password { hash: Some(kept), .. }) => kept,
                     _ => return Err("Set a password for this way to unlock".into()),
                 },
@@ -1265,8 +1267,13 @@ mod tests {
         assert!(drawn.len() == 12 && drawn.chars().all(|c| c.is_ascii_alphanumeric()), "{drawn}");
         assert!(failed(ask(Request::Stop { id: "a".into(), password: None, text: Some("wrong".into()) })));
         assert_eq!(ask(Request::Stop { id: "a".into(), password: None, text: Some(drawn.clone()) }), Response::Done);
-        // A length out of range is refused.
+        // A length out of range is refused; a text given with it is not kept.
         assert!(failed(save(&context, definition("b", &["b.com"]).lock(random(0)))));
+        assert_eq!(
+            save(&context, definition("c", &["c.com"]).lock(Lock::RandomText { length: 4, text: Some("know".into()) })),
+            Response::Done
+        );
+        assert!(overview(&context).sessions.iter().any(|s| s.lock == random(4)));
 
         // The way to unlock: drawn when it is set, and used up by an unlock.
         assert_eq!(ask(Request::SetUnlockDelay { delay: "1h".into() }), Response::Done);
@@ -1370,8 +1377,11 @@ mod tests {
         let password = |password: Option<&str>| Request::SetUnlockWay {
             way: Some(Lock::Password { password: password.map(str::to_string), hash: None }),
         };
-        // Without one set before, there is nothing to keep.
+        // Without one set before, there is nothing to keep; an empty one, or a hash a client made, is no password.
         assert!(failed(ask(password(None))));
+        assert_eq!(ask(password(Some(""))), Response::Failed("The password to unlock with cannot be empty".into()));
+        let forged = Request::SetUnlockWay { way: Some(Lock::Password { password: None, hash: Some("00$00".into()) }) };
+        assert_eq!(ask(forged), Response::Failed("Set a password for this way to unlock".into()));
         assert_eq!(ask(password(Some("secret"))), Response::Done);
         assert_eq!(ask(password(None)), Response::Done);
         assert_eq!(run(&context, timed("a", &["a.com"], "1h")), Response::Done);

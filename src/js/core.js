@@ -217,7 +217,8 @@ function ask({ heading, body = "", action, kind, fields = [], read = null }) {
   return new Promise((resolve) => (answer = resolve));
 }
 $("confirm-fields").addEventListener("keydown", (event) => {
-  if (event.key === "Enter") $("confirm-action").click();
+  // Not in a text area, where Enter starts a new line (a text lock's text has several).
+  if (event.key === "Enter" && event.composedPath()[0].tagName !== "TEXTAREA") $("confirm-action").click();
 });
 function answered(value) {
   const resolve = answer;

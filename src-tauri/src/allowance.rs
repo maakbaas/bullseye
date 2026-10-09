@@ -1,9 +1,9 @@
 //! Allowances: what lets a session go quiet for a while. A session has at most one, set on the session
-//! itself like its lock (`definitions::Definition::allowance`), never a list of its own. Three kinds
+//! itself like its lock (`definitions::Definition::allowance`), never a list of its own. Four kinds
 //! (`Terms`):
 //! - a **budget**: an allowed time of use, for the session as a whole or for each item of it (each
 //!   site, program, Store app or window title) on its own, that is used up while the item is in
-//!   use and given back by a reset (never, every hour / day / week, or each time the session's
+//!   use and given back by a reset (never, every so long, any duration, or each time the session's
 //!   condition becomes active);
 //! - a **Pomodoro**: a fixed cycle that blocks for a while and then allows everything for a while,
 //!   counted from the start of the session or from the clock (cycles from midnight, so a cycle that fits
@@ -218,7 +218,7 @@ impl Terms {
     pub fn tightened_by(&self, new: &Terms) -> Result<(), String> {
         // The kind first: another kind is refused whatever its terms are.
         if self.kind() != new.kind() {
-            return Err("The session is locked, so its allowance's type cannot change".into());
+            return Err("This session is locked, so its allowance's type cannot change".into());
         }
         let new = new.clone().checked()?;
         match (self, &new) {
@@ -227,15 +227,15 @@ impl Terms {
                 Terms::Budget { allowed: new_allowed, scope: new_scope, reset: new_reset, every: new_every, anchor: new_anchor },
             ) => {
                 if old_scope != new_scope {
-                    return Err("The session is locked, so its allowance cannot change between a total and each item".into());
+                    return Err("This session is locked, so its allowance cannot change between a total and each item".into());
                 }
                 if secs(new_allowed) > secs(old_allowed) {
-                    return Err("The session is locked, so its allowed time can get shorter but not longer".into());
+                    return Err("This session is locked, so its allowed time can get shorter but not longer".into());
                 }
                 if rarer((*old_reset, old_every, *old_anchor), (*new_reset, new_every, *new_anchor)) {
                     Ok(())
                 } else {
-                    Err("The session is locked, so its allowance can be reset less often but not more often".into())
+                    Err("This session is locked, so its allowance can be reset less often but not more often".into())
                 }
             }
             (
@@ -243,15 +243,15 @@ impl Terms {
                 Terms::Breaks { count: new_count, length: new_length, reset: new_reset, every: new_every, anchor: new_anchor },
             ) => {
                 if new_count > old_count {
-                    return Err("The session is locked, so it can have fewer breaks but not more".into());
+                    return Err("This session is locked, so it can have fewer breaks but not more".into());
                 }
                 if secs(new_length) > secs(old_length) {
-                    return Err("The session is locked, so its breaks can get shorter but not longer".into());
+                    return Err("This session is locked, so its breaks can get shorter but not longer".into());
                 }
                 if rarer((*old_reset, old_every, *old_anchor), (*new_reset, new_every, *new_anchor)) {
                     Ok(())
                 } else {
-                    Err("The session is locked, so its allowance can be reset less often but not more often".into())
+                    Err("This session is locked, so its allowance can be reset less often but not more often".into())
                 }
             }
             (
@@ -261,12 +261,12 @@ impl Terms {
                 if secs(old_blocked) == secs(new_blocked) && secs(old_allowed) == secs(new_allowed) && old_anchor == new_anchor {
                     Ok(())
                 } else {
-                    Err("The session is locked, so its allowance's cycle cannot change".into())
+                    Err("This session is locked, so its allowance's cycle cannot change".into())
                 }
             }
             (Terms::Delayed { kind: old_kind, value: old }, Terms::Delayed { kind: new_kind, value: new }) => {
                 if old_kind != new_kind {
-                    return Err("The session is locked, so its start cannot change between after a while and from a time".into());
+                    return Err("This session is locked, so its start cannot change between after a while and from a time".into());
                 }
                 // Earlier is stricter: enforcing starts sooner.
                 let sooner = match new_kind {
@@ -276,10 +276,10 @@ impl Terms {
                 if sooner {
                     Ok(())
                 } else {
-                    Err("The session is locked, so its start can come sooner but not later".into())
+                    Err("This session is locked, so its start can come sooner but not later".into())
                 }
             }
-            _ => Err("The session is locked, so its allowance's type cannot change".into()),
+            _ => Err("This session is locked, so its allowance's type cannot change".into()),
         }
     }
 
@@ -364,9 +364,9 @@ impl Terms {
 pub fn kind_allowed(old: Option<&Terms>, to: &str) -> Result<(), String> {
     match (old, to) {
         (_, "none") => Ok(()),
-        (None, _) => Err("The session is locked, so it cannot be given an allowance".into()),
+        (None, _) => Err("This session is locked, so it cannot be given an allowance".into()),
         (Some(old), to) if old.kind() == to => Ok(()),
-        _ => Err("The session is locked, so its allowance's type cannot change".into()),
+        _ => Err("This session is locked, so its allowance's type cannot change".into()),
     }
 }
 
@@ -375,7 +375,7 @@ pub fn kind_allowed(old: Option<&Terms>, to: &str) -> Result<(), String> {
 pub fn tightened(old: Option<&Terms>, new: Option<&Terms>) -> Result<(), String> {
     match (old, new) {
         (_, None) => Ok(()),
-        (None, Some(_)) => Err("The session is locked, so it cannot be given an allowance".into()),
+        (None, Some(_)) => Err("This session is locked, so it cannot be given an allowance".into()),
         (Some(old), Some(new)) => old.tightened_by(new),
     }
 }
@@ -407,14 +407,19 @@ fn into_period(terms: &Terms, started: u64, zone: &Zone, now: SystemTime) -> Opt
     if length == 0 {
         return None;
     }
-    let into = match anchor {
-        Anchor::Start => state::to_unix(now)?.saturating_sub(started) / 1000 % length,
+    Some((offset(anchor, started, zone, now, length)?, length))
+}
+
+/// Seconds into a stretch of `length` that repeats from the session's start (`started`, milliseconds
+/// since the Unix epoch) or from local midnight; `None` if the time cannot be told.
+fn offset(anchor: Anchor, started: u64, zone: &Zone, now: SystemTime, length: u64) -> Option<u64> {
+    match anchor {
+        Anchor::Start => Some(state::to_unix(now)?.saturating_sub(started) / 1000 % length),
         Anchor::Clock => {
             let local = zone.local(now)?;
-            (u64::from(local.minute) * 60 + u64::from(local.second)) % length
+            Some((u64::from(local.minute) * 60 + u64::from(local.second)) % length)
         }
-    };
-    Some((into, length))
+    }
 }
 
 /// Where a Pomodoro cycle stands.
@@ -541,7 +546,7 @@ impl Run {
 
     /// Takes a break now: one of those left, for its length. Not while one is going on.
     pub fn take_break(&mut self, now: SystemTime) -> Result<(), String> {
-        let Terms::Breaks { length, .. } = &self.terms else { return Err("This session's allowance has no breaks".into()) };
+        let Terms::Breaks { length, .. } = &self.terms else { return Err("This session has no breaks".into()) };
         let now = state::to_unix(now).ok_or("Cannot tell the time")?;
         if self.break_until.is_some_and(|until| now < until) {
             return Err("A break is going on already".into());
@@ -556,6 +561,9 @@ impl Run {
 
     /// Ends the break going on, early: it stays used up.
     pub fn end_break(&mut self, now: SystemTime) -> Result<(), String> {
+        if self.breaks_left().is_none() {
+            return Err("This session has no breaks".into());
+        }
         let now = state::to_unix(now).ok_or("Cannot tell the time")?;
         match self.break_until {
             Some(until) if now < until => {
@@ -598,8 +606,9 @@ impl Run {
         *used = used.saturating_add(millis).min(cap);
     }
 
-    /// Where a Pomodoro cycle stands, or how long a delayed start has to go (`None` once it has begun); `None` for a budget, or if the local time cannot be told (a
-    /// cycle on the clock), when it is blocked.
+    /// Where a Pomodoro cycle stands, how long a delayed start has to go (`None` once it has begun) or
+    /// what is left of a break going on (`None` without one); `None` for a budget, or if the local
+    /// time cannot be told (a cycle on the clock), when it is blocked.
     pub fn phase(&self, zone: &Zone, now: SystemTime) -> Option<Phase> {
         // A break going on: allowed for what is left of it.
         if let Terms::Breaks { .. } = &self.terms {
@@ -617,13 +626,7 @@ impl Run {
         if cycle == 0 {
             return None;
         }
-        let at = match anchor {
-            Anchor::Start => state::to_unix(now)?.saturating_sub(self.started) / 1000 % cycle,
-            Anchor::Clock => {
-                let local = zone.local(now)?;
-                (u64::from(local.minute) * 60 + u64::from(local.second)) % cycle
-            }
-        };
+        let at = offset(*anchor, self.started, zone, now, cycle)?;
         Some(if at >= blocked { Phase { allowed: true, change: cycle - at } } else { Phase { allowed: false, change: blocked - at } })
     }
 
@@ -684,7 +687,7 @@ pub struct ItemLeft {
     pub left_words: String,
 }
 
-/// What a running session's allowance is doing, in numbers and in words (`duration::countdown`).
+/// What a running session's allowance is doing, in numbers and in words (`duration::left`).
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Status {
     pub terms: Terms,
@@ -1119,7 +1122,7 @@ mod tests {
         let old = after("1h");
         assert_eq!(old.tightened_by(&after("1h")), Ok(()));
         assert_eq!(old.tightened_by(&after("30m")), Ok(()));
-        assert_eq!(old.tightened_by(&after("2h")), Err("The session is locked, so its start can come sooner but not later".into()));
+        assert_eq!(old.tightened_by(&after("2h")), Err("This session is locked, so its start can come sooner but not later".into()));
         assert!(old.tightened_by(&after("")).is_err(), "unreadable terms are no stricter");
         let kinds = old.tightened_by(&from("2026-10-06 18:00")).unwrap_err();
         assert!(kinds.contains("between after a while and from a time"), "{kinds}");

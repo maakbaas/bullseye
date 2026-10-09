@@ -220,7 +220,7 @@ fn items_are_added_and_removed() {
     assert_eq!(refused(&["condition", "remove", "Either"]), "Give the conditions to remove: --conditions <conditions>");
     // The service still holds to its rules: a combination of fewer than two is refused.
     assert!(!refused(&["condition", "remove", "Either", "--conditions", "Weekend"]).is_empty());
-    assert_eq!(refused(&["target"]), "`target` needs show, new, edit, add, remove, delete, duplicate");
+    assert_eq!(refused(&["target"]), "`target` needs show, new, edit, add, remove, delete, duplicate or apps");
 }
 
 #[test]

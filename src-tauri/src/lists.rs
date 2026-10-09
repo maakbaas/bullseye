@@ -102,6 +102,11 @@ impl Lists {
         }
     }
 
+    /// Whether a page is to be closed by these lists: on the sites, and not always allowed.
+    pub fn blocks_site(&self, url: &str) -> bool {
+        self.sites.is_blocked(url) && !self.allowed.is_blocked(url)
+    }
+
     /// Whether a window of this title is to be closed or minimized by these lists: one of the
     /// titles, and not always allowed.
     pub fn blocks_title(&self, title: &str) -> bool {

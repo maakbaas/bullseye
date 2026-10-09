@@ -16,14 +16,21 @@ function secondsOf(text) {
   return total;
 }
 
-// `label` and `helper` as a text field has them; `units`: those the dropdown offers, largest first.
-export function durationField({ label, helper = "", units = ALL }) {
-  // Not Carbon's number input: its stepper buttons make the row busy. Digits only.
-  const input = el("cds-text-input", { label, "helper-text": helper, inputmode: "numeric", value: "0" });
+// A whole number typed into a Carbon text input, digits only and at most `length` of them: not
+// Carbon's number input, whose stepper buttons make a row busy. Also a random text's length and the
+// number of breaks.
+export function numberField({ label, helper = "", length = 6, value = "0" }) {
+  const input = el("cds-text-input", { label, "helper-text": helper, inputmode: "numeric", value });
   input.addEventListener("input", () => {
-    const digits = String(input.value).replace(/\D/g, "").slice(0, 6);
+    const digits = String(input.value).replace(/\D/g, "").slice(0, length);
     if (digits !== input.value) input.value = digits;
   });
+  return input;
+}
+
+// `label` and `helper` as a text field has them; `units`: those the dropdown offers, largest first.
+export function durationField({ label, helper = "", units = ALL }) {
+  const input = numberField({ label, helper });
   const unit = el("cds-dropdown", { autoalign: true, "title-text": t("duration.unit") });
   for (const u of units) unit.append(el("cds-dropdown-item", { value: u }, t(`duration.${u}`)));
   unit.value = units.includes("m") ? "m" : units[units.length - 1];

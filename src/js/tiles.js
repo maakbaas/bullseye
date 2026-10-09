@@ -206,8 +206,10 @@ function renderTiles(kind) {
       // Tagged while a locked session uses it (it can then only get stricter); a running session
       // that is not locked leaves it free to change, but not to delete.
       parts.tag.hidden = !kindOf.limited(item);
-      parts.tag.setAttribute("type", "blue");
-      parts.tag.textContent = t("common.inUse");
+      if (parts.tag.textContent !== t("common.inUse")) {
+        parts.tag.setAttribute("type", "blue");
+        parts.tag.textContent = t("common.inUse");
+      }
     }
     parts.deleteItem.disabled = kindOf.inUse(item);
   });
@@ -324,8 +326,11 @@ function renderSessionControls(parts, session) {
   const status = (overview.status || []).find((s) => s.id === session.id);
   const state = (status && status.state) || "not_running";
   parts.tag.hidden = false;
-  parts.tag.setAttribute("type", { not_running: "gray", running: "blue", locked: "green", inactive: "cool-gray" }[state]);
-  parts.tag.textContent = t(`sessions.state.${{ not_running: "notRunning", running: "running", locked: "runningLocked", inactive: "inactive" }[state]}`);
+  if (parts.tag.dataset.state !== state) {
+    parts.tag.dataset.state = state;
+    parts.tag.setAttribute("type", { not_running: "gray", running: "blue", locked: "green", inactive: "cool-gray" }[state]);
+    parts.tag.textContent = t(`sessions.state.${{ not_running: "notRunning", running: "running", locked: "runningLocked", inactive: "inactive" }[state]}`);
+  }
   const busy = parts.toggle.dataset.busy === "1";
   // A session locked with a delay is asked to stop first, then waited out.
   const asking = running && running.stop_delay && running.stop_remaining === null;
@@ -359,7 +364,7 @@ async function takeOrEndBreak(id) {
     await invoke(on ? "end_break" : "take_break", { id });
     notify("list-notices");
   } catch (e) {
-    notify("list-notices", "error", t("sessions.breakFailed", { name: quoted(session.name) }), String(e));
+    notify("list-notices", "error", t("sessions.breakFailed", { name: quoted(session?.name ?? "") }), String(e));
   }
   await refresh();
 }
@@ -394,7 +399,7 @@ async function abortStop(id) {
     await invoke("abort_stop", { id });
     notify("list-notices");
   } catch (e) {
-    notify("list-notices", "error", t("sessions.stopFailed", { name: quoted(session.name) }), String(e));
+    notify("list-notices", "error", t("sessions.stopFailed", { name: quoted(session?.name ?? "") }), String(e));
   }
   await refresh();
 }

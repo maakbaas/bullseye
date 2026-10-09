@@ -1,15 +1,16 @@
-// What targets are made of (`LISTS`, `SECTIONS`) and the editors' forms: a session, a target,
-// a condition (with its week grid or its flash drive). Every form has `nodes`, `fill(item)`, `read(item)`,
+// What targets are made of (`LISTS`, `SECTIONS`) and the editors' forms: a target, a condition (with
+// its week grid, flash drive or webhook), and a session's allowance (`allowanceSection`). Every form has `nodes`, `fill(item)`, `read(item)`,
 // `disable(off)`, `settle()` and `error()`.
 
 import { el, errorNote, infoNote, invalid, invoke, lines, overview, t } from "./core.js";
-import { durationField } from "./duration.js";
+import { durationField, numberField } from "./duration.js";
 import { timingFields } from "./timing.js";
 
-// ---- What things are made of. Three kinds, each a list of its own: targets (what to
-// session), conditions (when) and sessions (one or more targets, a condition, an allowance and a
-// lock: what is started; the allowance and the lock are set on the session itself). The editors, tiles and summaries are built from these tables, so a new kind of
-// list, action or lock method is an entry here (plus its backend side, see AGENTS.md).
+// ---- What things are made of. Three kinds, each a list of its own: targets (what to block),
+// conditions (when) and sessions (one or more targets, a condition, an allowance and a lock: what is
+// started; the allowance and the lock are set on the session itself). The editors, tiles and
+// summaries are built from these tables, so a new kind of list, action or lock method is an entry
+// here (plus its backend side, see AGENTS.md).
 
 // The lists a target can have (`definitions::Target`), by field name.
 const LISTS = Object.fromEntries(
@@ -39,7 +40,7 @@ const SECTIONS = [
   { key: "other", icon: "apps", lists: [], actions: [action("obsidian_web_viewer")] },
 ].map((section) => ({ ...section, title: t(`targets.sections.${section.key}.title`), short: t(`targets.sections.${section.key}.${window.STRINGS.targets.sections[section.key].short ? "short" : "title"}`), description: window.STRINGS.targets.sections[section.key].description && t(`targets.sections.${section.key}.description`) }));
 
-// ---- The editors. Each kind's form is built once and reused; every form has `nodes`,
+// ---- The editors. Each kind's form is built anew each time an editor opens; every form has `nodes`,
 // `fill(item)`, `read(item)` (the item with the form's values), `disable(off)`, `settle()`
 // (finish what is being typed) and `error()` (what is wrong, or null).
 
@@ -150,7 +151,7 @@ function appPicker(list) {
         draw();
       },
       (e) => {
-        status.textContent = `${t("targets.store_apps.failed")}: ${e}`;
+        status.textContent = t("targets.store_apps.failedWhy", { why: String(e) });
         draw();
       },
     );
@@ -288,8 +289,8 @@ function drivePicker() {
     for (const drive of away) known.set(drive.serial, drive);
     select.setAttribute("label", t(drives.length || away.length ? "conditions.drive.missing" : "conditions.drive.none"));
     select.replaceChildren(
-      ...drives.map((drive) => item(drive.serial, `${drive.name} (${drive.serial})`)),
-      ...away.map((drive) => item(drive.serial, t("conditions.drive.away", { name: `${drive.name} (${drive.serial})` }))),
+      ...drives.map((drive) => item(drive.serial, t("conditions.drive.named", { name: drive.name, serial: drive.serial }))),
+      ...away.map((drive) => item(drive.serial, t("conditions.drive.away", { name: t("conditions.drive.named", { name: drive.name, serial: drive.serial }) }))),
     );
     select.value = known.has(keep) ? keep : "";
     if (fault) invalid(select, fault);
@@ -317,11 +318,11 @@ function drivePicker() {
 }
 
 // A webhook's match: what turns the condition from its fallback to the other state, by a dropdown
-// (the HTTP code or the body) and its field. `title` names the state it gives ("Not active when").
+// (the HTTP code or the body) and its field.
 function matcherFields() {
   const mode = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.webhook.matchOn") });
   for (const key of ["status", "body"]) mode.append(el("cds-dropdown-item", { value: key }, t(`conditions.webhook.on.${key}`)));
-  const status = el("cds-text-input", { label: t("conditions.webhook.on.status"), placeholder: "200", "max-count": "3" });
+  const status = el("cds-text-input", { label: t("conditions.webhook.on.status"), placeholder: t("conditions.webhook.statusPlaceholder"), "max-count": "3" });
   const body = el("cds-textarea", { label: t("conditions.webhook.on.body"), placeholder: t("conditions.webhook.bodyPlaceholder"), "helper-text": t("conditions.webhook.bodyHelper"), rows: 3 });
   const show = () => {
     status.hidden = mode.value !== "status";
@@ -364,7 +365,7 @@ function matcherFields() {
 // first what the condition is by default (also with no answer), then the one match that makes it the
 // other. A Test button asks it once (`test_webhook`).
 function webhookPicker() {
-  const url = el("cds-text-input", { label: t("conditions.webhook.url"), placeholder: "https://example.com/state?room=1", "helper-text": t("conditions.webhook.urlHelper") });
+  const url = el("cds-text-input", { label: t("conditions.webhook.url"), placeholder: t("conditions.webhook.urlPlaceholder"), "helper-text": t("conditions.webhook.urlHelper") });
   const method = el("cds-dropdown", { autoalign: true, "title-text": t("conditions.webhook.method") });
   for (const key of ["get", "post"]) method.append(el("cds-dropdown-item", { value: key }, t(`conditions.webhook.methods.${key}`)));
   // No seconds: it is asked at most once a minute.
@@ -545,9 +546,10 @@ function conditionForm() {
   };
 }
 
-// A session's allowance, a section of the session form: its type (none, a time budget or a Pomodoro
-// cycle) and what the type needs: how much time, for the session or each item, and when it is given
-// back; or blocked for, allowed for, counted from where. Under it the terms in words, written by the
+// A session's allowance, in the dialog of its Allowance row: its type (none, a time budget, a Pomodoro
+// cycle, a delayed start or breaks) and what the type needs: how much time, for the session or each
+// item, and when it is given back; blocked for, allowed for, counted from where; when enforcing
+// starts; or how many breaks of how long, given back when. Under it the terms in words, written by the
 // backend (`describe_allowance`), which is also what says what cannot be saved. `fill(terms or null)`,
 // `read()` (the terms, or null for none), `settle()` and `error()`.
 function allowanceSection() {
@@ -569,12 +571,8 @@ function allowanceSection() {
   const cycleAllowed = text(t("allowance.cycle.allowedLabel"), t("allowance.cycle.helper"));
   const anchor = dropdown(t("allowance.cycle.anchorLabel"), t("allowance.cycle.anchorHelper"), ["start", "clock"], "allowance.anchor");
   const budgetPart = el("div", { class: "fields" }, allowed.node, scope);
-  // Breaks: how many (digits only, as a duration's number) and how long each.
-  const count = el("cds-text-input", { label: t("allowance.breaks.countLabel"), "helper-text": t("allowance.breaks.countHelper"), inputmode: "numeric" });
-  count.addEventListener("input", () => {
-    const digits = String(count.value).replace(/\D/g, "").slice(0, 3);
-    if (digits !== count.value) count.value = digits;
-  });
+  // Breaks: how many and how long each (what is out of range, the service says under the form).
+  const count = numberField({ label: t("allowance.breaks.countLabel"), helper: t("allowance.breaks.countHelper"), length: 3 });
   const length = text(t("allowance.breaks.lengthLabel"), t("allowance.breaks.lengthHelper"));
   const breaksPart = el("div", { class: "fields" }, count, length.node);
   // When a budget's time, or the breaks, are given back: the same picker for both.

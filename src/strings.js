@@ -390,7 +390,8 @@ window.STRINGS = {
       placeholder: "",
       helper: "Tick the apps to close. Windows apps are not listed",
       loading: "Loading installed apps",
-      failed: "Could not list installed apps",
+      // {why}: what Windows said.
+      failedWhy: "Could not list installed apps: {why}",
       // An app on the list that this PC has no app of that family name for (it came with an import); {name}:
       // the name in its family name.
       notInstalled: "{name} (not found on this PC)",
@@ -446,7 +447,7 @@ window.STRINGS = {
   conditions: {
     title: "Conditions",
     noun: "condition",
-    description: "When a session is active: a schedule, an unplugged drive or a combination",
+    description: "When a session is active: a schedule, an unplugged drive, a webhook or a combination",
     autoName: "Condition {n}",
     newLabel: "New condition",
     editTitle: "Edit condition",
@@ -460,6 +461,7 @@ window.STRINGS = {
     // A webhook: one web address asked every so often; the true matcher first, then the false one, else the fallback.
     webhook: {
       url: "Web address",
+      urlPlaceholder: "https://example.com/state?room=1",
       urlHelper: "One address, GET parameters can be part of it. No tokens or headers",
       urlWrong: "Enter an address starting with http:// or https://",
       method: "Method",
@@ -484,6 +486,7 @@ window.STRINGS = {
       matchOn: "Match on",
       on: { status: "HTTP code", body: "Body" },
       statusWrong: "Enter an HTTP status code, e.g. 200",
+      statusPlaceholder: "200",
       bodyPlaceholder: "e.g. on",
       bodyHelper: "The whole body must equal this, white space around it aside",
       bodyMissing: "Enter the body text",
@@ -535,7 +538,9 @@ window.STRINGS = {
       helper: "Active while unplugged. Plugging it in switches sessions off and opens its lock. Drives without a serial number are not listed",
       scanning: "Looking for drives",
       none: "No flash drive found. Plug it in and scan again",
-      // {name}: the drive's name and serial number, for the one the condition was set to that is not connected now.
+      // A drive in the list: its name and serial number.
+      named: "{name} ({serial})",
+      // {name}: the drive (`named`) the condition was set to that is not connected now.
       away: "{name} (unplugged)",
       scan: "Scan again",
       missing: "Choose a flash drive",
@@ -584,7 +589,6 @@ window.STRINGS = {
       lengthLabel: "Each break lasts",
       lengthHelper: "Nothing is enforced during a break. Ending one early still uses it up",
       resetLabel: "Breaks are given back",
-      missing: "Enter a number from 1 to 100",
     },
     // A Pomodoro cycle: blocked first, then everything is allowed, over and over.
     cycle: {

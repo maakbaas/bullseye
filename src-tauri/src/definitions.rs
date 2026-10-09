@@ -1,17 +1,17 @@
 //! What the user has defined, in three kinds, each a list of its own (`Library`):
-//! - **targets** (`Target`): what to block and how: sites, always-allowed sites, programs,
-//!   and the actions that act on them;
-//! - **conditions** (`Condition`): when, as a weekly schedule or while a flash drive is not
-//!   connected (`condition.rs`); "always" is built in and is no entry here;
+//! - **targets** (`Target`): what to block and how: sites and always-allowed sites, programs, Store
+//!   apps, window titles and always-allowed titles, and the actions (`state::Actions`);
+//! - **conditions** (`Condition`): when, as a weekly schedule, while a flash drive is not connected,
+//!   by a webhook or a combination of those (`condition.rs`); "always" is built in and is no entry here;
 //! - **sessions** (`Definition`): one or more targets, a condition (or always), an allowance
-//!   (or none: a budget of time or a Pomodoro cycle, `allowance.rs`, set on the session itself like
-//!   its lock) and a lock (`lock.rs`). A session is what is started and runs.
+//!   (or none: a budget, a Pomodoro cycle, a delayed start or breaks, `allowance.rs`, set on the
+//!   session itself like its lock) and a lock (`lock.rs`). A session is what is started and runs.
 //!
 //! All of it is kept by the service (`%ProgramData%\bullseye\sessions.json`), so it survives
 //! restarts, and is only a template: starting a session copies its lists and condition into a running
 //! session (`session.rs`), which is then fixed until it ends. So that what is shown and what runs stay
-//! the same, a running session's definition cannot be changed or deleted until it ends, nor can a
-//! target or condition it uses be deleted. A target or condition can be changed, and the
+//! the same, a locked session's definition can only be made stricter (`handler::edit_session`) and
+//! not deleted until it can be stopped, nor can a target or condition it uses be deleted. A target or condition can be changed, and the
 //! change goes to the running sessions that use it; but while one of them is locked, only to be
 //! stricter (`Target::tightened_by`, `Rule::tightened_by`, `handler::edit_shared`). Deleting a
 //! target or condition takes it out of the sessions that use it (`Library::fallout`).
@@ -439,6 +439,10 @@ impl Definitions {
     pub fn save_session(&self, mut session: Definition) -> Result<(), String> {
         session.name = session.name.trim().to_string();
         session.allowance = session.allowance.map(Terms::checked).transpose()?;
+        // A random text is drawn when the session starts, never given.
+        if let Lock::RandomText { text, .. } = &mut session.lock {
+            *text = None;
+        }
         self.change(|library| {
             let old = library.session(&session.id).cloned();
             if let Lock::Password { password, hash } = &mut session.lock {
