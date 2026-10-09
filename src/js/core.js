@@ -197,8 +197,6 @@ document.addEventListener("pointerdown", () => (pointer = true), true);
 document.addEventListener("keydown", () => (pointer = false), true);
 // Once the dialog has closed and Carbon has given the focus back: let it go, if a pointer opened it.
 const letGo = () => openedByPointer && setTimeout(() => !$("confirm").open && document.activeElement && document.activeElement.blur());
-// Without an `action` it has no buttons: a list to choose from, closed by `dismiss` (a choice
-// made), by the X, Escape or a click outside it.
 function ask({ heading, body = "", action, kind, fields = [], read = null }) {
   if (answer) answer(false);
   if (!$("confirm").open) openedByPointer = pointer;
@@ -206,13 +204,7 @@ function ask({ heading, body = "", action, kind, fields = [], read = null }) {
   $("confirm-body").textContent = body;
   $("confirm-body").hidden = !body;
   $("confirm-error").hidden = true;
-  // A list to choose from has no buttons and closes on a click outside it, like on the X; a
-  // question or a form stays until it is answered.
-  $("confirm-footer").hidden = !action;
-  $("confirm").classList.toggle("list", !action);
-  $("confirm").preventCloseOnClickOutside = !!action;
-  $("confirm-action").hidden = !action;
-  $("confirm-action").textContent = action || "";
+  $("confirm-action").textContent = action;
   if (kind) $("confirm-action").setAttribute("kind", kind);
   $("confirm-fields").replaceChildren(...fields);
   $("confirm-fields").hidden = fields.length === 0;
@@ -225,7 +217,7 @@ function ask({ heading, body = "", action, kind, fields = [], read = null }) {
   return new Promise((resolve) => (answer = resolve));
 }
 $("confirm-fields").addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !$("confirm-action").hidden) $("confirm-action").click();
+  if (event.key === "Enter") $("confirm-action").click();
 });
 function answered(value) {
   const resolve = answer;
@@ -249,7 +241,7 @@ $("confirm-action").addEventListener("click", async () => {
   letGo();
   answered(value);
 });
-// Closes the dialog from inside it, as a choice in a list does. (Opened again at once, it stays.)
+// Closes the dialog from inside it, as a list's New does. (Opened again at once, it stays.)
 function dismiss(value = false) {
   $("confirm").open = false;
   letGo();

@@ -99,10 +99,10 @@ function showSession(id) {
 
 // A tile's ⋮ opens below its button, or above it where there is no room below: Carbon's overflow
 // menu does not flip by itself, so its direction (its own property) is set before it opens. Its
-// items are Carbon's md size, 2.5rem.
+// items are its button's size, sm: 2rem.
 function openTowardsRoom(trigger, body) {
   const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
-  const height = body.querySelectorAll("cds-overflow-menu-item:not([hidden])").length * 2.5 * rem;
+  const height = body.querySelectorAll("cds-overflow-menu-item:not([hidden])").length * 2 * rem;
   const box = trigger.getBoundingClientRect();
   const up = innerHeight - box.bottom < height && box.top > innerHeight - box.bottom;
   body.setAttribute("direction", up ? "top" : "bottom");
@@ -114,7 +114,7 @@ function makeTile(kind, id) {
   menuIcon.classList.add("cds--overflow-menu__icon");
   const menu = el(
     "cds-overflow-menu",
-    { "aria-label": t("common.options"), "menu-alignment": "bottom-end" },
+    { "aria-label": t("common.options"), "menu-alignment": "bottom-end", size: "sm" },
     menuIcon,
     el("span", { slot: "tooltip-content" }, t("common.options")),
     el(
@@ -216,9 +216,9 @@ function renderTiles(kind) {
 // ---- A session's tile: its state, its lock (the last of its fields, `fields.js`) and Start / Stop.
 
 function addSessionControls(parts, id) {
-  const toggle = el("cds-button", { kind: "primary", size: "md" });
+  const toggle = el("cds-button", { kind: "primary", size: "sm" });
   // A delay lock's wait can be ended while it counts down or waits to be used.
-  const abort = el("cds-button", { kind: "tertiary", size: "md", hidden: true }, t("common.keepLocked"), carbonIcon("locked", "icon"));
+  const abort = el("cds-button", { kind: "tertiary", size: "sm", hidden: true }, t("common.keepLocked"), carbonIcon("locked", "icon"));
   parts.actions.append(abort, toggle);
   // The Lock row's menu chooses the method, or the settings of the one it has (`fields.js`).
   Object.assign(parts, { toggle, abort, setLock: (method) => setLock(id, method) });

@@ -23,7 +23,7 @@ pub struct DateTime {
 impl DateTime {
     /// `2026-10-06 18:00`, also with a `T` between them, or without leading zeros (`2026-10-6 8:00`).
     pub fn parse(text: &str) -> Result<DateTime, String> {
-        let wrong = || format!("\"{}\" is not a date and time such as 2026-10-06 18:00", text.trim());
+        let wrong = || format!("“{}” is not a date and time such as 2026-10-06 18:00", text.trim());
         let (date, time) = text.trim().split_once([' ', 'T']).ok_or_else(wrong)?;
         let date: Vec<&str> = date.split('-').collect();
         let time: Vec<&str> = time.trim().split(':').collect();

@@ -21,7 +21,7 @@ pub fn parse_allowing_zero(text: &str) -> Result<Option<Duration>, String> {
 }
 
 fn invalid_duration(text: &str) -> String {
-    format!("Invalid duration \"{text}\"; use e.g. 10m (10 minutes), 2h 30m (2 hours 30 minutes) or 1d (1 day)")
+    format!("Invalid duration “{text}”; use e.g. 10m (10 minutes), 2h 30m (2 hours 30 minutes) or 1d (1 day)")
 }
 
 fn read(text: &str) -> Result<Option<Duration>, String> {

@@ -131,7 +131,6 @@ window.STRINGS = {
       budget: "Allowed for {time}",
       perItem: "{time} per item",
       // Running; while the condition is off, nothing is blocked for it to allow.
-      inactiveCondition: "Inactive condition",
       allowedFor: "Allowed for {change}",
       allowedIn: "Allowed in {change}",
       blocked: "Blocked",

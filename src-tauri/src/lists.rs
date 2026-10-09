@@ -8,7 +8,7 @@
 //! **A new list** is a field of both, a line in `Lists::parse`, `Lists::entries` and
 //! `Lists::has`, an arm in `Entries::field`, a `state::Uses` variant for the action that needs
 //! it, an entry in the window's `LISTS` and its key in a `SECTIONS` group, and an option in
-//! `cli::LIST_OPTIONS`.
+//! `LIST_OPTIONS` (`cli/parse.rs`).
 
 use serde::{Deserialize, Serialize};
 

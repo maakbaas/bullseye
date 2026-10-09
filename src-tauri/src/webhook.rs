@@ -178,7 +178,7 @@ pub fn test(hook: &Hook) -> Result<String, String> {
         Outcome::Matches => format!("it matches, so the condition is {state}"),
         Outcome::Otherwise => format!("it does not match, so the condition is {state}, as it is by default"),
     };
-    Ok(format!("HTTP {}, body \"{}\": {verdict}", found.status, found.body))
+    Ok(format!("HTTP {}, body “{}”: {verdict}", found.status, found.body))
 }
 
 // ---- The poller.
@@ -346,10 +346,10 @@ mod tests {
         };
         let (found, words) = asked(200, " off ", true);
         assert_eq!(found, Ok(Probe { status: 200, body: "off".into(), outcome: Outcome::Matches, active: false }));
-        assert_eq!(words.unwrap(), "HTTP 200, body \"off\": it matches, so the condition is not active");
+        assert_eq!(words.unwrap(), "HTTP 200, body “off”: it matches, so the condition is not active");
         let (found, words) = asked(200, "on", true);
         assert!(found.is_ok_and(|p| p.outcome == Outcome::Otherwise && p.active));
-        assert_eq!(words.unwrap(), "HTTP 200, body \"on\": it does not match, so the condition is active, as it is by default");
+        assert_eq!(words.unwrap(), "HTTP 200, body “on”: it does not match, so the condition is active, as it is by default");
         let (_, words) = asked(200, "off", false);
         assert!(words.unwrap().ends_with("it matches, so the condition is active"));
         let (_, words) = asked(500, "maybe", false);

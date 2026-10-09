@@ -82,7 +82,7 @@ function addRows(parts, id) {
     const label = el("span", { class: "row-label" }, t(`sessions.fields.${key}`));
     const value = el("span", { class: "row-value" });
     // Under it, in a few words, what is happening now (`tiles.js`).
-    const now = el("span", { class: "row-now cds--type-helper-text-01" });
+    const now = el("span", { class: "row-now cds--type-body-compact-01" });
     // The row's inline action: a ghost icon button, as Carbon's contained lists have them.
     const button = (symbol, tip, act) => {
       const node = el("cds-icon-button", { kind: "ghost", size: "md", align: "left" }, carbonIcon(symbol, "icon"), el("span", { slot: "tooltip-content" }, tip));
@@ -94,9 +94,12 @@ function addRows(parts, id) {
     if (key === "block" || key === "when") {
       // A list to tick or choose from in the modal (`fillPanel`), filled each time it opens.
       edit = button("edit", t(`sessions.fields.${key === "block" ? "changeBlock" : "changeWhen"}`), async () => {
-        const panel = el("div");
-        fillPanel(parts, id, key, panel, dismiss);
-        await ask({ heading: t("sessions.fields.panelHeading", { what: t(`sessions.fields.${key}`), name: quoted(current(id).name) }), fields: [panel] });
+        const { node, chosen } = choices(id, key);
+        const heading = t("sessions.fields.panelHeading", { what: t(`sessions.fields.${key}`), name: quoted(current(id).name) });
+        if (!(await ask({ heading, fields: [node], action: t("common.save"), kind: "primary", read: () => true }))) return;
+        const next = chosen();
+        const session = current(id);
+        if (Object.entries(next).some(([field, value]) => JSON.stringify(value) !== JSON.stringify(session[field] ?? null))) save(session, next);
       });
     } else {
       select = el("cds-dropdown", { type: "inline", size: "sm", "aria-label": t(`sessions.fields.${key}`) });
@@ -179,56 +182,48 @@ function renderRows(parts, session, lines) {
   }
 }
 
-// What the targets' list holds, with no heading of its own (the row says what it is): the targets
-// in a list to click, each marked or unmarked and saved at once with the dialog staying open for the
-// next, and a button under it to make a new one.
-function fillPanel(parts, id, key, panel, close) {
+// A row's list in the dialog: the targets to mark, or the conditions to choose one of, under a New
+// button on the right (made on a detour, then chosen); nothing is saved before Save. `chosen()`:
+// what to save.
+function choices(id, key) {
   const session = current(id);
-  // Making a new one is a button of its own under the list.
-  const button = (text, icon, act) => {
-    const node = el("cds-button", { kind: "tertiary", size: "md" }, text, carbonIcon(icon, "icon"));
-    node.addEventListener("click", () => {
-      close();
-      act();
-    });
-    return node;
-  };
-  if (key === "when") {
-    // One of several: a plain list to click, the one it has checked; a choice closes the dialog.
-    const has = chosenOf("when", session);
-    const options = optionsOf("when").map(([value, text]) => {
-      const item = el("cds-contained-list-item", { clickable: true }, value === has ? carbonIcon("checkmark", "icon") : el("span", { slot: "icon", class: "no-mark" }), text);
-      item.addEventListener("cds-contained-list-item-click", () => {
-        close();
-        if (value !== has) save(current(id), { condition: value === ALWAYS ? null : value });
-      });
-      return item;
-    });
-    const list = el("cds-contained-list", { kind: "disclosed", size: "md", "aria-label": t("sessions.fields.when") }, ...options);
-    const more = button(t("conditions.newLabel"), "add", () => make(id, "conditions", (made) => save(current(id), { condition: made.id })));
-    return panel.replaceChildren(el("div", { class: "row-panel" }, list, more));
-  }
-  // What is chosen while it is open: each click builds on the last, also before the last one's
-  // save has come back.
-  const chosen = new Set(session.targets);
-  const group = el("cds-contained-list", { kind: "disclosed", size: "md", "aria-label": t("sessions.fields.block") });
-  const items = overview.targets.map((target) => {
-    const mark = (on) => (on ? carbonIcon("checkmark", "icon") : el("span", { slot: "icon", class: "no-mark" }));
-    let icon = mark(chosen.has(target.id));
-    const item = el("cds-contained-list-item", { clickable: true }, icon, target.name);
+  const many = key === "block";
+  const kind = many ? "targets" : "conditions";
+  const options = many ? overview.targets.map((target) => [target.id, target.name]) : optionsOf("when");
+  const picked = new Set(many ? session.targets : [chosenOf("when", session)]);
+  const mark = (on) => (on ? carbonIcon("checkmark", "icon") : el("span", { slot: "icon", class: "no-mark" }));
+  const marks = new Map();
+  const items = options.map(([value, text]) => {
+    marks.set(value, mark(picked.has(value)));
+    const item = el("cds-contained-list-item", { clickable: true }, marks.get(value), text);
     item.addEventListener("cds-contained-list-item-click", () => {
-      if (chosen.has(target.id)) chosen.delete(target.id);
-      else chosen.add(target.id);
-      const next = mark(chosen.has(target.id));
-      icon.replaceWith(next);
-      icon = next;
-      save(current(id), { targets: overview.targets.map((t) => t.id).filter((t) => chosen.has(t)) });
+      // Targets are marked and unmarked, all but the last; a condition is one of them.
+      if (many && picked.has(value)) {
+        if (picked.size > 1) picked.delete(value);
+      } else {
+        if (!many) picked.clear();
+        picked.add(value);
+      }
+      for (const [other, old] of marks) {
+        const next = mark(picked.has(other));
+        old.replaceWith(next);
+        marks.set(other, next);
+      }
     });
     return item;
   });
-  group.append(...items);
-  const nodes = [group, button(t("targets.newLabel"), "add", () => make(id, "targets", (made) => save(current(id), { targets: [...current(id).targets, made.id] })))];
-  panel.replaceChildren(el("div", { class: "row-panel" }, ...nodes));
+  const chosen = () => {
+    if (many) return { targets: options.map(([value]) => value).filter((value) => picked.has(value)) };
+    const [value] = picked;
+    return { condition: value === ALWAYS ? null : value };
+  };
+  const more = el("cds-button", { kind: "primary", size: "sm" }, t(`${kind}.newLabel`), carbonIcon("add", "icon"));
+  more.addEventListener("click", () => {
+    dismiss();
+    make(id, kind, (made) => save(current(id), many ? { targets: [...chosen().targets, made.id] } : { condition: made.id }));
+  });
+  const list = el("cds-contained-list", { kind: "disclosed", size: "md", "aria-label": t(`${kind}.title`) }, ...items);
+  return { node: el("div", { class: "choices" }, more, list), chosen };
 }
 
 const current = (id) => overview.sessions.find((s) => s.id === id);

@@ -1520,7 +1520,7 @@ mod tests {
         // Unlocking used the request up, and that is remembered too.
         assert_eq!(overview(&service("three")).unlock.remaining, None);
         // Whatever is wrong with the file, unlocking is open: no delay, ready.
-        for garbage in ["", "{ nope", "null", "{\"delay\": \"soon\"}", "{\"delay\": -1}"] {
+        for garbage in ["", "{ nope", "null", "{“delay”: “soon”}", "{“delay”: -1}"] {
             fs::write(&file, garbage).unwrap();
             let status = overview(&service("garbage")).unlock;
             assert_eq!((status.delay, status.remaining), (0, Some(0)), "{garbage:?}");

@@ -3,7 +3,7 @@
 //! condition, `condition.rs`), and how it is locked (this).
 //!
 //! **A new lock method goes here**, as a variant, together with what it means in `Sessions`
-//! (`session.rs`), an entry in the UI's `LOCKS` table and an option in the CLI (`cli.rs`, `CLI.md`).
+//! (`session.rs`), an entry in the UI's `LOCKS` table and an option in the CLI (`cli/`, `CLI.md`).
 
 use std::time::Duration;
 

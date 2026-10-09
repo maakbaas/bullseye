@@ -148,9 +148,9 @@ fn running_lines(running: &Running) -> (Line, Line, Line) {
         None => now("active", &[]),
         Some(rule) => rule_now(rule, if running.enforcing { "active" } else { "inactive" }, running.condition_change_words.as_ref()),
     };
-    // Nothing is blocked while the condition is off, so there is nothing for an allowance to allow.
+    // The same while the condition is off: a cycle and a delayed start go by the clock, a budget keeps
+    // what is left (it is only used while the condition is on) and its reset.
     let allowance = match &running.allowance {
-        _ if !running.enforcing => now("inactiveCondition", &[]),
         None => now("neverPaused", &[]),
         Some(state) => {
             let change = state.change_words.clone().unwrap_or_default();
@@ -431,9 +431,9 @@ mod tests {
         assert_eq!(with(each(0)), "None used up");
         assert_eq!(with(each(1)), "1 item used up");
         assert_eq!(with(each(2)), "2 items used up");
-        // While the condition is off, whatever the allowance.
+        // While the condition is off, the same.
         let off = Running { enforcing: false, condition: Some(Rule::FlashDrive { serial: "1".into(), drive: "Stick".into() }), ..run() };
-        assert_eq!(running(off).1, "Inactive condition");
+        assert_eq!(running(off).1, "Never paused");
     }
 
     #[test]

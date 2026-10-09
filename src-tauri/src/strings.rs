@@ -215,9 +215,11 @@ mod tests {
     fn every_text_asked_for_is_there() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(std::path::Path::new(file!()).parent().unwrap());
         let mut asked = 0;
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let source = std::fs::read_to_string(entry.unwrap().path()).unwrap_or_default();
-            // The code, not its tests (which ask for missing texts on purpose).
+        let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().path()).collect();
+        files.extend(std::fs::read_dir(dir.join("cli")).unwrap().map(|entry| entry.unwrap().path()));
+        // The code, not its tests (which ask for missing texts on purpose).
+        for file in files.iter().filter(|file| !file.ends_with("tests.rs")) {
+            let source = std::fs::read_to_string(file).unwrap_or_default();
             let source = source.split("#[cfg(test)]").next().unwrap_or_default();
             for (at, _) in source.match_indices("t(\"") {
                 let path: String = source[at + 3..].chars().take_while(|&c| c != '"').collect();

@@ -10,7 +10,7 @@ pub mod session;
 pub mod status;
 #[path = "../../../src-tauri/src/strings.rs"]
 pub mod strings;
-#[path = "../../../src-tauri/src/cli.rs"]
+#[path = "../../../src-tauri/src/cli/mod.rs"]
 pub mod cli;
 #[path = "../../../src-tauri/src/clock.rs"]
 pub mod clock;

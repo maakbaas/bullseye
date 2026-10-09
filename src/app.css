@@ -65,7 +65,7 @@ main { padding-block: var(--cds-spacing-06); }
 .session-tile.cds--css-grid-column { display: flex; flex-direction: column; gap: var(--cds-spacing-03); margin-bottom: var(--cds-spacing-05); }
 .session-tile .top { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--cds-spacing-03); }
 /* The size of the overflow menu's button it stands in for. */
-.session-tile .lock { display: flex; align-items: center; justify-content: center; flex: none; inline-size: var(--cds-spacing-08); block-size: var(--cds-spacing-08); fill: var(--cds-icon-secondary); }
+.session-tile .lock { display: flex; align-items: center; justify-content: center; flex: none; inline-size: var(--cds-spacing-07); block-size: var(--cds-spacing-07); fill: var(--cds-icon-secondary); }
 .session-tile h2 { overflow-wrap: anywhere; padding-top: var(--cds-spacing-02); }
 /* The title is a Carbon link that reads as the heading: the link's own tokens give it the heading's
    type and text colour, which hover does not change; its `link` part drops the hover underline, and
@@ -99,8 +99,6 @@ cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
 .modal-fields .fields[hidden] { display: none; }
 /* Carbon leaves 3rem under a modal's content, which looks high under a form field or a sentence: 1.5rem, the same everywhere. */
 #confirm cds-modal-body { padding-block-end: var(--cds-spacing-06); }
-/* A list to choose from: its panel (`.row-panel`) gives it its room. */
-#confirm.list cds-modal-body { padding-inline: 0; padding-block-end: 0; }
 /* A duration: its number and its unit side by side, the number taking the room the unit leaves. */
 .duration { display: flex; align-items: flex-start; gap: var(--cds-spacing-05); }
 .duration > cds-text-input { flex: 1 1 6rem; min-inline-size: 0; }
@@ -189,27 +187,16 @@ cds-link[inline] { display: inline-flex; }
    lines start at one place on every row; a row without one, Targets, keeps the whole width). */
 .tile-rows .row-now { color: var(--cds-text-helper); padding-inline-start: var(--cds-spacing-05); }
 .tile-rows .row-now:empty { display: none; }
-/* A link in it (a lock's condition) in its size, through the link's own type tokens. */
-.tile-rows .row-now cds-link {
-  --cds-body-compact-01-font-size: var(--cds-helper-text-01-font-size, 0.75rem);
-  --cds-body-compact-01-line-height: var(--cds-helper-text-01-line-height, 1.33333);
-  --cds-body-compact-01-letter-spacing: var(--cds-helper-text-01-letter-spacing, 0.32px);
-  --cds-body-01-font-size: var(--cds-helper-text-01-font-size, 0.75rem);
-  --cds-body-01-line-height: var(--cds-helper-text-01-line-height, 1.33333);
-  --cds-body-01-letter-spacing: var(--cds-helper-text-01-letter-spacing, 0.32px);
-}
 @media (min-width: 42rem) {
   .tile-rows .row-text:has(> .row-now:not(:empty)) { grid-template-columns: 16rem minmax(0, 1fr); column-gap: var(--cds-spacing-05); }
   .tile-rows .row-text > .row-now { grid-row: 1; grid-column: 2; line-height: 1.25rem; padding-inline-start: 0; }
 }
 /* The first line of a row is one text line (1.25rem), so a row is as high as its button (2.5rem): Carbon pads the content by what a line of that height leaves. */
 .tile-rows .row-label, .tile-rows .row-text > .row-value:first-child { line-height: 1.25rem; }
-/* A row's panel (in the dialog): its controls and button spaced as a form's, with room around. */
-.row-panel { display: flex; flex-direction: column; align-items: flex-start; gap: var(--cds-spacing-05); padding: var(--cds-spacing-05); }
-/* A list of choices with the same room on its sides as the button under it, right under the heading. */
-.row-panel:has(> cds-contained-list) { padding-block-start: 0; }
-.row-panel > cds-contained-list { align-self: stretch; }
-.row-panel .no-mark { inline-size: 1rem; }
+/* A row's list in the dialog (`fields.js`): its New button on the right above it; no mark takes a mark's room. */
+.choices { display: flex; flex-direction: column; align-items: flex-end; gap: var(--cds-spacing-03); }
+.choices > cds-contained-list { align-self: stretch; }
+.no-mark { inline-size: 1rem; }
 
 /* The state tag beside the title, wrapping under it when the name is long. */
 .session-tile .heading { display: flex; flex-wrap: wrap; align-items: center; column-gap: var(--cds-spacing-04); min-inline-size: 0; }

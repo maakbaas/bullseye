@@ -12,7 +12,7 @@
 //! session holds a copy of the rule it started with (`session::Session`).
 //!
 //! **A new kind of condition** is a variant of `Rule`, with what it means in `active` and
-//! `next_change`, an editor in the window (`src/js/forms.js`) and an option in the CLI (`cli.rs`).
+//! `next_change`, an editor in the window (`src/js/forms.js`) and an option in the CLI (`cli/`).
 
 use std::time::{Duration, SystemTime};
 
@@ -183,7 +183,7 @@ impl Rule {
                 if more {
                     Ok(())
                 } else {
-                    Err("A locked session uses this combination, so it can only get more active: conditions added to an \"any\", taken out of an \"all\", or an \"all\" made an \"any\"".into())
+                    Err("A locked session uses this combination, so it can only get more active: conditions added to an “any”, taken out of an “all”, or an \"all\" made an \"any\"".into())
                 }
             }
             // What a web address will answer cannot be compared: only the same one is allowed.

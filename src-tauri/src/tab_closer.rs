@@ -748,7 +748,7 @@ impl Closer {
                         // SAFETY: a window handle Windows handed over a moment ago; a stale one only fails.
                         unsafe { PostMessageW(window.handle as HWND, WM_CLOSE, 0, 0) };
                         self.titles_asked.insert(window.handle, Instant::now());
-                        note("app", &format!("asked the window \"{}\" of {program} to close ({})", window.title, self.woken.describe()));
+                        note("app", &format!("asked the window “{}” of {program} to close ({})", window.title, self.woken.describe()));
                     }
                 }
                 TitleAction::Minimize => {
@@ -756,14 +756,14 @@ impl Closer {
                     match self.minimize_asked.get(&window.handle) {
                         Some(since) if since.elapsed() >= MINIMIZE_AFTER => {
                             self.unminimizable.insert(window.handle);
-                            note("app", &format!("the window \"{}\" of {program} does not minimize; it is left alone", window.title));
+                            note("app", &format!("the window “{}” of {program} does not minimize; it is left alone", window.title));
                         }
                         Some(_) => {}
                         None => {
                             // SAFETY: as above; asynchronous, so a window that does not answer holds nothing up.
                             unsafe { ShowWindowAsync(window.handle as HWND, SW_MINIMIZE) };
                             self.minimize_asked.insert(window.handle, Instant::now());
-                            note("app", &format!("minimized the window \"{}\" of {program} ({})", window.title, self.woken.describe()));
+                            note("app", &format!("minimized the window “{}” of {program} ({})", window.title, self.woken.describe()));
                         }
                     }
                 }
