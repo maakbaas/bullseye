@@ -35,7 +35,7 @@ window.STRINGS = {
     edit: "Edit",
     duplicate: "Duplicate",
     // {name}: the copy's (the service names it after the original, with a number).
-    duplicated: "Made {name}, a copy of {original}",
+    duplicated: "Duplicated {original} to {name}",
     duplicateFailed: "Could not duplicate {name}",
     options: "Options",
     locked: "Locked",
@@ -53,7 +53,7 @@ window.STRINGS = {
     keepLocked: "Keep locked",
     lockAgain: "Lock again",
     // Under the title of a target's or condition's editor.
-    editorDescription: "Running sessions follow changes made here; a locked one only accepts stricter ones",
+    editorDescription: "Running sessions also follow changes made here.",
     // The service's words as a sentence of a question ({text}).
     sentence: "{text}.",
     // Before the last of a list: a, b and c.
@@ -69,12 +69,12 @@ window.STRINGS = {
   sessions: {
     title: "Sessions",
     noun: "session",
-    description: "Targets under a condition and a lock. Sessions start and run independently",
+    description: "A session defines what to lock and when. Sessions start and run independently",
     // A new one is named by the first free number.
     autoName: "Session {n}",
     newLabel: "New session",
     emptyTitle: "No sessions yet",
-    emptyText: "Make a target first, then a session that uses it",
+    emptyText: "Click new to add your first session.",
     nameMissing: "Name the session",
 
     // A session is set up on its tile: a row each for its targets, condition, allowance and lock,
@@ -218,9 +218,9 @@ window.STRINGS = {
   // The question before a locked session is made stricter, like the one before it starts locked.
   // {names}: the session or sessions, quoted; {what}: what it will be, a sentence.
   stricter: {
-    heading: "Make {names} stricter?",
-    body: "{what} It cannot be loosened until {names} can be stopped. Only unlocking in Settings ends it early",
-    action: "Make stricter",
+    heading: "Makes the running session {names} stricter?",
+    body: "{what} It cannot be loosened as long as {names} remain locked",
+    action: "Confirm",
     noAllowance: "Its allowance is taken away, so nothing pauses it.",
     moreTargets: "It also blocks {targets}.",
     always: "It is active at all times.",
@@ -493,7 +493,7 @@ window.STRINGS = {
       testing: "Asking …",
       testNot: "Not asked",
       testFailed: "No answer",
-      answer: "HTTP {status}. Body: {body}",
+      answer: "HTTP status: {status}. Body: {body}",
       matchedActive: "Matches: active",
       matchedInactive: "Matches: not active",
       unmatchedActive: "No match: active by default",
