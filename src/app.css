@@ -171,18 +171,20 @@ cds-link[inline] { display: inline-flex; }
 .tile-rows .row-label { color: var(--cds-text-secondary); }
 /* The row's icon sits on the middle of the first line, which is 20px high. */
 .tile-rows cds-contained-list-item > [slot="icon"] { margin-block-start: var(--cds-spacing-01); }
-.tile-rows .row-text { display: grid; grid-template-columns: minmax(0, 1fr); justify-items: start; row-gap: var(--cds-spacing-03); overflow-wrap: anywhere; }
+/* Its parts sit at the top of the row, so a dropdown stays on the first line when the status beside it wraps. */
+.tile-rows .row-text { display: grid; grid-template-columns: minmax(0, 1fr); justify-items: start; align-items: start; row-gap: var(--cds-spacing-03); overflow-wrap: anywhere; }
 /* A dropdown sits in the line of the text, without making the row taller than the text would (20px: its 32px less 6px above and below). */
 .tile-rows .row-text cds-dropdown { margin-block: -0.375rem; inline-size: 16rem; max-inline-size: 100%; }
 /* Text in the column starts where the letters in an inline dropdown do (its left padding, 1rem), so they line up from row to row. */
 .tile-rows .row-value { padding-inline-start: var(--cds-spacing-05); }
 .tile-rows .row-value:empty { display: none; }
-/* What is happening now: helper text, lined up with the value's letters; under the value in a narrow
-   window, beside it from Carbon's md breakpoint (the values in a column as wide as a dropdown, so the
-   lines start at one place on every row; a row without one, Targets, keeps the whole width). */
+/* What is happening now, lined up with the value's letters; under the value in a narrow window, beside
+   it from 48rem, a little past Carbon's md breakpoint so it has room for its words (the values in a
+   column as wide as a dropdown, so the lines start at one place on every row; a row without one,
+   Targets, keeps the whole width). */
 .tile-rows .row-now { color: var(--cds-text-helper); padding-inline-start: var(--cds-spacing-05); }
 .tile-rows .row-now:empty { display: none; }
-@media (min-width: 42rem) {
+@media (min-width: 48rem) {
   .tile-rows .row-text:has(> .row-now:not(:empty)) { grid-template-columns: 16rem minmax(0, 1fr); column-gap: var(--cds-spacing-05); }
   .tile-rows .row-text > .row-now { grid-row: 1; grid-column: 2; line-height: 1.25rem; padding-inline-start: 0; }
 }
@@ -193,8 +195,10 @@ cds-link[inline] { display: inline-flex; }
 .choices > cds-contained-list { align-self: stretch; }
 .no-mark { inline-size: 1rem; }
 
-/* The state tag beside the title, wrapping under it when the name is long. */
-.session-tile .heading { display: flex; flex-wrap: wrap; align-items: center; column-gap: var(--cds-spacing-04); min-inline-size: 0; }
+/* The state tag beside the title, wrapping under it when the name is long; it sits on the letters'
+   middle, which is a little below the line's. */
+.session-tile .heading { display: flex; flex-wrap: wrap; align-items: center; column-gap: var(--cds-spacing-03); min-inline-size: 0; }
+.session-tile .heading > cds-tag { margin-block-start: var(--cds-spacing-01); }
 /* Carbon's overflow menu joins its open button with a strip over the seam (its `::after`), sized and
    placed by rules for its CSS class that the web component's host does not match, so the strip is
    there without a size and the menu's shadow shows across the seam. Carbon's own values, for a

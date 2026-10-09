@@ -319,7 +319,8 @@ async function setAllowance(parts, id, type) {
 }
 
 // A new session: its name, in the modal; the rest, targets too, is set on its tile, which is then
-// shown on its own, as a link to it shows it. Without a target it does nothing yet.
+// shown on its own, as a link to it shows it (with the list of all, when it is the only one).
+// Without a target it does nothing yet.
 async function newSession() {
   const name = el("cds-text-input", { label: t("common.name"), value: freeName("sessions", overview.sessions) });
   const made = await ask({

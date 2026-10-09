@@ -18,8 +18,8 @@ let single = null; // the session shown on its own (`#/edit/<id>`), or null
 function render() {
   if (!$("view-settings").hidden) renderSettings();
   if (!$("view-list").hidden) {
-    // A session shown on its own that is gone (deleted): back to all of them.
-    if (single && !overview.sessions.some((s) => s.id === single)) {
+    // A session shown on its own that is gone (deleted), or the only one: back to all of them.
+    if (single && (overview.sessions.length < 2 || !overview.sessions.some((s) => s.id === single))) {
       location.hash = KINDS.sessions.path;
       return;
     }
@@ -305,14 +305,16 @@ function route() {
     return;
   }
   detour.current = null;
-  // A link to a session shows its tile on its own, under Sessions in the breadcrumb.
+  // A link to a session shows its tile on its own, under Sessions in the breadcrumb; the only one
+  // is shown as the list.
   single = null;
   const match = hash.match(/^#\/(?:(targets|conditions)(?:\/|$))?(new|edit\/(.+))?$/);
   if (hash === "#/settings") view = "settings";
   else if (match) {
     kind = match[1] || "sessions";
     if (match[2] && kind === "sessions") {
-      if (match[3]) single = decodeURIComponent(match[3]);
+      // The only session is shown as the list of all of them (a new first one too).
+      if (match[3] && overview.sessions.length !== 1) single = decodeURIComponent(match[3]);
       else history.replaceState(null, "", KINDS.sessions.path);
     } else if (match[2]) {
       view = "editor";
@@ -349,11 +351,11 @@ function route() {
   $("scroller").scrollTo(0, 0);
 }
 
-// A session shown on its own: its name as the title and after Sessions in the breadcrumb, and Show all
-// under it when there are others.
+// A session shown on its own (never the only one): its name as the title and after Sessions in the
+// breadcrumb, and Show all under it.
 function showSingle() {
   const session = single && overview.sessions.find((s) => s.id === single);
-  $("show-all").hidden = !session || overview.sessions.length < 2;
+  $("show-all").hidden = !session;
   if (!session) return;
   if ($("list-title").textContent !== session.name) $("list-title").textContent = session.name;
   $("trail").toggleAttribute("no-trailing-slash", true);
