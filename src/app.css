@@ -69,7 +69,7 @@ main { padding-block: var(--cds-spacing-06); }
 .session-tile h2 { overflow-wrap: anywhere; padding-top: var(--cds-spacing-02); }
 /* The title is a Carbon link that reads as the heading: the link's own tokens give it the heading's
    type and text colour, which hover does not change; its `link` part drops the hover underline, and
-   an edit icon after the title (the link's icon slot) shows on hover and keyboard focus instead. */
+   an edit icon after the title (the link's icon slot) shows on hover and keyboard focus instead, moving the tag aside. */
 .session-tile h2 cds-link {
   --cds-body-compact-01-font-size: var(--cds-productive-heading-03-font-size, 1.25rem);
   --cds-body-compact-01-font-weight: var(--cds-productive-heading-03-font-weight, 400);
@@ -80,9 +80,8 @@ main { padding-block: var(--cds-spacing-06); }
 }
 .session-tile h2 cds-link::part(link):hover { text-decoration: none; }
 /* The link centres the icon in its line box, which reads high next to the letters: a hair lower, and a hair closer. */
-.session-tile .title-edit { margin-block-start: calc(var(--cds-spacing-02) + var(--cds-spacing-01)); margin-inline-start: calc(-1 * var(--cds-spacing-02)); fill: var(--cds-icon-secondary); opacity: 0; transition: opacity var(--cds-duration-fast-01, 70ms); }
-.session-tile .title-edit.unavailable { display: none; }
-.session-tile h2 cds-link:hover .title-edit, .session-tile h2 cds-link:focus-within .title-edit { opacity: 1; }
+.session-tile .title-edit { margin-block-start: calc(var(--cds-spacing-02) + var(--cds-spacing-01)); margin-inline-start: calc(-1 * var(--cds-spacing-02)); fill: var(--cds-icon-secondary); display: none; }
+.session-tile h2 cds-link:is(:hover, :focus-within) .title-edit:not(.unavailable) { display: inline-block; }
 /* Show all sessions, under one shown on its own. */
 .show-all { margin-bottom: var(--cds-spacing-05); }
 .show-all[hidden] { display: none; }

@@ -128,7 +128,15 @@ function makeTile(kind, id) {
   const name = el("span");
   const editIcon = carbonIcon("edit", "icon");
   editIcon.classList.add("title-edit");
-  const title = el("h2", { class: "cds--type-productive-heading-03" }, kind === "sessions" ? name : el("cds-link", { href: editHref(kind, id) }, name, editIcon));
+  // The name links to its editor; a session's, which has none, renames it.
+  const link = el("cds-link", { href: editHref(kind, id) }, name, editIcon);
+  if (kind === "sessions") {
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      renameSession(id);
+    });
+  }
+  const title = el("h2", { class: "cds--type-productive-heading-03" }, link);
   const tag = el("cds-tag", { size: "md" });
   const actions = el("div", { class: "actions" });
   const columns = "session-tile cds--css-grid-column cds--sm:col-span-4 cds--md:col-span-8 cds--lg:col-span-16";
@@ -182,7 +190,7 @@ function renderTiles(kind) {
     const held = kindOf.held(item);
     parts.menu.hidden = !!held;
     parts.lock.hidden = !parts.menu.hidden;
-    // Nothing to edit while it is held, so no room kept for the title's edit icon: the tag moves up to the name.
+    // Nothing to edit while it is held: no edit icon on the title.
     parts.editIcon.classList.toggle("unavailable", !!held);
     if (kind === "sessions") {
       renderSessionControls(parts, item);
