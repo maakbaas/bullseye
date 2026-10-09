@@ -84,7 +84,7 @@ function runningNow(item, running) {
   let unless = null;
   const state = running.allowance;
   if (state && state.terms.type === "pomodoro") unless = now(state.open ? "allowed" : "blocked", state.change_words);
-  else if (state && state.terms.type === "delayed") unless = state.open && state.change_words ? now("delayed", state.change_words) : t("sessions.now.begun");
+  else if (state && state.terms.type === "delayed") unless = state.open ? now("delayed", state.change_words) : t("sessions.now.begun");
   else if (state && state.left !== null) unless = t(`sessions.now.${state.left === 0 ? "usedUp" : "left"}${state.reset_words ? "Reset" : ""}`, { left: state.left_words, reset: state.reset_words });
   else if (state && state.items.length) {
     const items = state.items.map((i) => t(`sessions.now.${i.left === 0 ? "itemUsedUp" : "itemLeft"}`, { item: i.item, left: i.left_words }));

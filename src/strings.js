@@ -112,6 +112,7 @@ window.STRINGS = {
       allowedFor: "Allowed for {change}",
       blocked: "Blocked now",
       blockedFor: "Allowed in {change}",
+      delayed: "Not started yet",
       delayedFor: "Starts in {change}",
       begun: "Started",
       left: "{left} left",
