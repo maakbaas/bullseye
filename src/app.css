@@ -167,7 +167,7 @@ cds-link[inline] { display: inline-flex; }
 
 /* A tile's rows (a session's: `fields.js`; a target's or condition's: `tiles.js`): the label in a column of
    its own, the value beside it; on a session, the edit button (as high as a row) is the row's action. */
-.tile-rows .row { display: grid; grid-template-columns: 5rem minmax(0, 1fr); gap: var(--cds-spacing-05); padding-inline-end: var(--cds-spacing-08); }
+.tile-rows .row { display: grid; grid-template-columns: 5rem minmax(0, 1fr); gap: var(--cds-spacing-06); padding-inline-end: var(--cds-spacing-08); }
 .tile-rows .row-label { color: var(--cds-text-secondary); }
 /* The row's icon sits on the middle of the first line, which is 20px high. */
 .tile-rows cds-contained-list-item > [slot="icon"] { margin-block-start: var(--cds-spacing-01); }
@@ -186,8 +186,8 @@ cds-link[inline] { display: inline-flex; }
 .tile-rows .row-now { color: var(--cds-text-helper); padding-inline-start: var(--cds-spacing-05); }
 .tile-rows .row-now:empty { display: none; }
 @media (min-width: 48rem) {
-  /* After the widest dropdown's chevron about as much room as after the widest label (some 45px). */
-  .tile-rows .row-text:has(> .row-now:not(:empty)) { grid-template-columns: 11rem minmax(0, 1fr); column-gap: var(--cds-spacing-06); }
+  /* After the widest dropdown's chevron about as much room as after the widest label (some 54px). */
+  .tile-rows .row-text:has(> .row-now:not(:empty)) { grid-template-columns: 11rem minmax(0, 1fr); column-gap: var(--cds-spacing-07); }
   .tile-rows .row-text > .row-now { grid-row: 1; grid-column: 2; line-height: 1.25rem; padding-inline-start: 0; }
 }
 /* The first line of a row is one text line (1.25rem), so a row is as high as its button (2.5rem): Carbon pads the content by what a line of that height leaves. */
