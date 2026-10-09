@@ -266,11 +266,7 @@ pub(super) fn describe_session(overview: &Overview, session: &Definition) -> Str
 
 /// The target editor's sections (`forms.js`, `SECTIONS`; a test holds them equal): the lists and actions in each, by key.
 pub(super) const SECTIONS: [(&str, &[&str], &[&str]); 5] = [
-    (
-        "websites",
-        &["filters", "allowed"],
-        &["chromium_tabs", "chromium_split_view", "chromium_app_windows", "firefox_tabs", "firefox_split_view"],
-    ),
+    ("websites", &["filters", "allowed"], &[]),
     ("programs", &["programs"], &[]),
     ("store", &["store_apps"], &[]),
     ("titles", &["titles", "allowed_titles"], &["window_titles_minimize"]),

@@ -138,7 +138,7 @@ fn sessions_targets_and_conditions_are_made_shown_changed_and_deleted() {
 #[test]
 fn items_are_added_and_removed() {
     serve("add-remove");
-    ok(&["target", "new", "Social", "--sites", "youtube.com", "reddit.com", "--programs", "Steam", "--actions", "chromium_tabs"]);
+    ok(&["target", "new", "Social", "--sites", "youtube.com", "reddit.com", "--programs", "Steam", "--actions", "obsidian_web_viewer"]);
     ok(&["target", "new", "Games", "--programs", "game.exe"]);
     ok(&["target", "new", "News", "--sites", "nu.nl"]);
     let list = |name: &str| ok(&["target", "show", name]);
@@ -146,21 +146,32 @@ fn items_are_added_and_removed() {
     // A target: entries added as typed (the service keeps them in order), and taken out however they are
     // written, as the list reads them (Steam is steam.exe); what is there already stays once.
     assert_eq!(
-        ok(&["target", "add", "Social", "--sites", "x.com", "YouTube.com", "--titles", "Inbox, 3 unread", "--actions", "firefox_tabs"]),
+        ok(&[
+            "target",
+            "add",
+            "Social",
+            "--sites",
+            "x.com",
+            "YouTube.com",
+            "--titles",
+            "Inbox, 3 unread",
+            "--actions",
+            "window_titles_minimize"
+        ]),
         "Saved the target “Social”.\n"
     );
     let shown = list("Social");
     assert!(shown.contains("  Sites to block: reddit.com, x.com, youtube.com\n"), "{shown}");
     assert!(
         shown.contains("Windows by title\n  Window titles: Inbox, 3 unread\n")
-            && shown.contains("  Close blocked tabs in Firefox\n")
-            && shown.contains("  Close blocked tabs in Chromium\n"),
+            && shown.contains("  Minimize these windows\n")
+            && shown.contains("  Close Obsidian when web viewer is active\n"),
         "{shown}"
     );
-    ok(&["target", "remove", "Social", "--sites", "Reddit.com", "--programs", "steam.exe", "--actions", "chromium_tabs"]);
+    ok(&["target", "remove", "Social", "--sites", "Reddit.com", "--programs", "steam.exe", "--actions", "obsidian_web_viewer"]);
     let shown = list("Social");
     assert!(shown.contains("  Sites to block: x.com, youtube.com\n") && !shown.contains("Programs to close"), "{shown}");
-    assert!(!shown.contains("in Chromium") && shown.contains("Close blocked tabs in Firefox"), "{shown}");
+    assert!(!shown.contains("Obsidian") && shown.contains("Minimize these windows"), "{shown}");
     // What is not there is a typo, and nothing is saved.
     assert_eq!(refused(&["target", "remove", "Social", "--sites", "x.com", "tiktok.com"]), "“tiktok.com” is not in the sites of “Social”");
     assert!(list("Social").contains("x.com, youtube.com"));
@@ -171,7 +182,7 @@ fn items_are_added_and_removed() {
     ok(&["target", "add", "Social", "--actions", "all"]);
     let shown = list("Social");
     assert!(
-        shown.contains("  Close blocked tabs in Chromium\n") && shown.contains("Other\n  Close Obsidian when web viewer is active\n"),
+        shown.contains("Other\n  Close Obsidian when web viewer is active\n") && shown.contains("  Minimize these windows\n"),
         "{shown}"
     );
     ok(&["target", "remove", "Social", "--actions", "all"]);
@@ -520,7 +531,7 @@ fn an_import_says_which_store_apps_it_leaves_out() {
 #[test]
 fn help_and_version_need_no_service() {
     let help = cli(&["help"]).unwrap();
-    assert!(help.starts_with("Bullseye command line") && help.contains("chromium_tabs") && !help.contains("{actions}"));
+    assert!(help.starts_with("Bullseye command line") && help.contains("obsidian_web_viewer") && !help.contains("{actions}"));
     assert_eq!(cli(&["version"]).unwrap(), format!("bullseye {}\n", env!("CARGO_PKG_VERSION")));
 }
 
@@ -595,11 +606,11 @@ fn windows_by_title_are_closed_unless_minimized() {
     let all = parse_actions("all").unwrap();
     assert_eq!(all, Actions::default(), "all is every action as a new target has them: closing windows by title");
     assert!(!all.window_titles_minimize);
-    let down = parse_actions("chromium_tabs window_titles_minimize").unwrap();
-    assert!(down.window_titles_minimize && down.chromium_tabs && !down.firefox_tabs);
+    let down = parse_actions("window_titles_minimize").unwrap();
+    assert!(down.window_titles_minimize && !down.obsidian_web_viewer);
     assert!(parse_actions("all window_titles_minimize").unwrap().window_titles_minimize);
     // The lists with one way to act on them have no switch: their entries are it.
-    for gone in ["exe_names", "store_apps", "window_titles", "window_titles_close"] {
+    for gone in ["exe_names", "store_apps", "window_titles", "window_titles_close", "chromium_tabs", "firefox_split_view"] {
         assert!(parse_actions(gone).unwrap_err().starts_with("Unknown action"), "{gone}");
     }
 }
@@ -624,7 +635,6 @@ fn a_new_target_with_everything() {
         "--allowed-titles",
         "*Visual Studio Code",
         "--actions",
-        "chromium_tabs",
         "window_titles_minimize",
     ]);
     let Ok(Command::TargetNew { name, changes }) = parse(&line) else { panic!("not a new list") };
@@ -637,18 +647,7 @@ fn a_new_target_with_everything() {
     assert_eq!(list.entries.store_apps, vec!["Microsoft.XboxApp_8wekyb3d8bbwe"]);
     assert_eq!(list.entries.titles, vec!["*YouTube*"]);
     assert_eq!(list.entries.allowed_titles, vec!["*Visual Studio Code"]);
-    assert_eq!(
-        list.actions,
-        Actions {
-            chromium_tabs: true,
-            chromium_split_view: false,
-            obsidian_web_viewer: false,
-            chromium_app_windows: false,
-            firefox_tabs: false,
-            firefox_split_view: false,
-            window_titles_minimize: true,
-        }
-    );
+    assert_eq!(list.actions, Actions { obsidian_web_viewer: false, window_titles_minimize: true });
 }
 
 #[test]
@@ -801,7 +800,7 @@ fn what_is_not_understood() {
         &["target"],
         &["target", "new"],
         &["target", "new", "A", "--sites"],
-        &["target", "new", "A", "--actions", "chromium_tabs,lasers"],
+        &["target", "new", "A", "--actions", "obsidian_web_viewer,lasers"],
         &["target", "new", "A", "--clear", "sites"],
         &["target", "edit", "A", "--clear", "everything"],
         &["target", "frob", "A"],

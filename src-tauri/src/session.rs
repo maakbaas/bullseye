@@ -161,30 +161,10 @@ impl Active {
         lists.sites.is_blocked(url) && !lists.allowed.is_blocked(url)
     }
 
-    /// Whether a page shown in a browser is to be closed by any session that closes such pages:
-    /// `split_view` for a window showing two pages, otherwise an ordinary tab.
-    pub fn blocks_page(&self, url: &str, split_view: bool) -> bool {
-        self.judge(
-            |b| if split_view { b.actions.chromium_split_view } else { b.actions.chromium_tabs },
-            |b| b.blocks_site(url),
-            |lists| Active::site_in_use(lists, url),
-        )
-    }
-
-    /// Whether a page shown in an app window (a Chromium window with no tabs) is to be closed, with
-    /// the window, by any session that closes those.
-    pub fn blocks_app_window(&self, url: &str) -> bool {
-        self.judge(|b| b.actions.chromium_app_windows, |b| b.blocks_site(url), |lists| Active::site_in_use(lists, url))
-    }
-
-    /// Whether a page open in a Firefox tab is to be closed, by any session that closes those:
-    /// `split_view` for a page in either half of a split view, otherwise an ordinary tab.
-    pub fn blocks_firefox_page(&self, url: &str, split_view: bool) -> bool {
-        self.judge(
-            |b| if split_view { b.actions.firefox_split_view } else { b.actions.firefox_tabs },
-            |b| b.blocks_site(url),
-            |lists| Active::site_in_use(lists, url),
-        )
+    /// Whether a page shown in a browser is to be closed, however it shows (a tab, a split view, an
+    /// app window): by any session whose target has its site.
+    pub fn blocks_page(&self, url: &str) -> bool {
+        self.judge(|b| b.actions.uses(Uses::Sites), |b| b.blocks_site(url), |lists| Active::site_in_use(lists, url))
     }
 
     /// Whether any session has sites to look for, so the browsers are worth looking at: to close, or
@@ -1251,13 +1231,13 @@ mod tests {
         start(&list, "untimed", sites(&["b.com"]), None).unwrap();
         let active = list.active().unwrap();
         assert_eq!(active.sessions.len(), 2);
-        assert!(active.blocks_page("https://a.com/", false) && active.blocks_page("https://b.com/", false));
+        assert!(active.blocks_page("https://a.com/") && active.blocks_page("https://b.com/"));
         assert!(list.locked().is_some_and(|why| why.contains("Session timed")));
 
         // The timed one ends by itself; the other goes on.
         std::thread::sleep(Duration::from_millis(60));
         let active = list.active().unwrap();
-        assert!(!active.blocks_page("https://a.com/", false) && active.blocks_page("https://b.com/", false));
+        assert!(!active.blocks_page("https://a.com/") && active.blocks_page("https://b.com/"));
         assert!(!list.runs("timed") && list.runs("untimed"));
         assert_eq!(list.locked(), None);
         // Stopping one leaves the others.
@@ -1267,36 +1247,17 @@ mod tests {
     }
 
     #[test]
-    fn each_session_goes_by_its_own_actions_and_allowed_sites() {
+    fn each_session_goes_by_its_own_allowed_sites() {
         let list = sessions("own-rules");
-        let tabs_only = Actions {
-            chromium_tabs: true,
-            chromium_split_view: false,
-            obsidian_web_viewer: false,
-            chromium_app_windows: false,
-            firefox_tabs: false,
-            firefox_split_view: false,
-            window_titles_minimize: false,
-        };
-        let split_only = Actions {
-            chromium_tabs: false,
-            chromium_split_view: true,
-            obsidian_web_viewer: false,
-            chromium_app_windows: false,
-            firefox_tabs: false,
-            firefox_split_view: false,
-            window_titles_minimize: false,
-        };
+        let no_obsidian = Actions { obsidian_web_viewer: false, ..Actions::default() };
         let everything_but_google =
             Lists { sites: FilterList::parse(&["*"]).unwrap(), allowed: FilterList::parse(&["google.com"]).unwrap(), ..Lists::default() };
-        list.start("tabs", "Tabs", vec![part(everything_but_google, tabs_only)], None, StartLock::None).unwrap();
-        list.start("split", "Split", vec![part(sites(&["google.com"]), split_only)], None, StartLock::None).unwrap();
+        list.start("all", "All", vec![part(everything_but_google, no_obsidian)], None, StartLock::None).unwrap();
+        assert!(!list.active().unwrap().blocks_page("https://google.com/") && list.active().unwrap().blocks_page("https://youtube.com/"));
+        list.start("google", "Google", vec![part(sites(&["google.com"]), no_obsidian)], None, StartLock::None).unwrap();
         let active = list.active().unwrap();
         // One session's allowed site is not an exception to another session's list.
-        assert!(!active.blocks_page("https://google.com/", false));
-        assert!(active.blocks_page("https://google.com/", true));
-        assert!(active.blocks_page("https://youtube.com/", false));
-        assert!(!active.blocks_page("https://youtube.com/", true));
+        assert!(active.blocks_page("https://google.com/") && active.blocks_page("https://youtube.com/"));
         assert!(active.watches_sites() && !active.closes_programs() && !active.closes_obsidian());
     }
 
@@ -1408,7 +1369,7 @@ mod tests {
         let resumed = reopened("resume");
         resumed.restore();
         let active = resumed.active().unwrap();
-        assert!(active.blocks_page("https://tweakers.net/nieuws", false) && active.blocks_page("https://c.com/", false));
+        assert!(active.blocks_page("https://tweakers.net/nieuws") && active.blocks_page("https://c.com/"));
         let a = running(&resumed, "a");
         assert_eq!(a.name, "Session a");
         assert!(a.remaining.is_some_and(|left| (3595..=3600).contains(&left)));
@@ -1431,7 +1392,7 @@ mod tests {
     }
 
     fn blocks_site(active: &Active, url: &str) -> bool {
-        active.blocks_page(url, false)
+        active.blocks_page(url)
     }
 
     #[test]
@@ -1512,15 +1473,7 @@ mod tests {
 
     #[test]
     fn a_resumed_session_keeps_its_actions() {
-        let only_obsidian = Actions {
-            chromium_tabs: false,
-            chromium_split_view: false,
-            obsidian_web_viewer: true,
-            chromium_app_windows: false,
-            firefox_tabs: false,
-            firefox_split_view: false,
-            window_titles_minimize: false,
-        };
+        let only_obsidian = Actions { obsidian_web_viewer: true, window_titles_minimize: true };
         let list = sessions("actions");
         list.start("a", "A", vec![part(sites(&[]), only_obsidian)], None, StartLock::For(Duration::from_secs(3600))).unwrap();
         let resumed = reopened("actions");
@@ -1553,7 +1506,7 @@ mod tests {
         .unwrap();
         // An always-active session next to it, to show the other one going quiet on its own.
         start(&list, "b", sites(&["b.com"]), None).unwrap();
-        assert!(list.active().unwrap().blocks_page("https://a.com/", false));
+        assert!(list.active().unwrap().blocks_page("https://a.com/"));
         let a = running(&list, "a");
         assert!(a.enforcing && a.condition == office);
         // The test runs on a real clock as well, so a few seconds may pass along the way.
@@ -1564,7 +1517,7 @@ mod tests {
         // still locked.
         list.clock.at_least(monday(17 * 3600));
         let active = list.active().unwrap();
-        assert!(!active.blocks_page("https://a.com/", false) && active.blocks_page("https://b.com/", false));
+        assert!(!active.blocks_page("https://a.com/") && active.blocks_page("https://b.com/"));
         assert!(list.runs("a") && list.stop("a", false).is_err());
         let a = running(&list, "a");
         assert!(!a.enforcing);
@@ -1667,24 +1620,8 @@ mod tests {
     #[test]
     fn a_session_of_several_targets_enforces_each_by_its_own_rules() {
         let list = sessions("parts");
-        let tabs_only = Actions {
-            chromium_tabs: true,
-            chromium_split_view: false,
-            obsidian_web_viewer: false,
-            chromium_app_windows: false,
-            firefox_tabs: false,
-            firefox_split_view: false,
-            window_titles_minimize: false,
-        };
-        let programs_only = Actions {
-            chromium_tabs: false,
-            chromium_split_view: false,
-            obsidian_web_viewer: false,
-            chromium_app_windows: false,
-            firefox_tabs: false,
-            firefox_split_view: false,
-            window_titles_minimize: false,
-        };
+        let tabs_only = Actions { obsidian_web_viewer: false, window_titles_minimize: false };
+        let programs_only = tabs_only;
         let games = Lists { programs: ProgramList::parse(&["steam"]).unwrap(), ..Lists::default() };
         let social = Part { name: "Social".into(), lists: sites(&["youtube.com"]), actions: tabs_only };
         list.start(
@@ -1697,7 +1634,7 @@ mod tests {
         .unwrap();
         let active = list.active().unwrap();
         assert_eq!(active.sessions.len(), 2);
-        assert!(active.blocks_page("https://youtube.com/", false) && active.blocks_program("steam.exe"));
+        assert!(active.blocks_page("https://youtube.com/") && active.blocks_program("steam.exe"));
         let lists = running(&list, "a").targets;
         assert_eq!(lists.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), vec!["Social", "Games"]);
         // And again after a restart.
@@ -1839,18 +1776,18 @@ mod tests {
         .unwrap();
         // With time left the site is let through and its use is noted, to be counted.
         let active = list.active().unwrap();
-        assert!(!active.blocks_page("https://a.com/x", false));
+        assert!(!active.blocks_page("https://a.com/x"));
         assert_eq!(active.used.take(), vec![("a".to_string(), TOTAL.to_string())]);
         assert!(running(&list, "a").allowance.is_some_and(|status| status.open && status.left.is_some_and(|left| left > 0)));
         // What is reported counts from the last time the app asked; ignored: another session, another key.
         list.polled();
         std::thread::sleep(Duration::from_millis(1100));
         list.charge(&[("other".to_string(), TOTAL.to_string()), ("a".to_string(), "site:a.com".to_string())]);
-        assert!(!list.active().unwrap().blocks_page("https://a.com/x", false));
+        assert!(!list.active().unwrap().blocks_page("https://a.com/x"));
         list.charge(&[("a".to_string(), TOTAL.to_string())]);
         // Used up: closed again.
         let active = list.active().unwrap();
-        assert!(active.blocks_page("https://a.com/x", false));
+        assert!(active.blocks_page("https://a.com/x"));
         assert!(running(&list, "a").allowance.is_some_and(|status| !status.open && status.left == Some(0)));
     }
 
@@ -1867,14 +1804,14 @@ mod tests {
         )
         .unwrap();
         let active = list.active().unwrap();
-        assert!(!active.blocks_page("https://a.com/", false) && !active.blocks_page("https://b.com/", false));
+        assert!(!active.blocks_page("https://a.com/") && !active.blocks_page("https://b.com/"));
         assert_eq!(active.used.take().len(), 2);
         list.polled();
         std::thread::sleep(Duration::from_millis(1100));
         list.charge(&[("a".to_string(), "site:a.com".to_string())]);
         let active = list.active().unwrap();
-        assert!(active.blocks_page("https://a.com/", false), "a.com is used up");
-        assert!(!active.blocks_page("https://b.com/", false), "b.com has all its time");
+        assert!(active.blocks_page("https://a.com/"), "a.com is used up");
+        assert!(!active.blocks_page("https://b.com/"), "b.com has all its time");
         assert_eq!(active.used.take(), vec![("a".to_string(), "site:b.com".to_string())]);
         let items = running(&list, "a").allowance.unwrap().items;
         assert_eq!(items.iter().map(|i| (i.item.as_str(), i.left)).collect::<Vec<_>>(), vec![("a.com", 0)]);
@@ -1885,7 +1822,7 @@ mod tests {
         let list = sessions("cycle");
         let cycle = Terms::Pomodoro { blocked: "1h".into(), allowed: "10m".into(), anchor: allowance::Anchor::Start };
         list.start_with("a", "A", vec![part(sites(&["a.com"]), Actions::default())], None, Some(cycle), StartLock::None).unwrap();
-        assert!(list.active().unwrap().blocks_page("https://a.com/", false), "blocked first");
+        assert!(list.active().unwrap().blocks_page("https://a.com/"), "blocked first");
         assert!(running(&list, "a").allowance.is_some_and(|status| !status.open && status.change.is_some()));
 
         let list = sessions("budget-kept");
@@ -1933,13 +1870,11 @@ mod tests {
             titles: strings(&["*Chat*"]),
             ..Entries::default()
         });
-        let actions = only(&["chromium_app_windows", "firefox_split_view"]);
+        let actions = only(&[]);
         list.start("a", "A", vec![part(lists, actions)], None, StartLock::None).unwrap();
         let active = list.active().unwrap();
-        // Sites: only where an action for it is on.
-        assert!(active.blocks_app_window("https://a.com/x") && !active.blocks_app_window("https://b.com/"));
-        assert!(active.blocks_firefox_page("https://a.com/", true) && !active.blocks_firefox_page("https://a.com/", false));
-        assert!(!active.blocks_page("https://a.com/", false) && !active.blocks_page("https://a.com/", true));
+        // Sites: wherever they show.
+        assert!(active.blocks_page("https://a.com/x") && !active.blocks_page("https://b.com/"));
         assert!(active.watches_sites());
         // Store apps, never one of Windows' own whatever the list says.
         assert!(active.closes_store_apps());
@@ -2034,7 +1969,7 @@ mod tests {
         assert!(!active.blocks_store_app("Microsoft.XboxApp_8wekyb3d8bbwe"));
         assert!(active.title_action("Team chat", false).is_none());
         assert!(!active.blocks_program("game.exe"));
-        assert!(!active.blocks_app_window("https://a.com/") && !active.blocks_firefox_page("https://a.com/", false));
+        assert!(!active.blocks_page("https://a.com/"));
         let mut seen = active.used.take();
         seen.sort();
         let key = |k: &str| ("a".to_string(), k.to_string());
@@ -2111,7 +2046,7 @@ mod tests {
             list.start_with("a", "A", vec![part(sites(&["a.com"]), Actions::default())], None, Some(budget("1h", scope)), StartLock::None)
                 .unwrap();
             let active = list.active().unwrap();
-            assert!(!active.blocks_page("https://a.com/", false), "{scope:?}: the site is let through");
+            assert!(!active.blocks_page("https://a.com/"), "{scope:?}: the site is let through");
             assert!(active.closes_obsidian(), "{scope:?}: Obsidian is not");
             assert!(active.used.take().iter().all(|(_, key)| key.starts_with("site:") || key == TOTAL));
         }
@@ -2140,9 +2075,9 @@ mod tests {
         // A wildcard entry is one item for everything it matches; a page that two entries match is
         // seen as both.
         let active = list.active().unwrap();
-        assert!(!active.blocks_page("https://old.reddit.com/r/x", false) && !active.blocks_page("https://www.reddit.com/", false));
+        assert!(!active.blocks_page("https://old.reddit.com/r/x") && !active.blocks_page("https://www.reddit.com/"));
         assert_eq!(active.used.take(), vec![key("site:*"), key("site:*.reddit.com")]);
-        assert!(!active.blocks_page("https://youtube.com/", false));
+        assert!(!active.blocks_page("https://youtube.com/"));
         assert_eq!(active.used.take(), vec![key("site:*"), key("site:youtube.com")]);
         // Once one of the entries that match a page is used up, the page is closed, though the other
         // has time.
@@ -2150,13 +2085,13 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1100));
         list.charge(&[key("site:youtube.com")]);
         let active = list.active().unwrap();
-        assert!(active.blocks_page("https://youtube.com/", false));
-        assert!(!active.blocks_page("https://example.com/", false), "* still has time for the rest");
+        assert!(active.blocks_page("https://youtube.com/"));
+        assert!(!active.blocks_page("https://example.com/"), "* still has time for the rest");
         list.polled();
         std::thread::sleep(Duration::from_millis(1100));
         list.charge(&[key("site:*")]);
         let active = list.active().unwrap();
-        assert!(active.blocks_page("https://example.com/", false) && active.blocks_page("https://old.reddit.com/", false));
+        assert!(active.blocks_page("https://example.com/") && active.blocks_page("https://old.reddit.com/"));
         // The items as the window shows them: by the entry as typed.
         let mut items: Vec<String> = running(&list, "a").allowance.unwrap().items.into_iter().map(|i| i.item).collect();
         items.sort();
@@ -2240,7 +2175,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1100));
         list.charge(&[("a".to_string(), "site:a.com".to_string()), ("a".to_string(), "site:b.com".to_string())]);
         let active = list.active().unwrap();
-        assert!(active.blocks_page("https://a.com/", false) && active.blocks_page("https://b.com/", false));
+        assert!(active.blocks_page("https://a.com/") && active.blocks_page("https://b.com/"));
         assert!(active.sessions[0].free.is_empty());
     }
 

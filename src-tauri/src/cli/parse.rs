@@ -824,7 +824,7 @@ pub(super) fn action_names() -> Vec<String> {
     }
 }
 
-/// The actions named (`chromium_tabs firefox_tabs`), or `all`: every action as a new target has them (windows by
+/// The actions named (`obsidian_web_viewer`), or `all`: every action as a new target has them (windows by
 /// title closed, not minimized: `window_titles_minimize` says to minimize them).
 pub(super) fn parse_actions(given: &[String]) -> Result<Actions, String> {
     let names = action_names();

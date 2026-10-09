@@ -394,7 +394,7 @@ window.STRINGS = {
     sections: {
       websites: {
         title: "Websites",
-        description: "Closes listed pages in Chrome, Edge, Brave and Firefox",
+        description: "Closes pages of listed sites wherever they open: tabs, split views and app windows",
       },
       programs: {
         title: "Programs",
@@ -416,11 +416,6 @@ window.STRINGS = {
       },
     },
     actions: {
-      chromium_tabs: { label: "Close blocked tabs in Chromium" },
-      chromium_split_view: { label: "Close blocked pages in Chromium split view" },
-      chromium_app_windows: { label: "Close blocked app windows in Chromium" },
-      firefox_tabs: { label: "Close blocked tabs in Firefox" },
-      firefox_split_view: { label: "Close blocked pages in Firefox split view" },
       // The window title section's choice: closing (`close`, no action of its own) or minimizing.
       close: "Close these windows",
       window_titles_minimize: { label: "Minimize these windows" },

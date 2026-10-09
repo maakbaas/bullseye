@@ -31,7 +31,7 @@ const LISTS = Object.fromEntries(
 // when it has entries.
 const action = (key) => ({ key, label: t(`targets.actions.${key}.label`), short: window.STRINGS.targets.actions[key].short });
 const SECTIONS = [
-  { key: "websites", icon: "earth", lists: ["filters", "allowed"], actions: [action("chromium_tabs"), action("chromium_split_view"), action("chromium_app_windows"), action("firefox_tabs"), action("firefox_split_view")] },
+  { key: "websites", icon: "earth", lists: ["filters", "allowed"], actions: [] },
   { key: "programs", icon: "application", lists: ["programs"], actions: [] },
   { key: "store", icon: "shopping-bag", lists: ["store_apps"], actions: [] },
   // Closing (`choice`, the default: off) or minimizing: radio buttons, not a checkbox.

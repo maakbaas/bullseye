@@ -4,7 +4,7 @@ Bullseye is a Windows tray app (Tauri 2, Rust, a Carbon web page) that blocks di
 
 ## Concepts
 
-- **Target**: what to block. Lists of sites (with always-allowed sites), programs, Store apps and window titles (with always-allowed titles), plus **actions**: the ways it is closed (Chromium tabs, split view, app windows, Firefox tabs and split view, Obsidian's web viewer; titles closed or minimized).
+- **Target**: what to block. Lists of sites (with always-allowed sites), programs, Store apps and window titles (with always-allowed titles), plus **actions**: Obsidian's web viewer closed, titles closed or minimized. Every list acts by its entries; sites are closed wherever they open (Chromium and Firefox tabs, split views, app windows).
 - **Condition**: when. A weekly schedule, a flash drive that is unplugged, a webhook, or a combination (any / all) of those. "Always" is built in.
 - **Session**: what is started. One or more targets, a condition, at most one **allowance** (a time budget, a Pomodoro cycle or a delayed start that lets it go quiet) and a **lock** (none, timed (for a while, or until a date and time), until restart, while a condition is active, a delay, a text to type, a password). Sessions run side by side; outside its condition a session still runs and stays locked, but enforces nothing. A session has no editor page: it is set up on its tile (`fields.js`).
 - **Unlock** (Settings): ends every session. The escape hatch, behind an optional countdown and one optional other way (a condition, text or password).
@@ -53,7 +53,7 @@ Frontend (`src/`, no build step): `index.html`, `app.css` (layout only), `string
 
 - Allowances and locks are set on the session, never pages of their own. A budget resets never, every so long (any duration, from the start or on the clock) or when the condition turns on.
 - Site lists are address prefixes with `*`, a domain covering its subdomains; no uBlock syntax. Always-allowed entries win.
-- Program, Store app and title lists have no on/off switch: entries act, an empty list does nothing. Titles are closed or minimized (a window that cannot be minimized is left alone). A lone `*` title is allowed; Bullseye's own and Windows' windows are spared. Programs refuse anything that would match a protected one.
+- Site, program, Store app and title lists have no on/off switch, and the window does not name the browsers a site is closed in: entries act, an empty list does nothing. Titles are closed or minimized (a window that cannot be minimized is left alone). A lone `*` title is allowed; Bullseye's own and Windows' windows are spared. Programs refuse anything that would match a protected one.
 - Store apps are exact package family names; on import, apps not installed here are dropped with a message, never matched by name.
 - Exports keep password locks as hashes only.
 - A webhook has a fallback state and one match (HTTP code or body) that turns it around.

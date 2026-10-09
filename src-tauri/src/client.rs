@@ -245,8 +245,8 @@ mod tests {
         // A different one replaces it, a second session comes along; none at all ends the sessions.
         remote.apply(vec![policy(&["b.com"]), policy(&["c.com"])]);
         let active = current(&remote).unwrap();
-        assert!(active.blocks_page("https://b.com/x", false) && active.blocks_page("https://c.com/", false));
-        assert!(!active.blocks_page("https://tweakers.net/", false));
+        assert!(active.blocks_page("https://b.com/x") && active.blocks_page("https://c.com/"));
+        assert!(!active.blocks_page("https://tweakers.net/"));
         remote.apply(Vec::new());
         assert!(current(&remote).is_none());
     }
@@ -281,7 +281,7 @@ mod tests {
         let session = Definition { lock: Lock::timed_for("1h"), ..session("a", &["a"]) };
         remote.command(Request::SaveSession { session }).unwrap();
         remote.command(Request::Start { id: "a".into() }).unwrap();
-        assert!(remote.active().unwrap().blocks_page("https://a.com/x", false));
+        assert!(remote.active().unwrap().blocks_page("https://a.com/x"));
         assert!(remote.status().unwrap().running[0].remaining.is_some());
         // The same rules as with the real service: a timed session cannot be stopped early, unlocking
         // (free until a delay is set) ends it.

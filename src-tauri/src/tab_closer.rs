@@ -356,9 +356,8 @@ impl Closer {
                 self.forget(handle);
                 continue;
             };
-            // Two pages at once is a split view; one is an ordinary tab. An app window's page goes
-            // with its window; a normal window's blocked page is a tab to close.
-            let split_view = pages.len() > 1;
+            // An app window's page goes with its window; a normal window's blocked page (either half of
+            // a split view, or an ordinary tab) is a tab to close.
             // The address bar is a quicker witness than a heavy page: the browser shows where a tab is
             // going before the page's accessibility tree is built (which takes long on a big page, and
             // is why such a page closed late). It counts only when it names another site than the page
@@ -371,11 +370,8 @@ impl Closer {
                 }
                 _ => None,
             };
-            let app_page = pages.iter().find(|p| active.blocks_app_window(&p.url));
-            let tab_page = pages
-                .iter()
-                .find(|p| active.blocks_page(&p.url, split_view))
-                .or(bar.as_ref().filter(|p| active.blocks_page(&p.url, false)));
+            let app_page = pages.iter().find(|p| active.blocks_page(&p.url));
+            let tab_page = pages.iter().find(|p| active.blocks_page(&p.url)).or(bar.as_ref().filter(|p| active.blocks_page(&p.url)));
             match tab_page {
                 Some(page) if self.first_seen.get(&handle).is_none_or(|(url, _)| *url != page.url) => {
                     self.first_seen.insert(handle, (page.url.clone(), Instant::now()));
@@ -578,7 +574,7 @@ impl Closer {
         }
         // Where a page is on screen and whether it is in a split view costs a few calls each, so
         // only when some page is blocked, split or not.
-        if !read.iter().any(|(_, url, _)| active.blocks_firefox_page(url, false) || active.blocks_firefox_page(url, true)) {
+        if !read.iter().any(|(_, url, _)| active.blocks_page(url)) {
             return Ok(None);
         }
         let documents: Vec<FirefoxPage> = read
@@ -595,7 +591,7 @@ impl Closer {
         let names: Vec<String> = tabs.iter().map(|t| t.get_name().unwrap_or_default()).collect();
         let button = a.create_property_condition(UIProperty::ControlType, (ControlType::Button as i32).into(), None)?;
         for (index, page) in documents.iter().enumerate() {
-            if page.title.is_empty() || !active.blocks_firefox_page(&page.url, page.split) {
+            if page.title.is_empty() || !active.blocks_page(&page.url) {
                 continue;
             }
             let Some(tab) = firefox_tab_of(&documents, index, &names) else { continue };

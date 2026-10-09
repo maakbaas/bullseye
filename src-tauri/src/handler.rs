@@ -622,28 +622,9 @@ mod tests {
     #[test]
     fn requests_are_checked_again_by_the_service() {
         let context = context("checked");
-        // An empty list with only actions that go by it, and nothing chosen.
-        let only_the_list = Actions {
-            chromium_tabs: true,
-            chromium_split_view: true,
-            obsidian_web_viewer: false,
-            chromium_app_windows: false,
-            firefox_tabs: false,
-            firefox_split_view: false,
-            window_titles_minimize: false,
-        };
-        let none = Actions {
-            chromium_tabs: false,
-            chromium_split_view: false,
-            obsidian_web_viewer: false,
-            chromium_app_windows: false,
-            firefox_tabs: false,
-            firefox_split_view: false,
-            window_titles_minimize: false,
-        };
-        for one in [definition("a", &[]).actions(only_the_list), definition("b", &["a.com"]).actions(none)] {
-            assert!(failed(run(&context, one)));
-        }
+        // Empty lists, and no action that goes without one: nothing to do.
+        let only_the_lists = Actions { obsidian_web_viewer: false, window_titles_minimize: false };
+        assert!(failed(run(&context, definition("a", &[]).actions(only_the_lists))));
         // A bad duration, and an address that cannot match, are not even saved.
         for one in [timed("c", &["a.com"], "soon"), definition("d", &["has space.com"])] {
             assert!(failed(save(&context, one)));
@@ -653,21 +634,13 @@ mod tests {
         assert!(failed(handle(&context, 0, Request::Start { id: "e".into() }).0));
         assert!(failed(handle(&context, 0, Request::Start { id: "nope".into() }).0));
         assert!(policies(&context).is_empty());
-        assert_eq!(overview(&context).sessions.len(), 3);
+        assert_eq!(overview(&context).sessions.len(), 2);
     }
 
     #[test]
     fn an_empty_list_starts_a_session_when_an_action_without_the_list_is_on() {
         let context = context("empty-list");
-        let obsidian_only = Actions {
-            chromium_tabs: false,
-            chromium_split_view: false,
-            obsidian_web_viewer: true,
-            chromium_app_windows: false,
-            firefox_tabs: false,
-            firefox_split_view: false,
-            window_titles_minimize: false,
-        };
+        let obsidian_only = Actions { obsidian_web_viewer: true, window_titles_minimize: false };
         assert_eq!(run(&context, definition("a", &[]).actions(obsidian_only)), Response::Done);
         // The session keeps what it was started with: no entries, and Obsidian's action only.
         let policy = &policies(&context)[0];
@@ -798,11 +771,11 @@ mod tests {
         assert_eq!(handle(&context, 0, Request::SaveSession { session: work }).0, Response::Done);
         assert_eq!(handle(&context, 0, Request::Start { id: "work".into() }).0, Response::Done);
 
-        // Less to block, another site instead, an action off, an allowed site added: all refused.
+        // Less to block, another site instead, Obsidian's action off, an allowed site added: all refused.
         assert!(failed(handle(&context, 0, Request::SaveTarget { target: target("social", &[]) }).0));
         assert!(failed(handle(&context, 0, Request::SaveTarget { target: target("social", &["reddit.com"]) }).0));
         let mut loose = target("social", &["youtube.com"]);
-        loose.actions.chromium_tabs = false;
+        loose.actions.obsidian_web_viewer = false;
         assert!(failed(handle(&context, 0, Request::SaveTarget { target: loose }).0));
         let mut allow = target("social", &["youtube.com"]);
         allow.entries.allowed = vec!["google.com".into()];
@@ -1068,15 +1041,7 @@ mod tests {
 
     #[test]
     fn programs_alone_can_start_a_session_and_what_windows_needs_is_refused() {
-        let programs_only = Actions {
-            chromium_tabs: false,
-            chromium_split_view: false,
-            obsidian_web_viewer: false,
-            chromium_app_windows: false,
-            firefox_tabs: false,
-            firefox_split_view: false,
-            window_titles_minimize: false,
-        };
+        let programs_only = Actions { obsidian_web_viewer: false, window_titles_minimize: false };
         let one = |programs: &[&str]| timed("p", &[], "1h").actions(programs_only).programs(programs);
         let context = context("programs");
 
@@ -1115,16 +1080,8 @@ mod tests {
     #[test]
     fn allowed_sites_alone_are_not_something_to_block() {
         let context = context("allowed-alone");
-        // Only the tab actions, no sites to block and only an allowed one: nothing to do.
-        let tabs_only = Actions {
-            chromium_tabs: true,
-            chromium_split_view: true,
-            obsidian_web_viewer: false,
-            chromium_app_windows: false,
-            firefox_tabs: false,
-            firefox_split_view: false,
-            window_titles_minimize: false,
-        };
+        // No sites to block and only an allowed one: nothing to do.
+        let tabs_only = Actions { obsidian_web_viewer: false, window_titles_minimize: false };
         assert!(failed(run(&context, timed("a", &[], "1h").allowed(&["google.com"]).actions(tabs_only))));
         assert!(policies(&context).is_empty());
     }
