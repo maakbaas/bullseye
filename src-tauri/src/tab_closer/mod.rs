@@ -183,8 +183,9 @@ enum Window {
     Browser(Browser),
     /// A Firefox window (its address bar found), whose pages are looked up each pass.
     Firefox(UIElement),
-    /// A VS Code window (`vscode.rs`): its editor tab strips, and when they were searched for.
-    VsCode(Vec<UIElement>, Instant),
+    /// A VS Code window (`vscode.rs`): its editor area (none: it has none, as its developer tools), and
+    /// when that was looked for.
+    VsCode(Option<UIElement>, Instant),
     /// Not a browser window (Electron app, devtools, popup); searched again after `RECHECK`.
     Other(Instant),
 }

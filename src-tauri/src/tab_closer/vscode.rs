@@ -3,20 +3,25 @@
 //!
 //! Every editor tab is in UI Automation, background tabs too, with a label that names a browser tab's
 //! page: `Title (https://nos.nl/artikel/…)`. A blocked one is closed with its own Close button, which is
-//! there without hovering. The tab strips (`tabs-container`, one per editor group) are searched for once
-//! (that takes ~150 ms in a big window) and kept; reading their tabs then takes a few milliseconds.
+//! there without hovering. The tab strips (`tabs-container`, one per editor group) are searched for in
+//! the editor area (`workbench.parts.editor`) only, each pass: a few milliseconds, where the whole window
+//! (its explorer, terminal and source control too) took ~150. The editor area is found once and kept.
 
 use super::ledger::tab_key;
 use super::win::program_file;
-use super::{explain, Closer, Window, RECHECK};
+use super::{explain, Closer, Window};
 use crate::session::Active;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use uiautomation::patterns::UIInvokePattern;
 use uiautomation::types::{ControlType, Handle, TreeScope, UIProperty};
 use uiautomation::UIElement;
 
 /// VS Code's programs, by lower case file name: the release, Insiders, and VSCodium (the same code).
 const PROGRAMS: [&str; 3] = ["code.exe", "code - insiders.exe", "vscodium.exe"];
+
+/// How long a VS Code window without an editor area (its developer tools) is left before it is looked
+/// at again.
+const NO_EDITOR_AGAIN: Duration = Duration::from_secs(60);
 
 /// Whether a program (its lower case file name) is VS Code (`PROGRAMS`).
 fn is_vscode_program(file: &str) -> bool {
@@ -33,29 +38,49 @@ pub(super) fn page_of_label(label: &str) -> Option<&str> {
 }
 
 impl Closer {
-    /// The editor tab strips of a VS Code window, or None when the window is not VS Code's. Kept, and
-    /// searched for again after `RECHECK` (a new editor group has a strip of its own).
+    /// The editor tab strips of a VS Code window, or None when the window is not VS Code's. Found in its
+    /// editor area each pass, so a new editor group is seen at once.
     pub(super) fn vscode_strips(&mut self, handle: isize) -> Option<Vec<UIElement>> {
-        match self.windows.get(&handle) {
-            Some(Window::VsCode(strips, since)) if since.elapsed() < RECHECK => return Some(strips.clone()),
-            Some(Window::VsCode(..)) => {}
+        let part = match self.windows.get(&handle) {
+            Some(Window::VsCode(Some(part), _)) => part.clone(),
+            Some(Window::VsCode(None, since)) if since.elapsed() < NO_EDITOR_AGAIN => return Some(Vec::new()),
             Some(Window::Browser(_) | Window::Firefox(_)) => return None,
-            Some(Window::Other(since)) if since.elapsed() < RECHECK => return None,
-            _ if !program_file(handle).is_some_and(|file| is_vscode_program(&file)) => return None,
-            _ => {}
-        }
+            Some(Window::Other(_)) => return None,
+            Some(Window::VsCode(None, _)) => self.vscode_editor(handle)?,
+            None if program_file(handle).is_some_and(|file| is_vscode_program(&file)) => self.vscode_editor(handle)?,
+            None => return None,
+        };
         let started = Instant::now();
         let found = (|| {
-            let window = self.automation.element_from_handle(Handle::from(handle))?;
             let tab = self.automation.create_property_condition(UIProperty::ControlType, (ControlType::Tab as i32).into(), None)?;
             let class = self.automation.create_property_condition(UIProperty::ClassName, "tabs-container".into(), None)?;
-            window.find_all(TreeScope::Descendants, &self.automation.create_and_condition(tab, class)?)
+            part.find_all(TreeScope::Descendants, &self.automation.create_and_condition(tab, class)?)
         })();
         self.slow("looking for VS Code's tab strips", started);
-        // None found (yet) is no error: a window with no editor open has none.
-        let strips = found.unwrap_or_default();
-        self.windows.insert(handle, Window::VsCode(strips.clone(), Instant::now()));
-        Some(strips)
+        match found {
+            Ok(strips) => Some(strips),
+            // None at all is no error (no editor open); an error is an editor area that went stale.
+            Err(e) if e.code() == 0 => Some(Vec::new()),
+            Err(_) => {
+                self.forget(handle);
+                Some(Vec::new())
+            }
+        }
+    }
+
+    /// Finds and keeps a VS Code window's editor area; a window without one is noted as VS Code's, with
+    /// nothing to look at, until `NO_EDITOR_AGAIN` (and gives no strips now).
+    fn vscode_editor(&mut self, handle: isize) -> Option<UIElement> {
+        let started = Instant::now();
+        let part = (|| {
+            let window = self.automation.element_from_handle(Handle::from(handle))?;
+            let id = self.automation.create_property_condition(UIProperty::AutomationId, "workbench.parts.editor".into(), None)?;
+            window.find_first(TreeScope::Descendants, &id)
+        })()
+        .ok();
+        self.slow("looking for VS Code's editor area", started);
+        self.windows.insert(handle, Window::VsCode(part.clone(), Instant::now()));
+        part
     }
 
     /// Closes the browser tabs of a VS Code window whose page is blocked.
@@ -152,6 +177,44 @@ mod tests {
             }
         }
         names
+    }
+
+    /// A manual check of what VS Code costs a pass: with a VS Code window open,
+    /// `cargo test -- --ignored a_pass_over_vs_code_is_quick --nocapture`. The first pass finds the editor
+    /// area; every later one only searches it.
+    #[test]
+    #[ignore]
+    fn a_pass_over_vs_code_is_quick() {
+        use crate::filters::FilterList;
+        use crate::lists::Lists;
+        use crate::session::Enforced;
+        use crate::state::Actions;
+        use std::sync::Arc;
+        let mut closer = Closer::new(uiautomation::UIAutomation::new().unwrap());
+        let windows: Vec<isize> = super::super::win::browser_windows()
+            .into_iter()
+            .map(|(handle, _)| handle)
+            .filter(|handle| program_file(*handle).is_some_and(|f| is_vscode_program(&f)))
+            .collect();
+        assert!(!windows.is_empty(), "open VS Code first");
+        let quiet = Active {
+            sessions: vec![Enforced::new(
+                Arc::new(Lists { sites: FilterList::parse(&["nothing.invalid"]).unwrap(), ..Lists::default() }),
+                Actions::default(),
+            )],
+            used: Default::default(),
+        };
+        let only = windows.iter().copied().collect();
+        let started = Instant::now();
+        closer.tick(&quiet, Some(&only));
+        println!("first pass over VS Code: {:?}", started.elapsed());
+        let started = Instant::now();
+        for _ in 0..20 {
+            closer.tick(&quiet, Some(&only));
+        }
+        let each = started.elapsed() / 20;
+        println!("each later pass: {each:?}");
+        assert!(each < Duration::from_millis(50), "a pass over VS Code should take a few milliseconds");
     }
 
     /// A manual check against a real VS Code: open a page of nos.nl in its browser (Ctrl+Alt+/), then
