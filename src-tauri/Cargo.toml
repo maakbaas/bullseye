@@ -46,6 +46,7 @@ windows-service = "0.8"
 # named mutexes, the named pipe, starting the app in the user's session, window events (see src/watchdog.rs, src/pipe.rs, src/wake.rs)
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",

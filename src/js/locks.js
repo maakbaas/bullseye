@@ -2,7 +2,7 @@
 // (for the question when a locked session's lock is made stricter), and what starting a session with
 // one asks first.
 
-import { durationText, el, invalid, invoke, overview, quoted, editHref, ref, t, tn, untilText, wordingOf } from "./core.js";
+import { durationText, el, infoNote, invalid, invoke, overview, quoted, editHref, ref, t, tn, untilText, wordingOf } from "./core.js";
 import { timingFields } from "./timing.js";
 import { durationField, numberField } from "./duration.js";
 
@@ -154,16 +154,17 @@ const LOCKS = {
     // other way to unlock, when it is set and after each unlock), so it cannot be learnt before.
     form: (session) => {
       const count = numberField({ label: t("locks.random_text.field"), helper: t("locks.random_text.helper"), length: 4, value: String(settingsOf(session, "random_text").length || 30) });
-      // How long that is, as a text of that length (drawn here, only to be looked at).
-      const example = el("cds-textarea", { label: t("locks.random_text.example"), readonly: true, rows: 4 });
+      // How long that is, as a text of that length (drawn here, only to be looked at), in a note as
+      // the webhook's test answer is shown.
+      const example = infoNote(t("locks.random_text.example"));
       const show = () => {
         const length = Number(count.value) || 0;
-        example.value = Array.from(crypto.getRandomValues(new Uint8Array(length)), (byte) => CHARACTERS[byte % 36]).join("");
+        example.show(length ? Array.from(crypto.getRandomValues(new Uint8Array(length)), (byte) => CHARACTERS[byte % 36]).join("") : null);
       };
       count.addEventListener("input", show);
       show();
       return {
-        fields: [count, example],
+        fields: [count, example.node],
         // What the service says of the length (1 to its most), on the field.
         read: async () => {
           const lock = { method: "random_text", length: Number(count.value) || 0 };

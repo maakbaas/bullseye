@@ -244,6 +244,11 @@ impl Active {
     pub fn closes_obsidian(&self) -> bool {
         self.sessions.iter().any(|b| b.actions.obsidian_web_viewer)
     }
+
+    /// Whether any session closes Steam's browser window.
+    pub fn closes_steam_browser(&self) -> bool {
+        self.sessions.iter().any(|b| b.actions.steam_browser)
+    }
 }
 
 /// One target of a session, as it is started: its name, its lists and its actions.
@@ -1252,7 +1257,8 @@ mod tests {
     #[test]
     fn sessions_run_side_by_side_and_end_on_their_own() {
         let list = sessions("several");
-        start(&list, "timed", sites(&["a.com"]), Some(Duration::from_millis(50))).unwrap();
+        // (Long enough that a slow run, under coverage, does not see the timed one end before it looks.)
+        start(&list, "timed", sites(&["a.com"]), Some(Duration::from_millis(500))).unwrap();
         start(&list, "untimed", sites(&["b.com"]), None).unwrap();
         let active = list.active().unwrap();
         assert_eq!(active.sessions.len(), 2);
@@ -1260,7 +1266,7 @@ mod tests {
         assert!(list.locked().is_some_and(|why| why.contains("Session timed")));
 
         // The timed one ends by itself; the other goes on.
-        std::thread::sleep(Duration::from_millis(60));
+        std::thread::sleep(Duration::from_millis(560));
         let active = list.active().unwrap();
         assert!(!active.blocks_page("https://a.com/") && active.blocks_page("https://b.com/"));
         assert!(!list.runs("timed") && list.runs("untimed"));
@@ -1498,7 +1504,7 @@ mod tests {
 
     #[test]
     fn a_resumed_session_keeps_its_actions() {
-        let only_obsidian = Actions { obsidian_web_viewer: true, window_titles_minimize: true };
+        let only_obsidian = Actions { obsidian_web_viewer: true, window_titles_minimize: true, steam_browser: false };
         let list = sessions("actions");
         list.start("a", "A", vec![part(sites(&[]), only_obsidian)], None, StartLock::For(Duration::from_secs(3600))).unwrap();
         let resumed = reopened("actions");
@@ -1645,7 +1651,7 @@ mod tests {
     #[test]
     fn a_session_of_several_targets_enforces_each_by_its_own_rules() {
         let list = sessions("parts");
-        let tabs_only = Actions { obsidian_web_viewer: false, window_titles_minimize: false };
+        let tabs_only = Actions { obsidian_web_viewer: false, window_titles_minimize: false, steam_browser: false };
         let programs_only = tabs_only;
         let games = Lists { programs: ProgramList::parse(&["steam"]).unwrap(), ..Lists::default() };
         let social = Part { name: "Social".into(), lists: sites(&["youtube.com"]), actions: tabs_only };
@@ -1935,6 +1941,25 @@ mod tests {
             *value = serde_json::Value::Bool(on.contains(&name.as_str()));
         }
         serde_json::from_value(fields).unwrap()
+    }
+
+    #[test]
+    fn steams_browser_is_closed_only_by_a_session_that_has_the_action() {
+        let titles = || lists_of(Entries { titles: strings(&["*Chat*"]), ..Entries::default() });
+        let list = sessions("steam-off");
+        list.start("a", "A", vec![part(titles(), only(&["obsidian_web_viewer"]))], None, StartLock::None).unwrap();
+        assert!(!list.active().unwrap().closes_steam_browser());
+        let list = sessions("steam-on");
+        list.start("a", "A", vec![part(titles(), only(&["steam_browser"]))], None, StartLock::None).unwrap();
+        assert!(list.active().unwrap().closes_steam_browser());
+        // It needs no list: a target with nothing in it starts with it, and it is the only thing it does.
+        let list = sessions("steam-alone");
+        list.start("a", "A", vec![part(lists_of(Entries::default()), only(&["steam_browser"]))], None, StartLock::None).unwrap();
+        let active = list.active().unwrap();
+        assert!(active.closes_steam_browser() && !active.closes_obsidian() && !active.watches_titles());
+        // A target with nothing in it has something to do only with that action (`Part::can_run`).
+        assert!(part(lists_of(Entries::default()), only(&["steam_browser"])).can_run());
+        assert!(!part(lists_of(Entries::default()), only(&[])).can_run());
     }
 
     #[test]

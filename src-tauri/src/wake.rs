@@ -44,9 +44,9 @@ const SERVICE_EVENT: &str = r"Global\bullseye-wake";
 /// Everything for SYSTEM; interactive users may only wait on it (`SYNCHRONIZE`).
 const SDDL: &str = "D:(A;;GA;;;SY)(A;;0x00100000;;;IU)";
 /// The window class of Chromium browsers (and of Electron apps, Obsidian among them).
-const CHROMIUM: &str = "Chrome_WidgetWin_1";
+pub(crate) const CHROMIUM: &str = "Chrome_WidgetWin_1";
 /// The window class of Firefox (and Thunderbird).
-const FIREFOX: &str = "MozillaWindowClass";
+pub(crate) const FIREFOX: &str = "MozillaWindowClass";
 
 /// A handle kept in a static: an event, which any thread may set or wait on.
 struct Event(HANDLE);
@@ -84,6 +84,26 @@ static EVERY_WINDOW: AtomicBool = AtomicBool::new(false);
 /// worker: while windows are minimized, so one brought up goes down again at once.
 pub fn watch_every_window(on: bool) {
     EVERY_WINDOW.store(on, Ordering::Relaxed);
+}
+
+/// The windows that raised an event worth a look since the worker last asked (`take_changed`), so a pass
+/// caused by events can look at those alone.
+static CHANGED: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+
+/// Most windows kept in `CHANGED`: a flood of events from more windows than this is the whole pass.
+const MOST_CHANGED: usize = 64;
+
+/// A window raised an event worth a look: kept for `take_changed`, once, up to `MOST_CHANGED`.
+fn note_changed(window: isize) {
+    let mut changed = CHANGED.lock().unwrap_or_else(|e| e.into_inner());
+    if changed.len() < MOST_CHANGED && !changed.contains(&window) {
+        changed.push(window);
+    }
+}
+
+/// The windows that raised events since the last call, each once.
+pub fn take_changed() -> Vec<isize> {
+    std::mem::take(&mut *CHANGED.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// What ended a wait, so the log can say what a close came from (and so whether the events work).
@@ -170,6 +190,7 @@ unsafe extern "system" fn on_event(_hook: HWINEVENTHOOK, event: u32, window: HWN
     let any = coming_up && EVERY_WINDOW.load(Ordering::Relaxed);
     // SAFETY: a window handle from Windows; a stale one only makes these calls fail.
     if (wanted || any) && !window.is_null() && unsafe { GetAncestor(window, GA_ROOT) } == window && (any || is_browser(&class_of(window))) {
+        note_changed(window as isize);
         // SAFETY: the app's own event, open for as long as the app runs.
         unsafe { SetEvent(local()) };
     }
@@ -274,5 +295,26 @@ mod tests {
         unsafe { SetEvent(local()) };
         assert_eq!(wait(Duration::from_secs(5)), Woken::Window);
         assert_eq!(wait(Duration::from_millis(100)), Woken::Second);
+    }
+
+    #[test]
+    fn the_windows_that_raised_events_are_handed_over_once_each_and_not_without_end() {
+        // Whatever came before.
+        take_changed();
+        note_changed(10);
+        note_changed(20);
+        note_changed(10);
+        assert_eq!(take_changed(), vec![10, 20], "each once, in the order they came");
+        assert!(take_changed().is_empty(), "handed over once");
+        for window in 0..(MOST_CHANGED as isize + 50) {
+            note_changed(window);
+        }
+        assert_eq!(take_changed().len(), MOST_CHANGED, "a flood from more windows than that is the whole pass");
+    }
+
+    #[test]
+    fn only_the_two_browser_classes_wake_the_worker() {
+        assert!(is_browser(CHROMIUM) && is_browser(FIREFOX));
+        assert!(!is_browser("Notepad") && !is_browser("") && !is_browser("Chrome_WidgetWin_0"));
     }
 }

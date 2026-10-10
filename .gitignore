@@ -2,3 +2,5 @@ node_modules/
 src-tauri/target/
 src-tauri/gen/
 scripts/linux-tests/target/
+.claude/worktrees/
+scripts/strings-review/out/

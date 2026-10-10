@@ -55,7 +55,7 @@ main { padding-block: var(--cds-spacing-06); }
 .notices { margin-bottom: var(--cds-spacing-05); }
 .notices cds-inline-notification, .webhook-result cds-inline-notification, .form-note { max-width: none; }
 /* A form's note (`errorNote`, `infoNote`): Carbon's notification keeps its margin otherwise. */
-.form-note { margin-block: 0; }
+.form-note { margin-block: 0; overflow-wrap: anywhere; }
 
 /* Sessions, targets and conditions, as tiles in the Carbon grid. */
 /* The tiles are columns of the page's grid itself (this wrapper only keeps them together), so
@@ -80,7 +80,7 @@ main { padding-block: var(--cds-spacing-06); }
 }
 .session-tile h2 cds-link::part(link):hover { text-decoration: none; }
 /* The link centres the icon in its line box, which reads high next to the letters: a hair lower, and a hair closer. */
-.session-tile .title-edit { margin-block-start: calc(var(--cds-spacing-02) + var(--cds-spacing-01)); margin-inline-start: calc(-1 * var(--cds-spacing-02)); fill: var(--cds-icon-secondary); display: none; }
+.session-tile .title-edit { margin-block-start: calc(var(--cds-spacing-02) + var(--cds-spacing-01)); margin-inline: calc(-1 * var(--cds-spacing-02)) var(--cds-spacing-02); fill: var(--cds-icon-secondary); display: none; }
 .session-tile h2 cds-link:is(:hover, :focus-within) .title-edit:not(.unavailable) { display: inline-block; }
 /* Show all sessions, under one shown on its own. */
 .show-all { margin-bottom: var(--cds-spacing-05); }

@@ -12,7 +12,7 @@ export function timingFields([long, when], text) {
   const words = (key) => t(`timing.${text}.${key}`);
   const kind = el("cds-dropdown", { autoalign: true, "title-text": words("kind") });
   kind.append(el("cds-dropdown-item", { value: long }, words(long)), el("cds-dropdown-item", { value: when }, words(when)));
-  const input = durationField({ label: words("field"), helper: words("helper") });
+  const input = durationField({ label: words("field"), helper: window.STRINGS.timing[text].helper ? words("helper") : "" });
   // Carbon's date picker and time picker side by side.
   const datePicker = el("cds-date-picker", { "date-format": "Y-m-d", "min-date": localDate(new Date()) });
   const dateInput = el("cds-date-picker-input", { kind: "single", "label-text": t("timing.date"), placeholder: t("timing.datePlaceholder") });

@@ -645,7 +645,7 @@ mod tests {
     fn requests_are_checked_again_by_the_service() {
         let context = context("checked");
         // Empty lists, and no action that goes without one: nothing to do.
-        let only_the_lists = Actions { obsidian_web_viewer: false, window_titles_minimize: false };
+        let only_the_lists = Actions { obsidian_web_viewer: false, window_titles_minimize: false, steam_browser: false };
         assert!(failed(run(&context, definition("a", &[]).actions(only_the_lists))));
         // A bad duration, and an address that cannot match, are not even saved.
         for one in [timed("c", &["a.com"], "soon"), definition("d", &["has space.com"])] {
@@ -662,7 +662,7 @@ mod tests {
     #[test]
     fn an_empty_list_starts_a_session_when_an_action_without_the_list_is_on() {
         let context = context("empty-list");
-        let obsidian_only = Actions { obsidian_web_viewer: true, window_titles_minimize: false };
+        let obsidian_only = Actions { obsidian_web_viewer: true, window_titles_minimize: false, steam_browser: false };
         assert_eq!(run(&context, definition("a", &[]).actions(obsidian_only)), Response::Done);
         // The session keeps what it was started with: no entries, and Obsidian's action only.
         let policy = &policies(&context)[0];
@@ -1063,7 +1063,7 @@ mod tests {
 
     #[test]
     fn programs_alone_can_start_a_session_and_what_windows_needs_is_refused() {
-        let programs_only = Actions { obsidian_web_viewer: false, window_titles_minimize: false };
+        let programs_only = Actions { obsidian_web_viewer: false, window_titles_minimize: false, steam_browser: false };
         let one = |programs: &[&str]| timed("p", &[], "1h").actions(programs_only).programs(programs);
         let context = context("programs");
 
@@ -1103,7 +1103,7 @@ mod tests {
     fn allowed_sites_alone_are_not_something_to_block() {
         let context = context("allowed-alone");
         // No sites to block and only an allowed one: nothing to do.
-        let tabs_only = Actions { obsidian_web_viewer: false, window_titles_minimize: false };
+        let tabs_only = Actions { obsidian_web_viewer: false, window_titles_minimize: false, steam_browser: false };
         assert!(failed(run(&context, timed("a", &[], "1h").allowed(&["google.com"]).actions(tabs_only))));
         assert!(policies(&context).is_empty());
     }

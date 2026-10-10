@@ -23,7 +23,7 @@ It sends the same requests to the Bullseye service as the window, so the service
 | `bullseye start <session> [lock option] [--force]` | the Lock row on the session's tile, then **Start** (a locked session asks first, unless `--force`) |
 | `bullseye lock <session> <lock option> [--force]` | the Lock row of a running session that is not locked: it is locked from now on, and that is its lock for the next start too (asks first, unless `--force`) |
 | `bullseye stop <session> [--password <pw>] [--abort]` | **Stop** (a session locked with a password asks for it, as the window does; one locked with a delay is asked to stop first, `--abort` ends the wait) |
-| `bullseye break <session> [--end]` | **Take a break** on a session with breaks, while its condition is active (`--end`: **End break**, early; it stays used up) |
+| `bullseye break <session> [--end]` | **Break** on a session with breaks, while its condition is active (`--end`: **End break**, early; it stays used up) |
 | `bullseye target show <target> [--json]` | a target's tile and its editor |
 | `bullseye target apps [--json]` | the installed Store apps the editor offers to tick, by name and package family name |
 | `bullseye target new <name> [options]` | **New target**, then **Save** |
@@ -44,8 +44,8 @@ It sends the same requests to the Bullseye service as the window, so the service
 | `bullseye export <file>` | **Export** in Settings |
 | `bullseye import <file> [--force]` | **Import** in Settings |
 | `bullseye drives [--json]` | the flash drives the **Flash drive** type of a condition offers, by name and serial number |
-| `bullseye unlock [--abort] [--password <pw>]` | **Request unlock**, **Unlock** and **Keep locked** / **Lock again** in Settings; `--password` unlocks at once with the password of the other way to unlock |
-| `bullseye unlock-way [--condition <condition> \| --password <pw> \| --text <text> \| --random <n> \| --none]` | **Another way to unlock** in Settings: show it, set it or remove it |
+| `bullseye unlock [--abort] [--password <pw>]` | **Request unlock**, **Unlock** and **Keep locked** / **Lock again** in Settings; `--password` unlocks at once with the password of the secondary unlock method |
+| `bullseye unlock-way [--condition <condition> \| --password <pw> \| --text <text> \| --random <n> \| --none]` | **Secondary unlock method** in Settings: show it, set it or remove it |
 | `bullseye unlock-delay [<time>]` | **Unlock delay** in Settings: show it, or set it |
 | `bullseye help` | |
 | `bullseye version` | |
@@ -86,7 +86,7 @@ With `edit`, an option replaces only what it names: `--targets` replaces all its
 | `--titles <titles>` | Windows to close, by their title, the whole title with `*` as a wildcard and letter case ignored: `*YouTube*`. The whole window closes, or is minimized (`--actions`), a browser's with all its tabs. A lone `*` matches every window but Bullseye's own and Windows' shell. | none |
 | `--allowed-titles <titles>` | Window titles that are always left alone, also when this list's titles match them, written as in `--titles`: `*Visual Studio Code`. | none |
 | `--sites-file <file>`, `--allowed-sites-file <file>`, `--programs-file <file>`, `--store-apps-file <file>`, `--titles-file <file>`, `--allowed-titles-file <file>` | The same, one entry per line, from a text file. Can be combined with the options above. | |
-| `--actions <names>` | Which actions this target takes: `window_titles_minimize` (minimize the windows by title instead of closing them: nothing is lost, and a window that cannot be minimized is left alone), `obsidian_web_viewer` (close Obsidian when its web viewer is active), or `all` (every action but minimizing windows, which goes instead of closing them). Sites, programs, Store apps and windows by title need no action: a list with entries acts, an empty one does nothing; pages of blocked sites are closed wherever they open (tabs, split views, app windows). `bullseye help` lists the current names. A locked session's list may go from minimizing to closing windows, not back. | `all` |
+| `--actions <names>` | Which actions this target takes: `window_titles_minimize` (minimize the windows by title instead of closing them: nothing is lost, and a window that cannot be minimized is left alone), `obsidian_web_viewer` (close Obsidian when its web viewer is active), `steam_browser` (close Steam's browser window, the one titled `Steam - Browser`; not part of `all`), or `all` (every action but minimizing windows, which goes instead of closing them, and Steam's browser). Sites, programs, Store apps and windows by title need no action: a list with entries acts, an empty one does nothing; pages of blocked sites are closed wherever they open (tabs, split views, app windows). `bullseye help` lists the current names. A locked session's list may go from minimizing to closing windows, not back. | `all` |
 | `--name <name>` | (`target edit` only) A new name. | |
 | `--clear <lists>` | (`target edit` only) Empty lists: `sites`, `allowed-sites`, `programs`, `store-apps`, `titles`, `allowed-titles`, e.g. `--clear sites titles`. | |
 
@@ -97,7 +97,7 @@ An allowance lets a session go quiet for a while. A session has at most one, set
 - A **budget** is a time of use. It is for the session as a whole (`--scope total`) or for each of its items on its own (`--scope each`: each site, program, Store app and window title in its targets). While time is left, what is covered is not closed; it is only watched, and the time it is in use is counted. When the time is used up it is closed again, until the budget is reset.
 - A **Pomodoro** is a fixed cycle: blocked for `--blocked`, then everything allowed for `--allowed`, over and over. While it allows, the session enforces nothing, Obsidian's web viewer included.
 - A **delayed start** enforces nothing for the first `--after` of the session (e.g. `30m`), or until `--from` a local date and time; from then on everything is enforced, for good. The session is running and locked all along; only the enforcing waits.
-- **Breaks** are a number of breaks (`--breaks`) of a length (`--length`), taken by hand with `bullseye break <session>` (or **Take a break** on the tile), only while the session's condition is active, never by themselves. During a break nothing is enforced until it ends; ending one early (`--end`) still uses it up. They are given back by `--reset`, as a budget's time is. What is taken, and a break going on, survive a restart.
+- **Breaks** are a number of breaks (`--breaks`) of a length (`--length`), taken by hand with `bullseye break <session>` (or **Break** on the tile), only while the session's condition is active, never by themselves. During a break nothing is enforced until it ends; ending one early (`--end`) still uses it up. They are given back by `--reset`, as a budget's time is. What is taken, and a break going on, survive a restart.
 
 **Use** is what the app sees: a page shown in a visible tab (a page in a background tab is not seen), an open window or app, a program that is running. The service counts it, on internet time.
 
@@ -177,7 +177,7 @@ bullseye condition edit "Work hours" --times "Mon-Fri 08:00-17:00; Sat 10:00-14:
 > bullseye status
 Sessions:
   Work     Inactive · Inactive for 15 hours · Never paused · Unlocked for 15 hours
-  Evening  Running · locked · Active · Never paused · 62 minutes left
+  Evening  Locked · Active · Never paused · 62 minutes left
 Targets:
   Social media  Used by Work and Evening
   Games         Used by Work and Evening
@@ -187,14 +187,14 @@ Conditions:
 > bullseye show Evening
 Name:        Evening
 Id:          4f1c…
-State:       Running · locked
+State:       Locked
 Targets:     Social media and Games
 Condition:   Always · Active
 Allowance:   No allowance · Never paused
 Lock:        Timed · 62 minutes left
 ```
 
-The CLI uses the window's words (`src/strings.js`, read by the program itself), so it says what the window says. Each session's line in `status` is its tile's tag (Not running, Running, Running · locked, Inactive), then what its Condition, Allowance and Lock rows say beside their value: while it runs what is happening (`Active for 4 hours`, `Allowed for 4 minutes`, `12 minutes left`, `In 3 minutes`), while it is stopped what is set (`By schedule`, `Allowed for 30 minutes`, `For 2 hours`). A target's and a condition's line are their tiles' rows.
+The CLI uses the window's words (`src/strings.js`, read by the program itself), so it says what the window says. Each session's line in `status` is its tile's tag (Not running, Running, Locked, Inactive), then what its Condition, Allowance and Lock rows say beside their value: while it runs what is happening (`Active for 4 hours`, `Allowed for 4 minutes`, `12 minutes left`, `In 3 minutes`), while it is stopped what is set (`By schedule`, `Allowed for 30 minutes`, `For 2 hours`). A target's and a condition's line are their tiles' rows.
 
 `show <session>` is its tile's rows, each value with its status, word for word. `target show <target>` lists what the target editor has in each of its sections; `condition show <condition>` its tile's line, a schedule day by day, a webhook's request. With `--json`, `status`, `show` and `target show` print what the service says, for scripts: the same fields as the export file, plus `running` with each running session's state (`locked`, `enforcing`, the times left in seconds and in words) and `status` with what its rows say.
 
@@ -246,7 +246,7 @@ bullseye unlock-delay 2h
 bullseye unlock-delay 0
 ```
 
-### The other way to unlock
+### The secondary unlock method
 
 Besides the delay, which is always there, one other way to unlock can be set (`unlock-way`), chosen like a session's lock but only a condition, a custom text, a random text or a password: unlocking is ready when the delay is over **or** this way lets go, one is enough. `--condition <condition>` is locked while the condition is active (as a session's lock) and open when it is not, `--text <text>` opens when the text is typed in (in the window: a terminal cannot refuse a paste), `--random <n>` likewise with a random text of `n` letters and digits, drawn when it is set and again after each unlock, and `--password <pw>` with the password (`unlock --password`, asked for when not given; only a salted hash is kept). `--none` removes it. Setting one makes unlocking easier, so it needs unlocking to be ready, or no session to be locked; removing it is always free.
 

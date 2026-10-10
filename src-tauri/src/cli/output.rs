@@ -264,7 +264,7 @@ pub(super) const SECTIONS: [(&str, &[&str], &[&str]); 5] = [
     ("programs", &["programs"], &[]),
     ("store", &["store_apps"], &[]),
     ("titles", &["titles", "allowed_titles"], &["window_titles_minimize"]),
-    ("other", &[], &["obsidian_web_viewer"]),
+    ("other", &[], &["obsidian_web_viewer", "steam_browser"]),
 ];
 
 /// One target, as its editor has it: each section with something in it, its lists by their labels and

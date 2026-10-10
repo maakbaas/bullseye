@@ -253,7 +253,7 @@ fn locks_are_set_shown_and_held_by_the_service() {
     // The method as the Lock row's dropdown names it, and its status: the tile's row.
     assert_eq!(lock_of("Timed"), "Lock:        Timed · For 60 minutes");
     assert_eq!(lock_of("Slow"), "Lock:        Delay · Delay 60 minutes");
-    assert_eq!(lock_of("Typed"), "Lock:        Custom text · Type text to stop");
+    assert_eq!(lock_of("Typed"), "Lock:        Custom text · Type to stop");
     assert_eq!(lock_of("Kept"), "Lock:        Condition · During “Always”");
     assert_eq!(lock_of("Restart"), "Lock:        Until restart · Until restart");
     assert_eq!(lock_of("Later"), "Lock:        Timed · Until January 1");
@@ -263,10 +263,10 @@ fn locks_are_set_shown_and_held_by_the_service() {
     }
     let status = ok(&["status"]);
     for line in [
-        "Timed    Running · locked · Active · Never paused · ",
-        "Typed    Running · locked · Active · Never paused · Type text to stop",
-        "Restart  Running · locked · Active · Never paused · Until restart",
-        "Kept     Running · locked · Active · Never paused · Locked",
+        "Timed    Locked · Active · Never paused · ",
+        "Typed    Locked · Active · Never paused · Type to stop",
+        "Restart  Locked · Active · Never paused · Until restart",
+        "Kept     Locked · Active · Never paused · Locked",
     ] {
         assert!(status.contains(line), "{line:?} in {status}");
     }
@@ -281,7 +281,7 @@ fn locks_are_set_shown_and_held_by_the_service() {
     // A password: set with start, as the tile sets it, and stopped with it.
     ok(&["new", "Pw", "--targets", "L"]);
     assert_eq!(ok(&["start", "Pw", "--lock-password", "secret", "--force"]), "Started “Pw”.\n");
-    assert!(ok(&["status"]).contains("Pw       Running · locked · Active · Never paused · Password to stop"));
+    assert!(ok(&["status"]).contains("Pw       Locked · Active · Never paused · Password to stop"));
     assert!(cli(&["stop", "Pw", "--password", "wrong"]).is_err());
     assert_eq!(ok(&["stop", "Pw", "--password", "secret"]), "Stopped “Pw”.\n");
     // A running session that is not locked is locked now; one that is keeps its lock.
@@ -289,7 +289,7 @@ fn locks_are_set_shown_and_held_by_the_service() {
     assert_eq!(ok(&["lock", "Pw", "--no-lock"]), "“Pw” runs on without a lock.\n");
     assert!(refused(&["lock", "Pw", "--lock-duration", "1h"]).contains("No terminal to ask in; add --force"));
     assert_eq!(ok(&["lock", "Pw", "--lock-duration", "1h", "--force"]), "Locked “Pw” now.\n");
-    assert!(ok(&["status"]).contains("Pw       Running · locked · Active · Never paused · 60 minutes left"));
+    assert!(ok(&["status"]).contains("Pw       Locked · Active · Never paused · 60 minutes left"));
     assert_eq!(
         refused(&["lock", "Pw", "--no-lock"]),
         "This session is locked, so its lock cannot be changed until it can be stopped, except to end later or to wait longer"
@@ -411,7 +411,7 @@ fn a_combination_of_all_and_a_list_renamed() {
     // A lock until a date and time asks first, with the time it ends.
     ok(&["new", "Later", "--targets", "Media", "--lock-until", "2099-01-01 00:00"]);
     assert_eq!(ok(&["start", "Later", "--force"]), "Started “Later”.\n");
-    assert!(ok(&["status"]).contains("Later  Running · locked · Active · Never paused · "));
+    assert!(ok(&["status"]).contains("Later  Locked · Active · Never paused · "));
 }
 
 #[test]
@@ -486,7 +486,7 @@ fn a_running_session_reads_like_its_tile() {
         lock_change_words: Some("1 hour".into()),
         ..a_running("b1")
     });
-    assert_eq!(state(&with_status(overview.clone()), &session), "Running · locked · Active for 4 hours · Never paused · Locked for 1 hour");
+    assert_eq!(state(&with_status(overview.clone()), &session), "Locked · Active for 4 hours · Never paused · Locked for 1 hour");
     overview.running[0].enforcing = false;
     assert_eq!(state(&with_status(overview.clone()), &session), "Inactive · Inactive for 4 hours · Never paused · Locked for 1 hour");
     // Without the service's words (an overview from no service), nothing to say.
@@ -618,6 +618,17 @@ fn windows_by_title_are_closed_unless_minimized() {
 }
 
 #[test]
+fn steams_browser_is_an_action_by_its_own_name_and_not_one_of_all() {
+    let parse = |names: &str| parse_actions(&names.split(' ').map(str::to_string).collect::<Vec<_>>());
+    let steam = parse("steam_browser").unwrap();
+    assert!(steam.steam_browser && !steam.obsidian_web_viewer && !steam.window_titles_minimize);
+    // `all` is what a new target has: Steam's browser is left alone unless asked for.
+    assert!(!parse("all").unwrap().steam_browser);
+    assert!(parse("all steam_browser").unwrap().steam_browser);
+    assert!(parse("steam_browser obsidian_web_viewer").unwrap().obsidian_web_viewer);
+}
+
+#[test]
 fn a_new_target_with_everything() {
     let line = args(&[
         "target",
@@ -649,7 +660,7 @@ fn a_new_target_with_everything() {
     assert_eq!(list.entries.store_apps, vec!["Microsoft.XboxApp_8wekyb3d8bbwe"]);
     assert_eq!(list.entries.titles, vec!["*YouTube*"]);
     assert_eq!(list.entries.allowed_titles, vec!["*Visual Studio Code"]);
-    assert_eq!(list.actions, Actions { obsidian_web_viewer: false, window_titles_minimize: true });
+    assert_eq!(list.actions, Actions { obsidian_web_viewer: false, window_titles_minimize: true, steam_browser: false });
 }
 
 #[test]
@@ -706,7 +717,7 @@ fn start_can_set_the_lock_as_the_tile_does() {
     let (heading, body) = ask(&overview, Lock::timed_for("2h5m")).unwrap();
     assert_eq!(
         (heading.as_str(), body.as_str()),
-        ("Start “Work” for 2 hours and 5 minutes?", "Locked for 2 hours and 5 minutes. Only unlocking in Settings ends it early")
+        ("Start “Work” for 2 hours and 5 minutes?", "Locked for 2 hours and 5 minutes. Only unlocking in Settings can end it early")
     );
     assert!(ask(&overview, Lock::timed_until("2099-01-01 00:00")).unwrap().1.starts_with("Locked until Thursday 1 January 2099, 00:00, "));
     assert_eq!(ask(&overview, Lock::timed_until("2001-01-01 00:00")), None);
@@ -908,12 +919,12 @@ fn the_other_commands() {
 fn deleting_says_what_it_does_to_the_sessions() {
     // In the window's words, a sentence each, then all of it as the window's question.
     let mut overview = library();
-    assert_eq!(fallout(&overview, "l1"), ["Goes on without it: “Work”"]);
-    assert_eq!(fallout(&overview, "s1"), ["Always active from now: “Work”", "No lock from now: “Work”"]);
+    assert_eq!(fallout(&overview, "l1"), ["The target will be deleted from: “Work”"]);
+    assert_eq!(fallout(&overview, "s1"), ["Always active after removal: “Work”", "Unlocked after removal: “Work”"]);
     assert_eq!(fallout(&overview, "other"), Vec::<String>::new());
     assert_eq!(
         delete_question(&overview, "targets", "Social", "l1"),
-        "Delete “Social”? Deletes the target for good. Goes on without it: “Work”"
+        "Delete “Social”? Deletes the target for good. The target will be deleted from: “Work”"
     );
     assert_eq!(delete_question(&overview, "sessions", "Work", "b1"), "Delete “Work”? Deletes the session for good");
     overview.running.push(a_running("b1"));

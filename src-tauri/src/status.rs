@@ -378,7 +378,7 @@ mod tests {
             (Lock::Timed { kind: TimedKind::Until, value: "soon".into() }, "Until soon"),
             (Lock::UntilRestart, "Until restart"),
             (Lock::Delay { delay: "5m".into() }, "Delay 5 minutes"),
-            (Lock::Text { text: "x".into() }, "Type text to stop"),
+            (Lock::Text { text: "x".into() }, "Type to stop"),
             (Lock::Password { password: None, hash: None }, "Password to stop"),
             (Lock::Condition { condition: "hours".into() }, "During “Work hours”"),
             (Lock::Condition { condition: "key".into() }, "By “Key”"),
@@ -400,7 +400,7 @@ mod tests {
         assert_eq!(state(Some(Running { locked: true, ..run() })), State::Locked);
         assert_eq!(state(Some(Running { locked: true, enforcing: false, ..run() })), State::Inactive);
         let words = [State::NotRunning, State::Running, State::Locked, State::Inactive].map(State::words);
-        assert_eq!(words, ["Not running", "Running", "Running · locked", "Inactive"].map(String::from));
+        assert_eq!(words, ["Not running", "Running", "Locked", "Inactive"].map(String::from));
         // Sent to the window by these names.
         assert_eq!(serde_json::to_string(&State::NotRunning).unwrap(), "\"not_running\"");
     }
@@ -480,7 +480,7 @@ mod tests {
             "Locked for 2 hours"
         );
         assert_eq!(lock(Running { until_restart: true, ..run() }), "Until restart");
-        assert_eq!(lock(Running { lock_text: Some("x".into()), ..run() }), "Type text to stop");
+        assert_eq!(lock(Running { lock_text: Some("x".into()), ..run() }), "Type to stop");
         assert_eq!(lock(Running { password: true, ..run() }), "Password to stop");
     }
 }

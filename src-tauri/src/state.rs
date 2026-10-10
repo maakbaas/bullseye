@@ -64,6 +64,10 @@ pub struct Actions {
     pub window_titles_minimize: bool,
     /// Closes Obsidian while it shows web content; not linked to the target.
     pub obsidian_web_viewer: bool,
+    /// Closes Steam's built-in browser window (its title never says which page it shows); not
+    /// linked to the target. Off in a new target.
+    #[serde(default)]
+    pub steam_browser: bool,
 }
 
 /// What an action needs to have something to do.
@@ -85,9 +89,10 @@ impl Actions {
     /// Every action as (turned on, what it needs). **The one place to list a new action**: add
     /// its field above (if it has a switch) and a line here; what may start and what runs follow
     /// from it. (A new kind of list also needs a `Uses` variant and an arm in `lists::Lists::has`.)
-    fn all(&self) -> [(bool, Uses); 5] {
+    fn all(&self) -> [(bool, Uses); 6] {
         [
             (self.obsidian_web_viewer, Uses::Nothing),
+            (self.steam_browser, Uses::Nothing),
             // Acted on whenever their list has entries.
             (true, Uses::Sites),
             (true, Uses::Programs),
@@ -119,7 +124,7 @@ impl Actions {
 
 impl Default for Actions {
     fn default() -> Actions {
-        Actions { obsidian_web_viewer: true, window_titles_minimize: false }
+        Actions { obsidian_web_viewer: true, window_titles_minimize: false, steam_browser: false }
     }
 }
 
@@ -302,7 +307,7 @@ mod tests {
 
     #[test]
     fn what_can_run_depends_on_the_actions_and_the_lists() {
-        let only = |obsidian| Actions { obsidian_web_viewer: obsidian, window_titles_minimize: false };
+        let only = |obsidian| Actions { obsidian_web_viewer: obsidian, window_titles_minimize: false, steam_browser: false };
         // Which lists have entries.
         let lists = |sites: bool, programs: bool| {
             move |uses: Uses| match uses {
@@ -359,5 +364,18 @@ mod tests {
         assert!(!minimize(false).turned_off_by(&minimize(false)));
         let obsidian = |on| Actions { obsidian_web_viewer: on, ..Actions::default() };
         assert!(obsidian(true).turned_off_by(&obsidian(false)) && !obsidian(false).turned_off_by(&obsidian(true)));
+    }
+
+    #[test]
+    fn steams_browser_is_an_action_of_its_own_that_is_off_in_a_new_target() {
+        let steam = |on| Actions { steam_browser: on, ..Actions::default() };
+        assert!(!Actions::default().steam_browser, "a new target leaves Steam's browser alone");
+        // It needs no list, so a session with only it has something to do.
+        let nothing = |uses: Uses| uses == Uses::Nothing; // no list has entries; the action needs none
+        let only_steam = Actions { obsidian_web_viewer: false, window_titles_minimize: false, steam_browser: true };
+        assert!(only_steam.can_run(nothing) && only_steam.uses(Uses::Nothing));
+        // A locked session cannot turn it off; turning it on is stricter.
+        assert!(steam(true).turned_off_by(&steam(false)));
+        assert!(!steam(false).turned_off_by(&steam(true)) && !steam(true).turned_off_by(&steam(true)));
     }
 }
