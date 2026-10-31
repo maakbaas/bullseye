@@ -115,7 +115,7 @@ jobs:
       # The server's own tests (the modules it shares with the app are tested below and on Windows).
       - name: Test the server
         working-directory: server
-        run: cargo test http::
+        run: cargo test 'http::'
 
       - name: Test the platform-free modules on Linux
         run: cargo test --manifest-path scripts/linux-tests/Cargo.toml -- --skip only_the_installed_app --skip the_app_of_a_program
