@@ -201,6 +201,8 @@ dependencies = [
  "tauri-plugin-dialog",
  "uiautomation",
  "ureq",
+ "webview2-com",
+ "windows-core",
  "windows-service",
  "windows-sys 0.61.2",
  "wmi",

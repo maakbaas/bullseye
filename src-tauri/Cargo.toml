@@ -40,6 +40,9 @@ sysinfo = "0.39.6"
 tauri = { version = "2", features = ["tray-icon"] }
 # the Save and Open dialogs of Export and Import in Settings
 tauri-plugin-dialog = "2"
+# The window's WebView2 settings (no form autofill), as Tauri's own WebView2 crates name them.
+webview2-com = "0.39"
+windows-core = "0.62"
 uiautomation = "0.25.1"
 # the service (src/service.rs); install, failure actions, session notifications
 windows-service = "0.8"

@@ -79,13 +79,30 @@ pub fn show_in_background(app: AppHandle) {
 }
 
 fn create(app: &AppHandle) -> tauri::Result<WebviewWindow> {
-    WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("index.html".into()))
+    let window = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("index.html".into()))
         .title("Bullseye")
         .inner_size(WIDTH, HEIGHT)
         .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
         .resizable(true)
         .visible(false)
-        .build()
+        .build()?;
+    let _ = window.with_webview(|webview| without_autofill(&webview.controller()));
+    Ok(window)
+}
+
+/// No suggestions of what was typed before, and no offer to save a password: WebView2's pop-ups over
+/// the window's fields.
+fn without_autofill(controller: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Controller) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings4;
+    use windows_core::Interface;
+    // SAFETY: COM calls on the window's own WebView2, on the thread Tauri runs this on.
+    unsafe {
+        let Ok(settings) = controller.CoreWebView2().and_then(|core| core.Settings()) else { return };
+        if let Ok(settings) = settings.cast::<ICoreWebView2Settings4>() {
+            let _ = settings.SetIsGeneralAutofillEnabled(false);
+            let _ = settings.SetIsPasswordAutosaveEnabled(false);
+        }
+    }
 }
 
 fn reveal(ui: &Ui, window: &WebviewWindow) {
