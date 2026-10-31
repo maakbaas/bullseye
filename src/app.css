@@ -14,6 +14,31 @@ html {
   -webkit-touch-callout: none;
 }
 body { overscroll-behavior: none; }
+/* A touch screen has no hover: a tap would leave the last thing tapped in its hover colour until the
+   next tap elsewhere. There Carbon's hover tokens are its resting ones (the contextual `--cds-layer-hover`
+   and the others follow their numbered tokens, so every layer is covered); pressing still shows. */
+@media (hover: none) {
+  :root.cds--g10, :root.cds--g100 {
+    --cds-background-hover: transparent;
+    --cds-background-selected-hover: var(--cds-background-selected);
+    --cds-field-hover: var(--cds-field);
+    --cds-field-hover-01: var(--cds-field-01);
+    --cds-field-hover-02: var(--cds-field-02);
+    --cds-field-hover-03: var(--cds-field-03);
+    --cds-layer-hover-01: var(--cds-layer-01);
+    --cds-layer-hover-02: var(--cds-layer-02);
+    --cds-layer-hover-03: var(--cds-layer-03);
+    --cds-layer-accent-hover-01: var(--cds-layer-accent-01);
+    --cds-layer-accent-hover-02: var(--cds-layer-accent-02);
+    --cds-layer-accent-hover-03: var(--cds-layer-accent-03);
+    --cds-layer-selected-hover-01: var(--cds-layer-selected-01);
+    --cds-layer-selected-hover-02: var(--cds-layer-selected-02);
+    --cds-layer-selected-hover-03: var(--cds-layer-selected-03);
+    --cds-link-primary-hover: var(--cds-link-primary);
+    --cds-button-primary-hover: var(--cds-button-primary);
+    --cds-button-secondary-hover: var(--cds-button-secondary);
+  }
+}
 body {
   margin: 0;
   display: flex;
@@ -95,7 +120,8 @@ main { padding-block: var(--cds-spacing-06); }
 .session-tile h2 cds-link::part(link):hover { text-decoration: none; }
 /* The link centres the icon in its line box, which reads high next to the letters: a hair lower, and a hair closer. */
 .session-tile .title-edit { margin-block-start: calc(var(--cds-spacing-02) + var(--cds-spacing-01)); margin-inline: calc(-1 * var(--cds-spacing-02)) var(--cds-spacing-02); fill: var(--cds-icon-secondary); display: none; }
-.session-tile h2 cds-link:is(:hover, :focus-within) .title-edit:not(.unavailable) { display: inline-block; }
+.session-tile h2 cds-link:focus-within .title-edit:not(.unavailable) { display: inline-block; }
+@media (hover: hover) { .session-tile h2 cds-link:hover .title-edit:not(.unavailable) { display: inline-block; } }
 /* Show all sessions, under one shown on its own. */
 .show-all { margin-bottom: var(--cds-spacing-05); }
 /* A session's Start / Stop (and Keep locked), on the right under its rows. */
@@ -105,6 +131,8 @@ main { padding-block: var(--cds-spacing-06); }
 /* A dropdown's list shows all its items where there is room (Carbon stops it at five and a half and scrolls),
    through the list's own part; where there is not, it still scrolls. */
 cds-dropdown::part(menu-body) { max-block-size: min(21rem, 70vh); }
+/* A tile's inline dropdown: its menu no wider than fits on the screen around it (`menuRoom`, fields.js). */
+.session-tile cds-dropdown[type="inline"]::part(menu-body) { min-inline-size: var(--menu-inline-size, 18rem); }
 /* A refusal in the dialog, spaced from the fields under it as they are from each other. */
 #confirm-error { margin-block-end: var(--cds-spacing-06); }
 .modal-fields { display: flex; flex-direction: column; gap: var(--cds-spacing-06); }
@@ -203,6 +231,12 @@ cds-link[inline] { display: inline-flex; }
   /* After the widest dropdown's chevron about as much room as after the widest label (some 54px). */
   .tile-rows .row-text:has(> .row-now:not(:empty)) { grid-template-columns: 11rem minmax(0, 1fr); column-gap: var(--cds-spacing-07); }
   .tile-rows .row-text > .row-now { grid-row: 1; grid-column: 2; line-height: 1.25rem; padding-inline-start: 0; }
+}
+/* On a phone (below 28rem) a value beside its label would get too little room (a dropdown's words
+   no longer fit), so the label goes over it, the value's letters starting under the label's. */
+@media (max-width: 27.99rem) {
+  .tile-rows .row { grid-template-columns: minmax(0, 1fr); row-gap: var(--cds-spacing-03); }
+  .tile-rows .row-text { margin-inline-start: calc(-1 * var(--cds-spacing-05)); }
 }
 /* The first line of a row is one text line (1.25rem), so a row is as high as its button (2.5rem): Carbon pads the content by what a line of that height leaves. */
 .tile-rows .row-label, .tile-rows .row-text > .row-value:first-child { line-height: 1.25rem; }

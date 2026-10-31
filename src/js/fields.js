@@ -54,11 +54,14 @@ function chosenOf(key, session) {
   return session.lock.method;
 }
 
-// Whether there is more room above a dropdown than below it, in the scrolling part of the window
-// (a menu cannot show outside it).
-function roomAbove(select) {
-  const [box, view] = [select.getBoundingClientRect(), document.getElementById("scroller").getBoundingClientRect()];
-  return box.top - view.top > view.bottom - box.bottom;
+// How wide a dropdown's menu, centred under it, can be and stay a gutter inside the window: at most
+// Carbon's 18rem for an inline one.
+function menuRoom(select) {
+  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
+  const box = (select.shadowRoot?.querySelector("[part=trigger-button]") ?? select).getBoundingClientRect();
+  const centre = (box.left + box.right) / 2;
+  const room = 2 * Math.min(centre, document.documentElement.clientWidth - centre) - 2 * rem;
+  return Math.max(box.width, Math.min(18 * rem, room));
 }
 
 // Whether the service would accept a change to what a locked session holds (`check_stricter`); if
@@ -120,9 +123,13 @@ function addRows(parts, id) {
         }
       });
     } else {
-      select = el("cds-dropdown", { type: "inline", size: "sm", "aria-label": t(`sessions.fields.${key}`) });
-      // Its menu opens under it, left edges together, or above it where there is more room there.
-      for (const gesture of ["pointerdown", "keydown"]) select.addEventListener(gesture, () => (select.direction = roomAbove(select) ? "top" : "bottom"), true);
+      // `autoalign`, as every dropdown: its menu opens under it or above it, wherever it fits, and is kept
+      // inside the window, so on a narrow one it never pushes the page sideways.
+      select = el("cds-dropdown", { type: "inline", size: "sm", autoalign: true, "aria-label": t(`sessions.fields.${key}`) });
+      // Carbon centres the menu under it and makes an inline one at least 18rem wide, with nothing to
+      // move it back in: on a phone it would run off the screen. So it is as wide as fits around its
+      // centre (`--menu-inline-size`, `app.css`), and never narrower than the dropdown itself.
+      for (const gesture of ["pointerdown", "keydown"]) select.addEventListener(gesture, () => select.style.setProperty("--menu-inline-size", `${menuRoom(select)}px`), true);
       select.addEventListener("cds-dropdown-selected", async (event) => {
         const chosen = event.detail.item.value;
         const session = current(id);
