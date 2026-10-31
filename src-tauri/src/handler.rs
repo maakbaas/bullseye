@@ -140,7 +140,7 @@ fn answer_sync(context: &Context, request: Request) -> Response {
     let Some(syncer) = context.syncer.as_ref() else { return Response::Failed("This is not a computer that syncs".into()) };
     let done = |result: Result<(), String>| result.map_or_else(Response::Failed, |()| Response::Done);
     match request {
-        Request::SyncConnect { url, token, join } => done(syncer.connect(context, &url, &token, join)),
+        Request::SyncConnect { url, token } => done(syncer.connect(context, &url, &token)),
         Request::SyncDisconnect => {
             syncer.disconnect();
             Response::Done

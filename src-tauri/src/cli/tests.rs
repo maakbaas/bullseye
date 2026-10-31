@@ -1273,12 +1273,14 @@ fn sync_is_read_with_its_server_and_token() {
     assert_eq!(parse(&args(&["sync", "status", "--json"])), Ok(Command::SyncStatus { json: true }));
     assert_eq!(
         parse(&args(&["sync", "connect", "https://sync.example.com", "--token", token])),
-        Ok(Command::SyncConnect { url: "https://sync.example.com".into(), token: token.into(), join: Join::UseServer, force: false })
+        Ok(Command::SyncConnect { url: "https://sync.example.com".into(), token: token.into(), force: false })
     );
     assert_eq!(
-        parse(&args(&["sync", "connect", "https://s", "--token=t", "--send-mine", "--force"])),
-        Ok(Command::SyncConnect { url: "https://s".into(), token: "t".into(), join: Join::SendMine, force: true })
+        parse(&args(&["sync", "connect", "https://s", "--token=t", "--force"])),
+        Ok(Command::SyncConnect { url: "https://s".into(), token: "t".into(), force: true })
     );
+    // Which side everything starts from is not a choice: the service decides.
+    assert!(parse(&args(&["sync", "connect", "https://s", "--token=t", "--send-mine"])).is_err());
     assert!(parse(&args(&["sync", "connect", "--token", token])).unwrap_err().contains("address"));
     assert_eq!(parse(&args(&["sync", "disconnect"])), Ok(Command::SyncDisconnect { force: false }));
     assert_eq!(parse(&args(&["sync", "now"])), Ok(Command::SyncNow));

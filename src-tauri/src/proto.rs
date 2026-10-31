@@ -132,8 +132,8 @@ pub enum Request {
     PrepareUninstall,
     /// Where syncing with the other computers stands (`sync_api::SyncStatus`).
     SyncStatus,
-    /// Joins the sync server at `url` with `token`, taking its settings or sending this computer's.
-    SyncConnect { url: String, token: String, join: crate::sync_api::Join },
+    /// Joins the sync server at `url` with `token`: a new server takes this computer's settings, any other gives it its own.
+    SyncConnect { url: String, token: String },
     /// Stops syncing; always works.
     SyncDisconnect,
     /// One round with the sync server now.

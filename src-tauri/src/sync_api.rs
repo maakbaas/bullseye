@@ -112,14 +112,6 @@ pub struct Device {
     pub report: DeviceReport,
 }
 
-/// How a computer joins: taking the server's settings and sessions, or sending its own to every computer.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Join {
-    UseServer,
-    SendMine,
-}
-
 /// A refusal from the server, or no answer.
 #[derive(Debug, PartialEq, Clone)]
 pub enum Failure {

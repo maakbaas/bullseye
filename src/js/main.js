@@ -304,22 +304,21 @@ async function renderSync() {
   );
 }
 
-// Connecting: the server's address and token, and which side everything starts from. The service
-// joins the server before the dialog closes; what it refuses is said in the dialog.
+// Connecting: the server's address and token. A new server takes this computer's settings, any other
+// gives this computer its own (the service decides). The service joins the server before the dialog
+// closes; what it refuses is said in the dialog.
 $("sync-connect").addEventListener("click", async () => {
   notify("sync-notices");
   const url = el("cds-text-input", { label: t("sync.url"), "helper-text": t("sync.urlHelper"), autocomplete: "off" });
   const token = el("cds-password-input", { label: t("sync.token"), "helper-text": t("sync.tokenHelper"), autocomplete: "off" });
-  const join = el("cds-radio-button-group", { "legend-text": t("sync.join"), name: "sync-join", orientation: "vertical" });
-  join.append(el("cds-radio-button", { "label-text": t("sync.useServer"), value: "use_server" }), el("cds-radio-button", { "label-text": t("sync.sendMine"), value: "send_mine" }));
-  join.value = "use_server";
   const done = await ask({
     heading: t("sync.connectHeading"),
+    body: t("sync.connectBody"),
     action: t("sync.connect"),
     kind: "primary",
-    fields: [url, token, join],
+    fields: [url, token],
     read: async () => {
-      await invoke("sync_connect", { url: url.value, token: token.value, join: join.value });
+      await invoke("sync_connect", { url: url.value, token: token.value });
       return true;
     },
   });

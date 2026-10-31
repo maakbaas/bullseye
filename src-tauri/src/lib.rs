@@ -314,11 +314,9 @@ fn sync_status(remote: State<Remote>) -> Result<sync_api::SyncStatus, String> {
 
 /// Joins the sync server at `url`. Async: the service waits on the server.
 #[tauri::command]
-async fn sync_connect(url: String, token: String, join: sync_api::Join, remote: State<'_, Remote>) -> Result<(), String> {
+async fn sync_connect(url: String, token: String, remote: State<'_, Remote>) -> Result<(), String> {
     let remote = remote.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || remote.command(Request::SyncConnect { url, token, join }))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || remote.command(Request::SyncConnect { url, token })).await.map_err(|e| e.to_string())?
 }
 
 /// Stops syncing; always works.

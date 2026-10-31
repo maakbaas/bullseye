@@ -194,11 +194,11 @@ Syncing with your other computers, through a Bullseye sync server:
   sync status [--json]              Whether this computer syncs, with which server, the computers
                                     that sync and the changes from them that wait here. Also just
                                     'sync'.
-  sync connect <url> [--token <token>] [--send-mine] [--force]
+  sync connect <url> [--token <token>] [--force]
                                     Sync this computer through the server at <url> (the token from
-                                    --token, or BULLSEYE_TOKEN). It takes the server's sessions,
-                                    targets, conditions, unlock settings and running sessions; with
-                                    --send-mine every other computer takes this one's instead. Asks
+                                    --token, or BULLSEYE_TOKEN). A new server takes this computer's
+                                    sessions, targets, conditions, unlock settings and running
+                                    sessions; otherwise this computer takes the server's. Asks
                                     first, unless --force.
   sync disconnect [--force]         Stop syncing. Always possible, also while locked: the sessions
                                     here stay and run on by their own rules. Asks first, unless
@@ -378,7 +378,6 @@ pub(super) enum Command {
     SyncConnect {
         url: String,
         token: String,
-        join: Join,
         force: bool,
     },
     SyncDisconnect {
@@ -603,8 +602,7 @@ fn parse_command(args: &[String]) -> Result<Command, String> {
         "sync connect" => {
             let url = options.positional().ok_or("Give the server's address, e.g. https://sync.example.com")?;
             let token = token_option(&mut options)?;
-            let join = if options.flag("--send-mine") { Join::SendMine } else { Join::UseServer };
-            Command::SyncConnect { url, token, join, force: options.flag("--force") }
+            Command::SyncConnect { url, token, force: options.flag("--force") }
         }
         "sync disconnect" => Command::SyncDisconnect { force: options.flag("--force") },
         "sync now" => Command::SyncNow,

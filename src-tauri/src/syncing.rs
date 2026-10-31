@@ -20,9 +20,7 @@ use crate::definitions::Library;
 use crate::handler::{self, Context, Outcome};
 use crate::replica::{Action, Entry, Replica};
 use crate::sync::LockExt;
-use crate::sync_api::{
-    DeviceReport, DeviceView, Failure, HeldView, Http, Join, Posted, Snapshot, SyncStatus, Transport, MAX_POST, MAX_WAIT,
-};
+use crate::sync_api::{DeviceReport, DeviceView, Failure, HeldView, Http, Posted, Snapshot, SyncStatus, Transport, MAX_POST, MAX_WAIT};
 use crate::watchdog::note;
 use crate::{state, strings};
 
@@ -196,10 +194,12 @@ impl Syncer {
         Ok(())
     }
 
-    /// Joins the server at `url` with `token`, from what it has now: taking its settings and sessions
-    /// (applied here under this computer's rules, as anything from elsewhere is: what they refuse waits),
-    /// or sending this computer's to every computer. A computer that was connected disconnects first.
-    pub fn connect(&self, context: &Context, url: &str, token: &str, join: Join) -> Result<(), String> {
+    /// Joins the server at `url` with `token`. A new server, whose log never had anything, takes what is
+    /// here: the first computer sets everything up. Otherwise this computer takes the server's settings
+    /// and sessions (applied here under this computer's rules, as anything from elsewhere is: what they
+    /// refuse waits), so one that joins later never sends its own over everyone's. A computer that was
+    /// connected disconnects first.
+    pub fn connect(&self, context: &Context, url: &str, token: &str) -> Result<(), String> {
         let transport = (self.connector)(url, token)?;
         let snapshot = transport.snapshot().map_err(|failure| failure.words())?;
         self.disconnect();
@@ -214,9 +214,10 @@ impl Syncer {
         self.replica.connect(snapshot.head, snapshot.last.clone(), snapshot.newest)?;
         *self.settings.locked() = settings;
         *self.transport.locked() = Some(transport);
-        match join {
-            Join::UseServer => self.adopt(context, &snapshot),
-            Join::SendMine => self.send_mine(context),
+        if snapshot.head == 0 {
+            self.send_mine(context);
+        } else {
+            self.adopt(context, &snapshot);
         }
         let _ = self.round(context, Duration::ZERO);
         Ok(())
@@ -633,8 +634,8 @@ mod tests {
             assert_eq!(self.ask(request), Response::Done);
         }
 
-        fn connect(&self, join: Join) -> Response {
-            self.ask(Request::SyncConnect { url: URL.into(), token: TOKEN.into(), join })
+        fn connect(&self) -> Response {
+            self.ask(Request::SyncConnect { url: URL.into(), token: TOKEN.into() })
         }
 
         fn status(&self) -> SyncStatus {
@@ -692,8 +693,8 @@ mod tests {
         let (a, b) = (computer("join-a", &server), computer("join-b", &server));
         // B had something of its own: taking the server's replaces it.
         b.ok(Request::SaveTarget { target: target("mine", &["mine.com"]) });
-        assert_eq!(a.connect(Join::UseServer), Response::Done);
-        assert_eq!(b.connect(Join::UseServer), Response::Done);
+        assert_eq!(a.connect(), Response::Done);
+        assert_eq!(b.connect(), Response::Done);
         assert_eq!(a.context.library(), server.hub().snapshot().unwrap().library);
         assert_eq!(b.context.library(), a.context.library());
         assert_eq!(b.context.unlock().delay(), 3600);
@@ -709,26 +710,35 @@ mod tests {
         a.ok(Request::Start { id: "work".into() });
         sync(&[&a]);
         let c = computer("join-c", &server);
-        assert_eq!(c.connect(Join::UseServer), Response::Done);
+        assert_eq!(c.connect(), Response::Done);
         assert!(c.runs("work"));
         assert_eq!(c.context.sessions().starts_of("work"), a.context.sessions().starts_of("work"));
     }
 
+    /// The first computer on a new server sets everything up: what it has defined, its unlock settings and
+    /// what runs. One that joins later, a freshly installed one with nothing defined too, takes the
+    /// server's and overwrites nobody.
     #[test]
-    fn a_computer_that_sends_its_own_gives_every_computer_its_settings() {
-        let server = server("send");
-        defined(&server, Lock::None);
-        let (a, b) = (computer("send-a", &server), computer("send-b", &server));
-        assert_eq!(a.connect(Join::UseServer), Response::Done);
-        b.ok(Request::SaveTarget { target: target("mine", &["mine.com"]) });
-        b.ok(Request::SetUnlockDelay { delay: "2h".into() });
-        assert_eq!(b.connect(Join::SendMine), Response::Done);
+    fn the_first_computer_fills_a_new_server_and_the_next_ones_take_it() {
+        let server = server("first");
+        let (a, b) = (computer("first-a", &server), computer("first-b", &server));
+        a.ok(Request::SaveTarget { target: target("social", &["youtube.com"]) });
+        a.ok(Request::SaveSession { session: session("work", &["social"]) });
+        a.ok(Request::SetUnlockDelay { delay: "2h".into() });
+        a.ok(Request::Start { id: "work".into() });
+        assert_eq!(a.connect(), Response::Done);
+        sync(&[&a]);
+        let snapshot = server.hub().snapshot().unwrap();
+        assert_eq!(snapshot.library, a.context.library());
+        assert_eq!(snapshot.unlock_delay, "7200s");
+        assert_eq!(snapshot.runs.len(), 1);
+        // B has nothing: it takes A's, and A keeps everything.
+        assert_eq!(b.connect(), Response::Done);
         sync(&[&a, &b]);
-        assert!(a.context.library().target("mine").is_some());
-        assert!(a.context.library().session("work").is_none());
-        assert_eq!(a.context.library(), b.context.library());
-        assert_eq!(a.context.unlock().delay(), 7200);
-        assert_eq!(server.hub().snapshot().unwrap().library, b.context.library());
+        assert_eq!(b.context.library(), a.context.library());
+        assert!(a.context.library().session("work").is_some());
+        assert_eq!(b.context.unlock().delay(), 7200);
+        assert!(b.runs("work") && a.runs("work"));
     }
 
     /// A copy of a server's folder, as a backup is.
@@ -746,8 +756,8 @@ mod tests {
         let server = server("wiped");
         defined(&server, Lock::timed_for("2h"));
         let (a, b) = (computer("wiped-a", &server), computer("wiped-b", &server));
-        assert_eq!(a.connect(Join::UseServer), Response::Done);
-        assert_eq!(b.connect(Join::UseServer), Response::Done);
+        assert_eq!(a.connect(), Response::Done);
+        assert_eq!(b.connect(), Response::Done);
         a.ok(Request::SetUnlockDelay { delay: "3h".into() });
         a.ok(Request::Start { id: "work".into() });
         sync(&[&a, &b]);
@@ -784,8 +794,8 @@ mod tests {
         let server = server("stale");
         defined(&server, Lock::timed_for("3h"));
         let (a, b) = (computer("stale-a", &server), computer("stale-b", &server));
-        assert_eq!(a.connect(Join::UseServer), Response::Done);
-        assert_eq!(b.connect(Join::UseServer), Response::Done);
+        assert_eq!(a.connect(), Response::Done);
+        assert_eq!(b.connect(), Response::Done);
         a.ok(Request::Start { id: "work".into() });
         sync(&[&a, &b]);
         assert!(b.locked());
@@ -834,8 +844,8 @@ mod tests {
         let server = server("restored");
         defined(&server, Lock::None);
         let (a, b) = (computer("restored-a", &server), computer("restored-b", &server));
-        assert_eq!(a.connect(Join::UseServer), Response::Done);
-        assert_eq!(b.connect(Join::UseServer), Response::Done);
+        assert_eq!(a.connect(), Response::Done);
+        assert_eq!(b.connect(), Response::Done);
         sync(&[&a, &b]);
         // The folder `server("restored")` keeps its files in.
         let folder = std::env::temp_dir().join(format!("hub-{}-syncing-restored", std::process::id()));
@@ -864,14 +874,11 @@ mod tests {
     fn a_wrong_token_or_no_server_connects_nothing() {
         let server = server("refused");
         let a = computer("refused-a", &server);
-        let refused = a.ask(Request::SyncConnect { url: URL.into(), token: "wrong token, long enough".into(), join: Join::UseServer });
+        let refused = a.ask(Request::SyncConnect { url: URL.into(), token: "wrong token, long enough".into() });
         assert_eq!(refused, Response::Failed("The server refused the token".into()));
         server.down.store(true, Ordering::SeqCst);
-        assert!(matches!(a.connect(Join::UseServer), Response::Failed(why) if why.contains("cannot be reached")));
-        assert!(matches!(
-            a.ask(Request::SyncConnect { url: "sync.example.com".into(), token: TOKEN.into(), join: Join::UseServer }),
-            Response::Failed(_)
-        ));
+        assert!(matches!(a.connect(), Response::Failed(why) if why.contains("cannot be reached")));
+        assert!(matches!(a.ask(Request::SyncConnect { url: "sync.example.com".into(), token: TOKEN.into() }), Response::Failed(_)));
         assert!(!a.status().connected);
         assert!(!a.dir.join("sync.json").exists());
         // Not connected: a round does nothing, and what is done here is not kept for the server.
@@ -886,8 +893,8 @@ mod tests {
         let server = server("unlock");
         defined(&server, Lock::UntilRestart);
         let (a, b) = (computer("unlock-a", &server), computer("unlock-b", &server));
-        a.connect(Join::UseServer);
-        b.connect(Join::UseServer);
+        a.connect();
+        b.connect();
         assert_eq!(server.hub().request(&Request::Start { id: "work".into() }).unwrap(), Response::Done);
         sync(&[&a, &b]);
         assert!(a.locked() && b.locked());
@@ -927,8 +934,8 @@ mod tests {
         let server = server("restarted");
         defined(&server, Lock::UntilRestart);
         let (a, b) = (computer("restarted-a", &server), computer("restarted-b", &server));
-        a.connect(Join::UseServer);
-        b.connect(Join::UseServer);
+        a.connect();
+        b.connect();
         a.ok(Request::Start { id: "work".into() });
         sync(&[&a, &b]);
         assert!(a.locked() && b.locked());
@@ -944,7 +951,7 @@ mod tests {
         // The server's view has no restart of its own: it ends there, so nobody who joins later takes it.
         assert!(server.hub().snapshot().unwrap().runs.is_empty());
         let c = computer("restarted-c", &server);
-        c.connect(Join::UseServer);
+        c.connect();
         assert!(!c.runs("work"));
         // B is locked until its own restart: the stop waits for that, and then has nothing to do.
         assert!(b.locked());
@@ -989,7 +996,7 @@ mod tests {
         let server = server("disconnect");
         defined(&server, Lock::UntilRestart);
         let a = computer("disconnect-a", &server);
-        a.connect(Join::UseServer);
+        a.connect();
         assert_eq!(server.hub().request(&Request::Start { id: "work".into() }).unwrap(), Response::Done);
         sync(&[&a]);
         assert!(a.locked());
@@ -1014,7 +1021,7 @@ mod tests {
         let server = server("restart");
         defined(&server, Lock::None);
         let a = computer("restart-a", &server);
-        a.connect(Join::UseServer);
+        a.connect();
         let device = a.status().device;
         server.down.store(true, Ordering::SeqCst);
         a.ok(Request::Start { id: "work".into() });
@@ -1033,7 +1040,7 @@ mod tests {
         // Without its settings, or with them unreadable, it is not connected.
         fs::write(a.dir.join("sync.json"), b"{").unwrap();
         assert!(!Syncer::at(Some(a.dir.clone()), connector(&server), "x".into()).connected());
-        a.connect(Join::UseServer);
+        a.connect();
         fs::write(a.dir.join("sync.json"), serde_json::to_vec(&Settings { url: URL.into(), token: "short".into() }).unwrap()).unwrap();
         assert!(!Syncer::at(Some(a.dir.clone()), connector(&server), "x".into()).connected());
     }
@@ -1043,8 +1050,8 @@ mod tests {
         let server = server("gone");
         defined(&server, Lock::None);
         let (a, b) = (computer("gone-a", &server), computer("gone-b", &server));
-        a.connect(Join::UseServer);
-        b.connect(Join::UseServer);
+        a.connect();
+        b.connect();
         server.hub().request(&Request::SaveTarget { target: target("news", &["news.com"]) }).unwrap();
         b.ok(Request::Start { id: "work".into() });
         server.gone.store(true, Ordering::SeqCst);
@@ -1059,8 +1066,8 @@ mod tests {
         let server = server("status");
         defined(&server, Lock::None);
         let (a, b) = (computer("status-a", &server), computer("status-b", &server));
-        a.connect(Join::UseServer);
-        b.connect(Join::UseServer);
+        a.connect();
+        b.connect();
         sync(&[&a, &b]);
         a.ok(Request::SyncNow);
         let status = a.status();
@@ -1090,8 +1097,8 @@ mod tests {
         let server = server("threads");
         defined(&server, Lock::None);
         let (a, b) = (computer("threads-a", &server), computer("threads-b", &server));
-        a.connect(Join::UseServer);
-        b.connect(Join::UseServer);
+        a.connect();
+        b.connect();
         a.syncer.spawn(a.context.clone());
         b.syncer.spawn(b.context.clone());
         a.ok(Request::Start { id: "work".into() });

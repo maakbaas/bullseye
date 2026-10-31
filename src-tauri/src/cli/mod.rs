@@ -33,7 +33,7 @@ use crate::schedule::Week;
 use crate::state::Actions;
 use crate::status::{Line, Status};
 use crate::strings::{joined, quoted, t};
-use crate::sync_api::{Http, Join, SyncStatus};
+use crate::sync_api::{Http, SyncStatus};
 use crate::webhook::{self, Hook, Match, Matcher, Method};
 
 mod output;
@@ -557,15 +557,11 @@ fn execute(command: Command) -> Result<(), Failure> {
                 out(&describe_sync(&status));
             }
         }
-        Command::SyncConnect { url, token, join, force } => {
-            let question = match join {
-                Join::UseServer => format!("Sync through {url}? {}.", t("sync.useServer", &[])),
-                Join::SendMine => format!("Sync through {url}? {}.", t("sync.sendMine", &[])),
-            };
-            if !confirm(&question, force)? {
+        Command::SyncConnect { url, token, force } => {
+            if !confirm(&format!("Sync through {url}? {}.", t("sync.connectBody", &[])), force)? {
                 return Err(failed("Not connected."));
             }
-            send(Request::SyncConnect { url, token, join })?;
+            send(Request::SyncConnect { url, token })?;
             out(&describe_sync(&sync_status()?));
         }
         Command::SyncDisconnect { force } => {

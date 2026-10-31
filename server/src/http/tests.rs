@@ -6,7 +6,7 @@ use crate::hub::{self, tests::context};
 use crate::lock::Lock;
 use crate::proto::Response as Answered;
 use crate::replica::{Action, Entry};
-use crate::sync_api::{Http, Join, LogPage, Snapshot, SyncStatus};
+use crate::sync_api::{Http, LogPage, Snapshot, SyncStatus};
 use crate::syncing::{Connector, Syncer};
 use std::time::{Instant, SystemTime};
 
@@ -166,7 +166,7 @@ fn two_computers_sync_over_http_and_each_can_always_get_out() {
     http.request(&Request::SaveTarget { target: target("social", &["a.com"]) }).unwrap();
     http.request(&Request::SaveSession { session: Definition { lock: Lock::UntilRestart, ..session("work", &["social"]) } }).unwrap();
     let (a, b) = (computer("http-a"), computer("http-b"));
-    let connect = |c: &Computer| c.ask(Request::SyncConnect { url: address.clone(), token: TOKEN.into(), join: Join::UseServer });
+    let connect = |c: &Computer| c.ask(Request::SyncConnect { url: address.clone(), token: TOKEN.into() });
     assert_eq!(connect(&a), Answered::Done);
     assert_eq!(connect(&b), Answered::Done);
     // Started on A, and with the sync threads running, B has it soon.
