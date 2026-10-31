@@ -356,7 +356,24 @@ window.STRINGS = {
     emptyTitle: "No targets yet", // reviewed
     emptyText: "Add sites, programs or apps to close, and how to close them", // reviewed
     // {names}: the locked sessions that use it, quoted.
-    limited: "In use by {names}. You can add blocked entries, remove always allowed ones and turn actions on", // reviewed
+    limited: "In use by {names}. What blocks more applies at once, what blocks less waits until no locked session uses this target",
+    limitedTitle: "Looser changes wait while locked",
+    // A change that loosens a target a locked session uses: saved, and made once no locked session uses it.
+    waiting: {
+      tag: "Change waiting",
+      // {changes}: what waits, the parts below joined by `separator`.
+      text: "Waiting until no locked session uses this target: {changes}",
+      separator: "; ",
+      // {entries}: entries of the lists, joined.
+      unblocked: "{entries} no longer blocked",
+      allowed: "{entries} always allowed",
+      // {actions}: the actions' labels, quoted and joined.
+      off: "{actions} turned off",
+      minimize: "windows by title minimized instead of closed",
+      // Asked before saving a target a locked session uses; {name}: the target, {names}: the sessions, quoted.
+      confirmHeading: "Save {name}?",
+      confirmBody: "{names} is locked: what blocks more applies now and cannot be undone until it is unlocked, what blocks less waits until then",
+    },
     namePlaceholder: "e.g. Social media", // reviewed
     nameMissing: "Name the target", // reviewed
     nothing: "Nothing to block", // reviewed

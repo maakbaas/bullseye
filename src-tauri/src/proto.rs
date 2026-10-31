@@ -4,6 +4,7 @@
 //! that many bytes of JSON. The service treats every request as untrusted: any local user can
 //! open the pipe and send whatever they like (`service::handle` checks it all again).
 
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 
 use serde::de::DeserializeOwned;
@@ -62,8 +63,8 @@ pub enum Request {
     SaveSession { session: Definition },
     /// Removes a session. Refused while it runs.
     DeleteSession { id: String },
-    /// Adds a target, or replaces the one with its id. While a locked session uses it, only to be
-    /// stricter (`Target::tightened_by`).
+    /// Adds a target, or replaces the one with its id. While a locked session uses it, what loosens it
+    /// waits until none does (`Target::split`).
     SaveTarget { target: Target },
     /// Removes a target, and takes it out of the sessions that use it. Refused while a running
     /// session uses it.
@@ -196,6 +197,9 @@ pub struct Overview {
     /// What each session's Condition, Allowance and Lock rows say now (`status.rs`), for its tile.
     #[serde(default)]
     pub status: Vec<Status>,
+    /// What waits of each target that has something waiting (`Target::waiting_words`), by its id.
+    #[serde(default)]
+    pub waiting: BTreeMap<String, String>,
 }
 
 impl Overview {

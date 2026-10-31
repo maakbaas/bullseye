@@ -111,9 +111,20 @@ impl Actions {
     /// Whether `new` loosens these (for a locked session, that is a way out): an action turned off,
     /// or windows by title minimized where they were closed (closing them where they were minimized
     /// is stricter).
+    #[cfg(test)]
     pub fn turned_off_by(&self, new: &Actions) -> bool {
         (new.window_titles_minimize && !self.window_titles_minimize)
             || self.all().iter().zip(new.all()).any(|(&(was, _), (now, _))| was && !now)
+    }
+
+    /// The strictest of both: every action either has on, and windows by title minimized only if
+    /// both minimize them. Neither turns anything of it off (`turned_off_by`).
+    pub fn strictest(&self, other: &Actions) -> Actions {
+        Actions {
+            window_titles_minimize: self.window_titles_minimize && other.window_titles_minimize,
+            obsidian_web_viewer: self.obsidian_web_viewer || other.obsidian_web_viewer,
+            steam_browser: self.steam_browser || other.steam_browser,
+        }
     }
 
     /// Whether any action that is turned on needs this kind of list.
@@ -377,6 +388,19 @@ mod tests {
         assert!(!minimize(false).turned_off_by(&minimize(false)));
         let obsidian = |on| Actions { obsidian_web_viewer: on, ..Actions::default() };
         assert!(obsidian(true).turned_off_by(&obsidian(false)) && !obsidian(false).turned_off_by(&obsidian(true)));
+    }
+
+    #[test]
+    fn the_strictest_of_two_has_every_action_either_has_and_minimizes_only_if_both_do() {
+        let actions =
+            |minimize, obsidian, steam| Actions { window_titles_minimize: minimize, obsidian_web_viewer: obsidian, steam_browser: steam };
+        assert_eq!(actions(true, true, false).strictest(&actions(false, false, true)), actions(false, true, true));
+        assert_eq!(actions(true, false, false).strictest(&actions(true, false, false)), actions(true, false, false));
+        for (a, b) in [(actions(true, true, false), actions(false, false, true)), (actions(true, false, true), actions(true, true, false))]
+        {
+            let both = a.strictest(&b);
+            assert!(!a.turned_off_by(&both) && !b.turned_off_by(&both));
+        }
     }
 
     #[test]

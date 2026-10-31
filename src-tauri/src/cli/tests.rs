@@ -565,6 +565,7 @@ fn library() -> Overview {
         unlock: UnlockStatus::default(),
         clock_synced: true,
         status: vec![],
+        waiting: Default::default(),
     }
 }
 
@@ -958,6 +959,7 @@ fn the_status_reads_like_the_pages() {
         unlock: UnlockStatus::default(),
         clock_synced: true,
         status: vec![],
+        waiting: Default::default(),
     };
     assert!(describe_overview(&empty).contains("Sessions:\n  None yet"));
     let mut overview = library();
@@ -1364,4 +1366,32 @@ fn syncing_is_described_as_settings_shows_it() {
         describe_sync(&status),
         "Connected to https://s, last synced just now\n\nComputers:\n  Desk · This computer · Seen just now · Running: “Work” · 1 change waiting\n  Laptop · Seen 2 minutes ago · 2 changes waiting\n\nWaiting on this computer:\n  Stop “Work” · It is locked\n"
     );
+}
+
+#[test]
+fn a_looser_target_edit_while_locked_is_saved_and_said_to_wait() {
+    serve("waiting");
+    ok(&["target", "new", "Social", "--sites", "youtube.com", "reddit.com"]);
+    ok(&["new", "Focus", "--targets", "Social", "--lock-duration", "1h"]);
+    ok(&["start", "Focus", "--force"]);
+    // Taken out while locked: saved, and said to wait; it still blocks until then.
+    assert_eq!(
+        ok(&["target", "remove", "Social", "--sites", "reddit.com"]),
+        "Saved the target “Social”.\nWaiting until no locked session uses this target: reddit.com no longer blocked.\n"
+    );
+    let shown = ok(&["target", "show", "Social"]);
+    assert!(shown.contains("Sites to block: reddit.com, youtube.com"), "{shown}");
+    assert!(shown.contains("Waiting until no locked session uses this target: reddit.com no longer blocked\n"), "{shown}");
+    // An edit starts from the target as it is to be: what waits stays waiting, what is added blocks at once.
+    assert_eq!(
+        ok(&["target", "add", "Social", "--sites", "x.com"]),
+        "Saved the target “Social”.\nWaiting until no locked session uses this target: reddit.com no longer blocked.\n"
+    );
+    assert!(ok(&["target", "show", "Social"]).contains("Sites to block: reddit.com, x.com, youtube.com"));
+    assert_eq!(ok(&["target", "edit", "Social", "--sites", "reddit.com", "x.com", "youtube.com"]), "Saved the target “Social”.\n");
+    assert!(!ok(&["target", "show", "Social"]).contains("Waiting"));
+    // Unlocked: made.
+    ok(&["target", "remove", "Social", "--sites", "x.com"]);
+    ok(&["unlock"]);
+    assert!(ok(&["target", "show", "Social"]).contains("Sites to block: reddit.com, youtube.com\n"));
 }

@@ -895,10 +895,13 @@ mod tests {
         let at = server.now();
         let mirror = |action: Action| handler::mirror(&server.context, &action, at);
         // What its own rules refuse is taken as done: a computer did it under its own.
+        // A target made looser waits there as here, while what it runs is locked; then it is made.
         assert_eq!(mirror(Action::SaveTarget { target: target("social", &[]) }), Outcome::Applied);
-        assert!(server.context.library().target("social").unwrap().entries.filters.is_empty());
+        assert!(server.context.library().target("social").unwrap().desired().entries.filters.is_empty());
         assert_eq!(mirror(Action::Stop { id: "work".into(), starts, text: None, proof: None }), Outcome::Applied);
         assert!(!server.runs("work"));
+        server.ask(Request::Status);
+        assert!(server.context.library().target("social").unwrap().entries.filters.is_empty());
         server.ok(Request::SaveTarget { target: target("social", &["a.com"]) });
         server.ok(Request::Start { id: "work".into() });
         for action in [
@@ -1127,6 +1130,31 @@ mod tests {
     }
 
     #[test]
+    fn a_target_made_looser_elsewhere_waits_here_while_locked_and_is_made_once_it_is_not() {
+        let (a, b, mut log) = pair("waits", Lock::UntilRestart);
+        b.ok(Request::Start { id: "work".into() });
+        log.sync(&[&a, &b]);
+        a.ok(Request::SaveTarget { target: target("social", &["reddit.com"]) });
+        log.sync(&[&a, &b]);
+        // Nothing is held: what blocks more is made at once, what blocks less waits in the target.
+        assert!(b.replica.held().is_empty());
+        let social = b.context.library().target("social").unwrap().clone();
+        assert_eq!(social.entries.filters, vec!["reddit.com".to_string(), "youtube.com".to_string()]);
+        assert_eq!(social.desired().entries.filters, vec!["reddit.com".to_string()]);
+        // A runs the locked session too (what runs is shared): there it waits as well.
+        assert_eq!(a.context.library(), b.context.library());
+        // Unlocked: made on both, each by itself.
+        assert!(b.unlocks());
+        log.sync(&[&a, &b]);
+        for node in [&a, &b] {
+            node.ask(Request::Status);
+            let social = node.context.library().target("social").unwrap().clone();
+            assert_eq!((social.entries.filters, social.waiting), (vec!["reddit.com".to_string()], None));
+        }
+        assert_eq!(a.context.library(), b.context.library());
+    }
+
+    #[test]
     fn an_edit_made_here_and_not_yet_sent_is_what_every_computer_ends_up_with() {
         let (a, b, mut log) = pair("order", Lock::None);
         a.ok(Request::SaveTarget { target: target("social", &["a.com"]) });
@@ -1344,7 +1372,12 @@ mod tests {
         match dice.roll(21) {
             0 => Action::SaveSession { session: definition },
             1 => Action::DeleteSession { id },
-            2 => Action::SaveTarget { target: target(dice.pick(&["social", "other"]), sites) },
+            // Whatever `waiting` comes with it is no part of what is saved.
+            2 => {
+                let waiting =
+                    dice.pick(&[None, Some(crate::definitions::Waiting { entries: Default::default(), actions: Default::default() })]);
+                Action::SaveTarget { target: crate::definitions::Target { waiting, ..target(dice.pick(&["social", "other"]), sites) } }
+            }
             3 => Action::DeleteTarget { id: dice.pick(&["social".to_string(), id]) },
             4 => Action::Duplicate { kind: Kind::Session, id, new_id: new_id() },
             5 => Action::Import { library },
@@ -1411,7 +1444,24 @@ mod tests {
                         log.forge(action, at);
                     }
                 }
+                // What a session that stays locked blocks never gets less by what arrives.
+                let blocked = || -> Vec<(String, Vec<String>)> {
+                    let status = b.context.sessions().status();
+                    let locked = b.context.sessions().locked_ids();
+                    status
+                        .running
+                        .iter()
+                        .filter(|r| locked.contains(&r.id))
+                        .map(|r| (r.id.clone(), r.targets.iter().flat_map(|t| t.entries.filters.clone()).collect()))
+                        .collect()
+                };
+                let before = blocked();
                 log.sync(&[&b]);
+                for (id, after) in blocked() {
+                    if let Some((_, had)) = before.iter().find(|(was, _)| *was == id) {
+                        assert!(had.iter().all(|site| after.contains(site)), "round {round}: {id} lost a site: {had:?} to {after:?}");
+                    }
+                }
                 assert!(b.context.unlock().delay() <= unlock::MAX_DELAY, "round {round}");
                 assert!(b.replica.held().len() <= MAX_HELD);
             }

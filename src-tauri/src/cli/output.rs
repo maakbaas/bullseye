@@ -296,6 +296,10 @@ pub(super) fn describe_target(overview: &Overview, list: &Target) -> String {
     if empty {
         text += &format!("{}\n", t("targets.nothing", &[]));
     }
+    // What waits of it (`Target::split`), in the words of the window's editor.
+    if let Some(words) = overview.waiting.get(&list.id) {
+        text += &format!("{words}\n");
+    }
     text + &field(&t("tiles.usedBy", &[]), &users(overview, &list.id))
 }
 

@@ -2,7 +2,7 @@
 // `detour.js`), its breadcrumb, saving and deleting, and keeping what a locked session uses to
 // stricter changes.
 
-import { $, confirmStricter, el, invoke, lockedUsersOf, names, notify, refresh, t } from "./core.js";
+import { $, ask, confirmStricter, el, invoke, lockedUsersOf, names, notify, quoted, refresh, t } from "./core.js";
 import { KINDS } from "./kinds.js";
 import { confirmDelete } from "./tiles.js";
 
@@ -29,7 +29,8 @@ function openEditor(kind, id, { via = null } = {}) {
     location.hash = kindOf.path;
     return;
   }
-  editing = { kind, item: structuredClone(item), isNew: !id, via };
+  // A target is opened as it is to be: with what waits of it (`kinds.js`).
+  editing = { kind, item: structuredClone(kindOf.desired ? kindOf.desired(item) : item), isNew: !id, via };
   $("view-editor").dataset.kind = kind;
   const form = (forms[kind] = kindOf.form());
   $("form").replaceChildren(...form.nodes);
@@ -63,16 +64,20 @@ function renderEditorLock() {
   // Only the name can be changed on something a locked session holds; it never loosens anything.
   $("delete").disabled = !!held || (!editing.isNew && kind.inUse(editing.item));
   const box = $("editor-notices");
-  const shown = box.dataset.lock === "1";
-  const note = held || limited;
+  // What waits of a target is said with it, as the service words it.
+  const waiting = !editing.isNew && kind.waiting(editing.item);
+  const note = held || [limited, waiting].filter(Boolean).join(". ");
+  const shown = box.dataset.lock === "1" && box.dataset.note === note;
   // An error stays until the next save or leaving; the lock note must not replace it.
   if (box.dataset.lock === "error") return;
   if (note && !shown) {
-    notify("editor-notices", "info", t(held ? "editor.lockedTitle" : "editor.limitedTitle"), note, { closable: false });
+    notify("editor-notices", "info", held ? t("editor.lockedTitle") : limited ? kind.limitedTitle : t("targets.waiting.tag"), note, { closable: false });
     box.dataset.lock = "1";
-  } else if (!note && shown) {
+    box.dataset.note = note;
+  } else if (!note && box.dataset.lock === "1") {
     notify("editor-notices");
     box.dataset.lock = "";
+    box.dataset.note = "";
   }
 }
 
@@ -91,13 +96,23 @@ $("save").addEventListener("click", async () => {
   $("save").disabled = true;
   try {
     const saved = form.read(editing.item);
-    // What a locked session uses can only get stricter, and that cannot be taken back: asked first
-    // (nothing to ask when nothing is changed).
+    // What a locked session uses gets stricter at once, and that cannot be taken back: asked first
+    // (nothing to ask when nothing is changed). What loosens a target waits instead (the service
+    // splits it); a condition can only get stricter.
     const holders = editing.isNew ? [] : lockedUsersOf(editing.item.id);
     if (holders.length && JSON.stringify(saved) !== JSON.stringify(editing.item)) {
-      // The service says first if it would be refused, as it is when it is looser.
+      // The service says first if it would be refused.
       await invoke("check_stricter", { check: kind === "targets" ? { what: "target", target: saved } : { what: "condition", condition: saved } });
-      if (!(await confirmStricter(names(holders), t("stricter.shared")))) {
+      const asked =
+        kind === "targets"
+          ? ask({
+              heading: t("targets.waiting.confirmHeading", { name: quoted(saved.name) }),
+              body: t("targets.waiting.confirmBody", { names: names(holders) }),
+              action: t("common.save"),
+              kind: "primary",
+            })
+          : confirmStricter(names(holders), t("stricter.shared"));
+      if (!(await asked)) {
         $("save").disabled = false;
         return;
       }

@@ -248,7 +248,7 @@ fn shared_action(context: &Context, request: Request, stopping: Vec<String>, pro
     Some(match request {
         Request::SaveSession { session } => Action::SaveSession { session: library.session(&session.id)?.clone() },
         Request::DeleteSession { id } => Action::DeleteSession { id },
-        Request::SaveTarget { target } => Action::SaveTarget { target: library.target(&target.id)?.clone() },
+        Request::SaveTarget { target } => Action::SaveTarget { target: library.target(&target.id)?.desired() },
         Request::DeleteTarget { id } => Action::DeleteTarget { id },
         Request::SaveCondition { condition } => Action::SaveCondition { condition: library.condition(&condition.id)?.clone() },
         Request::DeleteCondition { id } => Action::DeleteCondition { id },
@@ -330,6 +330,7 @@ fn forced(context: &Context, action: &Action, at: SystemTime) -> Outcome {
                 context.definitions.save_session_from(session, true).map(|()| vec![id])
             }
             Action::SaveTarget { target } => {
+                let target = Target { waiting: None, ..target };
                 let users = context.definitions.library().users_of(&target.id).iter().map(|b| b.id.clone()).collect();
                 context.definitions.save_target(target).map(|()| users)
             }
@@ -378,6 +379,7 @@ fn forced(context: &Context, action: &Action, at: SystemTime) -> Outcome {
 }
 
 fn apply_as(context: &Context, action: &Action, at: SystemTime, mirroring: bool) -> Outcome {
+    settle(context);
     use Outcome::{Applied, Dropped, Held};
     let sessions = &context.sessions;
     let now = sessions.now();
@@ -517,6 +519,7 @@ fn unlock_synced(context: &Context, at: SystemTime, text: Option<&str>, next: Op
 }
 
 fn answer(context: &Context, caller: u32, request: Request) -> (Response, Option<Shutdown>) {
+    settle(context);
     let sessions = &context.sessions;
     let done = |result: Result<(), String>| match result {
         Ok(()) => Response::Done,
@@ -536,6 +539,7 @@ fn answer(context: &Context, caller: u32, request: Request) -> (Response, Option
                     crate::status::of(session, status.running.iter().find(|r| r.id == session.id), &library.conditions, &zone, now)
                 })
                 .collect();
+            let waiting = library.targets.iter().filter_map(|target| Some((target.id.clone(), target.waiting_words()?))).collect();
             let overview = Overview {
                 targets: library.targets,
                 conditions: library.conditions,
@@ -544,6 +548,7 @@ fn answer(context: &Context, caller: u32, request: Request) -> (Response, Option
                 unlock: unlock_status(context),
                 clock_synced: status.clock_synced,
                 status: rows,
+                waiting,
             };
             (Response::Status(overview), None)
         }
@@ -752,9 +757,10 @@ enum Proposed {
 
 /// Saving a target or condition. While running sessions use it, what runs is kept the same as
 /// what is defined: if none of them is locked right now (it could be stopped anyway) the change
-/// is made and goes to them, and if one is locked the change may only make things stricter (more
-/// to block, more times: `Target::tightened_by`, `Rule::tightened_by`), which then goes to
-/// all of them. Otherwise a locked session could be loosened by editing what it uses.
+/// is made and goes to them. If one is locked, a condition may only be made stricter (more times:
+/// `Rule::tightened_by`); a target takes at once what of the change blocks more, and what blocks
+/// less waits until no locked session uses it (`Target::split`, `settle`). What is made then goes
+/// to all of them. Otherwise a locked session could be loosened by editing what it uses.
 fn edit_shared(context: &Context, proposed: Proposed) -> Result<(), String> {
     let _editing = context.editing.locked();
     check_shared(context, &proposed)?;
@@ -766,15 +772,56 @@ fn edit_shared(context: &Context, proposed: Proposed) -> Result<(), String> {
     let running = context.sessions.running_ids();
     let users: Vec<String> = library.users_of(&id).into_iter().filter(|b| running.contains(&b.id)).map(|b| b.id.clone()).collect();
     match proposed {
-        Proposed::List(list) => context.definitions.save_target(list)?,
+        Proposed::List(list) => {
+            let locked = context.sessions.locked_ids();
+            let list = match library.target(&list.id) {
+                Some(old) if users.iter().any(|user| locked.contains(user)) => old.split(list),
+                _ => Target { waiting: None, ..list },
+            };
+            context.definitions.save_target(list)?
+        }
         Proposed::Condition(condition) => context.definitions.save_condition(condition)?,
     }
     // What the sessions that run use is what is defined now.
     refresh_running(context, &users)
 }
 
-/// Whether a target or condition may be saved like this: any way while no locked session uses it, and
-/// when one does, only to be stricter (`Target::tightened_by`, `Rule::tightened_by`).
+/// Makes what waits of each target (`Target::split`) once no locked session uses it, and the running
+/// sessions that use it follow. Before every request is answered, and every entry from the log
+/// applied: so when a lock ends, by itself, a stop, Unlock or a restart, a session started next has it.
+/// Each computer does this for itself, under its own locks: it is not shared.
+fn settle(context: &Context) {
+    let waiting = context.definitions.waiting_ids();
+    if waiting.is_empty() {
+        return;
+    }
+    let _editing = context.editing.locked();
+    let library = context.definitions.library();
+    let (locked, running) = (context.sessions.locked_ids(), context.sessions.running_ids());
+    for id in waiting {
+        let users = library.users_of(&id);
+        if users.iter().any(|user| locked.contains(&user.id)) {
+            continue;
+        }
+        let Some(target) = library.target(&id) else { continue };
+        match context.definitions.save_target(target.desired()) {
+            Ok(()) => {
+                let running: Vec<String> = users.iter().filter(|user| running.contains(&user.id)).map(|user| user.id.clone()).collect();
+                if let Err(why) = refresh_running(context, &running) {
+                    crate::watchdog::note(
+                        "service",
+                        &format!("what waited of “{}” was made, but its running sessions did not follow: {why}", target.name),
+                    );
+                }
+            }
+            Err(why) => crate::watchdog::note("service", &format!("what waits of “{}” could not be made: {why}", target.name)),
+        }
+    }
+}
+
+/// Whether a target or condition may be saved like this: a target any way (what loosens it waits
+/// while a locked session uses it: `edit_shared`), a condition any way while no locked session uses
+/// it, and when one does, only to be stricter (`Rule::tightened_by`).
 fn check_shared(context: &Context, proposed: &Proposed) -> Result<(), String> {
     let library = context.definitions.library();
     let id = match proposed {
@@ -788,11 +835,7 @@ fn check_shared(context: &Context, proposed: &Proposed) -> Result<(), String> {
         return Ok(());
     }
     match proposed {
-        Proposed::List(new) => {
-            if let Some(old) = library.target(&new.id) {
-                old.tightened_by(new)?;
-            }
-        }
+        Proposed::List(_) => {}
         Proposed::Condition(new) => {
             if let Some(old) = library.condition(&new.id) {
                 for (session, via) in library.usages(&new.id).into_iter().filter(|(session, _)| locked.contains(&session.id)) {
@@ -1264,7 +1307,7 @@ mod tests {
     }
 
     #[test]
-    fn what_a_locked_session_uses_can_only_get_stricter() {
+    fn what_a_locked_session_uses_gets_stricter_at_once_and_looser_once_it_is_not_locked() {
         let context = context("stricter");
         assert_eq!(handle(&context, 0, Request::SaveTarget { target: target("social", &["youtube.com"]) }).0, Response::Done);
         assert_eq!(handle(&context, 0, Request::SaveCondition { condition: weekly("office", "mon-fri 8-17") }).0, Response::Done);
@@ -1273,36 +1316,100 @@ mod tests {
         work.lock = Lock::timed_for("1h");
         assert_eq!(handle(&context, 0, Request::SaveSession { session: work }).0, Response::Done);
         assert_eq!(handle(&context, 0, Request::Start { id: "work".into() }).0, Response::Done);
+        let saved = || overview(&context).targets.into_iter().find(|t| t.id == "social").unwrap();
+        let running = || {
+            let mut filters = overview(&context).running[0].targets[0].entries.filters.clone();
+            filters.sort();
+            filters
+        };
+        let words = || overview(&context).waiting.get("social").cloned();
 
-        // Less to block, another site instead, Obsidian's action off, an allowed site added: all refused.
-        assert!(failed(handle(&context, 0, Request::SaveTarget { target: target("social", &[]) }).0));
-        assert!(failed(handle(&context, 0, Request::SaveTarget { target: target("social", &["reddit.com"]) }).0));
-        let mut loose = target("social", &["youtube.com"]);
+        // Less to block: saved, and waits; what runs and what is defined still block it.
+        assert_eq!(handle(&context, 0, Request::SaveTarget { target: target("social", &[]) }).0, Response::Done);
+        assert_eq!(saved().entries.filters, vec!["youtube.com".to_string()]);
+        assert!(saved().waiting.is_some_and(|waiting| waiting.entries.filters.is_empty()));
+        assert_eq!(saved().desired().entries.filters, Vec::<String>::new());
+        assert_eq!(running(), vec!["youtube.com".to_string()]);
+        assert_eq!(words().unwrap(), "Waiting until no locked session uses this target: youtube.com no longer blocked");
+
+        // Another site instead: the new one at once, the old one until then.
+        assert_eq!(handle(&context, 0, Request::SaveTarget { target: target("social", &["reddit.com"]) }).0, Response::Done);
+        assert_eq!(running(), vec!["reddit.com".to_string(), "youtube.com".to_string()]);
+        assert_eq!(saved().waiting.unwrap().entries.filters, vec!["reddit.com".to_string()]);
+
+        // Exceptions added, an action off, windows minimized: all wait, and are said.
+        let mut loose = target("social", &["reddit.com", "youtube.com"]);
         loose.actions.obsidian_web_viewer = false;
-        assert!(failed(handle(&context, 0, Request::SaveTarget { target: loose }).0));
-        let mut allow = target("social", &["youtube.com"]);
-        allow.entries.allowed = vec!["google.com".into()];
-        assert!(failed(handle(&context, 0, Request::SaveTarget { target: allow }).0));
-        let mut allow_title = target("social", &["youtube.com"]);
-        allow_title.entries.allowed_titles = vec!["Notes".into()];
+        loose.actions.window_titles_minimize = true;
+        loose.entries.allowed = vec!["google.com".into()];
+        loose.entries.allowed_titles = vec!["Notes".into()];
+        assert_eq!(handle(&context, 0, Request::SaveTarget { target: loose }).0, Response::Done);
+        assert!(saved().entries.allowed.is_empty() && saved().entries.allowed_titles.is_empty());
+        assert!(saved().actions.obsidian_web_viewer && !saved().actions.window_titles_minimize);
+        assert!(overview(&context).running[0].targets[0].actions.obsidian_web_viewer);
         assert_eq!(
-            handle(&context, 0, Request::SaveTarget { target: allow_title }).0,
-            Response::Failed(
-                "A locked session uses this target, so always-allowed window titles can be taken out but not added: Notes".into()
-            )
+            words().unwrap(),
+            "Waiting until no locked session uses this target: google.com and Notes always allowed; “Close Obsidian when web viewer is \
+             active” turned off; windows by title minimized instead of closed"
         );
-        // Fewer times, a schedule made something else: refused.
+
+        // Saved as it is now: nothing waits any more. A request's own `waiting` is no part of what it saves.
+        let mut same = target("social", &["YouTube.com", "reddit.com"]);
+        same.waiting = saved().waiting;
+        assert_eq!(handle(&context, 0, Request::SaveTarget { target: same }).0, Response::Done);
+        assert_eq!(saved().waiting, None);
+        assert_eq!(words(), None);
+
+        // Fewer times, a schedule made something else: still refused for a condition.
         assert!(failed(handle(&context, 0, Request::SaveCondition { condition: weekly("office", "mon-fri 9-17") }).0));
+        assert_eq!(
+            handle(&context, 0, Request::Check { check: Check::Target { target: target("social", &[]) } }).0,
+            Response::Done,
+            "a looser target is not refused: it waits"
+        );
 
         // More to block, and more times, are fine, and go to the running session.
-        assert_eq!(handle(&context, 0, Request::SaveTarget { target: target("social", &["youtube.com", "reddit.com"]) }).0, Response::Done);
-        let mut filters = overview(&context).running[0].targets[0].entries.filters.clone();
-        filters.sort();
-        assert_eq!(filters, vec!["reddit.com".to_string(), "youtube.com".to_string()]);
+        let more = target("social", &["youtube.com", "reddit.com", "x.com"]);
+        assert_eq!(handle(&context, 0, Request::SaveTarget { target: more }).0, Response::Done);
+        assert_eq!(running(), vec!["reddit.com".to_string(), "x.com".to_string(), "youtube.com".to_string()]);
+        assert_eq!(saved().waiting, None);
         assert_eq!(handle(&context, 0, Request::SaveCondition { condition: weekly("office", "mon-sat 8-17") }).0, Response::Done);
         assert!(overview(&context).running[0].condition.as_ref().is_some_and(|rule| !rule.week().unwrap().days[5].is_empty()));
         // And what it uses cannot be deleted.
         assert!(failed(handle(&context, 0, Request::DeleteTarget { id: "social".into() }).0));
+
+        // Once nothing locked uses it (Unlock, here), what waits is made.
+        assert_eq!(handle(&context, 0, Request::SaveTarget { target: target("social", &["x.com"]) }).0, Response::Done);
+        assert!(saved().waiting.is_some());
+        assert_eq!(handle(&context, 0, Request::Unlock).0, Response::Done);
+        assert_eq!(saved().entries.filters, vec!["x.com".to_string()]);
+        assert_eq!(saved().waiting, None);
+    }
+
+    #[test]
+    fn what_waits_is_made_once_no_locked_session_uses_the_target_and_what_runs_unlocked_follows() {
+        let context = context("settle");
+        assert_eq!(save(&context, definition("free", &["a.com", "b.com"])), Response::Done);
+        assert_eq!(save(&context, timed("work", &["w.com"], "1h")), Response::Done);
+        let mut work = session("work", &["work", "free"]);
+        work.lock = Lock::timed_for("1h");
+        assert_eq!(handle(&context, 0, Request::SaveSession { session: work }).0, Response::Done);
+        assert_eq!(handle(&context, 0, Request::Start { id: "free".into() }).0, Response::Done);
+        assert_eq!(handle(&context, 0, Request::Start { id: "work".into() }).0, Response::Done);
+        // `free` runs unlocked, but the locked `work` uses its target too: taking a site out waits.
+        assert_eq!(handle(&context, 0, Request::SaveTarget { target: target("free", &["a.com"]) }).0, Response::Done);
+        let free_runs = |context: &Context| {
+            let overview = overview(context);
+            let mut filters = overview.running.iter().find(|r| r.id == "free").unwrap().targets[0].entries.filters.clone();
+            filters.sort();
+            filters
+        };
+        assert_eq!(free_runs(&context), vec!["a.com".to_string(), "b.com".to_string()]);
+        // The locked one gone (as when its lock ends and it is stopped): made at the next request, and
+        // the unlocked one follows.
+        context.sessions.stop_forced("work", &context.sessions.starts_of("work")).unwrap();
+        assert_eq!(free_runs(&context), vec!["a.com".to_string()]);
+        assert_eq!(context.definitions.library().target("free").unwrap().waiting, None);
     }
 
     #[test]

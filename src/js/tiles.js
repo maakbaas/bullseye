@@ -203,12 +203,15 @@ function renderTiles(kind) {
         parts.rows.dataset.shown = shown;
         parts.rows.replaceChildren(...rows.map(infoRow));
       }
-      // Tagged while a locked session uses it (it can then only get stricter); a running session
-      // that is not locked leaves it free to change, but not to delete.
-      parts.tag.hidden = !kindOf.limited(item);
-      if (parts.tag.textContent !== t("common.inUse")) {
-        parts.tag.setAttribute("type", "blue");
-        parts.tag.textContent = t("common.inUse");
+      // Tagged while a locked session uses it (it can then only get stricter, or a target's looser
+      // changes wait), or while a change of it waits; a running session that is not locked leaves it
+      // free to change, but not to delete.
+      const waiting = !!kindOf.waiting(item);
+      parts.tag.hidden = !waiting && !kindOf.limited(item);
+      const [type, text] = waiting ? ["purple", t("targets.waiting.tag")] : ["blue", t("common.inUse")];
+      if (parts.tag.textContent !== text) {
+        parts.tag.setAttribute("type", type);
+        parts.tag.textContent = text;
       }
     }
     parts.deleteItem.disabled = kindOf.inUse(item);

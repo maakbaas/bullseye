@@ -38,6 +38,7 @@ const KINDS = {
     // Set up on its tile, which keeps what a locked session may not change read-only (`fields.js`).
     held: () => null,
     limited: () => null,
+    waiting: () => null,
     // Whether something locked stands in the way of deleting it (a running session that is not locked
     // ends with it).
     inUse: (session) => !!(runningOf(session.id) && runningOf(session.id).locked),
@@ -65,6 +66,15 @@ const KINDS = {
       const holders = lockedUsersOf(list.id);
       return holders.length ? t("targets.limited", { names: names(holders) }) : null;
     },
+    limitedTitle: t("targets.limitedTitle"),
+    // What waits of it, in the service's words: a change that loosens it, saved while a locked session uses it.
+    waiting: (list) => (overview.waiting && overview.waiting[list.id]) || null,
+    // Opened as it is to be: with what waits, if anything does.
+    desired: (list) => {
+      if (!list.waiting) return list;
+      const { waiting, ...saved } = list;
+      return { ...saved, ...waiting };
+    },
     inUse: (list) => lockedUsersOf(list.id).length > 0,
     form: () => targetForm(),
   },
@@ -88,6 +98,8 @@ const KINDS = {
       const holders = lockedUsersOf(condition.id);
       return holders.length ? t("conditions.limited", { names: names(holders) }) : null;
     },
+    limitedTitle: t("editor.limitedTitle"),
+    waiting: () => null,
     inUse: (condition) => lockedUsersOf(condition.id).length > 0,
     form: () => conditionForm(),
   },

@@ -18,6 +18,11 @@ use crate::programs::ProgramList;
 use crate::state::Uses;
 
 /// The lists as typed. Missing ones are empty, so a list saved before a list was added reads.
+/// Every list by its field name, and whether its entries block (the others are exceptions to them,
+/// always allowed): taking out an entry that blocks loosens a target, and so does adding an exception.
+pub const FIELDS: [(&str, bool); 6] =
+    [("filters", true), ("allowed", false), ("programs", true), ("store_apps", true), ("titles", true), ("allowed_titles", false)];
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct Entries {
@@ -44,6 +49,18 @@ impl Entries {
         {
             list.sort_by_cached_key(|entry| entry.to_lowercase());
         }
+    }
+
+    /// What an entry of the list `field` stands for, to tell two entries apart: as it is read
+    /// (`Lists::entries`), letter case aside, so `Steam` and `steam.exe` are one entry. One that cannot
+    /// be read is itself, trimmed.
+    pub fn key(field: &str, entry: &str) -> String {
+        let mut one = Entries::default();
+        if let Some(list) = one.field(field) {
+            list.push(entry.to_string());
+        }
+        let read = Lists::parse(&one).ok().and_then(|lists| lists.entries().field(field).and_then(|list| list.first().cloned()));
+        read.unwrap_or_else(|| entry.trim().to_string()).to_lowercase()
     }
 
     /// A list by its field name, for what works on any of them (the CLI's options).

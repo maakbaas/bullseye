@@ -12,8 +12,9 @@
 //! session (`session.rs`), which is then fixed until it ends. So that what is shown and what runs stay
 //! the same, a locked session's definition can only be made stricter (`handler::edit_session`) and
 //! not deleted until it can be stopped, nor can a target or condition it uses be deleted. A target or condition can be changed, and the
-//! change goes to the running sessions that use it; but while one of them is locked, only to be
-//! stricter (`Target::tightened_by`, `Rule::tightened_by`, `handler::edit_shared`). Deleting a
+//! change goes to the running sessions that use it; but while one of them is locked, a condition only
+//! to be stricter (`Rule::tightened_by`), and a target takes at once what blocks more while what
+//! blocks less waits until none is (`Target::split`, `handler::edit_shared`). Deleting a
 //! target or condition takes it out of the sessions that use it (`Library::fallout`).
 
 use std::fs;
@@ -24,9 +25,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::allowance::Terms;
 use crate::condition::{Mode, Rule};
-use crate::lists::{Entries, Lists};
+use crate::lists::{Entries, Lists, FIELDS};
 use crate::lock::Lock;
 use crate::state::{self, Actions};
+use crate::strings::{joined, quoted, t};
 use crate::sync::LockExt;
 use crate::unlock;
 
@@ -42,6 +44,19 @@ pub struct Target {
     pub id: String,
     pub name: String,
     /// What it blocks: its lists, one entry per line as typed (fields of the list in the file).
+    #[serde(flatten)]
+    pub entries: Entries,
+    pub actions: Actions,
+    /// The target as it was last saved, where that loosens it while a locked session uses it: kept
+    /// until none does, and then made the target (`Target::split`, `handler::settle`). A request's own
+    /// is ignored: what it saves is its entries and actions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<Waiting>,
+}
+
+/// A target's lists and actions as they are to be once no locked session uses it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Waiting {
     #[serde(flatten)]
     pub entries: Entries,
     pub actions: Actions,
@@ -141,45 +156,113 @@ impl Target {
         Lists::parse(&self.entries).map_err(|why| format!("{}: {why}", self.name))
     }
 
-    /// Whether `new` blocks everything this does and more, which is all a target a locked session
-    /// uses may be changed by: entries may be added to what is blocked, taken out of what is
-    /// allowed, and actions turned on, never the other way. Lists are compared as they are read
-    /// (`Lists::entries`), so case and a missing `.exe` make no difference. The error says what is
-    /// wrong, for a person.
-    pub fn tightened_by(&self, new: &Target) -> Result<(), String> {
-        let (old, new_entries) = (self.lists()?.entries(), new.lists()?.entries());
-        let missing = |had: &[String], now: &[String]| had.iter().filter(|e| !now.contains(e)).cloned().collect::<Vec<_>>().join(", ");
-        for (what, had, now) in [
-            ("sites to block", &old.filters, &new_entries.filters),
-            ("programs", &old.programs, &new_entries.programs),
-            ("Store apps", &old.store_apps, &new_entries.store_apps),
-            ("window titles", &old.titles, &new_entries.titles),
-        ] {
-            let gone = missing(had, now);
-            if !gone.is_empty() {
-                return Err(format!("A locked session uses this target, so {what} can be added but not taken out: {gone}"));
+    /// The target as it is to be: what waits made it (`waiting`), and nothing waiting.
+    pub fn desired(&self) -> Target {
+        let mut desired = Target { waiting: None, ..self.clone() };
+        if let Some(waiting) = &self.waiting {
+            desired.entries = waiting.entries.clone();
+            desired.actions = waiting.actions;
+        }
+        desired
+    }
+
+    /// What saving `new` over this target comes to while a locked session uses it: what blocks more
+    /// is made at once (entries added to what is blocked, taken out of what is allowed, actions turned
+    /// on), what blocks less waits (`waiting`, all of `new`) until no locked session uses it. So nothing
+    /// a locked session holds gets looser, and nothing that waits is lost. Entries are told apart as
+    /// their lists read them (`Entries::key`), and kept as typed. `new`'s own `waiting` is ignored.
+    pub fn split(&self, new: Target) -> Target {
+        let desired = Target { waiting: None, ..new };
+        let mut now = desired.clone();
+        let (mut old, mut wanted) = (self.entries.clone(), desired.entries.clone());
+        for (field, blocks) in FIELDS {
+            let (Some(had), Some(want), Some(list)) = (old.field(field), wanted.field(field), now.entries.field(field)) else { continue };
+            let wanted_keys: Vec<String> = want.iter().map(|entry| Entries::key(field, entry)).collect();
+            if blocks {
+                // Kept until what waits is made: what the locked session blocks now.
+                let mut kept: Vec<String> = wanted_keys.clone();
+                for entry in had.iter() {
+                    let key = Entries::key(field, entry);
+                    if !kept.contains(&key) {
+                        kept.push(key);
+                        list.push(entry.clone());
+                    }
+                }
+            } else {
+                // Only the exceptions it has now: new ones wait.
+                let had_keys: Vec<String> = had.iter().map(|entry| Entries::key(field, entry)).collect();
+                list.retain(|entry| had_keys.contains(&Entries::key(field, entry)));
             }
         }
-        for (what, had, now) in [
-            ("always-allowed sites", &old.allowed, &new_entries.allowed),
-            ("always-allowed window titles", &old.allowed_titles, &new_entries.allowed_titles),
-        ] {
-            let added = missing(now, had);
-            if !added.is_empty() {
-                return Err(format!("A locked session uses this target, so {what} can be taken out but not added: {added}"));
-            }
+        now.actions = self.actions.strictest(&desired.actions);
+        let differs = |a: &Target, b: &Target| {
+            let keys = |target: &Target| {
+                let mut entries = target.entries.clone();
+                FIELDS.map(|(field, _)| {
+                    let mut keys: Vec<String> =
+                        entries.field(field).into_iter().flatten().map(|entry| Entries::key(field, entry)).collect();
+                    keys.sort();
+                    keys.dedup();
+                    keys
+                })
+            };
+            a.actions != b.actions || keys(a) != keys(b)
+        };
+        if differs(&now, &desired) {
+            now.waiting = Some(Waiting { entries: desired.entries, actions: desired.actions });
         }
-        if self.actions.turned_off_by(&new.actions) {
-            return Err("A locked session uses this target, so actions can be turned on but not off".into());
+        now
+    }
+
+    /// What waits, in words for a person (the window's target editor and the CLI), or none.
+    pub fn waiting_words(&self) -> Option<String> {
+        let waiting = self.waiting.as_ref()?;
+        let (mut now, mut then) = (self.entries.clone(), waiting.entries.clone());
+        let (mut unblocked, mut allowed) = (Vec::new(), Vec::new());
+        for (field, blocks) in FIELDS {
+            let (Some(is), Some(will)) = (now.field(field), then.field(field)) else { continue };
+            // What is in one and not in the other: what blocks no longer, or is allowed then.
+            let (from, to, into) = if blocks { (&*is, &*will, &mut unblocked) } else { (&*will, &*is, &mut allowed) };
+            let keys: Vec<String> = to.iter().map(|entry| Entries::key(field, entry)).collect();
+            into.extend(from.iter().filter(|entry| !keys.contains(&Entries::key(field, entry))).cloned());
         }
-        Ok(())
+        let mut changes = Vec::new();
+        if !unblocked.is_empty() {
+            changes.push(t("targets.waiting.unblocked", &[("entries", &joined(&unblocked))]));
+        }
+        if !allowed.is_empty() {
+            changes.push(t("targets.waiting.allowed", &[("entries", &joined(&allowed))]));
+        }
+        let off: Vec<String> = [
+            ("obsidian_web_viewer", self.actions.obsidian_web_viewer && !waiting.actions.obsidian_web_viewer),
+            ("steam_browser", self.actions.steam_browser && !waiting.actions.steam_browser),
+        ]
+        .into_iter()
+        .filter(|&(_, off)| off)
+        .map(|(action, _)| quoted(&t(&format!("targets.actions.{action}.label"), &[])))
+        .collect();
+        if !off.is_empty() {
+            changes.push(t("targets.waiting.off", &[("actions", &joined(&off))]));
+        }
+        if waiting.actions.window_titles_minimize && !self.actions.window_titles_minimize {
+            changes.push(t("targets.waiting.minimize", &[]));
+        }
+        // Only a difference in how entries are typed: nothing a person would call a change.
+        if changes.is_empty() {
+            return None;
+        }
+        Some(t("targets.waiting.text", &[("changes", &changes.join(&t("targets.waiting.separator", &[])))]))
     }
 
     /// What can be checked without starting a session with it. Whether it has anything to do is only
     /// checked when a session starts, so a list can be saved half done.
     fn check(&self) -> Result<(), String> {
         check_name("target", &self.id, &self.name)?;
-        self.lists().map(|_| ())
+        self.lists()?;
+        match &self.waiting {
+            Some(waiting) => Lists::parse(&waiting.entries).map(|_| ()).map_err(|why| format!("{}: {why}", self.name)),
+            None => Ok(()),
+        }
     }
 }
 
@@ -423,6 +506,12 @@ impl Definitions {
         self.library.locked().clone()
     }
 
+    /// The targets with something waiting (`Target::split`), without copying everything (asked before
+    /// every request: `handler::settle`).
+    pub fn waiting_ids(&self) -> Vec<String> {
+        self.library.locked().targets.iter().filter(|t| t.waiting.is_some()).map(|t| t.id.clone()).collect()
+    }
+
     /// Changes the library with `change`, which may refuse; written to disk before it counts.
     fn change(&self, change: impl FnOnce(&mut Library) -> Result<(), String>) -> Result<(), String> {
         let mut library = self.library.locked();
@@ -486,6 +575,9 @@ impl Definitions {
     pub fn save_target(&self, mut list: Target) -> Result<(), String> {
         list.name = list.name.trim().to_string();
         list.entries.sort();
+        if let Some(waiting) = &mut list.waiting {
+            waiting.entries.sort();
+        }
         list.check()?;
         self.change(|library| {
             let id = list.id.clone();
@@ -554,7 +646,12 @@ impl Definitions {
     pub fn duplicate(&self, kind: Kind, id: &str, new_id: &str) -> Result<(), String> {
         self.change(|library| match kind {
             Kind::Session => duplicate(&mut library.sessions, "session", id, new_id),
-            Kind::Target => duplicate(&mut library.targets, "target", id, new_id),
+            // A copy of a target is as it is to be: no locked session uses the copy.
+            Kind::Target => duplicate(&mut library.targets, "target", id, new_id).map(|()| {
+                for copy in library.targets.iter_mut().filter(|t| t.id == new_id) {
+                    *copy = copy.desired();
+                }
+            }),
             Kind::Condition => duplicate(&mut library.conditions, "condition", id, new_id),
         })
     }
@@ -567,6 +664,8 @@ impl Definitions {
             return Err(format!("At most {MAX_ITEMS} of each"));
         }
         for list in &mut library.targets {
+            // What runs is the handler's to refuse: what is imported is as it is to be.
+            *list = list.desired();
             list.name = list.name.trim().to_string();
             list.check()?;
         }
@@ -806,6 +905,7 @@ pub mod tests {
             name: format!("List {id}"),
             entries: Entries { filters: filters.iter().map(|f| f.to_string()).collect(), ..Entries::default() },
             actions: Actions::default(),
+            waiting: None,
         }
     }
 
@@ -1210,5 +1310,106 @@ pub mod tests {
         assert_eq!(library.conditions.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["b"]);
         let x = library.session("x").unwrap();
         assert!(x.condition.is_none() && x.lock == Lock::None);
+    }
+
+    /// A target with these lists (`field`, entries), as typed.
+    fn listed(lists: &[(&str, &[&str])]) -> Target {
+        let mut list = target("t", &[]);
+        for (field, entries) in lists {
+            *list.entries.field(field).unwrap() = entries.iter().map(|e| e.to_string()).collect();
+        }
+        list
+    }
+
+    #[test]
+    fn what_loosens_a_target_waits_and_what_tightens_it_is_made_at_once() {
+        let old = listed(&[("filters", &["youtube.com", "Reddit.com"]), ("programs", &["steam.exe"]), ("allowed", &["google.com"])]);
+        // Steam typed as `Steam`, reddit in another case, a site gone, one added; an exception gone and
+        // one added.
+        let new = listed(&[("filters", &["reddit.com", "x.com"]), ("programs", &["Steam"]), ("allowed", &["maps.com"])]);
+        let split = old.split(new.clone());
+        let mut filters = split.entries.filters.clone();
+        filters.sort();
+        // What blocked still blocks, as typed then; what is new blocks at once, as typed now.
+        assert_eq!(filters, vec!["reddit.com", "x.com", "youtube.com"]);
+        assert_eq!(split.entries.programs, vec!["Steam"], "one program, typed as now");
+        assert!(split.entries.allowed.is_empty(), "the new exception waits, the one taken out is gone at once");
+        let waiting = split.waiting.clone().unwrap();
+        assert_eq!((waiting.entries, waiting.actions), (new.entries.clone(), new.actions));
+        assert_eq!(split.desired(), Target { waiting: None, ..new.clone() });
+        assert_eq!(
+            split.waiting_words().unwrap(),
+            "Waiting until no locked session uses this target: youtube.com no longer blocked; maps.com always allowed"
+        );
+
+        // Only stricter, or the same as typed otherwise: nothing waits.
+        let stricter = listed(&[("filters", &["YOUTUBE.com", "reddit.com", "a.com"]), ("programs", &["steam.exe"])]);
+        assert_eq!(old.split(stricter.clone()), stricter);
+        // A request's own `waiting` is no part of it.
+        let claimed = Target { waiting: Some(Waiting { entries: Entries::default(), actions: Actions::default() }), ..stricter.clone() };
+        assert_eq!(old.split(claimed), stricter);
+        assert_eq!(stricter.desired(), stricter);
+        assert_eq!(stricter.waiting_words(), None);
+
+        // Every blocking list, and every exception list, the same way.
+        for (field, blocks) in FIELDS {
+            let one = |entries: &[&str]| listed(&[(field, entries)]);
+            let entry = if field == "store_apps" { "Vendor.App_abc123" } else { "a.com" };
+            let entry = if field == "programs" { "a.exe" } else { entry };
+            let split = one(&[entry]).split(one(&[]));
+            assert_eq!(split.waiting.is_some(), blocks, "{field}");
+            let split = one(&[]).split(one(&[entry]));
+            assert_eq!(split.waiting.is_some(), !blocks, "{field}");
+        }
+
+        // Actions: turned off, or minimizing, wait; turned on, or closing, are made.
+        let actions = |minimize, obsidian, steam| {
+            let mut list = target("t", &[]);
+            list.actions = Actions { window_titles_minimize: minimize, obsidian_web_viewer: obsidian, steam_browser: steam };
+            list
+        };
+        let split = actions(false, true, true).split(actions(true, false, false));
+        assert_eq!(split.actions, actions(false, true, true).actions);
+        assert_eq!(
+            split.waiting_words().unwrap(),
+            "Waiting until no locked session uses this target: “Close Obsidian when web viewer is active” and “Close Steam Browser” \
+             turned off; windows by title minimized instead of closed"
+        );
+        assert_eq!(actions(true, false, false).split(actions(false, true, true)), actions(false, true, true));
+
+        // What differs only in how it is typed is no change to name.
+        let typed = Target {
+            waiting: Some(Waiting { entries: listed(&[("programs", &["Steam"])]).entries, actions: Actions::default() }),
+            ..listed(&[("programs", &["steam.exe"])])
+        };
+        assert_eq!(typed.waiting_words(), None);
+    }
+
+    #[test]
+    fn what_waits_is_kept_checked_and_copied_as_it_is_to_be() {
+        let path = path("waiting");
+        let definitions = Definitions::at(Some(path.clone()));
+        let waits = target("social", &["b.com", "a.com"]).split(target("social", &["b.com"]));
+        definitions.save_target(waits.clone()).unwrap();
+        let again = Definitions::at(Some(path.clone()));
+        assert_eq!(again.library().target("social").unwrap().desired().entries.filters, vec!["b.com"]);
+        assert_eq!(again.waiting_ids(), vec!["social".to_string()]);
+        // Nothing waiting is not written at all.
+        definitions.save_target(target("games", &[])).unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("\"waiting\":null"));
+
+        // What waits is read and checked as the target's own lists are.
+        let mut bad = waits.clone();
+        bad.waiting.as_mut().unwrap().entries.programs = vec!["explorer.exe".into()];
+        assert!(definitions.save_target(bad).is_err());
+
+        // A copy, and an import, are as it is to be: no locked session uses them yet.
+        definitions.duplicate(Kind::Target, "social", "copy").unwrap();
+        let copy = definitions.library().target("copy").unwrap().clone();
+        assert_eq!((copy.entries.filters, copy.waiting), (vec!["b.com".to_string()], None));
+        let library = Library { targets: vec![waits], ..Library::default() };
+        definitions.replace(library).unwrap();
+        let imported = definitions.library().target("social").unwrap().clone();
+        assert_eq!((imported.entries.filters, imported.waiting), (vec!["b.com".to_string()], None));
     }
 }

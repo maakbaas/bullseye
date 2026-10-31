@@ -25,7 +25,7 @@ use crate::client::Remote;
 use crate::condition::{Mode, Rule};
 use crate::definitions::{self, Condition, Definition, Kind, Library, Target};
 use crate::duration;
-use crate::lists::{Entries, Lists};
+use crate::lists::Entries;
 use crate::localtime;
 use crate::lock::{Lock, TimedKind};
 use crate::proto::{Overview, Request, UnlockStatus};
@@ -314,7 +314,7 @@ fn execute(command: Command) -> Result<(), Failure> {
             }
         }
         Command::TargetNew { name, changes } => {
-            let mut list = Target { id: new_id(), name, entries: Entries::default(), actions: Actions::default() };
+            let mut list = Target { id: new_id(), name, entries: Entries::default(), actions: Actions::default(), waiting: None };
             changes.apply(&mut list);
             let name = list.name.clone();
             send(Request::SaveTarget { target: list })?;
@@ -322,11 +322,12 @@ fn execute(command: Command) -> Result<(), Failure> {
         }
         Command::TargetEdit { target: list, changes } => {
             let overview = overview()?;
-            let mut list = find(&overview.targets, &list, "target", |l| (&l.id, &l.name))?.clone();
+            let mut list = find(&overview.targets, &list, "target", |l| (&l.id, &l.name))?.desired();
             changes.apply(&mut list);
-            let name = list.name.clone();
+            let (id, name) = (list.id.clone(), list.name.clone());
             send(Request::SaveTarget { target: list })?;
             say!("Saved the target “{name}”.");
+            say_waiting(&id)?;
         }
         Command::TargetDelete { target: list, force } => {
             let overview = overview()?;
@@ -389,18 +390,18 @@ fn execute(command: Command) -> Result<(), Failure> {
         }
         Command::TargetItems { target: list, entries, actions, add } => {
             let overview = overview()?;
-            let mut list = find(&overview.targets, &list, "target", |l| (&l.id, &l.name))?.clone();
+            let mut list = find(&overview.targets, &list, "target", |l| (&l.id, &l.name))?.desired();
             for (key, given) in entries {
                 let what =
                     LIST_OPTIONS.iter().find(|(_, k)| *k == key).map(|(option, _)| option[2..].replace('-', " ")).unwrap_or_default();
                 let Some(field) = list.entries.field(key) else { continue };
-                let keyed: Vec<(String, String)> = given.iter().map(|entry| (entry_key(key, entry), entry.clone())).collect();
-                let now: Vec<String> = field.iter().map(|entry| entry_key(key, entry)).collect();
+                let keyed: Vec<(String, String)> = given.iter().map(|entry| (Entries::key(key, entry), entry.clone())).collect();
+                let now: Vec<String> = field.iter().map(|entry| Entries::key(key, entry)).collect();
                 let kept = changed(&now, &keyed, add, |entry| format!("“{entry}” is not in the {what} of “{}”", list.name))?;
                 // The entries as they were typed, the new ones as given.
                 let mut typed: Vec<String> = Vec::new();
                 for entry_key in kept {
-                    match field.iter().find(|entry| self::entry_key(key, entry) == entry_key) {
+                    match field.iter().find(|entry| Entries::key(key, entry) == entry_key) {
                         Some(entry) => typed.push(entry.clone()),
                         None => typed.extend(keyed.iter().find(|(k, _)| *k == entry_key).map(|(_, entry)| entry.clone())),
                     }
@@ -410,9 +411,10 @@ fn execute(command: Command) -> Result<(), Failure> {
             if !actions.is_empty() {
                 list.actions = switched(list.actions, &actions, add).map_err(Failure::Usage)?;
             }
-            let name = list.name.clone();
+            let (id, name) = (list.id.clone(), list.name.clone());
             send(Request::SaveTarget { target: list })?;
             say!("Saved the target “{name}”.");
+            say_waiting(&id)?;
         }
         Command::ConditionItems { condition, members, add } => {
             let overview = overview()?;
@@ -697,15 +699,13 @@ fn changed(now: &[String], given: &[(String, String)], add: bool, missing: impl 
     Ok(items)
 }
 
-/// An entry of a list as the list reads it, letter case aside, so `Steam` is `steam.exe` and
-/// `YouTube.com` is `youtube.com`; as typed if it does not read.
-fn entry_key(field: &str, entry: &str) -> String {
-    let mut one = Entries::default();
-    if let Some(list) = one.field(field) {
-        list.push(entry.to_string());
+/// What waits of a target just saved, if anything does: a change that loosens it while a locked session
+/// uses it (`Target::split`).
+fn say_waiting(id: &str) -> Result<(), Failure> {
+    if let Some(words) = overview()?.waiting.get(id) {
+        say!("{words}.");
     }
-    let read = Lists::parse(&one).ok().and_then(|lists| lists.entries().field(field).and_then(|list| list.first().cloned()));
-    read.unwrap_or_else(|| entry.trim().to_string()).to_lowercase()
+    Ok(())
 }
 
 /// `actions` with those named (or `all`) turned on, or off.
