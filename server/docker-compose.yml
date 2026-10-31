@@ -1,5 +1,5 @@
 # The Bullseye sync server, from the image published with each release. Replace the token below with
-# your own (at least 16 characters, e.g. from `openssl rand -hex 32`), and put your reverse proxy in
+# your own (a long random one is safest, e.g. from `openssl rand -hex 32`), and put your reverse proxy in
 # front of port 8080 for HTTPS.
 services:
   bullseye:

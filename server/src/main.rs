@@ -3,7 +3,7 @@
 //!
 //! | Variable | Default | What |
 //! |---|---|---|
-//! | `BULLSEYE_TOKEN` | (required) | The token every request but `/api/health` carries, at least 16 characters |
+//! | `BULLSEYE_TOKEN` | (required) | The token every request but `/api/health` carries |
 //! | `BULLSEYE_DATA` | `/data` | The folder for the log, the computers and the view |
 //! | `BULLSEYE_LISTEN` | `0.0.0.0:8080` | Where to listen; HTTPS is the reverse proxy's |
 //!
@@ -82,8 +82,8 @@ use std::sync::Arc;
 
 fn main() {
     let token = std::env::var("BULLSEYE_TOKEN").unwrap_or_default();
-    if token.trim().chars().count() < sync_api::MIN_TOKEN {
-        eprintln!("bullseye-sync: set BULLSEYE_TOKEN to a token of at least {} characters", sync_api::MIN_TOKEN);
+    if token.trim().is_empty() {
+        eprintln!("bullseye-sync: set BULLSEYE_TOKEN to a token");
         std::process::exit(2);
     }
     let data = PathBuf::from(std::env::var("BULLSEYE_DATA").unwrap_or_else(|_| "/data".into()));

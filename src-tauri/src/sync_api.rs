@@ -28,9 +28,6 @@ pub const MAX_WAIT: u64 = 25;
 pub const PAGE: usize = 500;
 /// The most entries one post takes.
 pub const MAX_POST: usize = 200;
-/// The shortest token the server takes.
-pub const MIN_TOKEN: usize = 16;
-
 /// A running session as the server's view has it, for a computer that joins: started there as it was.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct RunShare {
@@ -163,8 +160,8 @@ impl Http {
         if !(base.starts_with("https://") || base.starts_with("http://")) {
             return Err("The server's address starts with https:// (or http://)".into());
         }
-        if token.trim().chars().count() < MIN_TOKEN {
-            return Err(format!("The server's token has at least {MIN_TOKEN} characters"));
+        if token.trim().is_empty() {
+            return Err("Give the server's token".into());
         }
         // Long enough for a log request that waits.
         let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).timeout(Duration::from_secs(MAX_WAIT + 15)).build();
@@ -281,7 +278,9 @@ mod tests {
     #[test]
     fn an_address_and_a_token_are_needed() {
         assert!(Http::new("sync.example.com", "t").is_err());
-        assert!(Http::new("https://sync.example.com", " 0123456789abcde ").is_err());
+        assert_eq!(Http::new("https://sync.example.com", "  ").err().as_deref(), Some("Give the server's token"));
+        // Any length will do.
+        assert!(Http::new("https://sync.example.com", "t").is_ok());
         let http = Http::new(" https://sync.example.com/base/ ", " 0123456789abcdef ").unwrap();
         assert_eq!((http.base.as_str(), http.token.as_str()), ("https://sync.example.com/base", "0123456789abcdef"));
     }

@@ -2,8 +2,8 @@
 // computer that syncs. In the app Tauri gives the page `window.__TAURI__`; here this stands in for it,
 // before the page's modules run: each command goes to the server's `POST api/invoke` with the token
 // (`web.rs` answers it as the app does), and what only a computer has is refused there with a
-// message. The token is asked for once, in a dialog, and kept for this tab (`sessionStorage`); a
-// wrong one is asked for again. A plain script, not a module, so it runs first; in the app it does
+// message. The token is asked for once, in a dialog, and kept in this browser for 30 days from then
+// (`localStorage`, with the time it runs out); a wrong one is asked for again. A plain script, not a module, so it runs first; in the app it does
 // nothing.
 
 (() => {
@@ -12,6 +12,17 @@
   window.BULLSEYE_WEB = true;
 
   const KEY = "bullseye-token";
+  const DAYS = 30;
+  // The token kept here, while its 30 days last; one that ran out (or cannot be read) is forgotten.
+  const kept = () => {
+    try {
+      const { token, until } = JSON.parse(localStorage.getItem(KEY));
+      if (typeof token === "string" && token && Date.now() < until) return token;
+    } catch {}
+    localStorage.removeItem(KEY);
+    return null;
+  };
+  const keep = (token) => localStorage.setItem(KEY, JSON.stringify({ token, until: Date.now() + DAYS * 86400000 }));
   // A text of `strings.js`, with its {placeholders} filled.
   const t = (path, values = {}) => {
     const text = path.split(".").reduce((node, key) => (node ? node[key] : undefined), window.STRINGS);
@@ -71,7 +82,7 @@
             problem.setAttribute("subtitle", t("web.unreachable", { why: `${response.status} ${response.statusText}` }));
             problem.hidden = false;
           } else {
-            sessionStorage.setItem(KEY, token);
+            keep(token);
             modal.open = false;
             setTimeout(() => modal.remove(), 500);
             resolve(token);
@@ -91,8 +102,8 @@
 
   let signing = null;
   const token = () => {
-    const kept = sessionStorage.getItem(KEY);
-    if (kept) return Promise.resolve(kept);
+    const known = kept();
+    if (known) return Promise.resolve(known);
     return (signing = signing || signIn());
   };
 
@@ -109,8 +120,8 @@
     }
     if (response.status === 401) {
       // The token was changed on the server: asked for again (once, however many were on their way).
-      if (sessionStorage.getItem(KEY) === given) {
-        sessionStorage.removeItem(KEY);
+      if (kept() === given) {
+        localStorage.removeItem(KEY);
         signing = null;
       }
       return invoke(cmd, args);

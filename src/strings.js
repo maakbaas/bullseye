@@ -746,7 +746,7 @@ window.STRINGS = {
     url: "Server address",
     urlHelper: "For example https://sync.example.com",
     token: "Token",
-    tokenHelper: "The token the server was started with, at least 16 characters",
+    tokenHelper: "The token the server was started with",
     connectBody: "A new server takes this computer's sessions, targets, conditions, unlock settings and running sessions. Otherwise this computer takes the server's",
     connected: "Connected",
     connectFailed: "Not connected",

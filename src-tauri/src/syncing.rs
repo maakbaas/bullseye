@@ -1041,7 +1041,7 @@ mod tests {
         fs::write(a.dir.join("sync.json"), b"{").unwrap();
         assert!(!Syncer::at(Some(a.dir.clone()), connector(&server), "x".into()).connected());
         a.connect();
-        fs::write(a.dir.join("sync.json"), serde_json::to_vec(&Settings { url: URL.into(), token: "short".into() }).unwrap()).unwrap();
+        fs::write(a.dir.join("sync.json"), serde_json::to_vec(&Settings { url: URL.into(), token: " ".into() }).unwrap()).unwrap();
         assert!(!Syncer::at(Some(a.dir.clone()), connector(&server), "x".into()).connected());
     }
 

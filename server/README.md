@@ -8,7 +8,7 @@ The image is `ghcr.io/maakbaas/bullseye` (`:latest` is the last release, `:main`
 
 | Variable | Default | What |
 |---|---|---|
-| `BULLSEYE_TOKEN` | (required) | The token, at least 16 characters. Every request to the API but `/api/health` carries it: `Authorization: Bearer <token>` |
+| `BULLSEYE_TOKEN` | (required) | The token. Every request to the API but `/api/health` carries it: `Authorization: Bearer <token>` |
 | `BULLSEYE_DATA` | `/data` | Where everything is kept: a volume |
 | `BULLSEYE_LISTEN` | `0.0.0.0:8080` | Where it listens |
 | `BULLSEYE_PAGE` | `/app/web` | The window's page (`src/`, in the image), served at `/`; a folder without `index.html`: no page |
