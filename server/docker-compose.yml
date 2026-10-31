@@ -2,8 +2,8 @@
 # your own (at least 16 characters, e.g. from `openssl rand -hex 32`), and put your reverse proxy in
 # front of port 8080 for HTTPS.
 services:
-  bullseye-sync:
-    image: ghcr.io/maakbaas/bullseye-sync:latest
+  bullseye:
+    image: ghcr.io/maakbaas/bullseye:latest
     restart: unless-stopped
     environment:
       BULLSEYE_TOKEN: "change-me-to-a-long-random-token"

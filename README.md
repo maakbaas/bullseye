@@ -61,13 +61,15 @@ With a Bullseye sync server, all your computers share their sessions, targets, c
 
 **Each computer keeps its own hardening.** What comes from another computer is applied under this computer's rules, as if it had been done at its keyboard. A stop that the lock does not allow here yet waits (Settings shows what waits, and why) and applies once it is allowed. The server has no shortcut either: its API has the same rules as a computer, and an unlock from elsewhere still waits for this computer's own countdown. Passwords never leave a computer: a stop or unlock with a password travels as a signature that only that password can make, for that one session or moment. Unlock in Settings always works on each computer by its own countdown, and **Disconnect** always works, also while locked.
 
-**Run the server** with Docker, behind your own reverse proxy for HTTPS (it speaks plain HTTP on port 8080). A token of at least 16 characters guards it:
+**Run the server** with Docker, behind your own reverse proxy for HTTPS (it speaks plain HTTP on port 8080). A token of at least 16 characters guards it. [server/docker-compose.yml](server/docker-compose.yml) runs it:
 
 ```yaml
-# docker-compose.yml; put your own token in (openssl rand -hex 32 makes one)
+# The Bullseye sync server, from the image published with each release. Replace the token below with
+# your own (at least 16 characters, e.g. from `openssl rand -hex 32`), and put your reverse proxy in
+# front of port 8080 for HTTPS.
 services:
-  bullseye-sync:
-    image: ghcr.io/maakbaas/bullseye-sync:latest
+  bullseye:
+    image: ghcr.io/maakbaas/bullseye:latest
     restart: unless-stopped
     environment:
       BULLSEYE_TOKEN: "change-me-to-a-long-random-token"
@@ -75,6 +77,7 @@ services:
       - bullseye-data:/data
     ports:
       - "127.0.0.1:8080:8080"
+
 volumes:
   bullseye-data:
 ```

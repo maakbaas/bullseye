@@ -4,7 +4,7 @@
 
 ## Running it
 
-The image is `ghcr.io/maakbaas/bullseye-sync` (`:latest` is the last release, `:main` the last build of main), for amd64 and arm64. [docker-compose.yml](docker-compose.yml) is an example.
+The image is `ghcr.io/maakbaas/bullseye` (`:latest` is the last release, `:main` the last build of main), for amd64 and arm64. [docker-compose.yml](docker-compose.yml) runs it: put your own token in.
 
 | Variable | Default | What |
 |---|---|---|
@@ -17,7 +17,7 @@ It speaks plain HTTP: put it behind your own reverse proxy for HTTPS, as the tok
 
 Its data (`/data`) is the log (`log.jsonl`, the last 20 000 entries), the computers that report to it (`devices.json`) and its own view of what the log comes to (`view/`). A backup is a copy of the folder. A computer that was away for longer than the log keeps joins again from the server's view on its own. If the server loses its data, or is restored from an older backup, each computer notices on its next round (the log is not the one it synced with). The newer side wins: a computer sends everything it has again if the server has nothing newer than what it saw last (emptied, or an older backup), and takes what the server has if another computer has filled it again since (it was away), keeping what it did itself meanwhile. Either way under each computer's own rules, so no lock gets looser, and nothing done since is lost.
 
-To build the image yourself, from the repository's root: `docker build -f server/Dockerfile -t bullseye-sync .`
+To build the image yourself, from the repository's root: `docker build -f server/Dockerfile -t bullseye .`
 
 ## How it works
 

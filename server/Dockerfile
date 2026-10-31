@@ -1,6 +1,6 @@
 # The Bullseye sync server. Built from the repository's root, as it uses the app's own modules:
 #
-#   docker build -f server/Dockerfile -t bullseye-sync .
+#   docker build -f server/Dockerfile -t bullseye .
 #
 # Plain HTTP on port 8080: put it behind your own reverse proxy for HTTPS. See server/README.md.
 
