@@ -215,6 +215,7 @@ pub fn file(page: &Path, url: &str) -> Option<(&'static str, Vec<u8>)> {
         Some("woff") => "font/woff",
         Some("svg") => "image/svg+xml",
         Some("png") => "image/png",
+        Some("webmanifest") => "application/manifest+json",
         _ => return None,
     };
     std::fs::read(page.join(path)).ok().map(|bytes| (kind, bytes))

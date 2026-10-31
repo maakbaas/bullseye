@@ -2,6 +2,18 @@
 /* The window is two sections, one over the other: the fixed one on top and `#scroller`, which
    fills the rest and is all that scrolls, so the scrollbar runs beside the content only. */
 html, body { height: 100%; }
+/* On a phone (the sync server's page) it behaves as an app, not a web page: no double-tap zoom (pinch
+   is stopped in `web.js`, as iOS ignores the viewport's), the page as a whole never rubber-bands
+   (only `#scroller` scrolls), and no grey flash on a tap or callout on a long press. */
+html {
+  touch-action: manipulation;
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+}
+body { overscroll-behavior: none; }
 body {
   margin: 0;
   display: flex;

@@ -10,6 +10,12 @@
   if (window.__TAURI__) return;
   // What the page hides that only a computer has (`main.js`).
   window.BULLSEYE_WEB = true;
+  // No zooming on a phone: iOS ignores the viewport's `user-scalable=no`, so a pinch is stopped here
+  // (double-tap zoom by `touch-action` in `app.css`).
+  for (const gesture of ["gesturestart", "gesturechange", "gestureend"]) {
+    document.addEventListener(gesture, (event) => event.preventDefault(), { passive: false });
+  }
+  document.addEventListener("touchmove", (event) => event.touches.length > 1 && event.preventDefault(), { passive: false });
 
   const KEY = "bullseye-token";
   const kept = () => localStorage.getItem(KEY);

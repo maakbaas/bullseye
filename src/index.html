@@ -3,8 +3,23 @@
 <html lang="en" class="cds--g10" spellcheck="false">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- No zooming: on a phone the page is an app (the sync server's page, `web.js`), and a field that
+         gets focus does not zoom in either. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
     <title>Bullseye</title>
+    <!-- Added to a phone's home screen, the sync server's page opens as an app of its own: no browser
+         bars, the app's icon on its dark ring's colour (`scripts/web-icons.py`; change the `?v=` after a new one, as iOS keeps an icon it has), and the status bar the
+         colour of the heading under it (Carbon's layer-01 in g10 and g100). -->
+    <link rel="icon" type="image/png" sizes="32x32" href="icons/icon-32.png?v=20261031a" />
+    <link rel="apple-touch-icon" href="icons/icon-180.png?v=20261031a" />
+    <link rel="manifest" href="manifest.webmanifest?v=20261031a" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Bullseye" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#262626" media="(prefers-color-scheme: dark)" />
+    <meta name="format-detection" content="telephone=no" />
     <!-- Every text the window shows (src/strings.js): edit the copy there. -->
     <script src="strings.js"></script>
     <!-- The Carbon design system, vendored (`npm run vendor`, from scripts/carbon/entry.js): IBM Plex, the themes and

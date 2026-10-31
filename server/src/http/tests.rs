@@ -225,6 +225,9 @@ fn the_windows_page_is_served_without_the_token_and_nothing_else() {
     assert_eq!(file(&page, "/js/web.js?v=1").unwrap().0, "text/javascript; charset=utf-8");
     assert_eq!(file(&page, "/app.css").unwrap().0, "text/css; charset=utf-8");
     assert_eq!(file(&page, "/vendor/carbon.js").unwrap().0, "text/javascript; charset=utf-8");
+    // A phone's home screen: the manifest and the icons, whatever `?v=` asks iOS to fetch them again.
+    assert_eq!(file(&page, "/manifest.webmanifest?v=1").unwrap().0, "application/manifest+json");
+    assert_eq!(file(&page, "/icons/icon-180.png?v=1").unwrap().0, "image/png");
     for url in [
         "/../server/Cargo.toml",
         "/js/../index.html",
