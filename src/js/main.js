@@ -258,6 +258,14 @@ $("import").addEventListener("click", async () => {
     notify("transfer-notices", "error", t("settings.importFailed"), String(e));
   }
 });
+// On the sync server's page (`web.js`) the computer's own settings are left out: its files and its syncing.
+if (window.BULLSEYE_WEB) {
+  $("transfer-setting").hidden = true;
+  $("sync-setting").hidden = true;
+  const description = document.querySelector('[data-t="settings.description"]');
+  description.dataset.t = "web.settingsDescription";
+  description.textContent = t("web.settingsDescription");
+}
 // ---- Settings: syncing with the other computers through a sync server (`syncing.rs`). Where it
 // stands is the service's words (`SyncStatus::summary`), as the CLI's `sync status` says them.
 
@@ -267,6 +275,7 @@ $("sync-disconnect").replaceChildren(t("sync.disconnect"), carbonIcon("close", "
 let syncShown = ""; // what the section shows, so it is drawn again only when that changes
 
 async function renderSync() {
+  if (window.BULLSEYE_WEB) return;
   let sync;
   try {
     sync = await invoke("sync_status");

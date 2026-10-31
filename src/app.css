@@ -13,6 +13,8 @@ body {
 }
 /* Until the components are defined, show nothing rather than unstyled markup. */
 body:not(.ready) { visibility: hidden; }
+/* The sync server's sign-in (`web.js`) comes before the page has drawn. */
+body:not(.ready) .sign-in { visibility: visible; }
 /* Two sections: the fixed one on top (heading and tabs: `.pinned`) and the content under the
    tabs, which is what scrolls. Both fill the width up to Carbon's lg breakpoint (66rem) and are
    centred beyond it, so the margins grow evenly instead of jumping. */

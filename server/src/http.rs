@@ -4,6 +4,7 @@
 //! log request waits up to `MAX_WAIT` seconds), at most `MAX_THREADS` at once.
 
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -15,6 +16,7 @@ use tiny_http::{Header, Method, Response, Server};
 use crate::hub::Hub;
 use crate::proto::Request;
 use crate::sync_api::{DeviceReport, Failure, Posted, Transport, MAX_WAIT};
+use crate::web::{self, Invoked};
 
 /// The largest body taken.
 pub const MAX_BODY: usize = 32 * 1024 * 1024;
@@ -25,11 +27,18 @@ pub struct Api {
     hub: Arc<Hub>,
     token: String,
     busy: AtomicUsize,
+    /// The window's page (`src/`), served at `/` for managing every computer from a browser; none: not served.
+    page: Option<PathBuf>,
 }
 
 impl Api {
     pub fn new(hub: Arc<Hub>, token: &str) -> Api {
-        Api { hub, token: token.to_string(), busy: AtomicUsize::new(0) }
+        Api { hub, token: token.to_string(), busy: AtomicUsize::new(0), page: None }
+    }
+
+    /// Serving the window's page from the folder `page` too.
+    pub fn with_page(self, page: PathBuf) -> Api {
+        Api { page: Some(page), ..self }
     }
 }
 
@@ -83,6 +92,10 @@ pub fn answer(api: &Api, method: &Method, url: &str, authorization: Option<&str>
     if path == "/api/health" {
         return Answer { status: 200, body: "ok".into() };
     }
+    // Outside the API only the page's files are (`file`), and they need no token.
+    if !path.starts_with("/api/") {
+        return error(404, "No such path");
+    }
     let token = authorization.and_then(|value| value.trim().strip_prefix("Bearer ")).unwrap_or("");
     if !same(token.trim().as_bytes(), api.token.as_bytes()) {
         return failed(Failure::Unauthorized);
@@ -107,6 +120,13 @@ pub fn answer(api: &Api, method: &Method, url: &str, authorization: Option<&str>
         (Method::Post, "/api/request") => {
             done(read::<Request>(body).map(|request| hub.request(&request).map_or_else(failed, |response| json(&response))))
         }
+        // A command of the window's page (`web.rs`): its value, or what went wrong as `{"error": ...}`.
+        (Method::Post, "/api/invoke") => done(read::<Invoked>(body).map(|invoked| {
+            match web::invoke(invoked, &|request| hub.request(&request).map_err(|failure| failure.words())) {
+                Ok(value) => json(&value),
+                Err(why) => Answer { status: 400, body: serde_json::json!({ "error": why }).to_string() },
+            }
+        })),
         (Method::Get, "/api/devices") => hub.devices().map_or_else(failed, |devices| json(&devices)),
         (Method::Put, path) if path.starts_with("/api/devices/") => {
             let device = &path["/api/devices/".len()..];
@@ -115,7 +135,7 @@ pub fn answer(api: &Api, method: &Method, url: &str, authorization: Option<&str>
                 Err(failure) => failed(failure),
             }))
         }
-        (_, "/api/snapshot" | "/api/log" | "/api/request" | "/api/devices") => error(405, "Not allowed for this path"),
+        (_, "/api/snapshot" | "/api/log" | "/api/request" | "/api/invoke" | "/api/devices") => error(405, "Not allowed for this path"),
         _ => error(404, "No such path"),
     }
 }
@@ -147,6 +167,18 @@ pub fn serve(api: Arc<Api>, server: Server) {
 }
 
 fn respond(api: &Api, mut request: tiny_http::Request) {
+    // The page's files need no token: there is nothing in them but the window.
+    if let (Method::Get, Some(page)) = (request.method(), &api.page) {
+        if let Some((kind, bytes)) = file(page, request.url()) {
+            let headers = [("Content-Type", kind), ("Cache-Control", "no-cache"), ("X-Content-Type-Options", "nosniff")];
+            let mut response = Response::from_data(bytes);
+            for (name, value) in headers {
+                response.add_header(Header::from_bytes(name, value).expect("a valid header"));
+            }
+            let _ = request.respond(response);
+            return;
+        }
+    }
     let authorization = request.headers().iter().find(|h| h.field.equiv("Authorization")).map(|h| h.value.as_str().to_string());
     let mut body = Vec::new();
     let read = request.as_reader().take(MAX_BODY as u64 + 1).read_to_end(&mut body);
@@ -158,6 +190,33 @@ fn respond(api: &Api, mut request: tiny_http::Request) {
     let kind = if answer.status == 200 && request.url().starts_with("/api/health") { "text/plain" } else { "application/json" };
     let header = Header::from_bytes("Content-Type", kind).expect("a valid header");
     let _ = request.respond(Response::from_string(answer.body).with_status_code(answer.status).with_header(header));
+}
+
+/// A file of the page at `url` (`/` is `index.html`), and its type: only plain names below `page`, of the
+/// kinds the page has; anything else, and anything under `/api/`, is none.
+pub fn file(page: &Path, url: &str) -> Option<(&'static str, Vec<u8>)> {
+    let path = url.split(['?', '#']).next().unwrap_or_default();
+    if path.starts_with("/api/") || path == "/api" {
+        return None;
+    }
+    let path = path.trim_start_matches('/');
+    let path = if path.is_empty() { "index.html" } else { path };
+    let plain =
+        |part: &str| !part.is_empty() && !part.starts_with('.') && part.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
+    if !path.split('/').all(plain) {
+        return None;
+    }
+    let kind = match path.rsplit_once('.').map(|(_, extension)| extension) {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js") => "text/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("woff2") => "font/woff2",
+        Some("woff") => "font/woff",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        _ => return None,
+    };
+    std::fs::read(page.join(path)).ok().map(|bytes| (kind, bytes))
 }
 
 #[cfg(test)]

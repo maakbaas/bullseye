@@ -18,8 +18,10 @@ RUN cargo build --release --manifest-path server/Cargo.toml
 FROM debian:bookworm-slim
 RUN useradd --system --uid 10001 --no-create-home bullseye && mkdir /data && chown bullseye /data
 COPY --from=build /src/server/target/release/bullseye-sync /usr/local/bin/bullseye-sync
+# The window's page, served at / for managing every computer from a browser (`BULLSEYE_PAGE`).
+COPY src /app/web
 USER bullseye
-ENV BULLSEYE_DATA=/data BULLSEYE_LISTEN=0.0.0.0:8080
+ENV BULLSEYE_DATA=/data BULLSEYE_LISTEN=0.0.0.0:8080 BULLSEYE_PAGE=/app/web
 VOLUME /data
 EXPOSE 8080
 ENTRYPOINT ["bullseye-sync"]

@@ -81,6 +81,8 @@ volumes:
 
 **Connect each computer** under Sync in Settings, with the server's address and token. The first computer can send its own settings to the server (**This computer**); the others take the server's. The command line has the same: `bullseye sync connect https://sync.example.com --token ...`, and `--server` sends any command to the server itself, so a script or a phone shortcut can start a session everywhere. See [server/README.md](server/README.md) for the server and its API.
 
+**Manage everything from a browser**: the server shows the same window at its address (`https://sync.example.com/`). Sign in with the token and you can change sessions, targets and conditions, start and stop sessions and unlock, for every computer that syncs, under the same rules. What only a computer has (its installed Store apps and flash drives, import and export, its sync settings) stays in the app.
+
 ## Build it yourself
 
 Prerequisites, on Windows 10 or 11:

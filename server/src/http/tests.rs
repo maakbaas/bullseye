@@ -187,3 +187,69 @@ fn two_computers_sync_over_http_and_each_can_always_get_out() {
     thread::sleep(Duration::from_millis(300));
     assert!(a.runs("work"));
 }
+
+#[test]
+fn the_windows_commands_are_answered_as_the_app_answers_them() {
+    let api = api("invoke");
+    let invoke = |body: serde_json::Value| answer(&api, &Method::Post, "/api/invoke", bearer(), body.to_string().as_bytes());
+    let saved = invoke(serde_json::json!({ "cmd": "save_target", "args": { "target": target("social", &["a.com"]) } }));
+    assert_eq!(saved, Answer { status: 200, body: "null".into() });
+    // It went into the log, as a request does.
+    assert_eq!(api.hub.head(), 1);
+    let status = invoke(serde_json::json!({ "cmd": "status", "zone": 120 }));
+    let overview: crate::proto::Overview = serde_json::from_str(&status.body).unwrap();
+    assert_eq!(overview.targets.len(), 1);
+    // A refusal is `{"error": ...}`, as are a computer's own commands and arguments that cannot be read.
+    let refused = invoke(serde_json::json!({ "cmd": "start_session", "args": { "id": "nothing" } }));
+    assert_eq!(refused.status, 400);
+    assert!(refused.body.starts_with(r#"{"error":"#));
+    let drives = invoke(serde_json::json!({ "cmd": "connected_drives" }));
+    assert_eq!(drives.body, serde_json::json!({ "error": crate::strings::t("web.computerOnly", &[]) }).to_string());
+    assert_eq!(answer(&api, &Method::Post, "/api/invoke", bearer(), b"garbage").status, 400);
+    assert_eq!(answer(&api, &Method::Post, "/api/invoke", None, b"{}").status, 401);
+    assert_eq!(answer(&api, &Method::Get, "/api/invoke", bearer(), b"").status, 405);
+}
+
+#[test]
+fn the_windows_page_is_served_without_the_token_and_nothing_else() {
+    let page = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src");
+    let (kind, bytes) = file(&page, "/").unwrap();
+    assert_eq!(kind, "text/html; charset=utf-8");
+    assert!(String::from_utf8(bytes).unwrap().contains("js/web.js"));
+    assert_eq!(file(&page, "/js/web.js?v=1").unwrap().0, "text/javascript; charset=utf-8");
+    assert_eq!(file(&page, "/app.css").unwrap().0, "text/css; charset=utf-8");
+    assert_eq!(file(&page, "/vendor/carbon.js").unwrap().0, "text/javascript; charset=utf-8");
+    for url in [
+        "/../server/Cargo.toml",
+        "/js/../index.html",
+        "/.git/config",
+        "//etc/passwd",
+        "/api/invoke",
+        "/api",
+        "/nothing.js",
+        "/README",
+        "/js",
+    ] {
+        assert!(file(&page, url).is_none(), "{url}");
+    }
+    let fonts = page.join("vendor/fonts");
+    if let Some(font) = std::fs::read_dir(&fonts).ok().and_then(|mut d| d.find_map(|e| e.ok())).map(|e| e.file_name()) {
+        let name = font.to_string_lossy().into_owned();
+        if name.ends_with(".woff2") {
+            assert_eq!(file(&page, &format!("/vendor/fonts/{name}")).unwrap().0, "font/woff2");
+        }
+    }
+
+    // Over HTTP: the page with no token, the API still with it.
+    let dir = hub::tests::dir("http-page");
+    let api = Arc::new(Api::new(Arc::new(Hub::new(context(&dir), Some(dir))), TOKEN).with_page(page));
+    let server = listen("127.0.0.1:0").unwrap();
+    let address = format!("http://{}", server.server_addr().to_ip().unwrap());
+    thread::spawn(move || serve(api, server));
+    let index = ureq::get(&format!("{address}/")).call().unwrap();
+    assert_eq!(index.header("Content-Type"), Some("text/html; charset=utf-8"));
+    assert_eq!(index.header("Cache-Control"), Some("no-cache"));
+    assert!(index.into_string().unwrap().contains("<html"));
+    assert!(matches!(ureq::get(&format!("{address}/nothing.html")).call(), Err(ureq::Error::Status(404, _))));
+    assert!(matches!(ureq::post(&format!("{address}/api/invoke")).send_string("{}"), Err(ureq::Error::Status(401, _))));
+}

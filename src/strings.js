@@ -710,6 +710,21 @@ window.STRINGS = {
   },
 
   // Syncing with a Bullseye sync server, in Settings.
+  // The sync server's page: this window, served by the server, for every computer that syncs (`js/web.js`).
+  web: {
+    heading: "Sign in to the sync server",
+    text: "Its token lets you manage every computer that syncs",
+    token: "Token",
+    signIn: "Sign in",
+    wrong: "Wrong token",
+    // {why}: what went wrong.
+    unreachable: "Cannot reach the server: {why}",
+    // A command only the app on a computer has (its Store apps, flash drives, syncing, files).
+    computerOnly: "Only in the app on a computer",
+    // The Settings page's description there, without what only a computer has.
+    settingsDescription: "Unlocking and the unlock delay, for every computer that syncs",
+  },
+
   sync: {
     title: "Sync",
     text: "Share sessions, targets, conditions, running sessions and the unlock settings with your other computers through a Bullseye sync server you run yourself. Each computer applies the others' changes under its own rules, so a lock is never weaker for coming from elsewhere",

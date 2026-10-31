@@ -64,6 +64,8 @@ pub mod sync_api;
 pub mod syncing;
 #[path = "../../src-tauri/src/unlock.rs"]
 pub mod unlock;
+#[path = "../../src-tauri/src/web.rs"]
+pub mod web;
 #[path = "../../src-tauri/src/webhook.rs"]
 pub mod webhook;
 
@@ -93,7 +95,10 @@ fn main() {
     // Internet time, as a computer's service has it, so the view's times are the computers'.
     clock::spawn_sync();
     let hub = Arc::new(hub::Hub::new(hub::view(&data.join("view")), Some(data.clone())));
-    let api = Arc::new(http::Api::new(hub, token.trim()));
+    // The window's page, for managing every computer from a browser (the image has it in /app/web).
+    let page = PathBuf::from(std::env::var("BULLSEYE_PAGE").unwrap_or_else(|_| "/app/web".into()));
+    let api = http::Api::new(hub, token.trim());
+    let api = Arc::new(if page.join("index.html").is_file() { api.with_page(page) } else { api });
     let server = match http::listen(&listen) {
         Ok(server) => server,
         Err(e) => {

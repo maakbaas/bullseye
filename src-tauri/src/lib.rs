@@ -42,6 +42,9 @@ mod ui;
 mod unlock;
 mod wake;
 mod watchdog;
+// The window's commands for the sync server's page (`server/`), tested here.
+#[cfg(test)]
+mod web;
 mod webhook;
 
 use client::Remote;

@@ -8,9 +8,10 @@ The image is `ghcr.io/maakbaas/bullseye-sync` (`:latest` is the last release, `:
 
 | Variable | Default | What |
 |---|---|---|
-| `BULLSEYE_TOKEN` | (required) | The token, at least 16 characters. Every request but `/api/health` carries it: `Authorization: Bearer <token>` |
+| `BULLSEYE_TOKEN` | (required) | The token, at least 16 characters. Every request to the API but `/api/health` carries it: `Authorization: Bearer <token>` |
 | `BULLSEYE_DATA` | `/data` | Where everything is kept: a volume |
 | `BULLSEYE_LISTEN` | `0.0.0.0:8080` | Where it listens |
+| `BULLSEYE_PAGE` | `/app/web` | The window's page (`src/`, in the image), served at `/`; a folder without `index.html`: no page |
 
 It speaks plain HTTP: put it behind your own reverse proxy for HTTPS, as the token travels with every request. **The token is full control** over every computer that syncs, within each computer's rules: whoever has it can start sessions everywhere, as you can from any computer.
 
@@ -22,12 +23,18 @@ To build the image yourself, from the repository's root: `docker build -f server
 
 The server is the app's own code (`src-tauri/src`, built with `#[path]`, as `scripts/linux-tests` is): the log is `hub.rs`, the API types are `sync_api.rs`, and a computer's side is `replica.rs` and `syncing.rs`. It numbers the entries in the order they come and decides nothing for a computer: each computer applies them under its own rules. Its view takes what a computer did as done, so it shows what is defined and what runs; requests to its API go through the same rules as at a computer's keyboard (`handler::handle_shared`), and what they do goes into the log as the server's own entries.
 
+## The page
+
+The server shows the app's own window at `/`, for managing every computer from a browser: it asks for the token once (kept for the browser tab only), then works as the window does, under a computer's rules. `src/js/web.js` stands in for Tauri and sends each of the window's commands to `/api/invoke`, answered by `src-tauri/src/web.rs` as the app answers them; what only a computer has (its Store apps, flash drives, files, syncing) is refused there and hidden. The server has no time zone of its own, so the page sends the browser's offset from UTC and times are worded in it.
+
 ## The API
 
 | Method and path | Body | Answer |
 |---|---|---|
+| `GET /` and the page's files | | the window, without the token (it asks for it) |
 | `GET /api/health` | | `ok`, without the token |
 | `POST /api/request` | a request, as the window and the CLI send them | its answer: the server's view, under a computer's rules |
+| `POST /api/invoke` | `{"cmd", "args", "zone"}`: a command of the window by name, with its arguments | its value, or `{"error": ...}` with `400` (`src-tauri/src/web.rs`) |
 | `GET /api/snapshot` | | everything defined, the unlock settings, what runs, and the log's head |
 | `GET /api/log?after=N&wait=S` | | the entries after `N`, waiting up to `S` (at most 25) seconds for one; `410` if `N` is older than the log keeps |
 | `POST /api/log` | `{"entries": [...]}` | `{"head": N}`: a computer's entries, each taken once |

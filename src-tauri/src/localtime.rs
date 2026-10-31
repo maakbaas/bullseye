@@ -158,8 +158,13 @@ pub struct Until {
 /// An until lock's end as typed (`2026-10-06 18:00`), in Windows' time zone now; refused when it is
 /// not a date and time or has passed.
 pub fn until(text: &str) -> Result<Until, String> {
+    until_in(text, &Zone::current())
+}
+
+/// As `until`, in `zone` (the sync server's page: the browser's).
+pub fn until_in(text: &str, zone: &Zone) -> Result<Until, String> {
     let at = DateTime::parse(text)?;
-    let end = Zone::current().instant(&at).ok_or_else(|| format!("Cannot tell when {at} is in this time zone"))?;
+    let end = zone.instant(&at).ok_or_else(|| format!("Cannot tell when {at} is in this time zone"))?;
     let left = end.duration_since(SystemTime::now()).map_err(|_| format!("{at} has passed"))?;
     Ok(Until { when: at.to_string(), left: duration::left(left.as_secs()) })
 }

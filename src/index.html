@@ -24,6 +24,8 @@
       })();
     </script>
     <script src="vendor/carbon.js"></script>
+    <!-- In a browser (the sync server's page), a stand-in for Tauri; in the app it does nothing. -->
+    <script src="js/web.js"></script>
     <!-- The page's own layout, in Carbon's tokens only. -->
     <link rel="stylesheet" href="app.css" />
   </head>
@@ -142,7 +144,7 @@
             <div class="row" id="way-controls"></div>
           </div>
           <!-- Everything defined, to a file and back: to move to another computer. -->
-          <div class="setting">
+          <div class="setting" id="transfer-setting">
             <h2 class="cds--type-productive-heading-03" data-t="settings.transferTitle"></h2>
             <p class="cds--type-body-01" data-t="settings.transferText"></p>
             <div class="notices" id="transfer-notices"></div>
@@ -152,7 +154,7 @@
             </div>
           </div>
           <!-- Syncing with the other computers through a sync server (`syncing.rs`). -->
-          <div class="setting">
+          <div class="setting" id="sync-setting">
             <h2 class="cds--type-productive-heading-03" data-t="sync.title"></h2>
             <p class="cds--type-body-01" data-t="sync.text"></p>
             <div class="notices" id="sync-notices"></div>
