@@ -30,11 +30,11 @@ A target acts by what its lists hold: pages of blocked sites are closed wherever
 - **No browser plugins needed**: nothing is installed in your browsers, and they are not started in any special way. Bullseye looks at the open windows through Windows' accessibility interface (UI Automation) and closes what is blocked. It works with Chromium-based browsers (Chrome, Edge, Brave, Opera, Vivaldi and others built on Chromium) and Firefox-based ones (Firefox, Zen), in tabs, split views and app windows, in Opera's sidebar apps and Vivaldi's web panels, and in VS Code's built-in browser.
 - **Sessions set up on their tiles**: each row (targets, condition, allowance, lock) is changed in place, from a list or a dropdown in the row. Several run at once, each started and stopped on its own, from the window or the command line, and a running session can be locked on the spot.
 - **Conditions** by weekly schedule (drawn on a week grid), USB flash drive, webhook (any URL that answers, so you can hook up a home automation or a calendar), or any / all of those combined.
-- **Locks that hold**: the rules live in a Windows service that runs as SYSTEM, so ending the app in Task Manager does not help, times are measured on internet time so changing the clock does not either, and sessions survive a restart. A locked session's conditions can only be made stricter (it can take more targets, and its condition can become Always); a change to a target it uses that blocks more applies at once, and one that blocks less (a site taken out, an exception added) is saved and applies once no locked session uses the target, as the target's tag and editor say, and so can its lock (a later end, a longer wait) and its allowance.
+- **Locks that hold**: the rules live in a Windows service that runs as SYSTEM, so ending the app in Task Manager does not help, times are measured on internet time so changing the clock does not either, and sessions survive a restart. A locked session's targets and conditions can only be made stricter (it can take more targets, and its condition can become Always), and so can its lock (a later end, a longer wait) and its allowance. A change that would loosen a target waits until no locked session uses it.
 - **A way out you choose**: Unlock in Settings ends every session, behind a countdown you set (none by default) and optionally another way, such as a password or the USB key.
 - **Nothing hidden**: the service and app go by their own names and log what they do. It is friction, not spyware.
 - **Export and import** everything to move to another computer.
-- **Sync between computers** through a server you run yourself: start a session on one and it runs on all of them. See [Syncing several computers](#syncing-several-computers).
+- **Sync between computers** through a server you run yourself: start a session on one and it runs on all of them.
 - **A command line** that can do everything the window does: `bullseye status`, `bullseye start "Deep work"`, `bullseye target add "Social media" --sites tiktok.com`. See [CLI.md](CLI.md).
 
 ![A condition](docs/condition-editor.png)
@@ -57,34 +57,13 @@ You can ignore the warning if the installer comes from this repository's Release
 
 ## Syncing several computers
 
-With a Bullseye sync server, all your computers share their sessions, targets, conditions, unlock settings and running sessions: start a block on your desktop and it runs on your laptop too, lock it and it is locked on both.
+With a sync server, your computers share their sessions, targets, conditions, unlock settings and running sessions: start a block on your desktop and it runs on your laptop too.
 
-**Each computer keeps its own hardening.** What comes from another computer is applied under this computer's rules, as if it had been done at its keyboard. A stop that the lock does not allow here yet waits (Settings shows what waits, and why) and applies once it is allowed. The server has no shortcut either: its API has the same rules as a computer, and an unlock from elsewhere still waits for this computer's own countdown. Passwords never leave a computer: a stop or unlock with a password travels as a signature that only that password can make, for that one session or moment. Unlock in Settings always works on each computer by its own countdown, and **Disconnect** always works, also while locked.
+**Each computer keeps its own hardening.** What comes from another computer is applied under this computer's rules, as if it was done at its keyboard. A stop that the lock does not allow here yet waits, and Settings shows why. Passwords never leave a computer, and Unlock and **Disconnect** always work on each computer by themselves.
 
-**Run the server** with Docker, behind your own reverse proxy for HTTPS (it speaks plain HTTP on port 8080). A token guards it. [server/docker-compose.yml](server/docker-compose.yml) runs it:
+**Run the server** with Docker: put your own token in [server/docker-compose.yml](server/docker-compose.yml), run `docker compose up -d`, and put a reverse proxy in front of it for HTTPS.
 
-```yaml
-# The Bullseye sync server, from the image published with each release. Replace the token below with
-# your own (a long random one is safest, e.g. from `openssl rand -hex 32`), and put your reverse proxy in
-# front of port 8080 for HTTPS.
-services:
-  bullseye:
-    image: ghcr.io/maakbaas/bullseye:latest
-    restart: unless-stopped
-    environment:
-      BULLSEYE_TOKEN: "change-me-to-a-long-random-token"
-    volumes:
-      - bullseye-data:/data
-    ports:
-      - "127.0.0.1:8080:8080"
-
-volumes:
-  bullseye-data:
-```
-
-**Connect each computer** under Sync in Settings, with the server's address and token. The first computer on a new server fills it with its own settings; every computer after it takes the server's. The command line has the same: `bullseye sync connect https://sync.example.com --token ...`, and `--server` sends any command to the server itself, so a script or a phone shortcut can start a session everywhere. See [server/README.md](server/README.md) for the server and its API.
-
-**Manage everything from a browser**: the server shows the same window at its address (`https://sync.example.com/`). Sign in with the token and you can change sessions, targets and conditions, start and stop sessions and unlock, for every computer that syncs, under the same rules. What only a computer has (its installed Store apps and flash drives, import and export, its sync settings) stays in the app.
+**Connect each computer** under Sync in Settings, with the server's address and token. The first computer fills a new server with its settings; every computer after it takes the server's. The server also shows the window in a browser at its address, to manage every computer from anywhere.
 
 ## Build it yourself
 
@@ -118,4 +97,5 @@ Changes that would be useful to others are welcome back as pull requests.
 ## More
 
 - [CLI.md](CLI.md): the command line.
+- [server/README.md](server/README.md): the sync server and its API.
 - [AGENTS.md](AGENTS.md): how it is built, for developers and AI assistants.
