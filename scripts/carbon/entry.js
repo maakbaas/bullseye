@@ -79,6 +79,7 @@ import apps16 from '@carbon/icons/es/apps/16.js';
 import list16 from '@carbon/icons/es/list/16.js';
 import webhook16 from '@carbon/icons/es/webhook/16.js';
 import cafe16 from '@carbon/icons/es/cafe/16.js';
+import logout16 from '@carbon/icons/es/logout/16.js';
 
 const icons = {
   add: add16,
@@ -121,6 +122,8 @@ const icons = {
   list: list16,
   // A webhook condition's row on its tile.
   webhook: webhook16,
+  // Sign out, on the sync server's page.
+  logout: logout16,
 };
 
 window.carbonIcon = (name, slot) => {

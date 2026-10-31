@@ -2,8 +2,8 @@
 // computer that syncs. In the app Tauri gives the page `window.__TAURI__`; here this stands in for it,
 // before the page's modules run: each command goes to the server's `POST api/invoke` with the token
 // (`web.rs` answers it as the app does), and what only a computer has is refused there with a
-// message. The token is asked for once, in a dialog, and kept in this browser for 30 days from then
-// (`localStorage`, with the time it runs out); a wrong one is asked for again. A plain script, not a module, so it runs first; in the app it does
+// message. The token is asked for once, in a dialog, and kept in this browser (`localStorage`) until
+// Sign out in Settings; a wrong one is asked for again. A plain script, not a module, so it runs first; in the app it does
 // nothing.
 
 (() => {
@@ -12,17 +12,13 @@
   window.BULLSEYE_WEB = true;
 
   const KEY = "bullseye-token";
-  const DAYS = 30;
-  // The token kept here, while its 30 days last; one that ran out (or cannot be read) is forgotten.
-  const kept = () => {
-    try {
-      const { token, until } = JSON.parse(localStorage.getItem(KEY));
-      if (typeof token === "string" && token && Date.now() < until) return token;
-    } catch {}
+  const kept = () => localStorage.getItem(KEY);
+  const keep = (token) => localStorage.setItem(KEY, token);
+  // Sign out (`main.js`): the token forgotten, and the page started again, which asks for it.
+  window.BULLSEYE_SIGN_OUT = () => {
     localStorage.removeItem(KEY);
-    return null;
+    location.reload();
   };
-  const keep = (token) => localStorage.setItem(KEY, JSON.stringify({ token, until: Date.now() + DAYS * 86400000 }));
   // A text of `strings.js`, with its {placeholders} filled.
   const t = (path, values = {}) => {
     const text = path.split(".").reduce((node, key) => (node ? node[key] : undefined), window.STRINGS);

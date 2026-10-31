@@ -265,6 +265,10 @@ if (window.BULLSEYE_WEB) {
   const description = document.querySelector('[data-t="settings.description"]');
   description.dataset.t = "web.settingsDescription";
   description.textContent = t("web.settingsDescription");
+  // Signing out forgets the token this browser keeps; the page asks for it again.
+  $("sign-out-setting").hidden = false;
+  $("sign-out").replaceChildren(t("web.signOut"), carbonIcon("logout", "icon"));
+  $("sign-out").addEventListener("click", () => window.BULLSEYE_SIGN_OUT());
 }
 // ---- Settings: syncing with the other computers through a sync server (`syncing.rs`). Where it
 // stands is the service's words (`SyncStatus::summary`), as the CLI's `sync status` says them.
