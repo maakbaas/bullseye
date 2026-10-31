@@ -19,6 +19,7 @@ use crate::proto::{self, Overview, Policy, Request, Response, Used};
 use crate::registration;
 use crate::session::{Active, Enforced, Free, Usage};
 use crate::sync::LockExt;
+use crate::sync_api::Transport;
 use crate::watchdog::note;
 
 /// The service's logic called directly, in place of the pipe (`service::local_handler`).
@@ -41,6 +42,8 @@ pub struct Remote {
     last_start: Arc<Mutex<Option<Instant>>>,
     /// Set in development: the service's logic, in this process.
     local: Option<Local>,
+    /// For the CLI's `--server`: a sync server's API in place of this computer's service.
+    server: Option<Arc<dyn Transport>>,
     /// For the CLI: a request that finds the service registered but not running starts it and
     /// waits for it, rather than failing (the app tries again a second later anyway).
     patient: bool,
@@ -74,6 +77,11 @@ impl Remote {
         Remote { local: Some(handler), ..Remote::default() }
     }
 
+    /// The CLI's with `--server`: every request to the sync server's API, where it has the same rules.
+    pub fn server(server: Arc<dyn Transport>) -> Remote {
+        Remote { server: Some(server), ..Remote::default() }
+    }
+
     /// Whether this is its own service, so there is nobody to register with or to start.
     pub fn is_local(&self) -> bool {
         self.local.is_some()
@@ -81,6 +89,9 @@ impl Remote {
 
     /// One request, to the service over the pipe or to the local one.
     fn send(&self, request: Request) -> Result<Response, String> {
+        if let Some(server) = &self.server {
+            return server.request(&request).map_err(|failure| failure.words());
+        }
         let first = match &self.local {
             Some(local) => return Ok(local(request)),
             None => call(&request),
@@ -116,6 +127,15 @@ impl Remote {
     pub fn library(&self) -> Result<crate::definitions::Library, String> {
         match self.send(Request::Export)? {
             Response::Library(library) => Ok(library),
+            Response::Failed(why) => Err(why),
+            other => Err(format!("unexpected answer: {other:?}")),
+        }
+    }
+
+    /// Where syncing stands on this computer.
+    pub fn sync_status(&self) -> Result<crate::sync_api::SyncStatus, String> {
+        match self.send(Request::SyncStatus)? {
+            Response::Sync(status) => Ok(*status),
             Response::Failed(why) => Err(why),
             other => Err(format!("unexpected answer: {other:?}")),
         }

@@ -34,6 +34,7 @@ A target acts by what its lists hold: pages of blocked sites are closed wherever
 - **A way out you choose**: Unlock in Settings ends every session, behind a countdown you set (none by default) and optionally another way, such as a password or the USB key.
 - **Nothing hidden**: the service and app go by their own names and log what they do. It is friction, not spyware.
 - **Export and import** everything to move to another computer.
+- **Sync between computers** through a server you run yourself: start a session on one and it runs on all of them. See [Syncing several computers](#syncing-several-computers).
 - **A command line** that can do everything the window does: `bullseye status`, `bullseye start "Deep work"`, `bullseye target add "Social media" --sites tiktok.com`. See [CLI.md](CLI.md).
 
 ![A condition](docs/condition-editor.png)
@@ -53,6 +54,32 @@ SmartScreen warns about any installer that is new or not signed with a code-sign
 You can ignore the warning if the installer comes from this repository's Releases page: the whole source is here to read, and [Build it yourself](#build-it-yourself) makes the same installer from it. Do not ignore it for an installer from anywhere else.
 
 **Try a short lock first.** A locked session is meant to be hard to end. Keep the unlock delay short (or zero) until you know how you want to use it.
+
+## Syncing several computers
+
+With a Bullseye sync server, all your computers share their sessions, targets, conditions, unlock settings and running sessions: start a block on your desktop and it runs on your laptop too, lock it and it is locked on both.
+
+**Each computer keeps its own hardening.** What comes from another computer is applied under this computer's rules, as if it had been done at its keyboard. A stop that the lock does not allow here yet waits (Settings shows what waits, and why) and applies once it is allowed. The server has no shortcut either: its API has the same rules as a computer, and an unlock from elsewhere still waits for this computer's own countdown. Passwords never leave a computer: a stop or unlock with a password travels as a signature that only that password can make, for that one session or moment. Unlock in Settings always works on each computer by its own countdown, and **Disconnect** always works, also while locked.
+
+**Run the server** with Docker, behind your own reverse proxy for HTTPS (it speaks plain HTTP on port 8080). A token of at least 16 characters guards it:
+
+```yaml
+# docker-compose.yml, with BULLSEYE_TOKEN=... in .env next to it (openssl rand -hex 32 makes one)
+services:
+  bullseye-sync:
+    image: ghcr.io/maakbaas/bullseye-sync:latest
+    restart: unless-stopped
+    environment:
+      BULLSEYE_TOKEN: ${BULLSEYE_TOKEN}
+    volumes:
+      - bullseye-data:/data
+    ports:
+      - "127.0.0.1:8080:8080"
+volumes:
+  bullseye-data:
+```
+
+**Connect each computer** under Sync in Settings, with the server's address and token. The first computer can send its own settings to the server (**This computer**); the others take the server's. The command line has the same: `bullseye sync connect https://sync.example.com --token ...`, and `--server` sends any command to the server itself, so a script or a phone shortcut can start a session everywhere. See [server/README.md](server/README.md) for the server and its API.
 
 ## Build it yourself
 

@@ -1,0 +1,7 @@
+# Only the server is built in Docker (server/Dockerfile); it copies what it needs.
+**/target
+node_modules
+.git
+src/vendor
+docs
+scripts/strings-review/out

@@ -1,0 +1,43 @@
+# The Bullseye sync server (`bullseye-sync`): the log every computer syncs through, and an HTTP API
+# with the same requests as a computer's. Linux (and the Docker image); it builds the platform-free
+# modules straight from src-tauri/src (`#[path]`, never a copy), as scripts/linux-tests does, with
+# the same stand-ins for what needs Windows. See server/README.md.
+[package]
+name = "bullseye-sync"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "bullseye-sync"
+path = "src/main.rs"
+
+# As in src-tauri/Cargo.toml.
+[dependencies]
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+getrandom = "0.3"
+regex = "1.13.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.10"
+ureq = "2"
+windows-sys = { path = "../scripts/linux-tests/windows-sys" }
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+# The HTTP side.
+tiny_http = "0.12"
+
+[profile.release]
+strip = true
+lto = true
+
+# PBKDF2 runs 600 000 rounds; unoptimised that takes seconds per password check.
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.hmac]
+opt-level = 3
+[profile.dev.package.pbkdf2]
+opt-level = 3
+[profile.dev.package.digest]
+opt-level = 3
+[profile.dev.package.block-buffer]
+opt-level = 3

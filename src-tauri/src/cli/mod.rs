@@ -12,8 +12,10 @@
 //! Here are the commands at work; `parse` reads a command line into a `Command`, `output` writes what
 //! the window shows.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::io::{BufRead, IsTerminal, Write};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value};
@@ -31,6 +33,7 @@ use crate::schedule::Week;
 use crate::state::Actions;
 use crate::status::{Line, Status};
 use crate::strings::{joined, quoted, t};
+use crate::sync_api::{Http, Join, SyncStatus};
 use crate::webhook::{self, Hook, Match, Matcher, Method};
 
 mod output;
@@ -43,7 +46,7 @@ use parse::*;
 
 /// Each command the window can invoke, and the CLI commands that do the same. Empty: it is about
 /// the window itself.
-pub const GUI_COMMANDS: [(&str, &[&str]); 34] = [
+pub const GUI_COMMANDS: [(&str, &[&str]); 38] = [
     ("status", &["status", "show", "target show", "condition show"]),
     ("save_session", &["new", "edit"]),
     ("delete_session", &["delete"]),
@@ -83,6 +86,10 @@ pub const GUI_COMMANDS: [(&str, &[&str]); 34] = [
     // A settings file's contents: what the question before importing it says.
     ("open_settings", &["import"]),
     ("import_settings", &["import"]),
+    ("sync_status", &["sync status"]),
+    ("sync_connect", &["sync connect"]),
+    ("sync_disconnect", &["sync disconnect"]),
+    ("sync_now", &["sync now"]),
     ("window_ready", &[]),
     // Asked before a confirmation in the window; the CLI asks, and the service answers when it does it.
     ("check_stricter", &[]),
@@ -533,6 +540,43 @@ fn execute(command: Command) -> Result<(), Failure> {
                 say!("{}", describe_unlock_way(&self::overview()?.unlock));
             }
         },
+        Command::Via { url, token, command } => {
+            let server = Http::new(&url, &token).map_err(Failure::Usage)?;
+            VIA.with(|via| *via.borrow_mut() = Some(Remote::server(Arc::new(server))));
+            let done = execute(*command);
+            VIA.with(|via| *via.borrow_mut() = None);
+            return done;
+        }
+        Command::SyncStatus { json } => {
+            let status = sync_status()?;
+            if json {
+                say!("{}", serde_json::to_string_pretty(&status).map_err(|e| failed(e.to_string()))?);
+            } else {
+                out(&describe_sync(&status));
+            }
+        }
+        Command::SyncConnect { url, token, join, force } => {
+            let question = match join {
+                Join::UseServer => format!("Sync through {url}? {}.", t("sync.useServer", &[])),
+                Join::SendMine => format!("Sync through {url}? {}.", t("sync.sendMine", &[])),
+            };
+            if !confirm(&question, force)? {
+                return Err(failed("Not connected."));
+            }
+            send(Request::SyncConnect { url, token, join })?;
+            out(&describe_sync(&sync_status()?));
+        }
+        Command::SyncDisconnect { force } => {
+            if !confirm(&format!("{} {}.", t("sync.disconnectHeading", &[]), t("sync.disconnectBody", &[])), force)? {
+                return Err(failed("Still connected."));
+            }
+            send(Request::SyncDisconnect)?;
+            say!("{}.", t("sync.disconnected", &[]));
+        }
+        Command::SyncNow => {
+            send(Request::SyncNow)?;
+            out(&describe_sync(&sync_status()?));
+        }
         Command::UnlockDelay { delay } => match delay {
             None => {
                 let status = overview()?.unlock;
@@ -687,9 +731,17 @@ fn resolve_lock(overview: &Overview, lock: Lock) -> Result<Lock, Failure> {
     }
 }
 
+thread_local! {
+    /// The sync server the command goes to (`--server`), in place of this computer's service.
+    static VIA: RefCell<Option<Remote>> = const { RefCell::new(None) };
+}
+
 /// The service, as the window reaches it: the same `Remote`, so the same requests and answers. In
 /// tests, one in the test's own process (`tests::serve`).
 fn remote() -> Remote {
+    if let Some(remote) = VIA.with(|via| via.borrow().clone()) {
+        return remote;
+    }
     #[cfg(test)]
     if let Some(remote) = tests::REMOTE.with(|remote| remote.borrow().clone()) {
         return remote;
@@ -708,6 +760,10 @@ fn out(text: &str) {
 
 fn overview() -> Result<Overview, Failure> {
     remote().status().map_err(failed)
+}
+
+fn sync_status() -> Result<SyncStatus, Failure> {
+    remote().sync_status().map_err(failed)
 }
 
 /// One command, as the window sends it (`Remote::command`).

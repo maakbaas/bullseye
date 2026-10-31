@@ -129,6 +129,14 @@ pub enum Request {
     SetUnlockDelay { delay: String },
     /// From the installer: end the service and remove it. Refused while a session is locked.
     PrepareUninstall,
+    /// Where syncing with the other computers stands (`sync_api::SyncStatus`).
+    SyncStatus,
+    /// Joins the sync server at `url` with `token`, taking its settings or sending this computer's.
+    SyncConnect { url: String, token: String, join: crate::sync_api::Join },
+    /// Stops syncing; always works.
+    SyncDisconnect,
+    /// One round with the sync server now.
+    SyncNow,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
@@ -145,6 +153,8 @@ pub enum Response {
     Library(Library),
     /// One per running session; none when nothing runs.
     Policy(Vec<Policy>),
+    /// Where syncing stands.
+    Sync(Box<crate::sync_api::SyncStatus>),
 }
 
 /// Where unlocking stands: how long it takes, and whether it is being waited for.

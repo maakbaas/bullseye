@@ -43,6 +43,7 @@ use crate::registration::{self, CREATE_NO_WINDOW, NAME};
 use crate::session::Sessions;
 use crate::state;
 use crate::sync::spawn_critical;
+use crate::syncing::Syncer;
 use crate::unlock::UnlockDelay;
 use crate::watchdog::{self, note, AppSlot};
 use crate::{clock, pipe, wake};
@@ -134,7 +135,7 @@ fn start_engine(for_real: bool) -> Result<mpsc::Receiver<Shutdown>, String> {
         wake::spawn_process_watch(sessions.clone());
     }
     let (quit, quit_rx) = mpsc::channel();
-    let context = Arc::new(Context::new(sessions, Definitions::new(), slot).with_unlock(UnlockDelay::new()));
+    let context = synced(Context::new(sessions, Definitions::new(), slot).with_unlock(UnlockDelay::new()));
     pipe::serve(move |caller, request| handle(&context, caller, request), quit)?;
     Ok(quit_rx)
 }
@@ -160,8 +161,16 @@ fn start_sessions() -> Sessions {
 /// app (`AppSlot::new(false)`).
 #[cfg(any(debug_assertions, test))]
 pub fn local_handler(sessions: Sessions, definitions: Definitions) -> Local {
-    let context = Context::new(sessions, definitions, Arc::new(AppSlot::new(false))).with_unlock(UnlockDelay::new());
+    let context = synced(Context::new(sessions, definitions, Arc::new(AppSlot::new(false))).with_unlock(UnlockDelay::new()));
     Arc::new(move |request| handle(&context, 0, request).0)
+}
+
+/// The context with syncing (`sync.json` in the data folder), and the threads that sync.
+fn synced(context: Context) -> Arc<Context> {
+    let syncer = Arc::new(Syncer::new());
+    let context = Arc::new(context.with_syncer(syncer.clone()));
+    syncer.spawn(context.clone());
+    context
 }
 
 /// For `npm run dev`: the service inside the app, with no service installed, no pipe and no

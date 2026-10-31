@@ -59,11 +59,14 @@ struct Inner {
     saved_at: Instant,
     /// When the app last asked what to enforce: the time since is what a report of use counts for.
     polled: Instant,
+    /// Use counted here and not yet told to the computers that sync, by session and key
+    /// (`take_unshared`).
+    unshared: std::collections::BTreeMap<(String, String), u64>,
 }
 
 impl Default for Inner {
     fn default() -> Inner {
-        Inner { sessions: Vec::new(), saved_at: Instant::now(), polled: Instant::now() }
+        Inner { sessions: Vec::new(), saved_at: Instant::now(), polled: Instant::now(), unshared: Default::default() }
     }
 }
 
@@ -282,7 +285,6 @@ pub enum StartLock {
     Text(String),
     /// Until stopped with the password of this hash (`unlock::new_hash`).
     Password(String),
-    #[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
     /// Until this moment: a duration lock as another computer started it (`replica.rs`).
     Ends(SystemTime),
 }
@@ -657,6 +659,12 @@ impl Sessions {
         Sessions { inner: Arc::default(), store: state::store().map(Arc::new), clock: clock::global(), zone: None, boot: None }
     }
 
+    /// Over `store`, with the clock everything else has: the sync server's view (`hub::view`).
+    #[cfg_attr(not(test), allow(dead_code))] // the sync server's
+    pub fn at(store: Store) -> Sessions {
+        Sessions { inner: Arc::default(), store: Some(Arc::new(store)), clock: clock::global(), zone: None, boot: None }
+    }
+
     /// A target over a store of its own and a clock of its own, for other modules' tests.
     #[cfg(test)]
     pub fn with_store(store: Store) -> Sessions {
@@ -881,7 +889,6 @@ impl Sessions {
         Ok(())
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
     /// The running session `id` stands for the start `origin` too (made on another computer at about
     /// the same time as its own): it ends only when that is stopped as well. That start's lock is taken
     /// as `relock` would take it (a locked session only a stricter one); otherwise its own stays.
@@ -901,7 +908,6 @@ impl Sessions {
         Ok(())
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
     /// Stops the starts `starts` of the running session `id` (as another computer stopped them,
     /// `replica.rs`): it ends once none of its starts is left, and only as `stop` would end it (not while
     /// it is locked). `Ok(true)`: it ended; `Ok(false)`: it goes on for a start not stopped yet. Nothing
@@ -931,6 +937,13 @@ impl Sessions {
         inner.sessions.iter().find(|b| b.id == id).map(|b| b.starts.clone()).unwrap_or_default()
     }
 
+    /// When the running session `id` started (milliseconds since the Unix epoch).
+    pub fn started_at(&self, id: &str) -> Option<u64> {
+        let mut inner = self.inner.locked();
+        self.expire(&mut inner);
+        inner.sessions.iter().find(|b| b.id == id).map(|b| b.started)
+    }
+
     /// How the running session `id` is locked.
     pub fn lock_of(&self, id: &str) -> Option<RunLock> {
         let mut inner = self.inner.locked();
@@ -938,7 +951,6 @@ impl Sessions {
         inner.sessions.iter().find(|b| b.id == id).map(|b| b.lock.clone())
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
     /// Whether a session started by `at` runs.
     pub fn started_by(&self, at: SystemTime) -> bool {
         let at = state::to_unix(at).unwrap_or(0);
@@ -947,7 +959,6 @@ impl Sessions {
         inner.sessions.iter().any(|b| b.started <= at)
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
     /// Ends every session started by `at` whatever its lock (an unlock made on another computer at
     /// `at`, `replica.rs`): one started after it is not ended by it.
     pub fn reset_started_by(&self, at: SystemTime) {
@@ -1073,6 +1084,7 @@ impl Sessions {
         self.expire(&mut inner);
         let millis = u64::try_from(inner.polled.elapsed().min(MAX_GAP).as_millis()).unwrap_or(0);
         let now = self.clock.now();
+        let mut charged = Vec::new();
         for session in inner.sessions.iter_mut() {
             session.advance(now);
             let active = session.in_condition(now);
@@ -1084,9 +1096,76 @@ impl Sessions {
             if let Some(run) = &mut session.allowance {
                 for key in keys {
                     run.charge(&key, millis);
+                    charged.push((session.id.clone(), key));
                 }
             }
         }
+        for key in charged {
+            *inner.unshared.entry(key).or_default() += millis;
+        }
+    }
+
+    /// Counts use that another computer that syncs counted (`replica.rs`), by key in milliseconds,
+    /// against the running session `id`'s budget: what its allowance counts, never beyond what it
+    /// allows. It only ever makes the session stricter.
+    pub fn charge_elsewhere(&self, id: &str, used: &std::collections::BTreeMap<String, u64>) -> Result<(), String> {
+        let mut inner = self.inner.locked();
+        self.expire(&mut inner);
+        let now = self.clock.now();
+        let session = inner.sessions.iter_mut().find(|b| b.id == id).ok_or("This session is not running")?;
+        session.advance(now);
+        let counted: Vec<(String, u64)> = used.iter().filter(|(key, _)| session.counts(key)).map(|(k, m)| (k.clone(), *m)).collect();
+        let run = session.allowance.as_mut().ok_or("This session has no budget")?;
+        for (key, millis) in counted {
+            run.charge(&key, millis);
+        }
+        self.save_all(&mut inner);
+        Ok(())
+    }
+
+    /// The use counted here since this was last asked, by session: what the computers that sync are told
+    /// (`replica::Action::Used`).
+    pub fn take_unshared(&self) -> Vec<(String, std::collections::BTreeMap<String, u64>)> {
+        let unshared = std::mem::take(&mut self.inner.locked().unshared);
+        let mut by_session: Vec<(String, std::collections::BTreeMap<String, u64>)> = Vec::new();
+        for ((id, key), millis) in unshared {
+            match by_session.iter_mut().find(|(session, _)| *session == id) {
+                Some((_, used)) => {
+                    used.insert(key, millis);
+                }
+                None => by_session.push((id, [(key, millis)].into())),
+            }
+        }
+        by_session
+    }
+
+    /// Ends the session `id`'s starts `starts` whatever its lock: the sync server's view of a stop made on
+    /// a computer (`handler::mirror`), which enforces nothing.
+    #[cfg_attr(not(test), allow(dead_code))] // used by the sync server
+    pub fn stop_forced(&self, id: &str, starts: &[String]) -> Result<(), String> {
+        let mut inner = self.inner.locked();
+        let at = inner.sessions.iter().position(|b| b.id == id).ok_or("This session is not running")?;
+        inner.sessions[at].starts.retain(|start| !starts.contains(start));
+        if inner.sessions[at].starts.is_empty() {
+            inner.sessions.remove(at);
+        }
+        self.save_all(&mut inner);
+        Ok(())
+    }
+
+    /// The same sessions over the same store after Windows restarted, as the service finds them then
+    /// (tests only: `boot` is the new start of Windows).
+    #[cfg(test)]
+    pub fn restarted(&self, boot: &str) -> Sessions {
+        let sessions = Sessions {
+            inner: Arc::default(),
+            store: self.store.clone(),
+            clock: self.clock,
+            zone: self.zone.clone(),
+            boot: Some(boot.into()),
+        };
+        sessions.restore();
+        sessions
     }
 
     /// The time the service goes by (internet time, `clock.rs`).

@@ -116,6 +116,8 @@
       reading: { state: "running", c: ["activeByWebhook"], a: ["breaksLeft", { n: 2 }], l: ["delay", { delay: "15 minutes" }] },
     },
     unlock: { delay: 0, delay_words: "0 seconds", remaining: null, remaining_words: null, way: null, way_open: false, way_left: null, way_left_words: null },
+    // Syncing (`SyncStatus`), its words as the service writes them; a function in a scene's setup, run once the texts are read.
+    sync: null,
     fail: {},
     pending: [],
     answers: {},
@@ -252,6 +254,23 @@
   };
   const kinds = { session: "sessions", target: "targets", condition: "conditions" };
 
+  // Connected, in sync, with two computers.
+  const SYNCED = (url) => ({
+    connected: true,
+    summary: t("sync.inSync", { url, ago: t("sync.justNow") }),
+    url,
+    confirmed: 42,
+    last_contact: Date.now(),
+    error: null,
+    outbox: 0,
+    held: [],
+    devices: [
+      { id: "a", name: "DESKTOP", this: true, seen: t("sync.justNow"), running: ["Work"], held: 0 },
+      { id: "b", name: "LAPTOP", this: false, seen: t("sync.ago", { time: "2 minutes" }), running: ["Work"], held: 1 },
+    ],
+    device: "a",
+  });
+
   const COMMANDS = {
     status: () => overview(),
     window_ready: () => null,
@@ -313,10 +332,14 @@
       apps_checked: true,
     }),
     import_settings: () => null,
+    sync_status: () => (typeof S.sync === "function" ? S.sync() : S.sync) || { connected: false, summary: t("sync.notConnected"), url: "", confirmed: 0, last_contact: null, error: null, outbox: 0, held: [], devices: [], device: "" },
+    sync_connect: ({ url }) => (S.sync = SYNCED(url)),
+    sync_disconnect: () => (S.sync = null),
+    sync_now: () => null,
   };
 
   // The scene's changes, before the page asks anything.
-  if (window.__SETUP) new Function("S", "t", "quoted", window.__SETUP)(S, t, quoted);
+  if (window.__SETUP) new Function("S", "t", "quoted", "SYNCED", window.__SETUP)(S, t, quoted, SYNCED);
 
   async function invoke(command, args = {}) {
     await new Promise((resolve) => setTimeout(resolve, 5));

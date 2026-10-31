@@ -1249,3 +1249,119 @@ fn a_schedule_is_shown_per_day() {
     assert!(text.contains("  Tue  08:00-12:00, 13:00-17:00\n"), "{text}");
     assert!(text.ends_with("  Sun  Inactive\n"), "{text}");
 }
+
+/// A service that syncs, through a server in this process, which the commands of this test talk to.
+fn serve_synced(name: &str) -> Arc<crate::hub::Hub> {
+    let dir = std::env::temp_dir().join(format!("cli-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let hub = Arc::new(crate::hub::Hub::new(crate::hub::tests::context(&dir.join("server")), None));
+    let reached = hub.clone();
+    let connector: crate::syncing::Connector = Box::new(move |_, _| Ok(reached.clone() as Arc<dyn crate::sync_api::Transport>));
+    let syncer = Arc::new(crate::syncing::Syncer::at(Some(dir.clone()), connector, "Desk".into()));
+    let context = Arc::new(crate::hub::tests::context(&dir).with_syncer(syncer));
+    REMOTE.with(|remote| *remote.borrow_mut() = Some(Remote::local(Arc::new(move |request| handle(&context, 0, request).0))));
+    hub
+}
+
+#[test]
+fn sync_is_read_with_its_server_and_token() {
+    let token = "0123456789abcdef";
+    assert_eq!(parse(&args(&["sync"])), Ok(Command::SyncStatus { json: false }));
+    assert_eq!(parse(&args(&["sync", "--json"])), Ok(Command::SyncStatus { json: true }));
+    assert_eq!(parse(&args(&["sync", "status", "--json"])), Ok(Command::SyncStatus { json: true }));
+    assert_eq!(
+        parse(&args(&["sync", "connect", "https://sync.example.com", "--token", token])),
+        Ok(Command::SyncConnect { url: "https://sync.example.com".into(), token: token.into(), join: Join::UseServer, force: false })
+    );
+    assert_eq!(
+        parse(&args(&["sync", "connect", "https://s", "--token=t", "--send-mine", "--force"])),
+        Ok(Command::SyncConnect { url: "https://s".into(), token: "t".into(), join: Join::SendMine, force: true })
+    );
+    assert!(parse(&args(&["sync", "connect", "--token", token])).unwrap_err().contains("address"));
+    assert_eq!(parse(&args(&["sync", "disconnect"])), Ok(Command::SyncDisconnect { force: false }));
+    assert_eq!(parse(&args(&["sync", "now"])), Ok(Command::SyncNow));
+    assert!(parse(&args(&["sync", "later"])).is_err());
+    let via = |command| Ok(Command::Via { url: "https://s".into(), token: token.into(), command: Box::new(command) });
+    assert_eq!(parse(&args(&["--server", "https://s", "--token", token, "status"])), via(Command::Status { json: false }));
+    assert_eq!(
+        parse(&args(&["start", "Work", "--server=https://s", "--token", token])),
+        via(Command::Start { session: "Work".into(), lock: None, force: false })
+    );
+    // A token without a server is not understood.
+    assert!(parse(&args(&["status", "--token", token])).is_err());
+}
+
+#[test]
+fn this_computer_connects_syncs_and_disconnects() {
+    let hub = serve_synced("sync");
+    assert_eq!(ok(&["sync"]), "Not connected\n");
+    let connect = ["sync", "connect", "https://sync.example.com", "--token", "0123456789abcdef"];
+    assert!(refused(&connect).contains("No terminal to ask in"));
+    let said = ok(&[&connect[..], &["--force"]].concat());
+    assert!(said.starts_with("Connected to https://sync.example.com"), "{said}");
+    // What is done here reaches the server.
+    ok(&["target", "new", "Social", "--sites", "youtube.com"]);
+    let said = ok(&["sync", "now"]);
+    assert!(said.contains("last synced just now"), "{said}");
+    assert!(said.contains("\nComputers:\n  Desk · This computer · Seen just now\n"), "{said}");
+    assert_eq!(crate::sync_api::Transport::snapshot(hub.as_ref()).unwrap().library.targets.len(), 1);
+    let json: Value = serde_json::from_str(&ok(&["sync", "status", "--json"])).unwrap();
+    assert_eq!(json["connected"], true);
+    assert_eq!(json["url"], "https://sync.example.com");
+    assert!(refused(&["sync", "disconnect"]).contains("No terminal to ask in"));
+    assert_eq!(ok(&["sync", "disconnect", "--force"]), "Disconnected.\n");
+    assert_eq!(ok(&["sync"]), "Not connected\n");
+    // A service that does not sync says so.
+    serve("sync-none");
+    assert_eq!(refused(&["sync"]), "This is not a computer that syncs");
+}
+
+#[test]
+fn a_command_with_a_server_goes_to_the_servers_api_under_its_rules() {
+    let dir = std::env::temp_dir().join(format!("cli-{}-via", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let hub = Arc::new(crate::hub::Hub::new(crate::hub::tests::context(&dir), None));
+    REMOTE.with(|remote| *remote.borrow_mut() = Some(Remote::server(hub.clone())));
+    ok(&["target", "new", "Social", "--sites", "youtube.com"]);
+    ok(&["new", "Work", "--targets", "Social", "--lock-until-restart"]);
+    assert_eq!(ok(&["start", "Work", "--force"]), "Started “Work”.\n");
+    assert!(ok(&["status"]).contains("Work"));
+    assert!(!refused(&["stop", "Work"]).is_empty());
+    assert_eq!(hub.head(), 3);
+    // Over HTTP: an address that does not read is not understood, a server that does not answer fails.
+    let token = "0123456789abcdef";
+    assert!(refused(&["--server", "sync.example.com", "--token", token, "status"]).contains("https://"));
+    assert!(refused(&["--server", "http://127.0.0.1:9", "--token", token, "status"]).contains("cannot be reached"));
+}
+
+#[test]
+fn syncing_is_described_as_settings_shows_it() {
+    let status = SyncStatus {
+        connected: true,
+        summary: "Connected to https://s, last synced just now".into(),
+        devices: vec![
+            crate::sync_api::DeviceView {
+                id: "a".into(),
+                name: "Desk".into(),
+                this: true,
+                seen: "just now".into(),
+                running: vec!["Work".into()],
+                held: 1,
+            },
+            crate::sync_api::DeviceView {
+                id: "b".into(),
+                name: "Laptop".into(),
+                this: false,
+                seen: "2 minutes ago".into(),
+                running: vec![],
+                held: 2,
+            },
+        ],
+        held: vec![crate::sync_api::HeldView { what: "Stop “Work”".into(), why: "It is locked".into() }],
+        ..SyncStatus::default()
+    };
+    assert_eq!(
+        describe_sync(&status),
+        "Connected to https://s, last synced just now\n\nComputers:\n  Desk · This computer · Seen just now · Running: “Work” · 1 change waiting\n  Laptop · Seen 2 minutes ago · 2 changes waiting\n\nWaiting on this computer:\n  Stop “Work” · It is locked\n"
+    );
+}

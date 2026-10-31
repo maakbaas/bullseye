@@ -13,9 +13,11 @@ use crate::lists::Entries;
 use crate::localtime::Zone;
 use crate::lock::{self, Lock, TimedKind};
 use crate::proto::{Check, FreeEntries, Overview, Policy, Request, Response, UnlockStatus};
-use crate::replica::Action;
+use crate::replica::{Action, Proof};
 use crate::session::{Origin, Part, RunLock, Sessions, StartLock};
 use crate::sync::LockExt;
+use crate::sync_api::{RunShare, Snapshot};
+use crate::syncing::Syncer;
 use crate::unlock::{self, UnlockDelay};
 use crate::watchdog::AppSlot;
 
@@ -33,11 +35,14 @@ pub struct Context {
     /// Held while the definitions change or a session starts, so a session cannot start while a list or
     /// condition it uses is being changed (the check and the change are one step).
     editing: Mutex<()>,
+    /// Syncing with the other computers (`syncing.rs`), in the service; `None` in the sync server's own
+    /// view (`hub.rs`).
+    syncer: Option<Arc<Syncer>>,
 }
 
 impl Context {
     pub fn new(sessions: Sessions, definitions: Definitions, slot: Arc<AppSlot>) -> Context {
-        Context { sessions, definitions, slot, unlock: UnlockDelay::default(), editing: Mutex::default() }
+        Context { sessions, definitions, slot, unlock: UnlockDelay::default(), editing: Mutex::default(), syncer: None }
     }
 
     /// With the unlock delay kept in its own file (the service's, `UnlockDelay::new`).
@@ -46,8 +51,12 @@ impl Context {
         self
     }
 
-    /// Its running sessions (tests of other modules).
-    #[cfg(test)]
+    /// Syncing with the other computers through `syncer`.
+    pub fn with_syncer(mut self, syncer: Arc<Syncer>) -> Context {
+        self.syncer = Some(syncer);
+        self
+    }
+
     pub fn sessions(&self) -> &Sessions {
         &self.sessions
     }
@@ -58,37 +67,128 @@ impl Context {
         &self.unlock
     }
 
-    /// What is defined (tests of other modules).
-    #[cfg(test)]
+    /// What is defined, password hashes included.
     pub fn library(&self) -> Library {
         self.definitions.library()
+    }
+
+    /// The time the service goes by (internet time).
+    pub fn now(&self) -> SystemTime {
+        self.sessions.now()
     }
 }
 
 /// Answers one request from the process `caller`, and says whether the service should end
 /// afterwards. Everything in the request is checked here again: it comes from any local user's
-/// program, not necessarily ours.
+/// program, not necessarily ours. While syncing, what it does goes to the other computers too.
 pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Option<Shutdown>) {
-    let (response, shutdown, _) = handle_shared(context, caller, request);
-    (response, shutdown)
+    // Only what is shared waits its turn: asking for the policy, and syncing itself (which takes the turn
+    // to apply what comes in), do not.
+    match context.syncer.as_ref().filter(|syncer| syncer.connected() && shareable(&request).is_some()) {
+        Some(syncer) => {
+            let _turn = syncer.turn();
+            let (response, shutdown, action) = handle_shared(context, caller, request);
+            if let Some(action) = action {
+                syncer.record(action, context.now());
+            }
+            (response, shutdown)
+        }
+        None => answer(context, caller, request),
+    }
+}
+
+/// Everything a computer that joins takes over (`sync_api::Snapshot`), as of the entry `head` of the log:
+/// what is defined (password hashes included), the unlock settings and what runs, with what was decided
+/// when it started.
+pub fn snapshot(context: &Context, head: u64) -> Snapshot {
+    let library = context.definitions.library();
+    let runs = context
+        .sessions
+        .running_ids()
+        .into_iter()
+        .filter_map(|id| {
+            let lock = context.sessions.lock_of(&id)?;
+            let drawn = matches!(library.session(&id).map(|s| &s.lock), Some(Lock::RandomText { .. }));
+            Some(RunShare {
+                starts: context.sessions.starts_of(&id),
+                started: context.sessions.started_at(&id).unwrap_or(0),
+                ends: match lock {
+                    RunLock::Ends { at } => Some(at),
+                    _ => None,
+                },
+                text: match lock {
+                    RunLock::Text { text } if drawn => Some(text),
+                    _ => None,
+                },
+                id,
+            })
+        })
+        .collect();
+    Snapshot {
+        head,
+        library,
+        unlock_delay: format!("{}s", context.unlock.delay()),
+        unlock_way: context.unlock.way().map(|way| way.lock),
+        runs,
+    }
+}
+
+/// The requests about syncing itself (`syncing.rs`).
+fn answer_sync(context: &Context, request: Request) -> Response {
+    let Some(syncer) = context.syncer.as_ref() else { return Response::Failed("This is not a computer that syncs".into()) };
+    let done = |result: Result<(), String>| result.map_or_else(Response::Failed, |()| Response::Done);
+    match request {
+        Request::SyncConnect { url, token, join } => done(syncer.connect(context, &url, &token, join)),
+        Request::SyncDisconnect => {
+            syncer.disconnect();
+            Response::Done
+        }
+        Request::SyncNow => done(syncer.now(context)),
+        _ => Response::Sync(Box::new(syncer.status(context))),
+    }
 }
 
 /// As `handle`, and what it did for the computers that sync (`replica.rs`), if it changed something
 /// they share: what was decided here goes with it (a start's end and drawn text, a password's hash),
-/// a password never does.
+/// a password never does: a stop or unlock made with one carries its signature (`unlock::sign`).
 pub fn handle_shared(context: &Context, caller: u32, request: Request) -> (Response, Option<Shutdown>, Option<Action>) {
-    // What a stop ends has to be known before it does.
-    let stopping = match &request {
-        Request::Stop { id, .. } => context.sessions.starts_of(id),
-        _ => Vec::new(),
+    // What a stop ends, and the proof of a password, have to be known before it is done.
+    let (stopping, proof) = match &request {
+        Request::Stop { id, password, .. } => {
+            let starts = context.sessions.starts_of(id);
+            let proof = match (password, context.sessions.lock_of(id)) {
+                (Some(password), Some(RunLock::Password { hash })) => unlock::sign(password, &hash, &stop_message(id, &starts)),
+                _ => None,
+            };
+            (starts, proof.map(|signature| Proof { at: 0, signature }))
+        }
+        Request::UnlockWith { password: Some(password), .. } => {
+            let at = crate::state::to_unix(context.sessions.now()).unwrap_or(0);
+            let proof = match context.unlock.way().map(|way| way.lock) {
+                Some(Lock::Password { hash: Some(hash), .. }) => unlock::sign(password, &hash, &unlock_message(at)),
+                _ => None,
+            };
+            (Vec::new(), proof.map(|signature| Proof { at, signature }))
+        }
+        _ => (Vec::new(), None),
     };
     let shared = shareable(&request);
     let (response, shutdown) = answer(context, caller, request);
     let action = match (&response, shared) {
-        (Response::Done, Some(shared)) => shared_action(context, shared, stopping),
+        (Response::Done, Some(shared)) => shared_action(context, shared, stopping, proof),
         _ => None,
     };
     (response, shutdown, action)
+}
+
+/// What the password's signature of a stop signs: the session and the starts it ends.
+fn stop_message(id: &str, starts: &[String]) -> String {
+    format!("bullseye stop {id} {}", starts.join(","))
+}
+
+/// What the password's signature of an unlock signs: when it was made, so it ends only what started by then.
+fn unlock_message(at: u64) -> String {
+    format!("bullseye unlock {at}")
 }
 
 /// The request as far as it is shared, before it is handled: a password left out.
@@ -121,12 +221,16 @@ fn shareable(request: &Request) -> Option<Request> {
         | Request::Register
         | Request::Check { .. }
         | Request::Export
-        | Request::PrepareUninstall => None,
+        | Request::PrepareUninstall
+        | Request::SyncStatus
+        | Request::SyncConnect { .. }
+        | Request::SyncDisconnect
+        | Request::SyncNow => None,
     }
 }
 
 /// What a request that was done here shares, as it came out: what is saved as it is saved now.
-fn shared_action(context: &Context, request: Request, stopping: Vec<String>) -> Option<Action> {
+fn shared_action(context: &Context, request: Request, stopping: Vec<String>, proof: Option<Proof>) -> Option<Action> {
     let library = context.definitions.library();
     let decided = |id: &str| {
         let lock = context.sessions.lock_of(id);
@@ -160,7 +264,7 @@ fn shared_action(context: &Context, request: Request, stopping: Vec<String>) -> 
             let (ends, text) = decided(&id);
             Action::Lock { id, lock, ends, text }
         }
-        Request::Stop { id, text, .. } => Action::Stop { id, starts: stopping, text },
+        Request::Stop { id, text, .. } => Action::Stop { id, starts: stopping, text, proof: proof.map(|proof| proof.signature) },
         Request::AskToStop { id } => Action::AskToStop { id },
         Request::AbortStop { id } => Action::AbortStop { id },
         Request::TakeBreak { id } => Action::TakeBreak { id },
@@ -174,7 +278,7 @@ fn shared_action(context: &Context, request: Request, stopping: Vec<String>) -> 
                 Some(Lock::RandomText { text, .. }) => text,
                 _ => None,
             };
-            Action::Unlock { text, next }
+            Action::Unlock { text, next, proof }
         }
         Request::SetUnlockWay { .. } => Action::SetUnlockWay { way: context.unlock.way().map(|way| way.lock) },
         Request::AskForUnlock => Action::AskForUnlock,
@@ -184,7 +288,6 @@ fn shared_action(context: &Context, request: Request, stopping: Vec<String>) -> 
     })
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
 /// What became of an action from another computer here (`apply`).
 #[derive(Debug, PartialEq)]
 pub enum Outcome {
@@ -195,17 +298,91 @@ pub enum Outcome {
     Dropped(String),
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
 /// Does an action that another computer did (`replica.rs`) **as if it was asked for here**: through
 /// the same rules, so it can do nothing here that could not be done at this computer's own keyboard.
 /// `at` is when it was done there: a countdown it starts is bounded to have begun at most
 /// `replica::GRACE` before now, so a time from elsewhere cannot shorten a wait here.
 pub fn apply(context: &Context, action: &Action, at: SystemTime) -> Outcome {
+    apply_as(context, action, at, false)
+}
+
+/// As `apply`, for the sync server's own view of what the computers did (`server`): what a computer
+/// did is taken as done, also where its rules here would refuse it (the server enforces nothing,
+/// and a computer's own restart, drive or password is not the server's to wait for). Requests to the
+/// server's API go through `handle_shared` and its rules, as a computer's do.
+#[cfg_attr(not(test), allow(dead_code))] // the sync server's (`hub.rs`, `server/`)
+pub fn mirror(context: &Context, action: &Action, at: SystemTime) -> Outcome {
+    match apply_as(context, action, at, true) {
+        Outcome::Held(_) => forced(context, action, at.min(context.sessions.now())),
+        other => other,
+    }
+}
+
+/// What `mirror` does with what the rules here refuse: the change made all the same.
+#[cfg_attr(not(test), allow(dead_code))] // the sync server's
+fn forced(context: &Context, action: &Action, at: SystemTime) -> Outcome {
+    let result = {
+        let _editing = context.editing.locked();
+        let running = context.sessions.running_ids();
+        match action.clone() {
+            Action::SaveSession { session } => {
+                let id = session.id.clone();
+                context.definitions.save_session_from(session, true).map(|()| vec![id])
+            }
+            Action::SaveTarget { target } => {
+                let users = context.definitions.library().users_of(&target.id).iter().map(|b| b.id.clone()).collect();
+                context.definitions.save_target(target).map(|()| users)
+            }
+            Action::SaveCondition { condition } => {
+                let users = context.definitions.library().users_of(&condition.id).iter().map(|b| b.id.clone()).collect();
+                context.definitions.save_condition(condition).map(|()| users)
+            }
+            Action::DeleteSession { id } => context.definitions.delete_session(&id).map(|()| vec![id]),
+            Action::DeleteTarget { id } => {
+                let users = context.definitions.library().users_of(&id).iter().map(|b| b.id.clone()).collect();
+                context.definitions.delete_target(&id).map(|()| users)
+            }
+            Action::DeleteCondition { id } => {
+                let users = context.definitions.library().users_of(&id).iter().map(|b| b.id.clone()).collect();
+                context.definitions.delete_condition(&id).map(|()| users)
+            }
+            Action::Import { library } => context.definitions.replace(library).map(|()| running.clone()),
+            Action::Stop { id, starts, .. } => context.sessions.stop_forced(&id, &starts).map(|()| Vec::new()),
+            Action::Unlock { .. } => {
+                context.sessions.reset_started_by(at);
+                context.unlock.abort_since(Some(at)).map(|()| Vec::new())
+            }
+            Action::SetUnlockDelay { delay } => unlock::parse_delay(&delay)
+                .and_then(|seconds| context.unlock.set_delay_idle(seconds, context.sessions.now()))
+                .map(|()| Vec::new()),
+            Action::SetUnlockWay { way } => context
+                .unlock
+                .set_way(way.map(|lock| unlock::Way { lock, opening: None }), context.sessions.now(), true)
+                .map(|()| Vec::new()),
+            _ => Ok(Vec::new()),
+        }
+        .map(|users| users.into_iter().filter(|id| running.contains(id)).collect::<Vec<_>>())
+    };
+    match result {
+        // The running sessions it touches follow; one that cannot is ended (what it was is gone).
+        Ok(users) => {
+            for user in users {
+                if refresh_running(context, std::slice::from_ref(&user)).is_err() {
+                    let _ = context.sessions.stop_forced(&user, &context.sessions.starts_of(&user));
+                }
+            }
+            Outcome::Applied
+        }
+        Err(why) => Outcome::Dropped(why),
+    }
+}
+
+fn apply_as(context: &Context, action: &Action, at: SystemTime, mirroring: bool) -> Outcome {
     use Outcome::{Applied, Dropped, Held};
     let sessions = &context.sessions;
     let now = sessions.now();
     let at = at.min(now);
-    let countdown_from = at.max(now.checked_sub(crate::replica::GRACE).unwrap_or(now));
+    let countdown_from = if mirroring { at } else { at.max(now.checked_sub(crate::replica::GRACE).unwrap_or(now)) };
     let running = |id: &str| sessions.running_ids().iter().any(|r| r == id);
     let held = |result: Result<(), String>| result.map_or_else(Held, |()| Applied);
     let dropped = |result: Result<(), String>| result.map_or_else(Dropped, |()| Applied);
@@ -233,34 +410,38 @@ pub fn apply(context: &Context, action: &Action, at: SystemTime) -> Outcome {
         }
         Action::Lock { id, .. } if !running(&id) => Dropped("This session is not running".into()),
         Action::Lock { id, lock, ends, text } => dropped(lock_running_from(context, &id, lock, Decided { ends, text })),
-        Action::Stop { id, starts, text } => {
+        Action::Stop { id, starts, text, proof } => {
             let here = sessions.starts_of(&id);
             if !starts.iter().any(|start| here.contains(start)) {
                 return Dropped("Not running from these starts".into());
             }
-            let answered = text.is_some_and(|text| sessions.text_matches(&id, &text));
+            // A text as typed there, or the signature of its password made there (`unlock::sign`).
+            let signed = |proof: &str| match sessions.lock_of(&id) {
+                Some(RunLock::Password { hash }) => unlock::verify(&hash, &stop_message(&id, &starts), proof),
+                _ => false,
+            };
+            let answered = text.is_some_and(|text| sessions.text_matches(&id, &text)) || proof.as_deref().is_some_and(signed);
             held(sessions.stop_starts(&id, &starts, answered).map(|_| ()))
         }
+        Action::Used { id, used } => dropped(sessions.charge_elsewhere(&id, &used)),
         Action::AskToStop { id } => dropped(sessions.ask_to_stop_at(&id, countdown_from)),
         Action::AbortStop { id } => dropped(sessions.abort_stop_since(&id, Some(at))),
         Action::TakeBreak { id } => dropped(sessions.take_break(&id)),
         Action::EndBreak { id } => dropped(sessions.end_break(&id)),
         Action::AskForUnlock => dropped(context.unlock.request(countdown_from)),
         Action::AbortUnlock => dropped(context.unlock.abort_since(Some(at))),
-        Action::Unlock { text, next } => held(unlock_synced(context, at, text.as_deref(), next)),
+        Action::Unlock { text, next, proof } => held(unlock_synced(context, at, text.as_deref(), next, proof)),
         Action::SetUnlockDelay { delay } => held(set_unlock_delay(context, &delay)),
         Action::SetUnlockWay { way } => held(set_unlock_way(context, way, true)),
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
 /// What was decided where a session was started or locked: a duration lock's end, a drawn text.
 struct Decided {
     ends: Option<u64>,
     text: Option<String>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
 /// Starts a session as another computer started it (`apply`); one running here already stands for that
 /// start too (`Sessions::join`).
 fn start_synced(context: &Context, id: &str, origin: Origin, decided: Decided) -> Result<(), String> {
@@ -275,7 +456,6 @@ fn start_synced(context: &Context, id: &str, origin: Origin, decided: Decided) -
     context.sessions.start_from(id, &resolved.session.name, parts, resolved.condition, resolved.allowance, lock, Some(origin))
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
 /// A session's lock as this computer has it defined, with what another computer decided where that is
 /// its to decide: a duration lock ends when it ends there, but never later than if it started here
 /// `now`; a random text is the one drawn there. Everything else is as it is here.
@@ -289,7 +469,6 @@ fn synced_lock(resolved: &Resolved, decided: Decided, now: SystemTime) -> Result
     })
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
 /// `lock_running` as another computer locked it: its password lock with the hash made there, and
 /// what it decided.
 fn lock_running_from(context: &Context, id: &str, lock: Lock, decided: Decided) -> Result<(), String> {
@@ -309,15 +488,21 @@ fn lock_running_from(context: &Context, id: &str, lock: Lock, decided: Decided) 
     applied
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
 /// An unlock made on another computer at `at`: the sessions started by then end, but only once
 /// unlocking is ready here too (its countdown is over, or its other way lets go or is answered by
 /// `text`), as `unlock_with` would; with none of them left to end, it only takes the random text drawn
-/// there (`next`) and ends the countdown it used.
-fn unlock_synced(context: &Context, at: SystemTime, text: Option<&str>, next: Option<String>) -> Result<(), String> {
+/// there (`next`) and ends the countdown it used. Made with the password of the way to unlock, it
+/// carries the password's signature of when it was made (`proof`): then that is the time it was made.
+fn unlock_synced(context: &Context, at: SystemTime, text: Option<&str>, next: Option<String>, proof: Option<Proof>) -> Result<(), String> {
     let now = context.sessions.now();
+    let way = context.unlock.way();
+    let signed = proof.filter(|proof| match way.as_ref().map(|way| &way.lock) {
+        Some(Lock::Password { hash: Some(hash), .. }) => unlock::verify(hash, &unlock_message(proof.at), &proof.signature),
+        _ => false,
+    });
+    let at = signed.as_ref().map_or(at, |proof| crate::state::from_unix(proof.at).min(now));
     if context.sessions.started_by(at) {
-        let by_way = context.unlock.way().is_some_and(|way| way.is_open(now) || way.answered(None, text));
+        let by_way = signed.is_some() || way.as_ref().is_some_and(|way| way.is_open(now) || way.answered(None, text));
         if !by_way && context.unlock.remaining(now) != Some(0) {
             return Err("Unlocking is not ready on this computer yet".into());
         }
@@ -440,6 +625,9 @@ fn answer(context: &Context, caller: u32, request: Request) -> (Response, Option
         Request::AbortUnlock => (done(context.unlock.abort()), None),
         Request::SetUnlockDelay { delay } => (done(set_unlock_delay(context, &delay)), None),
         // Refused while a session cannot be stopped, judged by internet time, like the session itself.
+        Request::SyncStatus | Request::SyncConnect { .. } | Request::SyncDisconnect | Request::SyncNow => {
+            (answer_sync(context, request), None)
+        }
         Request::PrepareUninstall => match sessions.locked() {
             Some(why) => (Response::Refused(why), None),
             None => (Response::Done, Some(Shutdown)),

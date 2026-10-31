@@ -26,6 +26,8 @@ pub mod duration;
 pub mod filters;
 #[path = "../../../src-tauri/src/handler.rs"]
 pub mod handler;
+#[path = "../../../src-tauri/src/hub.rs"]
+pub mod hub;
 #[path = "../../../src-tauri/src/lists.rs"]
 pub mod lists;
 #[path = "../../../src-tauri/src/localtime.rs"]
@@ -48,6 +50,10 @@ pub mod state;
 pub mod store_apps;
 #[path = "../../../src-tauri/src/sync.rs"]
 pub mod sync;
+#[path = "../../../src-tauri/src/sync_api.rs"]
+pub mod sync_api;
+#[path = "../../../src-tauri/src/syncing.rs"]
+pub mod syncing;
 #[path = "../../../src-tauri/src/system_path.rs"]
 pub mod system_path;
 #[path = "../../../src-tauri/src/unlock.rs"]

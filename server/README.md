@@ -1,0 +1,52 @@
+# Bullseye sync server
+
+`bullseye-sync` keeps the computers that sync in step: every computer sends it what was done there and takes in what was done elsewhere, and its HTTP API takes the same requests as a computer's service. See [Syncing several computers](../README.md#syncing-several-computers) for what syncing does.
+
+## Running it
+
+The image is `ghcr.io/maakbaas/bullseye-sync` (`:latest` is the last release, `:main` the last build of main), for amd64 and arm64. [docker-compose.yml](docker-compose.yml) is an example.
+
+| Variable | Default | What |
+|---|---|---|
+| `BULLSEYE_TOKEN` | (required) | The token, at least 16 characters. Every request but `/api/health` carries it: `Authorization: Bearer <token>` |
+| `BULLSEYE_DATA` | `/data` | Where everything is kept: a volume |
+| `BULLSEYE_LISTEN` | `0.0.0.0:8080` | Where it listens |
+
+It speaks plain HTTP: put it behind your own reverse proxy for HTTPS, as the token travels with every request. **The token is full control** over every computer that syncs, within each computer's rules: whoever has it can start sessions everywhere, as you can from any computer.
+
+Its data (`/data`) is the log (`log.jsonl`, the last 20 000 entries), the computers that report to it (`devices.json`) and its own view of what the log comes to (`view/`). A backup is a copy of the folder. A computer that was away for longer than the log keeps joins again from the server's view on its own.
+
+To build the image yourself, from the repository's root: `docker build -f server/Dockerfile -t bullseye-sync .`
+
+## How it works
+
+The server is the app's own code (`src-tauri/src`, built with `#[path]`, as `scripts/linux-tests` is): the log is `hub.rs`, the API types are `sync_api.rs`, and a computer's side is `replica.rs` and `syncing.rs`. It numbers the entries in the order they come and decides nothing for a computer: each computer applies them under its own rules. Its view takes what a computer did as done, so it shows what is defined and what runs; requests to its API go through the same rules as at a computer's keyboard (`handler::handle_shared`), and what they do goes into the log as the server's own entries.
+
+## The API
+
+| Method and path | Body | Answer |
+|---|---|---|
+| `GET /api/health` | | `ok`, without the token |
+| `POST /api/request` | a request, as the window and the CLI send them | its answer: the server's view, under a computer's rules |
+| `GET /api/snapshot` | | everything defined, the unlock settings, what runs, and the log's head |
+| `GET /api/log?after=N&wait=S` | | the entries after `N`, waiting up to `S` (at most 25) seconds for one; `410` if `N` is older than the log keeps |
+| `POST /api/log` | `{"entries": [...]}` | `{"head": N}`: a computer's entries, each taken once |
+| `PUT /api/devices/<id>` | `{"name", "confirmed", "held", "running"}` | `204`: a computer saying how it is |
+| `GET /api/devices` | | the computers, as they last said |
+
+A refusal is `{"error": "..."}` with `400`, `401` (wrong token), `404`, `405`, `410` or `413` (a body over 32 MB).
+
+`/api/request` is what scripts use. A request is `{"cmd": "<command>", "args": {...}}` (the `proto::Request` of `src-tauri/src/proto.rs`) and its answer `{"kind": "done"}`, `{"kind": "failed", "data": "why"}` or, for `status`, `{"kind": "status", "data": {...}}`, with every session, target and condition and their ids:
+
+```sh
+TOKEN=...
+curl -s -H "Authorization: Bearer $TOKEN" -d '{"cmd":"status"}' https://sync.example.com/api/request
+curl -s -H "Authorization: Bearer $TOKEN" -d '{"cmd":"start","args":{"id":"<session id>"}}' https://sync.example.com/api/request
+curl -s -H "Authorization: Bearer $TOKEN" -d '{"cmd":"stop","args":{"id":"<session id>"}}' https://sync.example.com/api/request
+```
+
+The command line does the same with `--server`: `bullseye --server https://sync.example.com --token $TOKEN start "Deep work"` (see [CLI.md](../CLI.md)).
+
+## Development
+
+`cargo test http::` in `server/` tests the HTTP side, the app's own client against it and computers syncing over it; the modules it shares with the app are tested in `src-tauri` and `scripts/linux-tests`. CI runs both and builds the image (`.github/workflows/build.yml`).

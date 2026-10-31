@@ -79,6 +79,78 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # The sync server (server/): its checks, the platform-free modules' tests on Linux (which the server
+  # is built from), and its Docker image. The image is published to GitHub's container registry from
+  # main (`:main`) and from a tag `v1.2.3` (`:1.2.3`, `:1.2` and `:latest`); other branches only build
+  # it, for amd64.
+  sync-server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      PUBLISH: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            server
+            scripts/linux-tests
+
+      - name: Version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: sed -i "0,/^version = \".*\"/s//version = \"${GITHUB_REF_NAME#v}\"/" server/Cargo.toml
+
+      - name: Format
+        working-directory: server
+        run: cargo fmt --check
+
+      - name: Clippy
+        working-directory: server
+        run: cargo clippy --all-targets -- -D warnings
+
+      # The server's own tests (the modules it shares with the app are tested below and on Windows).
+      - name: Test the server
+        working-directory: server
+        run: cargo test http::
+
+      - name: Test the platform-free modules on Linux
+        run: cargo test --manifest-path scripts/linux-tests/Cargo.toml -- --skip only_the_installed_app --skip the_app_of_a_program
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: env.PUBLISH == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/bullseye-sync
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: server/Dockerfile
+          platforms: ${{ env.PUBLISH == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          push: ${{ env.PUBLISH == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   # A tag such as `v0.1.0` also publishes the installer on the Releases page, which the README
   # points to. Nothing happens for an ordinary push.
   release:

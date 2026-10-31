@@ -431,4 +431,31 @@ export const scenes = [
     steps: [{ click: "#import", after: 700 }, SAVE, { wait: 700 }],
   },
   { title: "Settings, not imported", hash: "#/settings", setup: `S.fail.open_settings = "Not a Bullseye settings file";`, steps: [{ click: "#import", after: 700 }] },
+  // ---- Syncing.
+  { title: "Settings, connecting to a sync server", hash: "#/settings", steps: [{ click: "#sync-connect", after: 700 }] },
+  {
+    title: "Settings, not connected to a sync server",
+    hash: "#/settings",
+    setup: `S.fail.sync_connect = "The server refused the token";`,
+    steps: [{ click: "#sync-connect", after: 700 }, { fill: [field(1), "https://sync.example.com"] }, { fill: [field(2), "0123456789abcdef"] }, SAVE, { wait: 700 }],
+  },
+  {
+    title: "Settings, connected to a sync server",
+    hash: "#/settings",
+    steps: [{ click: "#sync-connect", after: 700 }, { fill: [field(1), "https://sync.example.com"] }, { fill: [field(2), "0123456789abcdef"] }, SAVE, { wait: 1500 }],
+  },
+  {
+    title: "Settings, syncing with changes to send",
+    hash: "#/settings",
+    setup: `S.sync = () => ({ ...SYNCED("https://sync.example.com"), outbox: 3, summary: t("sync.sending", { url: "https://sync.example.com", ago: t("sync.ago", { time: "2 minutes" }), n: 3 }) });`,
+  },
+  {
+    title: "Settings, syncing failed, a change waiting here",
+    hash: "#/settings",
+    setup: `const url = "https://sync.example.com"; S.sync = () => { const sync = { ...SYNCED(url), error: "The server cannot be reached", summary: t("sync.failing", { url, why: "The server cannot be reached" }), held: [{ what: t("sync.action.stop", { name: quoted("Work") }), why: "Work is locked until Windows restarts" }] }; sync.devices[0].held = 1; return sync; };`,
+  },
+  { title: "Settings, synced now", hash: "#/settings", setup: `S.sync = () => SYNCED("https://sync.example.com");`, steps: [{ click: "#sync-now", after: 700 }] },
+  { title: "Settings, could not sync now", hash: "#/settings", setup: `S.sync = () => SYNCED("https://sync.example.com"); S.fail.sync_now = "The server cannot be reached";`, steps: [{ click: "#sync-now", after: 700 }] },
+  { title: "Settings, disconnecting", hash: "#/settings", setup: `S.sync = () => SYNCED("https://sync.example.com");`, steps: [{ click: "#sync-disconnect", after: 700 }] },
+  { title: "Settings, disconnected", hash: "#/settings", setup: `S.sync = () => SYNCED("https://sync.example.com");`, steps: [{ click: "#sync-disconnect", after: 700 }, SAVE, { wait: 1500 }] },
 ];

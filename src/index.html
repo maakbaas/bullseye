@@ -151,6 +151,20 @@
               <cds-button id="export" kind="tertiary" size="md"></cds-button>
             </div>
           </div>
+          <!-- Syncing with the other computers through a sync server (`syncing.rs`). -->
+          <div class="setting">
+            <h2 class="cds--type-productive-heading-03" data-t="sync.title"></h2>
+            <p class="cds--type-body-01" data-t="sync.text"></p>
+            <div class="notices" id="sync-notices"></div>
+            <cds-inline-notification id="sync-state" class="form-note" kind="info" low-contrast hide-close-button></cds-inline-notification>
+            <div class="row">
+              <cds-button id="sync-connect" kind="tertiary" size="md"></cds-button>
+              <cds-button id="sync-now" kind="tertiary" size="md" hidden></cds-button>
+              <cds-button id="sync-disconnect" kind="danger-tertiary" size="md" hidden></cds-button>
+            </div>
+            <div id="sync-devices"></div>
+            <div id="sync-held"></div>
+          </div>
         </div>
       </div>
     </main>

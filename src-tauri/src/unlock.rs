@@ -49,19 +49,49 @@ fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0, |diff, (a, b)| diff | (a ^ b)) == 0
 }
 
-/// A password as it is kept: a new random salt and the hash, `salt$hash` in hex. The password
-/// itself is never kept. Used for the unlock password and the password of a password lock
-/// (`lock::Lock::Password`).
+/// A password as it is kept: a new random salt, the hash and the public key of the password's
+/// signing key (`signing_key`), `salt$hash$key` in hex. The password itself is never kept. Used for
+/// the unlock password and the password of a password lock (`lock::Lock::Password`). The key lets
+/// another computer that syncs (`replica.rs`) tell that a stop or an unlock was made with the
+/// password, without the password ever leaving the computer it was typed on.
 pub fn new_hash(password: &str) -> Result<String, String> {
     let mut salt = [0u8; 16];
     getrandom::fill(&mut salt).map_err(|e| format!("Cannot make a salt: {e}"))?;
-    Ok(format!("{}${}", hex(&salt), hex(&hash(password, &salt))))
+    let key = signing_key(password, &salt).verifying_key();
+    Ok(format!("{}${}${}", hex(&salt), hex(&hash(password, &salt)), hex(key.as_bytes())))
 }
 
 /// Whether `password` is the one `kept` (from `new_hash`) was made from.
 pub fn check_hash(password: &str, kept: &str) -> bool {
-    let Some((salt, expected)) = kept.split_once('$').and_then(|(s, h)| Some((unhex(s)?, unhex(h)?))) else { return false };
+    let mut parts = kept.split('$');
+    let (Some(salt), Some(expected)) = (parts.next().and_then(unhex), parts.next().and_then(unhex)) else { return false };
     same(&hash(password, &salt), &expected)
+}
+
+/// The signing key of a password, made from it as its hash is but with a salt of its own: knowing the
+/// hash does not give it.
+fn signing_key(password: &str, salt: &[u8]) -> ed25519_dalek::SigningKey {
+    let salt = [salt, b"bullseye-signing-key"].concat();
+    ed25519_dalek::SigningKey::from_bytes(&pbkdf2_hmac_array::<Sha256, 32>(password.as_bytes(), &salt, ROUNDS))
+}
+
+/// `message` signed with the key of `password`, if it is the password `kept` was made from: the proof
+/// that goes to other computers instead of the password.
+pub fn sign(password: &str, kept: &str, message: &str) -> Option<String> {
+    use ed25519_dalek::Signer;
+    if !check_hash(password, kept) {
+        return None;
+    }
+    let salt = unhex(kept.split('$').next()?)?;
+    Some(hex(&signing_key(password, &salt).sign(message.as_bytes()).to_bytes()))
+}
+
+/// Whether `signature` is `message` signed with the key of the password `kept` was made from.
+pub fn verify(kept: &str, message: &str, signature: &str) -> bool {
+    let Some(key) = kept.split('$').nth(2).and_then(unhex).and_then(|key| <[u8; 32]>::try_from(key).ok()) else { return false };
+    let Some(signature) = unhex(signature).and_then(|bytes| <[u8; 64]>::try_from(bytes).ok()) else { return false };
+    let Ok(key) = ed25519_dalek::VerifyingKey::from_bytes(&key) else { return false };
+    key.verify_strict(message.as_bytes(), &ed25519_dalek::Signature::from_bytes(&signature)).is_ok()
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -215,8 +245,8 @@ impl UnlockDelay {
         Ok(())
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
     /// When unlocking was asked for, if it was (milliseconds since the Unix epoch).
+    #[cfg(test)]
     pub fn requested(&self) -> Option<u64> {
         self.kept.locked().requested
     }

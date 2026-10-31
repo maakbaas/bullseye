@@ -47,6 +47,11 @@ It sends the same requests to the Bullseye service as the window, so the service
 | `bullseye unlock [--abort] [--password <pw>]` | **Request unlock**, **Unlock** and **Keep locked** / **Lock again** in Settings; `--password` unlocks at once with the password of the secondary unlock method |
 | `bullseye unlock-way [--condition <condition> \| --password <pw> \| --text <text> \| --random <n> \| --none]` | **Secondary unlock method** in Settings: show it, set it or remove it |
 | `bullseye unlock-delay [<time>]` | **Unlock delay** in Settings: show it, or set it |
+| `bullseye sync status [--json]` (or `bullseye sync`) | **Sync** in Settings: where syncing stands, the computers and what waits here |
+| `bullseye sync connect <url> [--token <token>] [--send-mine] [--force]` | **Connect** under Sync in Settings |
+| `bullseye sync disconnect [--force]` | **Disconnect** under Sync in Settings |
+| `bullseye sync now` | **Sync now** under Sync in Settings |
+| `bullseye --server <url> [--token <token>] <command>` | any command, sent to the sync server instead of this computer |
 | `bullseye help` | |
 | `bullseye version` | |
 
@@ -244,6 +249,23 @@ Shows how long unlocking takes, or sets it: `0` (none, the default) to `24h`, ty
 bullseye unlock-delay
 bullseye unlock-delay 2h
 bullseye unlock-delay 0
+```
+
+### Syncing: `sync` and `--server`
+
+With a [sync server](README.md#syncing-several-computers), every computer that syncs shares its sessions, targets, conditions, the unlock settings and the running sessions: a session started on one runs on all. Each computer applies what comes from the others under its own rules, as if it was done at its keyboard: what they do not allow yet (a stop while the session is locked here) waits, shown by `sync status`, and is tried again.
+
+`sync connect <url>` joins the server with its token (`--token`, or the variable `BULLSEYE_TOKEN`, which keeps it out of the terminal's history). By default this computer takes everything from the server; `--send-mine` sends this computer's sessions, targets, conditions and unlock settings to every computer instead. `sync disconnect` always works, also while a session is locked: what runs here goes on by its own rules.
+
+`--server <url>` with any other command sends that command to the server's API rather than to this computer's service. The server has the same rules as a computer (a locked session cannot be stopped there either), and what it does reaches every computer that syncs:
+
+```powershell
+$env:BULLSEYE_TOKEN = "the server's token"
+bullseye sync connect https://sync.example.com
+bullseye sync
+bullseye --server https://sync.example.com status
+bullseye --server https://sync.example.com start Work --lock-duration 2h --force
+bullseye sync disconnect --force
 ```
 
 ### The secondary unlock method

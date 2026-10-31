@@ -72,6 +72,7 @@ function renderSettings() {
   // Only when it differs: this draws every second, and a label swapped under a click can lose it.
   const delayLabel = t(free ? "settings.setDelay" : "settings.changeDelay");
   if ($("set-delay").textContent.trim() !== delayLabel) $("set-delay").replaceChildren(delayLabel, carbonIcon("time", "icon"));
+  renderSync();
 }
 
 // How long unlocking takes, as a duration field (none is all zeros).
@@ -257,6 +258,89 @@ $("import").addEventListener("click", async () => {
     notify("transfer-notices", "error", t("settings.importFailed"), String(e));
   }
 });
+// ---- Settings: syncing with the other computers through a sync server (`syncing.rs`). Where it
+// stands is the service's words (`SyncStatus::summary`), as the CLI's `sync status` says them.
+
+$("sync-connect").replaceChildren(t("sync.connect"), carbonIcon("plug-16", "icon"));
+$("sync-now").replaceChildren(t("sync.now"), carbonIcon("renew", "icon"));
+$("sync-disconnect").replaceChildren(t("sync.disconnect"), carbonIcon("close", "icon"));
+let syncShown = ""; // what the section shows, so it is drawn again only when that changes
+
+async function renderSync() {
+  let sync;
+  try {
+    sync = await invoke("sync_status");
+  } catch {
+    return;
+  }
+  const shown = JSON.stringify(sync);
+  if (shown === syncShown) return;
+  syncShown = shown;
+  $("sync-state").kind = sync.error ? "warning" : "info";
+  $("sync-state").subtitle = sync.summary;
+  $("sync-connect").hidden = sync.connected;
+  $("sync-now").hidden = !sync.connected;
+  $("sync-disconnect").hidden = !sync.connected;
+  const devices = sync.devices.map((device) => {
+    const about = [t("sync.seen", { ago: device.seen })];
+    if (device.running.length) about.push(t("sync.running", { names: joined(device.running.map(quoted)).join("") }));
+    if (device.held) about.push(t("sync.held", { n: device.held }));
+    const tag = device.this ? el("cds-tag", { size: "sm", type: "blue" }, t("sync.thisDevice")) : "";
+    return el("cds-contained-list-item", {}, el("span", { class: "row" }, el("span", {}, device.name), tag), el("span", { class: "cds--type-helper-text-01" }, about.join(" · ")));
+  });
+  $("sync-devices").replaceChildren(...(devices.length ? [el("cds-contained-list", { label: t("sync.devicesTitle"), size: "md" }, ...devices)] : []));
+  const held = sync.held.map((one) => el("cds-contained-list-item", {}, el("span", { class: "row" }, one.what), el("span", { class: "cds--type-helper-text-01" }, one.why)));
+  $("sync-held").replaceChildren(
+    ...(held.length ? [el("p", { class: "cds--type-body-01" }, t("sync.heldText")), el("cds-contained-list", { label: t("sync.heldTitle"), size: "md" }, ...held)] : []),
+  );
+}
+
+// Connecting: the server's address and token, and which side everything starts from. The service
+// joins the server before the dialog closes; what it refuses is said in the dialog.
+$("sync-connect").addEventListener("click", async () => {
+  notify("sync-notices");
+  const url = el("cds-text-input", { label: t("sync.url"), "helper-text": t("sync.urlHelper"), autocomplete: "off" });
+  const token = el("cds-password-input", { label: t("sync.token"), "helper-text": t("sync.tokenHelper"), autocomplete: "off" });
+  const join = el("cds-radio-button-group", { "legend-text": t("sync.join"), name: "sync-join", orientation: "vertical" });
+  join.append(el("cds-radio-button", { "label-text": t("sync.useServer"), value: "use_server" }), el("cds-radio-button", { "label-text": t("sync.sendMine"), value: "send_mine" }));
+  join.value = "use_server";
+  const done = await ask({
+    heading: t("sync.connectHeading"),
+    action: t("sync.connect"),
+    kind: "primary",
+    fields: [url, token, join],
+    read: async () => {
+      await invoke("sync_connect", { url: url.value, token: token.value, join: join.value });
+      return true;
+    },
+  });
+  if (done) notify("sync-notices", "success", t("sync.connected"));
+  syncShown = "";
+  await refresh();
+});
+
+$("sync-now").addEventListener("click", async () => {
+  try {
+    await invoke("sync_now");
+    notify("sync-notices", "success", t("sync.synced"));
+  } catch (e) {
+    notify("sync-notices", "error", t("sync.nowFailed"), String(e));
+  }
+  await refresh();
+});
+
+$("sync-disconnect").addEventListener("click", async () => {
+  const sure = await ask({ heading: t("sync.disconnectHeading"), body: t("sync.disconnectBody"), action: t("sync.disconnect"), kind: "danger" });
+  if (!sure) return;
+  try {
+    await invoke("sync_disconnect");
+    notify("sync-notices", "success", t("sync.disconnected"));
+  } catch (e) {
+    notify("sync-notices", "error", t("sync.nowFailed"), String(e));
+  }
+  await refresh();
+});
+
 // ---- Pages, by the address after #: #/ (sessions), #/new, #/edit/<id>, the same under
 // #/targets and #/conditions, and #/settings.
 

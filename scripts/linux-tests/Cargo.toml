@@ -28,6 +28,7 @@ serde_json = "1.0.151"
 sha2 = "0.10"
 ureq = "2"
 windows-sys = { path = "windows-sys" }
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 
 # PBKDF2 runs 600 000 rounds; unoptimised that takes seconds per password check.
 [profile.dev.package.sha2]

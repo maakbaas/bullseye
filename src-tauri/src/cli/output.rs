@@ -311,3 +311,32 @@ pub(super) fn per_day(week: &Week) -> String {
     }
     text
 }
+
+/// Where syncing stands, the computers that sync and what waits here, as Settings shows it.
+pub(super) fn describe_sync(status: &SyncStatus) -> String {
+    let mut text = format!("{}\n", status.summary);
+    if !status.devices.is_empty() {
+        text.push_str(&format!("\n{}:\n", t("sync.devicesTitle", &[])));
+        for device in &status.devices {
+            let mut about = vec![t("sync.seen", &[("ago", &device.seen)])];
+            if device.this {
+                about.insert(0, t("sync.thisDevice", &[]));
+            }
+            if !device.running.is_empty() {
+                let names: Vec<String> = device.running.iter().map(|name| quoted(name)).collect();
+                about.push(t("sync.running", &[("names", &joined(&names))]));
+            }
+            if device.held > 0 {
+                about.push(t("sync.held", &[("n", &device.held.to_string())]));
+            }
+            text.push_str(&format!("  {} · {}\n", device.name, about.join(" · ")));
+        }
+    }
+    if !status.held.is_empty() {
+        text.push_str(&format!("\n{}:\n", t("sync.heldTitle", &[])));
+        for held in &status.held {
+            text.push_str(&format!("  {} · {}\n", held.what, held.why));
+        }
+    }
+    text
+}

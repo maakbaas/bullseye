@@ -190,6 +190,24 @@ Moving to another computer:
                                     with a password lock comes without a lock. Asks first, unless
                                     --force.
 
+Syncing with your other computers, through a Bullseye sync server:
+  sync status [--json]              Whether this computer syncs, with which server, the computers
+                                    that sync and the changes from them that wait here. Also just
+                                    'sync'.
+  sync connect <url> [--token <token>] [--send-mine] [--force]
+                                    Sync this computer through the server at <url> (the token from
+                                    --token, or BULLSEYE_TOKEN). It takes the server's sessions,
+                                    targets, conditions, unlock settings and running sessions; with
+                                    --send-mine every other computer takes this one's instead. Asks
+                                    first, unless --force.
+  sync disconnect [--force]         Stop syncing. Always possible, also while locked: the sessions
+                                    here stay and run on by their own rules. Asks first, unless
+                                    --force.
+  sync now                          Sync at once rather than waiting.
+  --server <url> [--token <token>]  Given with any other command: send it to the sync server rather
+                                    than to this computer, under the same rules (the token as
+                                    above). What it does reaches every computer that syncs.
+
 Other:
   drives [--json]                   The flash drives connected, by name and serial number, for
                                     'condition new --drive'.
@@ -348,6 +366,25 @@ pub(super) enum Command {
     UnlockDelay {
         delay: Option<String>,
     },
+    /// `command` sent to the sync server at `url` (`--server`), in place of this computer's service.
+    Via {
+        url: String,
+        token: String,
+        command: Box<Command>,
+    },
+    SyncStatus {
+        json: bool,
+    },
+    SyncConnect {
+        url: String,
+        token: String,
+        join: Join,
+        force: bool,
+    },
+    SyncDisconnect {
+        force: bool,
+    },
+    SyncNow,
 }
 
 /// The rule a condition is given: weekly times as typed, or a flash drive by name or serial number;
@@ -436,6 +473,34 @@ impl TargetChanges {
 }
 
 pub(super) fn parse(args: &[String]) -> Result<Command, String> {
+    // `--server <url>` anywhere sends the command to a sync server's API; `sync` is about this
+    // computer's own syncing, and takes its server otherwise.
+    let mut global = Options::new(args);
+    let via = match args.first().map(String::as_str) {
+        Some("sync") => None,
+        _ => server_option(&mut global)?,
+    };
+    let command = parse_command(&global.args)?;
+    Ok(match via {
+        Some((url, token)) => Command::Via { url, token, command: Box::new(command) },
+        None => command,
+    })
+}
+
+/// `--server <url>` with its token: `--token <token>`, or else the variable `BULLSEYE_TOKEN`.
+fn server_option(options: &mut Options) -> Result<Option<(String, String)>, String> {
+    let Some(url) = options.value("--server")? else { return Ok(None) };
+    Ok(Some((url, token_option(options)?)))
+}
+
+fn token_option(options: &mut Options) -> Result<String, String> {
+    match options.value("--token")? {
+        Some(token) => Ok(token),
+        None => std::env::var("BULLSEYE_TOKEN").map_err(|_| "Give the server's token: --token <token>, or set BULLSEYE_TOKEN".to_string()),
+    }
+}
+
+fn parse_command(args: &[String]) -> Result<Command, String> {
     let Some((command, rest)) = args.split_first() else { return Ok(Command::Help) };
     // `target` and `condition` take a second word.
     let (command, rest) = match (command.as_str(), rest.split_first()) {
@@ -446,6 +511,9 @@ pub(super) fn parse(args: &[String]) -> Result<Command, String> {
                 if command == "condition" { ", check or test" } else { " or apps" }
             ))
         }
+        // `sync` alone is `sync status`.
+        ("sync", Some((verb, rest))) if !verb.starts_with("--") => (format!("sync {verb}"), rest),
+        ("sync", _) => ("sync status".to_string(), rest),
         _ => (command.clone(), rest),
     };
     let mut options = Options::new(rest);
@@ -531,6 +599,15 @@ pub(super) fn parse(args: &[String]) -> Result<Command, String> {
         "unlock" => Command::Unlock { abort: options.flag("--abort"), password: options.value("--password")? },
         "unlock-way" => Command::UnlockWay { way: parse_way(&mut options)? },
         "unlock-delay" => Command::UnlockDelay { delay: options.positional() },
+        "sync status" => Command::SyncStatus { json: options.flag("--json") },
+        "sync connect" => {
+            let url = options.positional().ok_or("Give the server's address, e.g. https://sync.example.com")?;
+            let token = token_option(&mut options)?;
+            let join = if options.flag("--send-mine") { Join::SendMine } else { Join::UseServer };
+            Command::SyncConnect { url, token, join, force: options.flag("--force") }
+        }
+        "sync disconnect" => Command::SyncDisconnect { force: options.flag("--force") },
+        "sync now" => Command::SyncNow,
         other => return Err(format!("Unknown command “{other}”")),
     };
     options.finish()?;

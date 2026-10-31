@@ -621,7 +621,7 @@ window.STRINGS = {
 
   settings: {
     title: "Settings", // reviewed
-    description: "Unlocking, the unlock delay, and import and export settings", // reviewed
+    description: "Unlocking, the unlock delay, import and export, and syncing with other computers",
     unlockText: "This is the only way to end a locked session early. Request it, wait for the countdown, then unlock. Ends every running session, locked ones too. Sessions, targets and conditions stay", // reviewed
     // No delay set: the state of a clean install.
     unlockFree: "Ends every running session, locked ones too. Sessions, targets and conditions stay. Set an unlock delay below to add a countdown", // reviewed
@@ -690,5 +690,71 @@ window.STRINGS = {
     importStops: "Running sessions without a lock are stopped", // reviewed
     imported: "Imported", // reviewed
     importFailed: "Not imported", // reviewed
+  },
+
+  // Syncing with a Bullseye sync server, in Settings.
+  sync: {
+    title: "Sync",
+    text: "Share sessions, targets, conditions, running sessions and the unlock settings with your other computers through a Bullseye sync server you run yourself. Each computer applies the others' changes under its own rules, so a lock is never weaker for coming from elsewhere",
+    // Where syncing stands. {url}: the server's address; {ago}: when it last answered, as below; {why}: what went wrong.
+    notConnected: "Not connected",
+    connecting: "Connected to {url}",
+    inSync: "Connected to {url}, last synced {ago}",
+    sending: { one: "Connected to {url}, last synced {ago}. {n} change is still to be sent", other: "Connected to {url}, last synced {ago}. {n} changes are still to be sent" },
+    failing: "Connected to {url}, but the last attempt failed: {why}. Changes made here are kept and sent once it works again",
+    justNow: "just now",
+    // {time}: how long, in words.
+    ago: "{time} ago",
+    connect: "Connect",
+    disconnect: "Disconnect",
+    now: "Sync now",
+    synced: "Synced",
+    nowFailed: "Could not sync",
+    connectHeading: "Connect to a sync server",
+    url: "Server address",
+    urlHelper: "For example https://sync.example.com",
+    token: "Token",
+    tokenHelper: "The token the server was started with, at least 16 characters",
+    join: "Start from",
+    useServer: "The server: this computer takes its sessions, targets, conditions, unlock settings and running sessions",
+    sendMine: "This computer: every other computer takes this one's sessions, targets, conditions and unlock settings",
+    connected: "Connected",
+    connectFailed: "Not connected",
+    disconnectHeading: "Disconnect from the sync server?",
+    disconnectBody: "This computer keeps its sessions, targets and conditions, and running sessions go on by their own rules. Changes are no longer shared",
+    disconnected: "Disconnected",
+    heldTitle: "Waiting on this computer",
+    heldText: "Changes from other computers that this computer's rules do not allow yet. They are tried again and apply as soon as they are allowed",
+    devicesTitle: "Computers",
+    thisDevice: "This computer",
+    // {ago}: when it was last heard from, as above.
+    seen: "Seen {ago}",
+    // {names}: the sessions running there, quoted.
+    running: "Running: {names}",
+    held: { one: "{n} change waiting", other: "{n} changes waiting" },
+    // What a change from another computer that waits here would do. {name}: a session, target or condition, quoted.
+    action: {
+      saveSession: "Change session {name}",
+      deleteSession: "Delete session {name}",
+      saveTarget: "Change target {name}",
+      deleteTarget: "Delete target {name}",
+      saveCondition: "Change condition {name}",
+      deleteCondition: "Delete condition {name}",
+      duplicate: "Duplicate {name}",
+      import: "Replace all sessions, targets and conditions",
+      start: "Start {name}",
+      lock: "Lock {name}",
+      stop: "Stop {name}",
+      used: "Count time used in {name}",
+      askToStop: "Request to stop {name}",
+      abortStop: "Cancel the request to stop {name}",
+      takeBreak: "Take a break from {name}",
+      endBreak: "End the break from {name}",
+      askForUnlock: "Request unlock",
+      abortUnlock: "Cancel the unlock request",
+      unlock: "Unlock",
+      setUnlockDelay: "Change the unlock delay",
+      setUnlockWay: "Change the secondary unlock method",
+    },
   },
 };

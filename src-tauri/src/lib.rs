@@ -14,6 +14,8 @@ mod drives;
 mod duration;
 mod filters;
 mod handler;
+#[cfg(test)]
+mod hub;
 mod lists;
 mod localtime;
 mod lock;
@@ -22,7 +24,6 @@ mod pipe;
 mod programs;
 mod proto;
 mod registration;
-#[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
 mod replica;
 mod schedule;
 mod service;
@@ -33,6 +34,8 @@ mod status;
 mod store_apps;
 mod strings;
 mod sync;
+mod sync_api;
+mod syncing;
 mod system_path;
 mod tab_closer;
 mod ui;
@@ -300,6 +303,34 @@ fn set_unlock_delay(delay: String, remote: State<Remote>) -> Result<(), String> 
     remote.command(Request::SetUnlockDelay { delay })
 }
 
+/// Where syncing with the sync server stands (`syncing.rs`).
+#[tauri::command]
+fn sync_status(remote: State<Remote>) -> Result<sync_api::SyncStatus, String> {
+    remote.sync_status()
+}
+
+/// Joins the sync server at `url`. Async: the service waits on the server.
+#[tauri::command]
+async fn sync_connect(url: String, token: String, join: sync_api::Join, remote: State<'_, Remote>) -> Result<(), String> {
+    let remote = remote.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || remote.command(Request::SyncConnect { url, token, join }))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Stops syncing; always works.
+#[tauri::command]
+fn sync_disconnect(remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::SyncDisconnect)
+}
+
+/// Syncs at once. Async: the service waits on the server.
+#[tauri::command]
+async fn sync_now(remote: State<'_, Remote>) -> Result<(), String> {
+    let remote = remote.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || remote.command(Request::SyncNow)).await.map_err(|e| e.to_string())?
+}
+
 /// Ends every running session, locked or not, once unlocking is ready (`unlock.rs`: at once with no
 /// delay, else after the countdown). The app stays open, with nothing to enforce; the definitions
 /// stay too.
@@ -358,6 +389,10 @@ pub fn run() {
         .manage(ui::Ui::new())
         .invoke_handler(tauri::generate_handler![
             status,
+            sync_status,
+            sync_connect,
+            sync_disconnect,
+            sync_now,
             check_stricter,
             save_session,
             delete_session,

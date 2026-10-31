@@ -102,11 +102,20 @@ pub enum Action {
         ends: Option<u64>,
         text: Option<String>,
     },
-    /// `starts`: the starts the session stood for where it was stopped; `text` a text lock's text as typed.
+    /// `starts`: the starts the session stood for where it was stopped; `text` a text lock's text as
+    /// typed; `proof` the signature its password made there (`unlock::sign`), never the password.
     Stop {
         id: String,
         starts: Vec<String>,
         text: Option<String>,
+        #[serde(default)]
+        proof: Option<String>,
+    },
+    /// Use of what a budget lets through, counted there since it last said so (milliseconds by key,
+    /// `allowance::Run::charge`): it counts here too, so a budget is one for all computers.
+    Used {
+        id: String,
+        used: std::collections::BTreeMap<String, u64>,
     },
     AskToStop {
         id: String,
@@ -122,10 +131,13 @@ pub enum Action {
     },
     AskForUnlock,
     AbortUnlock,
-    /// `text`: the answer to a text way to unlock; `next`: the random text drawn there for the next unlock.
+    /// `text`: the answer to a text way to unlock; `next`: the random text drawn there for the next
+    /// unlock; `proof`: made with the password of the way to unlock, its signature of the time.
     Unlock {
         text: Option<String>,
         next: Option<String>,
+        #[serde(default)]
+        proof: Option<Proof>,
     },
     SetUnlockDelay {
         delay: String,
@@ -133,6 +145,14 @@ pub enum Action {
     SetUnlockWay {
         way: Option<Lock>,
     },
+}
+
+/// That a password was typed, without the password: its signature (`unlock::sign`) of what was done
+/// at `at` (milliseconds since the Unix epoch).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Proof {
+    pub at: u64,
+    pub signature: String,
 }
 
 /// What an import changes: everything defined.
@@ -259,6 +279,31 @@ impl Replica {
         self.write(&next)?;
         *kept = next;
         Ok(device)
+    }
+
+    /// Joins the log again from its entry `head` on, as the same computer, keeping what is still to be
+    /// sent and what waits: after being away longer than the log keeps (the snapshot taken over then is
+    /// applied by `adopt`).
+    pub fn rejoin(&self, head: u64) {
+        let mut kept = self.kept.locked();
+        if kept.confirmed.is_some() {
+            kept.confirmed = Some(head);
+            self.save(&kept);
+        }
+    }
+
+    /// Applies an action taken over from the server's snapshot when joining (`syncing.rs`), as one from
+    /// elsewhere: under this computer's rules, waiting if they refuse it.
+    pub fn adopt(&self, context: &Context, action: Action, now: SystemTime) -> Outcome {
+        let outcome = handler::apply(context, &action, now);
+        if let Outcome::Held(why) = &outcome {
+            let mut kept = self.kept.locked();
+            let entry = Entry { id: new_id(), device: "server".into(), at: state::to_unix(now).unwrap_or(0), action };
+            kept.held.retain(|held| !supersedes(&entry.action, &held.entry.action));
+            hold(&mut kept.held, entry, why.clone());
+            self.save(&kept);
+        }
+        outcome
     }
 
     /// Stops syncing: nothing more is applied, and what waits or was not sent is forgotten. Always
@@ -465,6 +510,7 @@ fn runs_over<'a>(entries: impl Iterator<Item = &'a Entry> + Clone) -> BTreeSet<S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::allowance;
     use crate::definitions::tests::{session, target};
     use crate::definitions::Definitions;
     use crate::handler::handle_shared;
@@ -640,7 +686,10 @@ mod tests {
         assert_eq!(a.context.sessions().lock_of("work"), b.context.sessions().lock_of("work"));
         assert!(b.locked());
         // An entry claiming a stop is refused here as at the keyboard: it waits.
-        log.forge(Action::Stop { id: "work".into(), starts: b.context.sessions().starts_of("work"), text: None }, millis(b.now()));
+        log.forge(
+            Action::Stop { id: "work".into(), starts: b.context.sessions().starts_of("work"), text: None, proof: None },
+            millis(b.now()),
+        );
         log.sync(&[&a, &b]);
         assert!(b.runs("work"));
         assert_eq!(b.replica.held().len(), 1);
@@ -709,10 +758,10 @@ mod tests {
         a.ok(Request::Start { id: "work".into() });
         log.sync(&[&a, &b]);
         assert!(b.runs("work") && b.locked());
-        a.ok(Request::Stop { id: "work".into(), password: Some("secret".into()), text: None });
+        // A stop without the password's signature waits here for the password.
+        log.forge(Action::Stop { id: "work".into(), starts: b.context.sessions().starts_of("work"), text: None, proof: None }, 0);
         log.sync(&[&a, &b]);
-        // Stopped there with its password; here it waits for the password to be typed here.
-        assert!(!a.runs("work") && b.runs("work"));
+        assert!(a.runs("work") && b.runs("work"));
         assert_eq!(b.replica.held().len(), 1);
         b.ok(Request::Stop { id: "work".into(), password: Some("secret".into()), text: None });
         log.sync(&[&a, &b]);
@@ -720,9 +769,167 @@ mod tests {
         assert!(b.replica.held().is_empty());
         // And unlocking ends it too, whatever waits.
         a.ok(Request::Start { id: "work".into() });
-        log.forge(Action::Stop { id: "work".into(), starts: vec!["other".into()], text: None }, 0);
+        log.forge(Action::Stop { id: "work".into(), starts: vec!["other".into()], text: None, proof: None }, 0);
         log.sync(&[&a, &b]);
         assert!(b.unlocks());
+    }
+
+    #[test]
+    fn a_stop_with_the_password_travels_as_its_signature_for_that_run_only() {
+        let (a, b, mut log) = pair("signed", Lock::None);
+        a.ok(Request::SaveSession {
+            session: Definition { lock: Lock::Password { password: Some("secret".into()), hash: None }, ..session("work", &["social"]) },
+        });
+        a.ok(Request::Start { id: "work".into() });
+        log.sync(&[&a, &b]);
+        let first = b.context.sessions().starts_of("work");
+        a.ok(Request::Stop { id: "work".into(), password: Some("secret".into()), text: None });
+        let Some(Entry { action: Action::Stop { proof: Some(proof), .. }, .. }) = a.replica.outbox().last().cloned() else {
+            panic!("no proof")
+        };
+        log.sync(&[&a, &b]);
+        assert!(!b.runs("work"));
+        // The same signature for the next run is worth nothing: it signed the starts it ended.
+        a.ok(Request::Start { id: "work".into() });
+        log.sync(&[&a, &b]);
+        let second = b.context.sessions().starts_of("work");
+        assert_ne!(first, second);
+        log.forge(Action::Stop { id: "work".into(), starts: second.clone(), text: None, proof: Some(proof.clone()) }, 0);
+        log.forge(Action::Stop { id: "work".into(), starts: second, text: None, proof: Some("ab".repeat(64)) }, 0);
+        log.sync(&[&b]);
+        assert!(b.runs("work"));
+        assert_eq!(b.replica.held().len(), 2);
+    }
+
+    #[test]
+    fn an_unlock_with_the_password_travels_as_its_signature_of_the_time() {
+        let (a, b, mut log) = pair("signed-unlock", Lock::UntilRestart);
+        a.ok(Request::SetUnlockDelay { delay: "24h".into() });
+        a.ok(Request::SetUnlockWay { way: Some(Lock::Password { password: Some("out".into()), hash: None }) });
+        a.ok(Request::Start { id: "work".into() });
+        log.sync(&[&a, &b]);
+        assert!(b.locked());
+        a.ok(Request::UnlockWith { password: Some("out".into()), text: None });
+        let Some(Entry { action: Action::Unlock { proof: Some(proof), .. }, .. }) = a.replica.outbox().last().cloned() else {
+            panic!("no proof")
+        };
+        log.sync(&[&a, &b]);
+        assert!(!b.runs("work"));
+        // Sent again later, it ends nothing started after it was made.
+        b.ok(Request::Start { id: "work".into() });
+        log.forge(Action::Unlock { text: None, next: None, proof: Some(proof.clone()) }, millis(b.now()));
+        // Nor does a signature of another time, or a made-up one.
+        log.forge(Action::Unlock { text: None, next: None, proof: Some(Proof { at: millis(b.now()), ..proof }) }, millis(b.now()));
+        log.forge(
+            Action::Unlock { text: None, next: None, proof: Some(Proof { at: millis(b.now()), signature: "00".repeat(64) }) },
+            millis(b.now()),
+        );
+        log.sync(&[&b]);
+        assert!(b.runs("work"));
+    }
+
+    #[test]
+    fn a_budget_is_one_for_all_computers() {
+        use crate::allowance::{Anchor, Reset, Scope, Terms};
+        let budget =
+            Terms::Budget { allowed: "1h".into(), scope: Scope::Total, reset: Reset::Never, every: String::new(), anchor: Anchor::Clock };
+        let (a, b, mut log) = pair("budget", Lock::None);
+        a.ok(Request::SaveSession { session: Definition { allowance: Some(budget), ..session("work", &["social"]) } });
+        a.ok(Request::Start { id: "work".into() });
+        log.sync(&[&a, &b]);
+        let left = |node: &Node| node.context.sessions().status().running[0].allowance.as_ref().unwrap().left;
+        assert_eq!(left(&b), Some(3600));
+        // What A counts is told to the others, once.
+        a.context.sessions().polled();
+        std::thread::sleep(Duration::from_millis(20));
+        a.context.sessions().charge(&[("work".into(), allowance::TOTAL.into())]);
+        let unshared = a.context.sessions().take_unshared();
+        assert_eq!(unshared.len(), 1);
+        assert!(a.context.sessions().take_unshared().is_empty());
+        for (id, mut used) in unshared {
+            // As if half an hour of it had been counted.
+            used.insert(allowance::TOTAL.to_string(), 30 * 60 * 1000);
+            a.replica.record(Action::Used { id, used }, a.now());
+        }
+        log.sync(&[&a, &b]);
+        assert_eq!(left(&b), Some(1800));
+        // Use from elsewhere only ever counts against a session, and never beyond its budget.
+        log.forge(
+            Action::Used { id: "work".into(), used: [(allowance::TOTAL.to_string(), u64::MAX), ("site:nope".to_string(), 5)].into() },
+            0,
+        );
+        log.sync(&[&b]);
+        assert_eq!(left(&b), Some(0));
+        log.forge(Action::Used { id: "gone".into(), used: [(allowance::TOTAL.to_string(), 1)].into() }, 0);
+        log.sync(&[&b]);
+        assert!(b.replica.held().is_empty());
+    }
+
+    #[test]
+    fn a_restart_lock_waits_for_this_computers_own_restart() {
+        let (a, b, mut log) = pair("restart", Lock::UntilRestart);
+        b.ok(Request::SetUnlockDelay { delay: "1h".into() });
+        a.ok(Request::Start { id: "work".into() });
+        log.sync(&[&a, &b]);
+        log.forge(Action::Stop { id: "work".into(), starts: b.context.sessions().starts_of("work"), text: None, proof: None }, 0);
+        log.sync(&[&a, &b]);
+        assert!(b.runs("work"));
+        assert!(b.replica.held()[0].why.contains("restarts"));
+        // Windows restarts here: the session ends with it, and the stop has nothing left to do.
+        let restarted = b.context.sessions().restarted("after");
+        let context = Context::new(restarted, Definitions::at(Some(b.dir.join("sessions.json"))), Arc::new(AppSlot::new(false)))
+            .with_unlock(UnlockDelay::at(Some(b.dir.join("unlock.json"))));
+        let b = Node { context, replica: Replica::at(Some(b.dir.join("replica.json"))), dir: b.dir.clone() };
+        assert!(b.replica.connected());
+        assert!(!b.runs("work"));
+        log.sync(&[&a, &b]);
+        assert!(b.replica.held().is_empty());
+    }
+
+    #[test]
+    fn the_servers_view_takes_what_a_computer_did_as_done() {
+        let (_a, server, _log) = pair("mirror", Lock::UntilRestart);
+        server.ok(Request::SetUnlockDelay { delay: "24h".into() });
+        server.ok(Request::Start { id: "work".into() });
+        let starts = server.context.sessions().starts_of("work");
+        let at = server.now();
+        let mirror = |action: Action| handler::mirror(&server.context, &action, at);
+        // What its own rules refuse is taken as done: a computer did it under its own.
+        assert_eq!(mirror(Action::SaveTarget { target: target("social", &[]) }), Outcome::Applied);
+        assert!(server.context.library().target("social").unwrap().entries.filters.is_empty());
+        assert_eq!(mirror(Action::Stop { id: "work".into(), starts, text: None, proof: None }), Outcome::Applied);
+        assert!(!server.runs("work"));
+        server.ok(Request::SaveTarget { target: target("social", &["a.com"]) });
+        server.ok(Request::Start { id: "work".into() });
+        for action in [
+            Action::SaveSession { session: session("work", &["social"]) },
+            Action::SetUnlockDelay { delay: "0".into() },
+            Action::SetUnlockWay { way: Some(Lock::Text { text: "out".into() }) },
+            Action::SaveCondition { condition: crate::definitions::tests::weekly("c", "mon 9-17") },
+            Action::DeleteCondition { id: "c".into() },
+        ] {
+            assert_eq!(mirror(action), Outcome::Applied);
+        }
+        assert_eq!(server.context.unlock().delay(), 0);
+        server.context.sessions().reset();
+        server.ok(Request::SaveSession { session: Definition { lock: Lock::UntilRestart, ..session("work", &["social"]) } });
+        server.ok(Request::SetUnlockDelay { delay: "24h".into() });
+        server.ok(Request::Start { id: "work".into() });
+        assert_eq!(mirror(Action::DeleteTarget { id: "social".into() }), Outcome::Applied);
+        assert_eq!(mirror(Action::Import { library: Library::default() }), Outcome::Applied);
+        assert!(server.context.library().sessions.is_empty());
+        // An unlock is taken as done, for what started by then.
+        server.ok(Request::SaveTarget { target: target("social", &["a.com"]) });
+        server.ok(Request::SaveSession { session: Definition { lock: Lock::UntilRestart, ..session("work", &["social"]) } });
+        server.ok(Request::Start { id: "work".into() });
+        assert_eq!(
+            handler::mirror(&server.context, &Action::Unlock { text: None, next: None, proof: None }, server.now()),
+            Outcome::Applied
+        );
+        assert!(!server.runs("work"));
+        // What has nothing to do is dropped, as anywhere.
+        assert!(matches!(mirror(Action::DeleteSession { id: "nope".into() }), Outcome::Dropped(_)));
+        assert!(matches!(mirror(Action::SaveTarget { target: target("bad", &["not a site at all !"]) }), Outcome::Dropped(_)));
     }
 
     #[test]
@@ -764,7 +971,10 @@ mod tests {
         // A wrong text from elsewhere waits, as a wrong text typed here is refused.
         a.ok(Request::Start { id: "work".into() });
         log.sync(&[&a, &b]);
-        log.forge(Action::Stop { id: "work".into(), starts: b.context.sessions().starts_of("work"), text: Some("wrong".into()) }, 0);
+        log.forge(
+            Action::Stop { id: "work".into(), starts: b.context.sessions().starts_of("work"), text: Some("wrong".into()), proof: None },
+            0,
+        );
         log.sync(&[&a, &b]);
         assert!(b.runs("work"));
     }
@@ -782,7 +992,7 @@ mod tests {
         let asked_b = b.context.unlock().requested().unwrap();
         assert!(asked_b.abs_diff(asked_a) < 5000, "one countdown for both");
         // An unlock that claims to be ready before the countdown is over here waits.
-        log.forge(Action::Unlock { text: None, next: None }, millis(b.now()));
+        log.forge(Action::Unlock { text: None, next: None, proof: None }, millis(b.now()));
         log.sync(&[&a, &b]);
         assert!(b.runs("work"));
         let later = b.now() + HOUR + Duration::from_secs(5);
@@ -813,9 +1023,12 @@ mod tests {
         let (_a, b, mut log) = pair("overflow", Lock::UntilRestart);
         b.ok(Request::SetUnlockDelay { delay: "1h".into() });
         b.ok(Request::Start { id: "work".into() });
-        for action in
-            [Action::AskForUnlock, Action::AbortUnlock, Action::Unlock { text: None, next: None }, Action::AskToStop { id: "work".into() }]
-        {
+        for action in [
+            Action::AskForUnlock,
+            Action::AbortUnlock,
+            Action::Unlock { text: None, next: None, proof: None },
+            Action::AskToStop { id: "work".into() },
+        ] {
             log.forge(action, u64::MAX);
         }
         log.sync(&[&b]);
@@ -849,7 +1062,7 @@ mod tests {
         log.sync(&[&a, &b]);
         let before = millis(b.now()) - 10_000;
         b.ok(Request::Start { id: "work".into() });
-        log.forge(Action::Unlock { text: None, next: None }, before);
+        log.forge(Action::Unlock { text: None, next: None, proof: None }, before);
         log.sync(&[&a, &b]);
         assert!(b.runs("work"));
         // With nothing to end, it waits for nothing.
@@ -951,7 +1164,7 @@ mod tests {
         // is made up as if A had restarted and stopped it).
         a.ok(Request::Start { id: "work".into() });
         log.send(&a);
-        log.forge(Action::Stop { id: "work".into(), starts: a.context.sessions().starts_of("work"), text: None }, 0);
+        log.forge(Action::Stop { id: "work".into(), starts: a.context.sessions().starts_of("work"), text: None, proof: None }, 0);
         // B was away for all of it: it starts nothing, so nothing waits for its restart.
         log.sync(&[&b]);
         assert!(!b.runs("work"));
@@ -997,7 +1210,7 @@ mod tests {
         let (a, b, mut log) = pair("disconnect", Lock::UntilRestart);
         a.ok(Request::Start { id: "work".into() });
         log.sync(&[&a, &b]);
-        log.forge(Action::Stop { id: "work".into(), starts: b.context.sessions().starts_of("work"), text: None }, 0);
+        log.forge(Action::Stop { id: "work".into(), starts: b.context.sessions().starts_of("work"), text: None, proof: None }, 0);
         log.sync(&[&a, &b]);
         assert_eq!(b.replica.held().len(), 1);
         // Even with its file made unwritable by a folder in its place.
@@ -1137,14 +1350,15 @@ mod tests {
             5 => Action::Import { library },
             6 | 7 => Action::Start { id, start: new_id(), ends: time, text },
             8 => Action::Lock { id, lock, ends: time, text },
-            9 | 10 => Action::Stop { id, starts, text },
+            9 => Action::Stop { id, starts, text, proof: dice.pick(&[None, Some("00".repeat(64)), Some("not hex".to_string())]) },
+            10 => Action::Used { id, used: [("".to_string(), u64::MAX), ("site:youtube.com".to_string(), 1000)].into() },
             11 => Action::AskToStop { id },
             12 => Action::AbortStop { id },
             13 => Action::TakeBreak { id },
             14 => Action::EndBreak { id },
             15 => Action::AskForUnlock,
             16 => Action::AbortUnlock,
-            17 => Action::Unlock { text, next: dice.pick(&[None, Some("abcdefgh".to_string()), Some("x".to_string())]) },
+            17 => Action::Unlock { text, next: dice.pick(&[None, Some("abcdefgh".to_string()), Some("x".to_string())]), proof: None },
             18 => Action::SetUnlockDelay { delay: dice.pick(&["0", "1h", "24h", "25h", "999d", "nonsense"]).to_string() },
             19 => Action::SetUnlockWay {
                 way: dice.pick(&[None, Some(Lock::None), Some(lock), Some(Lock::Text { text: "out".into() }), Some(Lock::timed_for("1h"))]),
