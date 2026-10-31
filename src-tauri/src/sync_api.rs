@@ -7,7 +7,7 @@
 //! |---|---|---|
 //! | `GET /api/health` | | `ok` |
 //! | `GET /api/snapshot` | | `Snapshot`: what is defined, the unlock settings, what runs, the log's head |
-//! | `GET /api/log?after=N&wait=S` | | `LogPage`: the entries after `N`, waiting up to `S` seconds for one; `410` if `N` is older than the log keeps |
+//! | `GET /api/log?after=N&last=ID&wait=S` | | `LogPage`: the entries after `N`, waiting up to `S` seconds for one; `410` if `N` is older than the log keeps, `409` if the log has no `N`, or another entry than `ID` at `N` (it was wiped, or restored from a backup) |
 //! | `POST /api/log` | `Posted` | `Appended`: entries of a computer's, each once (by id) |
 //! | `POST /api/request` | a `proto::Request` | its `proto::Response`: the server's own view, under the same rules as a computer, and shared if done |
 //! | `PUT /api/devices/<id>` | `DeviceReport` | `204` |
@@ -47,6 +47,11 @@ pub struct RunShare {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Snapshot {
     pub head: u64,
+    /// The id of the entry at `head`, which a computer joining from here sends back with its next log
+    /// request (`last`), so the server can tell its log is still the one it joined; none when the log is
+    /// empty.
+    #[serde(default)]
+    pub last: Option<String>,
     /// With password hashes: a computer needs them.
     pub library: Library,
     pub unlock_delay: String,
@@ -108,6 +113,10 @@ pub enum Join {
 pub enum Failure {
     /// The log no longer has what was asked for (this computer was away too long): join again.
     Gone,
+    /// The log is not the one this computer synced with: it has no entry as far as the computer read, or
+    /// another one there (the server was wiped, or restored from a backup). The computer sends what it
+    /// has again, as when it connects with its own settings (`syncing.rs`).
+    Diverged,
     /// Wrong token.
     Unauthorized,
     /// No answer, or one that cannot be read.
@@ -118,6 +127,7 @@ impl Failure {
     pub fn words(&self) -> String {
         match self {
             Failure::Gone => "The server no longer has what this computer missed".into(),
+            Failure::Diverged => "The server's log is not the one this computer synced with".into(),
             Failure::Unauthorized => "The server refused the token".into(),
             Failure::Other(why) => why.clone(),
         }
@@ -128,7 +138,8 @@ impl Failure {
 /// in the server itself and in tests).
 pub trait Transport: Send + Sync {
     fn snapshot(&self) -> Result<Snapshot, Failure>;
-    fn log(&self, after: u64, wait: Duration) -> Result<LogPage, Failure>;
+    /// The entries after `after`, whose entry has the id `last` (none: not known, not checked).
+    fn log(&self, after: u64, last: Option<&str>, wait: Duration) -> Result<LogPage, Failure>;
     fn post(&self, posted: Posted) -> Result<Appended, Failure>;
     fn report(&self, device: &str, report: DeviceReport) -> Result<(), Failure>;
     fn devices(&self) -> Result<Vec<Device>, Failure>;
@@ -170,6 +181,7 @@ impl Http {
             }
             Err(ureq::Error::Status(401, _)) => Err(Failure::Unauthorized),
             Err(ureq::Error::Status(410, _)) => Err(Failure::Gone),
+            Err(ureq::Error::Status(409, _)) => Err(Failure::Diverged),
             Err(ureq::Error::Status(code, answer)) => {
                 let text = answer.into_string().unwrap_or_default();
                 Err(Failure::Other(format!("The server answered {code}: {}", text.chars().take(200).collect::<String>())))
@@ -188,8 +200,10 @@ impl Transport for Http {
         self.call("GET", "/api/snapshot", None)
     }
 
-    fn log(&self, after: u64, wait: Duration) -> Result<LogPage, Failure> {
-        self.call("GET", &format!("/api/log?after={after}&wait={}", wait.as_secs().min(MAX_WAIT)), None)
+    fn log(&self, after: u64, last: Option<&str>, wait: Duration) -> Result<LogPage, Failure> {
+        // An id is hex (`replica::new_id`): nothing in it needs escaping; anything else is not sent.
+        let last = last.filter(|id| id.chars().all(|c| c.is_ascii_alphanumeric())).map(|id| format!("&last={id}")).unwrap_or_default();
+        self.call("GET", &format!("/api/log?after={after}{last}&wait={}", wait.as_secs().min(MAX_WAIT)), None)
     }
 
     fn post(&self, posted: Posted) -> Result<Appended, Failure> {

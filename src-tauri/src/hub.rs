@@ -55,6 +55,13 @@ pub struct Hub {
     devices_path: Option<PathBuf>,
 }
 
+/// The id of the entry numbered `seq`, if the log still serves it.
+fn id_at(log: &Log, seq: u64) -> Option<String> {
+    let oldest = log.entries.front()?.0;
+    let (_, text) = log.entries.get(usize::try_from(seq.checked_sub(oldest)?).ok()?)?;
+    Entry::parse(text).ok().map(|entry| entry.id)
+}
+
 impl Hub {
     /// Over the view `context` and the log in `dir` (`None`: in memory), read back from the last run.
     /// The view keeps its own files: it is what the log came to, up to the entry it had last.
@@ -166,12 +173,18 @@ impl Transport for Hub {
     fn snapshot(&self) -> Result<Snapshot, Failure> {
         // Under the lock of the log, so the view is what the log comes to up to its head.
         let log = self.log.locked();
-        Ok(handler::snapshot(&self.context, log.head))
+        Ok(Snapshot { last: id_at(&log, log.head), ..handler::snapshot(&self.context, log.head) })
     }
 
-    fn log(&self, after: u64, wait: Duration) -> Result<LogPage, Failure> {
+    fn log(&self, after: u64, last: Option<&str>, wait: Duration) -> Result<LogPage, Failure> {
         let deadline = Instant::now() + wait.min(Duration::from_secs(MAX_WAIT));
         let mut log = self.log.locked();
+        // Read further than this log goes, or another entry where the computer stopped: not the log it
+        // synced with (wiped, or restored from a backup). Checked once: what comes while waiting follows it.
+        let known = last.is_none_or(|last| id_at(&log, after).is_none_or(|here| here == last));
+        if after > log.head || !known {
+            return Err(Failure::Diverged);
+        }
         loop {
             let oldest = log.entries.front().map_or(log.head + 1, |(seq, _)| *seq);
             if after + 1 < oldest && after < log.head {
@@ -286,13 +299,13 @@ pub mod tests {
         assert_eq!(hub.post(Posted { entries: vec![one] }).unwrap().head, 1);
         // Mirrored into the view.
         assert!(hub.snapshot().unwrap().library.target("social").is_some());
-        let page = hub.log(0, Duration::ZERO).unwrap();
+        let page = hub.log(0, None, Duration::ZERO).unwrap();
         assert_eq!((page.head, page.entries.len()), (1, 1));
         // A line cut short by a crash is skipped.
         fs::write(dir.join("log.jsonl"), format!("{}\n[2, \"cut", fs::read_to_string(dir.join("log.jsonl")).unwrap().trim())).unwrap();
         let again = Hub::new(context(&dir), Some(dir.clone()));
         assert_eq!(again.head(), 1);
-        assert_eq!(again.log(0, Duration::ZERO).unwrap(), page);
+        assert_eq!(again.log(0, None, Duration::ZERO).unwrap(), page);
         assert!(again.snapshot().unwrap().library.target("social").is_some());
         assert!(hub.post(Posted { entries: vec![String::new(); MAX_POST + 1] }).is_err());
     }
@@ -302,11 +315,11 @@ pub mod tests {
         let dir = dir("wait");
         let hub = Arc::new(Hub::new(context(&dir), None));
         let started = Instant::now();
-        assert!(hub.log(0, Duration::from_millis(50)).unwrap().entries.is_empty());
+        assert!(hub.log(0, None, Duration::from_millis(50)).unwrap().entries.is_empty());
         assert!(started.elapsed() >= Duration::from_millis(50));
         let waiting = {
             let hub = hub.clone();
-            std::thread::spawn(move || hub.log(0, Duration::from_secs(10)).unwrap())
+            std::thread::spawn(move || hub.log(0, None, Duration::from_secs(10)).unwrap())
         };
         std::thread::sleep(Duration::from_millis(50));
         hub.post(Posted { entries: vec![entry("a", Action::AskForUnlock)] }).unwrap();
@@ -322,16 +335,37 @@ pub mod tests {
         for chunk in entries.chunks(MAX_POST) {
             hub.post(Posted { entries: chunk.to_vec() }).unwrap();
         }
-        assert_eq!(hub.log(0, Duration::ZERO), Err(Failure::Gone));
+        assert_eq!(hub.log(0, None, Duration::ZERO), Err(Failure::Gone));
         let head = hub.head();
-        assert_eq!(hub.log(head, Duration::ZERO).unwrap().entries.len(), 0);
-        let page = hub.log(head - 10, Duration::ZERO).unwrap();
+        assert_eq!(hub.log(head, None, Duration::ZERO).unwrap().entries.len(), 0);
+        let page = hub.log(head - 10, None, Duration::ZERO).unwrap();
         assert_eq!(page.entries.len(), 10);
-        assert_eq!(hub.log(head - KEEP as u64, Duration::ZERO).unwrap().entries.len(), PAGE);
+        assert_eq!(hub.log(head - KEEP as u64, None, Duration::ZERO).unwrap().entries.len(), PAGE);
         // The file was written anew with what is kept, and reads back the same.
         let lines = fs::read_to_string(dir.join("log.jsonl")).unwrap().lines().count();
         assert!(lines < KEEP + KEEP / 4);
-        assert_eq!(Hub::new(context(&dir), Some(dir)).log(head - 10, Duration::ZERO).unwrap(), page);
+        assert_eq!(Hub::new(context(&dir), Some(dir)).log(head - 10, None, Duration::ZERO).unwrap(), page);
+    }
+
+    #[test]
+    fn a_computer_whose_log_this_is_not_is_told_so() {
+        let dir = dir("diverged");
+        let hub = Hub::new(context(&dir), Some(dir.clone()));
+        assert_eq!(hub.snapshot().unwrap().last, None, "an empty log has no last entry");
+        let entries: Vec<String> = (0..3).map(|_| entry("a", Action::AskToStop { id: "x".into() })).collect();
+        let ids: Vec<String> = entries.iter().map(|text| Entry::parse(text).unwrap().id).collect();
+        hub.post(Posted { entries }).unwrap();
+        assert_eq!(hub.snapshot().unwrap().last.as_deref(), Some(ids[2].as_str()));
+        // The entry where it stopped is the one it had: what came after.
+        assert_eq!(hub.log(2, Some(&ids[1]), Duration::ZERO).unwrap().entries.len(), 1);
+        assert_eq!(hub.log(3, Some(&ids[2]), Duration::ZERO).unwrap().entries.len(), 0);
+        assert_eq!(hub.log(0, None, Duration::ZERO).unwrap().entries.len(), 3, "nothing to check");
+        // Another entry there (a backup restored), or further than the log goes (wiped).
+        assert_eq!(hub.log(2, Some(&ids[0]), Duration::ZERO), Err(Failure::Diverged));
+        assert_eq!(hub.log(4, None, Duration::ZERO), Err(Failure::Diverged));
+        assert_eq!(hub.log(9, Some("abc"), Duration::ZERO), Err(Failure::Diverged));
+        let wiped = super::tests::dir("diverged-wiped");
+        assert_eq!(Hub::new(context(&wiped), Some(wiped)).log(3, Some(&ids[2]), Duration::ZERO), Err(Failure::Diverged));
     }
 
     #[test]
@@ -348,7 +382,7 @@ pub mod tests {
         assert!(matches!(hub.request(&Request::Stop { id: "work".into(), password: None, text: None }).unwrap(), Response::Failed(_)));
         assert!(matches!(hub.request(&Request::Status).unwrap(), Response::Status(_)));
         assert_eq!(hub.head(), head);
-        let page = hub.log(0, Duration::ZERO).unwrap();
+        let page = hub.log(0, None, Duration::ZERO).unwrap();
         assert!(page.entries.iter().all(|(_, text)| Entry::parse(text).unwrap().device == SERVER));
         let snapshot = hub.snapshot().unwrap();
         assert_eq!(snapshot.head, head);

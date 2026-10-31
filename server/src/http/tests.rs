@@ -92,7 +92,7 @@ fn the_apps_own_client_talks_to_it_over_http() {
     // A log request waits for an entry: on a thread of its own, while another request is answered.
     let waiting = {
         let http = Http::new(&address, TOKEN).unwrap();
-        thread::spawn(move || http.log(0, Duration::from_secs(10)).unwrap())
+        thread::spawn(move || http.log(0, None, Duration::from_secs(10)).unwrap())
     };
     thread::sleep(Duration::from_millis(100));
     let started = Instant::now();
@@ -104,6 +104,10 @@ fn the_apps_own_client_talks_to_it_over_http() {
     http.report("d1", DeviceReport { name: "Desk".into(), ..DeviceReport::default() }).unwrap();
     assert_eq!(http.devices().unwrap()[0].report.name, "Desk");
     assert_eq!(hub.head(), 2);
+    // A computer further than this log goes, or at another entry: not the log it synced with (409).
+    assert!(matches!(http.log(9, None, Duration::ZERO), Err(Failure::Diverged)));
+    assert!(matches!(http.log(1, Some("0123abcd"), Duration::ZERO), Err(Failure::Diverged)));
+    assert!(http.log(1, Some("not an id!"), Duration::ZERO).is_ok(), "what is not an id is not sent");
     // A body over the limit is refused.
     let big =
         ureq::post(&format!("{address}/api/log")).set("Authorization", "Bearer 0123456789abcdef").send_bytes(&vec![b' '; MAX_BODY + 1]);
@@ -120,7 +124,7 @@ fn a_computer_missing_too_much_is_told_so_over_http() {
     for chunk in entries.chunks(crate::sync_api::MAX_POST) {
         http.post(Posted { entries: chunk.to_vec() }).unwrap();
     }
-    assert!(matches!(http.log(0, Duration::ZERO), Err(Failure::Gone)));
+    assert!(matches!(http.log(0, None, Duration::ZERO), Err(Failure::Gone)));
 }
 
 /// A computer syncing with the server over HTTP.

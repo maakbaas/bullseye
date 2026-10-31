@@ -15,7 +15,7 @@ The image is `ghcr.io/maakbaas/bullseye-sync` (`:latest` is the last release, `:
 
 It speaks plain HTTP: put it behind your own reverse proxy for HTTPS, as the token travels with every request. **The token is full control** over every computer that syncs, within each computer's rules: whoever has it can start sessions everywhere, as you can from any computer.
 
-Its data (`/data`) is the log (`log.jsonl`, the last 20 000 entries), the computers that report to it (`devices.json`) and its own view of what the log comes to (`view/`). A backup is a copy of the folder. A computer that was away for longer than the log keeps joins again from the server's view on its own.
+Its data (`/data`) is the log (`log.jsonl`, the last 20 000 entries), the computers that report to it (`devices.json`) and its own view of what the log comes to (`view/`). A backup is a copy of the folder. A computer that was away for longer than the log keeps joins again from the server's view on its own. If the server loses its data, or is restored from an older backup, each computer notices on its next round (the log is not the one it synced with) and sends everything it has again: nothing is taken from a computer then, and nothing done since is lost.
 
 To build the image yourself, from the repository's root: `docker build -f server/Dockerfile -t bullseye-sync .`
 
@@ -36,7 +36,7 @@ The server shows the app's own window at `/`, for managing every computer from a
 | `POST /api/request` | a request, as the window and the CLI send them | its answer: the server's view, under a computer's rules |
 | `POST /api/invoke` | `{"cmd", "args", "zone"}`: a command of the window by name, with its arguments | its value, or `{"error": ...}` with `400` (`src-tauri/src/web.rs`) |
 | `GET /api/snapshot` | | everything defined, the unlock settings, what runs, and the log's head |
-| `GET /api/log?after=N&wait=S` | | the entries after `N`, waiting up to `S` (at most 25) seconds for one; `410` if `N` is older than the log keeps |
+| `GET /api/log?after=N&last=ID&wait=S` | | the entries after `N`, waiting up to `S` (at most 25) seconds for one; `410` if `N` is older than the log keeps; `409` if the log has no entry `N`, or another one than `ID` there (wiped, or restored from a backup): the computer then sends everything it has again |
 | `POST /api/log` | `{"entries": [...]}` | `{"head": N}`: a computer's entries, each taken once |
 | `PUT /api/devices/<id>` | `{"name", "confirmed", "held", "running"}` | `204`: a computer saying how it is |
 | `GET /api/devices` | | the computers, as they last said |

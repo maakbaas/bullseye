@@ -63,6 +63,7 @@ fn error(status: u16, why: &str) -> Answer {
 fn failed(failure: Failure) -> Answer {
     match failure {
         Failure::Gone => error(410, &failure.words()),
+        Failure::Diverged => error(409, &failure.words()),
         Failure::Unauthorized => error(401, &failure.words()),
         Failure::Other(why) => error(400, &why),
     }
@@ -111,7 +112,7 @@ pub fn answer(api: &Api, method: &Method, url: &str, authorization: Option<&str>
             done((|| {
                 let after = number("after").unwrap_or(Ok(0))?;
                 let wait = number("wait").unwrap_or(Ok(0))?.min(MAX_WAIT);
-                Ok(hub.log(after, Duration::from_secs(wait)).map_or_else(failed, |page| json(&page)))
+                Ok(hub.log(after, query(query_string, "last"), Duration::from_secs(wait)).map_or_else(failed, |page| json(&page)))
             })())
         }
         (Method::Post, "/api/log") => {

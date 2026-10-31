@@ -196,20 +196,23 @@ impl Syncer {
             }
             fs::write(path, json).map_err(|e| format!("Cannot save: {e}"))?;
         }
-        self.replica.connect(snapshot.head)?;
+        self.replica.connect(snapshot.head, snapshot.last.clone())?;
         *self.settings.locked() = settings;
         *self.transport.locked() = Some(transport);
         match join {
             Join::UseServer => self.adopt(context, &snapshot),
-            Join::SendMine => {
-                let mine = handler::snapshot(context, 0);
-                for action in actions_of(&mine) {
-                    self.replica.record(action, context.now());
-                }
-            }
+            Join::SendMine => self.send_mine(context),
         }
         let _ = self.round(context, Duration::ZERO);
         Ok(())
+    }
+
+    /// Sends everything here to the others, as it is: what is defined, the unlock settings and what runs
+    /// (each applies it under its own rules). Nothing here changes.
+    fn send_mine(&self, context: &Context) {
+        for action in actions_of(&handler::snapshot(context, 0)) {
+            self.record(action, context.now());
+        }
     }
 
     /// Takes over a snapshot of the server's, under this computer's rules.
@@ -222,7 +225,7 @@ impl Syncer {
     }
 
     fn rejoin(&self, context: &Context, snapshot: &Snapshot) {
-        self.replica.rejoin(snapshot.head);
+        self.replica.rejoin(snapshot.head, snapshot.last.clone());
         self.adopt(context, snapshot);
     }
 
@@ -279,7 +282,7 @@ impl Syncer {
         // Nothing to wait for while something of this computer's is still to come back.
         let wait = if self.replica.outbox().is_empty() { wait.min(Duration::from_secs(MAX_WAIT)) } else { Duration::ZERO };
         let after = self.replica.confirmed().unwrap_or(0);
-        match transport.log(after, wait) {
+        match transport.log(after, self.replica.last().as_deref(), wait) {
             Ok(page) => {
                 let _turn = self.turn();
                 self.replica.receive(context, &page.entries);
@@ -288,6 +291,15 @@ impl Syncer {
             Err(Failure::Gone) => {
                 let snapshot = transport.snapshot().map_err(|f| f.words())?;
                 self.rejoin(context, &snapshot);
+            }
+            // The server is not the one synced with (wiped, or restored from a backup): its log is joined
+            // where it is, and what is here goes to it again, as when connecting with this computer's own
+            // settings. Nothing is taken from it: what it has now may be less than what was shared.
+            Err(Failure::Diverged) => {
+                let snapshot = transport.snapshot().map_err(|f| f.words())?;
+                let _turn = self.turn();
+                self.replica.rejoin(snapshot.head, snapshot.last);
+                self.send_mine(context);
             }
             Err(failure) => return Err(failure.words()),
         }
@@ -461,14 +473,24 @@ mod tests {
     const TOKEN: &str = "0123456789abcdef";
     const URL: &str = "https://sync.example.com";
 
-    /// The server, as the computers reach it: it can be down, or say a computer was away too long.
+    /// The server, as the computers reach it: it can be down, say a computer was away too long, or be
+    /// replaced (wiped, restored from a backup: `replace`).
     struct Server {
-        hub: Hub,
+        hub: Mutex<Arc<Hub>>,
         down: AtomicBool,
         gone: AtomicBool,
     }
 
     impl Server {
+        fn hub(&self) -> Arc<Hub> {
+            self.hub.locked().clone()
+        }
+
+        /// Another server at the same address: over the files in `dir` (empty: wiped; a copy: a backup).
+        fn replace(&self, dir: PathBuf) {
+            *self.hub.locked() = Arc::new(Hub::new(hub::tests::context(&dir), Some(dir)));
+        }
+
         fn up(&self) -> Result<(), Failure> {
             match self.down.load(Ordering::SeqCst) {
                 true => Err(Failure::Other("The server cannot be reached".into())),
@@ -480,36 +502,40 @@ mod tests {
     impl Transport for Server {
         fn snapshot(&self) -> Result<Snapshot, Failure> {
             self.up()?;
-            self.hub.snapshot()
+            self.hub().snapshot()
         }
-        fn log(&self, after: u64, wait: Duration) -> Result<LogPage, Failure> {
+        fn log(&self, after: u64, last: Option<&str>, wait: Duration) -> Result<LogPage, Failure> {
             self.up()?;
             if self.gone.swap(false, Ordering::SeqCst) {
                 return Err(Failure::Gone);
             }
-            self.hub.log(after, wait)
+            self.hub().log(after, last, wait)
         }
         fn post(&self, posted: Posted) -> Result<Appended, Failure> {
             self.up()?;
-            self.hub.post(posted)
+            self.hub().post(posted)
         }
         fn report(&self, device: &str, report: DeviceReport) -> Result<(), Failure> {
             self.up()?;
-            self.hub.report(device, report)
+            self.hub().report(device, report)
         }
         fn devices(&self) -> Result<Vec<Device>, Failure> {
             self.up()?;
-            self.hub.devices()
+            self.hub().devices()
         }
         fn request(&self, request: &Request) -> Result<Response, Failure> {
             self.up()?;
-            self.hub.request(request)
+            self.hub().request(request)
         }
     }
 
     fn server(name: &str) -> Arc<Server> {
         let dir = hub::tests::dir(&format!("syncing-{name}"));
-        Arc::new(Server { hub: Hub::new(hub::tests::context(&dir), Some(dir)), down: AtomicBool::new(false), gone: AtomicBool::new(false) })
+        Arc::new(Server {
+            hub: Mutex::new(Arc::new(Hub::new(hub::tests::context(&dir), Some(dir)))),
+            down: AtomicBool::new(false),
+            gone: AtomicBool::new(false),
+        })
     }
 
     /// A computer: its service, syncing through `server` once connected.
@@ -589,7 +615,7 @@ mod tests {
 
     /// A target "social" and a session "work" of it with `lock`, made through the server's API.
     fn defined(server: &Server, lock: Lock) {
-        let ok = |request| assert_eq!(server.hub.request(&request).unwrap(), Response::Done);
+        let ok = |request| assert_eq!(server.hub().request(&request).unwrap(), Response::Done);
         ok(Request::SaveTarget { target: target("social", &["youtube.com"]) });
         ok(Request::SaveSession { session: Definition { lock, ..session("work", &["social"]) } });
         ok(Request::SetUnlockDelay { delay: "1h".into() });
@@ -604,17 +630,17 @@ mod tests {
         b.ok(Request::SaveTarget { target: target("mine", &["mine.com"]) });
         assert_eq!(a.connect(Join::UseServer), Response::Done);
         assert_eq!(b.connect(Join::UseServer), Response::Done);
-        assert_eq!(a.context.library(), server.hub.snapshot().unwrap().library);
+        assert_eq!(a.context.library(), server.hub().snapshot().unwrap().library);
         assert_eq!(b.context.library(), a.context.library());
         assert_eq!(b.context.unlock().delay(), 3600);
         a.ok(Request::Start { id: "work".into() });
         sync(&[&a, &b]);
         assert!(b.runs("work"));
-        assert_eq!(server.hub.snapshot().unwrap().runs.len(), 1);
+        assert_eq!(server.hub().snapshot().unwrap().runs.len(), 1);
         b.ok(Request::Stop { id: "work".into(), password: None, text: None });
         sync(&[&a, &b]);
         assert!(!a.runs("work") && !b.runs("work"));
-        assert!(server.hub.snapshot().unwrap().runs.is_empty());
+        assert!(server.hub().snapshot().unwrap().runs.is_empty());
         // A computer that joins while a session runs has it running too.
         a.ok(Request::Start { id: "work".into() });
         sync(&[&a]);
@@ -638,7 +664,86 @@ mod tests {
         assert!(a.context.library().session("work").is_none());
         assert_eq!(a.context.library(), b.context.library());
         assert_eq!(a.context.unlock().delay(), 7200);
-        assert_eq!(server.hub.snapshot().unwrap().library, b.context.library());
+        assert_eq!(server.hub().snapshot().unwrap().library, b.context.library());
+    }
+
+    /// A copy of a server's folder, as a backup is.
+    fn backup(from: &std::path::Path, name: &str) -> PathBuf {
+        let to = hub::tests::dir(&format!("syncing-{name}"));
+        fs::create_dir_all(&to).unwrap();
+        for file in fs::read_dir(from).unwrap().flatten().filter(|f| f.path().is_file()) {
+            fs::copy(file.path(), to.join(file.file_name())).unwrap();
+        }
+        to
+    }
+
+    #[test]
+    fn a_wiped_server_is_given_everything_again_and_takes_no_lock_away() {
+        let server = server("wiped");
+        defined(&server, Lock::timed_for("2h"));
+        let (a, b) = (computer("wiped-a", &server), computer("wiped-b", &server));
+        assert_eq!(a.connect(Join::UseServer), Response::Done);
+        assert_eq!(b.connect(Join::UseServer), Response::Done);
+        a.ok(Request::SetUnlockDelay { delay: "3h".into() });
+        a.ok(Request::Start { id: "work".into() });
+        sync(&[&a, &b]);
+        assert!(b.runs("work") && b.locked());
+        let library = a.context.library();
+
+        // The server comes back empty (a container without its volume).
+        server.replace(hub::tests::dir("syncing-wiped-empty"));
+        sync(&[&a, &b]);
+        sync(&[&a, &b]);
+        // Nothing here was taken from it: what is defined, the delay and the lock all stay.
+        for computer in [&a, &b] {
+            assert_eq!(computer.context.library(), library);
+            assert_eq!(computer.context.unlock().delay(), 3 * 3600);
+            assert!(computer.runs("work") && computer.locked());
+            assert!(computer.status().error.is_none(), "{:?}", computer.status().error);
+        }
+        // The server has it all again, and what is done now reaches the others (it is not left behind).
+        let snapshot = server.hub().snapshot().unwrap();
+        assert_eq!((snapshot.library, snapshot.runs.len(), snapshot.unlock_delay.as_str()), (library.clone(), 1, "10800s"));
+        a.ok(Request::SaveTarget { target: target("news", &["news.com"]) });
+        sync(&[&a, &b]);
+        assert!(b.context.library().target("news").is_some());
+        // And the way out: once unlocked, nothing that waited takes what is defined away.
+        assert!(b.unlocks());
+        sync(&[&a, &b]);
+        // (On A, B's unlock waits for A's own countdown, as any unlock from elsewhere does.)
+        assert!(b.context.library().session("work").is_some() && b.context.library().target("news").is_some());
+        assert_eq!(a.context.library(), b.context.library());
+    }
+
+    #[test]
+    fn a_server_restored_from_an_older_backup_loses_nothing_done_since() {
+        let server = server("restored");
+        defined(&server, Lock::None);
+        let (a, b) = (computer("restored-a", &server), computer("restored-b", &server));
+        assert_eq!(a.connect(Join::UseServer), Response::Done);
+        assert_eq!(b.connect(Join::UseServer), Response::Done);
+        sync(&[&a, &b]);
+        // The folder `server("restored")` keeps its files in.
+        let folder = std::env::temp_dir().join(format!("hub-{}-syncing-restored", std::process::id()));
+        let copy = backup(&folder, "restored-backup");
+        // Done after the backup: the server will not have it.
+        a.ok(Request::SaveTarget { target: target("one", &["one.com"]) });
+        a.ok(Request::SaveTarget { target: target("two", &["two.com"]) });
+        a.ok(Request::SaveTarget { target: target("three", &["three.com"]) });
+        sync(&[&a, &b]);
+        assert!(b.context.library().target("three").is_some());
+
+        server.replace(copy);
+        // B does something before A hears of the restore: its number on the restored log is one A had read
+        // past already. A must not skip it.
+        b.ok(Request::SaveTarget { target: target("four", &["four.com"]) });
+        sync(&[&a, &b]);
+        sync(&[&a, &b]);
+        assert!(a.context.library().target("four").is_some(), "skipped what B did after the restore");
+        for name in ["one", "two", "three", "four"] {
+            assert!(server.hub().snapshot().unwrap().library.target(name).is_some(), "the server lost {name}");
+        }
+        assert_eq!(a.context.library(), b.context.library());
     }
 
     #[test]
@@ -669,7 +774,7 @@ mod tests {
         let (a, b) = (computer("unlock-a", &server), computer("unlock-b", &server));
         a.connect(Join::UseServer);
         b.connect(Join::UseServer);
-        assert_eq!(server.hub.request(&Request::Start { id: "work".into() }).unwrap(), Response::Done);
+        assert_eq!(server.hub().request(&Request::Start { id: "work".into() }).unwrap(), Response::Done);
         sync(&[&a, &b]);
         assert!(a.locked() && b.locked());
         // Refused here as at the keyboard, and nothing of it goes out.
@@ -682,7 +787,7 @@ mod tests {
         b.later(Duration::from_secs(unlock::MAX_DELAY + 1));
         sync(&[&a, &b]);
         assert!(!b.locked() && !b.runs("work"));
-        assert!(server.hub.snapshot().unwrap().runs.is_empty());
+        assert!(server.hub().snapshot().unwrap().runs.is_empty());
         // Nothing brings it back.
         sync(&[&a, &b]);
         assert!(!a.runs("work") && !b.runs("work"));
@@ -695,7 +800,7 @@ mod tests {
         defined(&server, Lock::UntilRestart);
         let a = computer("disconnect-a", &server);
         a.connect(Join::UseServer);
-        assert_eq!(server.hub.request(&Request::Start { id: "work".into() }).unwrap(), Response::Done);
+        assert_eq!(server.hub().request(&Request::Start { id: "work".into() }).unwrap(), Response::Done);
         sync(&[&a]);
         assert!(a.locked());
         assert!(a.dir.join("sync.json").exists());
@@ -734,7 +839,7 @@ mod tests {
         server.down.store(false, Ordering::SeqCst);
         again.round(&a.context, Duration::ZERO).unwrap();
         assert_eq!(again.status(&a.context).outbox, 0);
-        assert_eq!(server.hub.snapshot().unwrap().runs.len(), 1);
+        assert_eq!(server.hub().snapshot().unwrap().runs.len(), 1);
         // Without its settings, or with them unreadable, it is not connected.
         fs::write(a.dir.join("sync.json"), b"{").unwrap();
         assert!(!Syncer::at(Some(a.dir.clone()), connector(&server), "x".into()).connected());
@@ -750,13 +855,13 @@ mod tests {
         let (a, b) = (computer("gone-a", &server), computer("gone-b", &server));
         a.connect(Join::UseServer);
         b.connect(Join::UseServer);
-        server.hub.request(&Request::SaveTarget { target: target("news", &["news.com"]) }).unwrap();
+        server.hub().request(&Request::SaveTarget { target: target("news", &["news.com"]) }).unwrap();
         b.ok(Request::Start { id: "work".into() });
         server.gone.store(true, Ordering::SeqCst);
         sync(&[&b, &a]);
         assert!(a.context.library().target("news").is_some());
         assert!(a.runs("work") && b.runs("work"));
-        assert_eq!(a.status().confirmed, server.hub.head());
+        assert_eq!(a.status().confirmed, server.hub().head());
     }
 
     #[test]
@@ -770,7 +875,7 @@ mod tests {
         a.ok(Request::SyncNow);
         let status = a.status();
         assert!(status.connected && status.error.is_none() && status.last_contact.is_some());
-        assert_eq!((status.url.as_str(), status.confirmed), (URL, server.hub.head()));
+        assert_eq!((status.url.as_str(), status.confirmed), (URL, server.hub().head()));
         let names: Vec<String> = status.devices.iter().map(|d| d.name.clone()).collect();
         assert!(names.contains(&"status-a".to_string()) && names.contains(&"status-b".to_string()));
         assert!(status.devices.iter().any(|d| d.id == status.device && d.this && d.seen == "just now"));
@@ -778,7 +883,7 @@ mod tests {
         // B's unlock waits on A until A's own countdown is over: said in the status.
         b.ok(Request::Start { id: "work".into() });
         server
-            .hub
+            .hub()
             .request(&Request::SaveSession { session: Definition { lock: Lock::UntilRestart, ..session("work", &["social"]) } })
             .unwrap();
         sync(&[&a, &b]);
