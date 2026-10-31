@@ -1080,6 +1080,64 @@ mod tests {
         assert!(b.refused(Request::Stop { id: "work".into(), password: None, text: None }).contains("can be stopped in"));
     }
 
+    /// A time from elsewhere that is still to come (a computer whose clock is far ahead, or a forged
+    /// entry) never moves a countdown here into the future: it would never end, and asking again
+    /// changes nothing while one runs. It counts from now at the latest.
+    #[test]
+    fn a_countdown_from_elsewhere_never_begins_later_than_now() {
+        let (_a, b, mut log) = pair("future", Lock::UntilRestart);
+        b.ok(Request::SetUnlockDelay { delay: "1h".into() });
+        b.ok(Request::Start { id: "work".into() });
+        let year = millis(b.now()) + 365 * 86_400_000;
+        log.forge(Action::AskForUnlock, year);
+        log.sync(&[&b]);
+        assert!(b.context.unlock().requested().is_some_and(|asked| asked <= millis(b.now())));
+        b.at(b.now() + Duration::from_secs(3601));
+        assert_eq!(b.ask(Request::Unlock), Response::Done);
+        assert!(!b.runs("work"));
+        // The same for a delay lock's wait.
+        let (_a, b, mut log) = pair("future-stop", Lock::Delay { delay: "1h".into() });
+        b.ok(Request::Start { id: "work".into() });
+        log.forge(Action::AskToStop { id: "work".into() }, millis(b.now()) + 365 * 86_400_000);
+        log.sync(&[&b]);
+        b.at(b.now() + Duration::from_secs(3601));
+        b.ok(Request::Stop { id: "work".into(), password: None, text: None });
+    }
+
+    /// A session locked while a condition is active (here a flash drive that is not plugged in) stays
+    /// locked whatever arrives about that condition or the session: the condition deleted, made one
+    /// that is never active, imported away, or the lock saved away.
+    #[test]
+    fn a_condition_lock_is_not_opened_from_elsewhere() {
+        let drive = || Condition {
+            id: "key".into(),
+            name: "Key".into(),
+            rule: crate::condition::Rule::FlashDrive { serial: "4E0985D05EC9".into(), drive: "Key".into() },
+        };
+        let (a, b, mut log) = pair("condition-lock", Lock::None);
+        a.ok(Request::SaveCondition { condition: drive() });
+        a.ok(Request::SaveSession {
+            session: Definition { lock: Lock::Condition { condition: "key".into() }, ..session("work", &["social"]) },
+        });
+        log.sync(&[&a, &b]);
+        b.ok(Request::Start { id: "work".into() });
+        assert!(b.locked());
+        let never = Condition { rule: crate::definitions::tests::weekly("key", "mon 9-10").rule, ..drive() };
+        for action in [
+            Action::DeleteCondition { id: "key".into() },
+            Action::SaveCondition { condition: never },
+            Action::Import { library: Library::default() },
+            Action::SaveSession { session: session("work", &["social"]) },
+            Action::DeleteSession { id: "work".into() },
+        ] {
+            log.forge(action, millis(b.now()));
+            log.sync(&[&b]);
+            b.ask(Request::Status);
+            assert!(b.locked(), "{:?}", b.context.library());
+            assert!(b.refused(Request::Stop { id: "work".into(), password: None, text: None }).contains("flash drive"));
+        }
+    }
+
     #[test]
     fn an_unlock_from_elsewhere_ends_only_what_started_before_it() {
         let (a, b, mut log) = pair("before", Lock::None);
@@ -1486,6 +1544,13 @@ mod tests {
                 }
                 assert!(b.context.unlock().delay() <= unlock::MAX_DELAY, "round {round}");
                 assert!(b.replica.held().len() <= MAX_HELD);
+                // Nothing that arrives makes the service crash: not what it does every second (a crash
+                // there ends the process, and Windows starts it again over the same files), nor what
+                // the app and the window ask for, nor reading the sessions back after a restart.
+                b.context.sessions().active();
+                assert!(matches!(b.ask(Request::Policy), Response::Policy(_)), "round {round}");
+                assert!(matches!(b.ask(Request::Status), Response::Status(_)), "round {round}");
+                b.context.sessions().restarted("boot").active();
             }
             b.replica.disconnect();
             assert!(!b.replica.connected() && b.replica.held().is_empty(), "round {round}");
@@ -1504,7 +1569,8 @@ mod tests {
             log.sync(&[&a, &b]);
             for _ in 0..20 {
                 let action = any_action(&mut dice, &b);
-                log.forge(action, millis(b.now()));
+                let at = dice.pick(&[0, millis(b.now()), millis(b.now()) + 86_400_000, u64::MAX]);
+                log.forge(action, at);
             }
             log.sync(&[&a, &b]);
             // Unlocking here, with nothing more arriving in between, ends what runs.

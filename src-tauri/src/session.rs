@@ -62,11 +62,20 @@ struct Inner {
     /// Use counted here and not yet told to the computers that sync, by session and key
     /// (`take_unshared`).
     unshared: std::collections::BTreeMap<(String, String), u64>,
+    /// The runs `restore` found ended by Windows' restart, by id with the starts they stood for: no stop
+    /// was asked for, so the computers that sync are told of it (`take_restarted`).
+    restarted: Vec<(String, Vec<String>)>,
 }
 
 impl Default for Inner {
     fn default() -> Inner {
-        Inner { sessions: Vec::new(), saved_at: Instant::now(), polled: Instant::now(), unshared: Default::default() }
+        Inner {
+            sessions: Vec::new(),
+            saved_at: Instant::now(),
+            polled: Instant::now(),
+            unshared: Default::default(),
+            restarted: Vec::new(),
+        }
     }
 }
 
@@ -1014,6 +1023,7 @@ impl Sessions {
                 self.clock.at_least(state::from_unix(seen));
             }
         }
+        let mut restarted = Vec::new();
         for saved in saved {
             // A target we cannot read is dropped rather than resumed as something unknown.
             let parts: Result<Vec<RunPart>, String> =
@@ -1031,6 +1041,9 @@ impl Sessions {
                 _ => false,
             };
             if ended {
+                if matches!(saved.lock, RunLock::UntilRestart { .. }) {
+                    restarted.push((saved.id, saved.starts));
+                }
                 continue;
             }
             sessions.push(Session {
@@ -1048,8 +1061,16 @@ impl Sessions {
         }
         let mut inner = self.inner.locked();
         inner.sessions = sessions;
+        inner.restarted = restarted;
         // What was dropped is cleaned up, rather than being re-checked on every run.
         self.save_all(&mut inner);
+    }
+
+    /// The runs that ended with Windows' restart, found by `restore` (each by its id, with the starts it
+    /// stood for), once: the service tells the computers that sync, which stop them as a stop asked for
+    /// here (each still by its own rules: one locked until its own restart waits for that).
+    pub fn take_restarted(&self) -> Vec<(String, Vec<String>)> {
+        std::mem::take(&mut self.inner.locked().restarted)
     }
 
     /// What is to be enforced right now: every target of every running session that its condition
@@ -1939,11 +1960,15 @@ mod tests {
         let resumed = reopened("until-restart");
         resumed.restore();
         assert!(resumed.stop("a", false).is_err());
-        // After a restart the session has ended.
+        assert!(resumed.take_restarted().is_empty());
+        let starts = resumed.starts_of("a");
+        // After a restart the session has ended, and that is said once, with the starts it stood for.
         let mut restarted = reopened("until-restart");
         restarted.boot = Some("next boot".into());
         restarted.restore();
         assert!(!restarted.is_running());
+        assert_eq!(restarted.take_restarted(), vec![("a".to_string(), starts)]);
+        assert!(restarted.take_restarted().is_empty());
     }
 
     #[test]

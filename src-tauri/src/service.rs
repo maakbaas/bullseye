@@ -169,6 +169,7 @@ pub fn local_handler(sessions: Sessions, definitions: Definitions) -> Local {
 fn synced(context: Context) -> Arc<Context> {
     let syncer = Arc::new(Syncer::new());
     let context = Arc::new(context.with_syncer(syncer.clone()));
+    syncer.restarted(&context);
     syncer.spawn(context.clone());
     context
 }

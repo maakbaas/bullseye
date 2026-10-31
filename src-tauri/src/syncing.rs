@@ -108,6 +108,18 @@ impl Syncer {
         self.replica.connected()
     }
 
+    /// The runs that ended here with Windows' restart (`Sessions::take_restarted`) go to the others as
+    /// stops, as if stopped here: nothing else would ever end them in the server's view, which has no
+    /// restart of its own, nor on a computer that takes its sessions over later. Each other computer
+    /// stops them by its own rules (one locked until its own restart waits for that). Called once, as
+    /// the service starts; while not connected there is nobody to tell.
+    pub fn restarted(&self, context: &Context) {
+        let _turn = self.turn();
+        for (id, starts) in context.sessions().take_restarted() {
+            self.record(Action::Stop { id, starts, text: None, proof: None }, context.now());
+        }
+    }
+
     /// Something was done here: it goes to the others.
     pub fn record(&self, action: Action, now: SystemTime) {
         self.replica.record(action, now);
@@ -218,11 +230,15 @@ impl Syncer {
         }
     }
 
-    /// Takes over a snapshot of the server's, under this computer's rules.
+    /// Takes over a snapshot of the server's, under this computer's rules. Nothing once disconnected,
+    /// also when that happens while a round is joining again: disconnecting is the way out.
     fn adopt(&self, context: &Context, snapshot: &Snapshot) {
         let _turn = self.turn();
         let now = context.now();
         for action in actions_of(snapshot) {
+            if !self.connected() {
+                return;
+            }
             let import = matches!(action, Action::Import { .. });
             if matches!(self.replica.adopt(context, action, now), Outcome::Held(_)) && import {
                 // Not all at once while a session here is locked (it waits): each target, condition and
@@ -890,6 +906,82 @@ mod tests {
         sync(&[&a, &b]);
         assert!(!a.runs("work") && !b.runs("work"));
         assert!(a.status().held.is_empty() && b.status().held.is_empty());
+    }
+
+    /// The same computer after Windows restarted: its service started again over the same folder.
+    fn restarted(computer: &Computer, server: &Arc<Server>) -> Computer {
+        let dir = computer.dir.clone();
+        let syncer = Arc::new(Syncer::at(Some(dir.clone()), connector(server), "again".into()));
+        let sessions = computer.context.sessions().restarted("after");
+        let context = Context::new(
+            sessions,
+            crate::definitions::Definitions::at(Some(dir.join("sessions.json"))),
+            Arc::new(crate::watchdog::AppSlot::new(false)),
+        )
+        .with_unlock(unlock::UnlockDelay::at(Some(dir.join("unlock.json"))));
+        Computer { context: Arc::new(context.with_syncer(syncer.clone())), syncer, dir }
+    }
+
+    #[test]
+    fn a_run_that_ends_with_a_restart_ends_on_the_server_and_waits_for_each_computers_own() {
+        let server = server("restarted");
+        defined(&server, Lock::UntilRestart);
+        let (a, b) = (computer("restarted-a", &server), computer("restarted-b", &server));
+        a.connect(Join::UseServer);
+        b.connect(Join::UseServer);
+        a.ok(Request::Start { id: "work".into() });
+        sync(&[&a, &b]);
+        assert!(a.locked() && b.locked());
+        assert_eq!(server.hub().snapshot().unwrap().runs.len(), 1);
+        // A restarts: its run ended with it, and the others are told, once.
+        let a = restarted(&a, &server);
+        assert!(!a.runs("work"));
+        a.syncer.restarted(&a.context);
+        assert_eq!(a.status().outbox, 1);
+        a.syncer.restarted(&a.context);
+        assert_eq!(a.status().outbox, 1);
+        sync(&[&a, &b]);
+        // The server's view has no restart of its own: it ends there, so nobody who joins later takes it.
+        assert!(server.hub().snapshot().unwrap().runs.is_empty());
+        let c = computer("restarted-c", &server);
+        c.connect(Join::UseServer);
+        assert!(!c.runs("work"));
+        // B is locked until its own restart: the stop waits for that, and then has nothing to do.
+        assert!(b.locked());
+        assert_eq!(b.status().held.len(), 1);
+        assert!(b.status().held[0].why.contains("restarts"));
+        let b = restarted(&b, &server);
+        assert!(!b.runs("work"));
+        b.syncer.restarted(&b.context);
+        sync(&[&a, &b]);
+        assert!(b.status().held.is_empty());
+        assert!(!a.runs("work") && !b.runs("work"));
+    }
+
+    #[test]
+    fn nothing_of_the_server_is_taken_over_once_disconnected() {
+        let server = server("adopt-gone");
+        defined(&server, Lock::UntilRestart);
+        assert_eq!(server.hub().request(&Request::Start { id: "work".into() }).unwrap(), Response::Done);
+        let a = computer("adopt-gone-a", &server);
+        // A round that was joining again when Disconnect came: what it read is not applied.
+        a.syncer.adopt(&a.context, &server.hub().snapshot().unwrap());
+        assert!(a.context.library().sessions.is_empty() && !a.runs("work"));
+    }
+
+    #[test]
+    fn a_restart_while_not_connected_tells_nobody() {
+        let server = server("restarted-alone");
+        defined(&server, Lock::None);
+        let a = computer("restarted-alone-a", &server);
+        a.ok(Request::SaveTarget { target: target("social", &["youtube.com"]) });
+        a.ok(Request::SaveSession { session: Definition { lock: Lock::UntilRestart, ..session("work", &["social"]) } });
+        a.ok(Request::Start { id: "work".into() });
+        let a = restarted(&a, &server);
+        a.syncer.restarted(&a.context);
+        assert!(!a.runs("work") && !a.syncer.connected() && a.status().outbox == 0);
+        // Nor does a run that ended by its own time, or that is still running.
+        assert!(a.context.sessions().take_restarted().is_empty());
     }
 
     #[test]
