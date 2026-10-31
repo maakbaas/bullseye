@@ -40,6 +40,13 @@ pub struct Saved {
     /// Its allowance and what is used of it (`allowance.rs`); `None`: it has none.
     #[serde(default)]
     pub allowance: Option<Run>,
+    /// The starts it stands for (`session::Origin`): one, or more when computers that sync started it
+    /// at once (`replica.rs`). It ends when all of them are stopped.
+    #[serde(default)]
+    pub starts: Vec<String>,
+    /// When it started, in milliseconds since the Unix epoch (internet time).
+    #[serde(default)]
+    pub started: u64,
 }
 
 /// One target of a running session, as written to disk.
@@ -139,9 +146,13 @@ pub fn to_unix(time: SystemTime) -> Option<u64> {
     time.duration_since(UNIX_EPOCH).ok().and_then(|d| u64::try_from(d.as_millis()).ok())
 }
 
-/// A wall-clock time read back from milliseconds since the Unix epoch.
+/// The latest time read back: the end of the year 9999. A later one (from a file, or an entry from
+/// another computer, `replica.rs`) is taken as that, rather than overflowing.
+const LATEST: u64 = 253_402_300_799_999;
+
+/// A wall-clock time read back from milliseconds since the Unix epoch, at most `LATEST`.
 pub fn from_unix(millis: u64) -> SystemTime {
-    UNIX_EPOCH + Duration::from_millis(millis)
+    UNIX_EPOCH + Duration::from_millis(millis.min(LATEST))
 }
 
 /// The file: the running sessions.
@@ -261,6 +272,8 @@ mod tests {
             condition: None,
             zone: "fixed:+0".into(),
             allowance: None,
+            starts: vec!["a".into()],
+            started: 0,
         }
     }
 

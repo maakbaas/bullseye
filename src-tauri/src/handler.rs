@@ -4,6 +4,7 @@
 //! (`service::local_handler`), so the rules cannot differ between the two.
 
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use crate::allowance;
 use crate::definitions::{Condition, Definition, Definitions, Library, Resolved, Target, Via};
@@ -12,7 +13,8 @@ use crate::lists::Entries;
 use crate::localtime::Zone;
 use crate::lock::{self, Lock, TimedKind};
 use crate::proto::{Check, FreeEntries, Overview, Policy, Request, Response, UnlockStatus};
-use crate::session::{Part, Sessions, StartLock};
+use crate::replica::Action;
+use crate::session::{Origin, Part, RunLock, Sessions, StartLock};
 use crate::sync::LockExt;
 use crate::unlock::{self, UnlockDelay};
 use crate::watchdog::AppSlot;
@@ -43,12 +45,293 @@ impl Context {
         self.unlock = unlock;
         self
     }
+
+    /// Its running sessions (tests of other modules).
+    #[cfg(test)]
+    pub fn sessions(&self) -> &Sessions {
+        &self.sessions
+    }
+
+    /// Its unlock settings (tests of other modules).
+    #[cfg(test)]
+    pub fn unlock(&self) -> &UnlockDelay {
+        &self.unlock
+    }
+
+    /// What is defined (tests of other modules).
+    #[cfg(test)]
+    pub fn library(&self) -> Library {
+        self.definitions.library()
+    }
 }
 
 /// Answers one request from the process `caller`, and says whether the service should end
 /// afterwards. Everything in the request is checked here again: it comes from any local user's
 /// program, not necessarily ours.
 pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Option<Shutdown>) {
+    let (response, shutdown, _) = handle_shared(context, caller, request);
+    (response, shutdown)
+}
+
+/// As `handle`, and what it did for the computers that sync (`replica.rs`), if it changed something
+/// they share: what was decided here goes with it (a start's end and drawn text, a password's hash),
+/// a password never does.
+pub fn handle_shared(context: &Context, caller: u32, request: Request) -> (Response, Option<Shutdown>, Option<Action>) {
+    // What a stop ends has to be known before it does.
+    let stopping = match &request {
+        Request::Stop { id, .. } => context.sessions.starts_of(id),
+        _ => Vec::new(),
+    };
+    let shared = shareable(&request);
+    let (response, shutdown) = answer(context, caller, request);
+    let action = match (&response, shared) {
+        (Response::Done, Some(shared)) => shared_action(context, shared, stopping),
+        _ => None,
+    };
+    (response, shutdown, action)
+}
+
+/// The request as far as it is shared, before it is handled: a password left out.
+fn shareable(request: &Request) -> Option<Request> {
+    match request {
+        Request::Stop { id, text, .. } => Some(Request::Stop { id: id.clone(), password: None, text: text.clone() }),
+        Request::UnlockWith { text, .. } => Some(Request::UnlockWith { password: None, text: text.clone() }),
+        Request::SaveSession { .. }
+        | Request::DeleteSession { .. }
+        | Request::SaveTarget { .. }
+        | Request::DeleteTarget { .. }
+        | Request::SaveCondition { .. }
+        | Request::DeleteCondition { .. }
+        | Request::Duplicate { .. }
+        | Request::Import { .. }
+        | Request::Start { .. }
+        | Request::Lock { .. }
+        | Request::AskToStop { .. }
+        | Request::AbortStop { .. }
+        | Request::TakeBreak { .. }
+        | Request::EndBreak { .. }
+        | Request::Unlock
+        | Request::SetUnlockWay { .. }
+        | Request::AskForUnlock
+        | Request::AbortUnlock
+        | Request::SetUnlockDelay { .. } => Some(request.clone()),
+        Request::Status
+        | Request::Policy
+        | Request::Report { .. }
+        | Request::Register
+        | Request::Check { .. }
+        | Request::Export
+        | Request::PrepareUninstall => None,
+    }
+}
+
+/// What a request that was done here shares, as it came out: what is saved as it is saved now.
+fn shared_action(context: &Context, request: Request, stopping: Vec<String>) -> Option<Action> {
+    let library = context.definitions.library();
+    let decided = |id: &str| {
+        let lock = context.sessions.lock_of(id);
+        let ends = match lock {
+            Some(RunLock::Ends { at }) => Some(at),
+            _ => None,
+        };
+        let drawn = matches!(library.session(id).map(|s| &s.lock), Some(Lock::RandomText { .. }));
+        let text = match lock {
+            Some(RunLock::Text { text }) if drawn => Some(text),
+            _ => None,
+        };
+        (ends, text)
+    };
+    Some(match request {
+        Request::SaveSession { session } => Action::SaveSession { session: library.session(&session.id)?.clone() },
+        Request::DeleteSession { id } => Action::DeleteSession { id },
+        Request::SaveTarget { target } => Action::SaveTarget { target: library.target(&target.id)?.clone() },
+        Request::DeleteTarget { id } => Action::DeleteTarget { id },
+        Request::SaveCondition { condition } => Action::SaveCondition { condition: library.condition(&condition.id)?.clone() },
+        Request::DeleteCondition { id } => Action::DeleteCondition { id },
+        Request::Duplicate { kind, id, new_id } => Action::Duplicate { kind, id, new_id },
+        Request::Import { .. } => Action::Import { library },
+        Request::Start { id } => {
+            let start = context.sessions.starts_of(&id).pop()?;
+            let (ends, text) = decided(&id);
+            Action::Start { id, start, ends, text }
+        }
+        Request::Lock { id, .. } => {
+            let lock = library.session(&id)?.lock.clone();
+            let (ends, text) = decided(&id);
+            Action::Lock { id, lock, ends, text }
+        }
+        Request::Stop { id, text, .. } => Action::Stop { id, starts: stopping, text },
+        Request::AskToStop { id } => Action::AskToStop { id },
+        Request::AbortStop { id } => Action::AbortStop { id },
+        Request::TakeBreak { id } => Action::TakeBreak { id },
+        Request::EndBreak { id } => Action::EndBreak { id },
+        Request::Unlock | Request::UnlockWith { .. } => {
+            let text = match request {
+                Request::UnlockWith { text, .. } => text,
+                _ => None,
+            };
+            let next = match context.unlock.way().map(|way| way.lock) {
+                Some(Lock::RandomText { text, .. }) => text,
+                _ => None,
+            };
+            Action::Unlock { text, next }
+        }
+        Request::SetUnlockWay { .. } => Action::SetUnlockWay { way: context.unlock.way().map(|way| way.lock) },
+        Request::AskForUnlock => Action::AskForUnlock,
+        Request::AbortUnlock => Action::AbortUnlock,
+        Request::SetUnlockDelay { delay } => Action::SetUnlockDelay { delay },
+        _ => return None,
+    })
+}
+
+#[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
+/// What became of an action from another computer here (`apply`).
+#[derive(Debug, PartialEq)]
+pub enum Outcome {
+    Applied,
+    /// Refused here for now, as it would be if it was asked for here: it waits and is tried again.
+    Held(String),
+    /// Nothing to do any more (what it was about is gone or is as it says already).
+    Dropped(String),
+}
+
+#[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
+/// Does an action that another computer did (`replica.rs`) **as if it was asked for here**: through
+/// the same rules, so it can do nothing here that could not be done at this computer's own keyboard.
+/// `at` is when it was done there: a countdown it starts is bounded to have begun at most
+/// `replica::GRACE` before now, so a time from elsewhere cannot shorten a wait here.
+pub fn apply(context: &Context, action: &Action, at: SystemTime) -> Outcome {
+    use Outcome::{Applied, Dropped, Held};
+    let sessions = &context.sessions;
+    let now = sessions.now();
+    let at = at.min(now);
+    let countdown_from = at.max(now.checked_sub(crate::replica::GRACE).unwrap_or(now));
+    let running = |id: &str| sessions.running_ids().iter().any(|r| r == id);
+    let held = |result: Result<(), String>| result.map_or_else(Held, |()| Applied);
+    let dropped = |result: Result<(), String>| result.map_or_else(Dropped, |()| Applied);
+    let library = context.definitions.library();
+    match action.clone() {
+        Action::SaveSession { session } => held(edit_session(context, session, true)),
+        Action::DeleteSession { id } if library.session(&id).is_none() => Dropped("No such session".into()),
+        Action::DeleteSession { id } => held(delete_session(context, &id)),
+        Action::SaveTarget { target } => held(edit_shared(context, Proposed::List(target))),
+        Action::DeleteTarget { id } if library.target(&id).is_none() => Dropped("No such target".into()),
+        Action::DeleteTarget { id } => held(delete_shared(context, &id, |d| d.delete_target(&id))),
+        Action::SaveCondition { condition } => held(edit_shared(context, Proposed::Condition(condition))),
+        Action::DeleteCondition { id } if library.condition(&id).is_none() => Dropped("No such condition".into()),
+        Action::DeleteCondition { id } => held(delete_shared(context, &id, |d| d.delete_condition(&id))),
+        Action::Duplicate { kind, id, new_id } => {
+            let _editing = context.editing.locked();
+            dropped(context.definitions.duplicate(kind, &id, &new_id))
+        }
+        Action::Import { library } => held(import(context, library)),
+        Action::Start { id, start, ends, text } => {
+            if sessions.starts_of(&id).contains(&start) {
+                return Dropped("Started already".into());
+            }
+            dropped(start_synced(context, &id, Origin { id: start, at }, Decided { ends, text }))
+        }
+        Action::Lock { id, .. } if !running(&id) => Dropped("This session is not running".into()),
+        Action::Lock { id, lock, ends, text } => dropped(lock_running_from(context, &id, lock, Decided { ends, text })),
+        Action::Stop { id, starts, text } => {
+            let here = sessions.starts_of(&id);
+            if !starts.iter().any(|start| here.contains(start)) {
+                return Dropped("Not running from these starts".into());
+            }
+            let answered = text.is_some_and(|text| sessions.text_matches(&id, &text));
+            held(sessions.stop_starts(&id, &starts, answered).map(|_| ()))
+        }
+        Action::AskToStop { id } => dropped(sessions.ask_to_stop_at(&id, countdown_from)),
+        Action::AbortStop { id } => dropped(sessions.abort_stop_since(&id, Some(at))),
+        Action::TakeBreak { id } => dropped(sessions.take_break(&id)),
+        Action::EndBreak { id } => dropped(sessions.end_break(&id)),
+        Action::AskForUnlock => dropped(context.unlock.request(countdown_from)),
+        Action::AbortUnlock => dropped(context.unlock.abort_since(Some(at))),
+        Action::Unlock { text, next } => held(unlock_synced(context, at, text.as_deref(), next)),
+        Action::SetUnlockDelay { delay } => held(set_unlock_delay(context, &delay)),
+        Action::SetUnlockWay { way } => held(set_unlock_way(context, way, true)),
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
+/// What was decided where a session was started or locked: a duration lock's end, a drawn text.
+struct Decided {
+    ends: Option<u64>,
+    text: Option<String>,
+}
+
+#[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
+/// Starts a session as another computer started it (`apply`); one running here already stands for that
+/// start too (`Sessions::join`).
+fn start_synced(context: &Context, id: &str, origin: Origin, decided: Decided) -> Result<(), String> {
+    let _editing = context.editing.locked();
+    let resolved = context.definitions.library().resolve(id)?;
+    let lock = synced_lock(&resolved, decided, context.sessions.now())?;
+    if context.sessions.running_ids().iter().any(|r| r == id) {
+        return context.sessions.join(id, &origin.id, lock);
+    }
+    let parts = parts_of(&resolved.lists)?;
+    something_to_block(&parts)?;
+    context.sessions.start_from(id, &resolved.session.name, parts, resolved.condition, resolved.allowance, lock, Some(origin))
+}
+
+#[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
+/// A session's lock as this computer has it defined, with what another computer decided where that is
+/// its to decide: a duration lock ends when it ends there, but never later than if it started here
+/// `now`; a random text is the one drawn there. Everything else is as it is here.
+fn synced_lock(resolved: &Resolved, decided: Decided, now: SystemTime) -> Result<StartLock, String> {
+    let random = matches!(resolved.session.lock, Lock::RandomText { length, .. }
+        if decided.text.as_ref().is_some_and(|text| text.chars().count() == length as usize));
+    Ok(match (start_lock(resolved)?, decided) {
+        (StartLock::For(length), Decided { ends: Some(ends), .. }) => StartLock::Ends(crate::state::from_unix(ends).min(now + length)),
+        (StartLock::Text(_), Decided { text: Some(text), .. }) if random => StartLock::Text(text),
+        (lock, _) => lock,
+    })
+}
+
+#[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
+/// `lock_running` as another computer locked it: its password lock with the hash made there, and
+/// what it decided.
+fn lock_running_from(context: &Context, id: &str, lock: Lock, decided: Decided) -> Result<(), String> {
+    let _editing = context.editing.locked();
+    let old = context.definitions.library().session(id).ok_or("No such session")?.clone();
+    context.definitions.save_session_from(Definition { lock, ..old.clone() }, true)?;
+    let now = context.sessions.now();
+    let applied = context
+        .definitions
+        .library()
+        .resolve(id)
+        .and_then(|resolved| synced_lock(&resolved, decided, now))
+        .and_then(|lock| context.sessions.relock(id, lock));
+    if applied.is_err() {
+        context.definitions.save_session(old)?;
+    }
+    applied
+}
+
+#[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
+/// An unlock made on another computer at `at`: the sessions started by then end, but only once
+/// unlocking is ready here too (its countdown is over, or its other way lets go or is answered by
+/// `text`), as `unlock_with` would; with none of them left to end, it only takes the random text drawn
+/// there (`next`) and ends the countdown it used.
+fn unlock_synced(context: &Context, at: SystemTime, text: Option<&str>, next: Option<String>) -> Result<(), String> {
+    let now = context.sessions.now();
+    if context.sessions.started_by(at) {
+        let by_way = context.unlock.way().is_some_and(|way| way.is_open(now) || way.answered(None, text));
+        if !by_way && context.unlock.remaining(now) != Some(0) {
+            return Err("Unlocking is not ready on this computer yet".into());
+        }
+        context.sessions.reset_started_by(at);
+    }
+    if let (Some(unlock::Way { lock: Lock::RandomText { length, .. }, opening }), Some(next)) = (context.unlock.way(), next) {
+        if next.len() == length as usize {
+            context.unlock.set_way(Some(unlock::Way { lock: Lock::RandomText { length, text: Some(next) }, opening }), now, true)?;
+        }
+    }
+    context.unlock.abort_since(Some(at))
+}
+
+fn answer(context: &Context, caller: u32, request: Request) -> (Response, Option<Shutdown>) {
     let sessions = &context.sessions;
     let done = |result: Result<(), String>| match result {
         Ok(()) => Response::Done,
@@ -123,7 +406,7 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
         // be done to it and to what it uses: while a locked session is involved, a change may only make
         // it stricter and nothing may be deleted (`edit_session`, `edit_shared`, `delete_session`,
         // `delete_shared`); otherwise the change is made and the running sessions follow.
-        Request::SaveSession { session } => (done(edit_session(context, session)), None),
+        Request::SaveSession { session } => (done(edit_session(context, session, false)), None),
         Request::DeleteSession { id } => (done(delete_session(context, &id)), None),
         Request::SaveTarget { target: list } => (done(edit_shared(context, Proposed::List(list))), None),
         Request::DeleteTarget { id } => (done(delete_shared(context, &id, |d| d.delete_target(&id))), None),
@@ -151,7 +434,7 @@ pub fn handle(context: &Context, caller: u32, request: Request) -> (Response, Op
         Request::EndBreak { id } => (done(sessions.end_break(&id)), None),
         Request::Unlock => (done(unlock(context)), None),
         Request::UnlockWith { password, text } => (done(unlock_with(context, password.as_deref(), text.as_deref())), None),
-        Request::SetUnlockWay { way } => (done(set_unlock_way(context, way)), None),
+        Request::SetUnlockWay { way } => (done(set_unlock_way(context, way, false)), None),
         Request::Export => (Response::Library(context.definitions.library()), None),
         Request::AskForUnlock => (done(context.unlock.request(sessions.now())), None),
         Request::AbortUnlock => (done(context.unlock.abort()), None),
@@ -219,10 +502,10 @@ fn delete_shared(context: &Context, id: &str, delete: impl FnOnce(&Definitions) 
 /// unless it is locked right now (then only its name, more targets, the condition Always, and its
 /// allowance only to be stricter: `allowance::tightened`), and the running session follows; its lock stays as it is: a running
 /// session that is not locked is given another lock by `lock_running` (`Request::Lock`), never by saving.
-fn edit_session(context: &Context, session: Definition) -> Result<(), String> {
+fn edit_session(context: &Context, session: Definition, synced: bool) -> Result<(), String> {
     let _editing = context.editing.locked();
     if !context.sessions.running_ids().contains(&session.id) {
-        return context.definitions.save_session(session);
+        return context.definitions.save_session_from(session, synced);
     }
     let old = context.definitions.library().session(&session.id).ok_or("No such session")?.clone();
     if context.sessions.locked_ids().contains(&session.id) {
@@ -258,7 +541,7 @@ fn edit_session(context: &Context, session: Definition) -> Result<(), String> {
         .collect::<Result<Vec<_>, _>>()?;
     something_to_block(&parts_of(&lists)?)?;
     let id = session.id.clone();
-    context.definitions.save_session(session)?;
+    context.definitions.save_session_from(session, synced)?;
     refresh_running(context, &[id])
 }
 
@@ -474,7 +757,7 @@ fn unlock_status(context: &Context) -> UnlockStatus {
 /// (its rule looked up now), a text, a random text (drawn now) or a password (only its hash kept).
 /// Never the delay, which is always there. Setting one needs unlocking to be ready, or no
 /// session to be locked; removing it is always free.
-fn set_unlock_way(context: &Context, lock: Option<Lock>) -> Result<(), String> {
+fn set_unlock_way(context: &Context, lock: Option<Lock>, synced: bool) -> Result<(), String> {
     let _editing = context.editing.locked();
     let now = context.sessions.now();
     let idle = context.sessions.locked().is_none();
@@ -489,12 +772,18 @@ fn set_unlock_way(context: &Context, lock: Option<Lock>) -> Result<(), String> {
             (lock, Some(opening))
         }
         Lock::Text { .. } => (lock, None),
+        // As drawn on the computer it was set on (`replica.rs`).
+        Lock::RandomText { length, text: Some(text) } if synced && text.chars().count() == length as usize => {
+            (Lock::RandomText { length, text: Some(text) }, None)
+        }
         // Its text is drawn now, and again after each unlock (`unlock_with`).
         Lock::RandomText { length, .. } => (Lock::RandomText { length, text: Some(lock::random_text(length)?) }, None),
         // Only its hash is kept; a password lock without a new password keeps the one it has.
-        // As a session's: a hash from a client is not taken, only the one kept from before.
-        Lock::Password { password, .. } => {
+        // As a session's: a hash from a client is not taken, only the one kept from before, or the
+        // one made on the computer it was set on (`replica.rs`).
+        Lock::Password { password, hash } => {
             let hash = match password {
+                _ if synced && hash.is_some() => hash.unwrap_or_default(),
                 Some(password) if password.is_empty() => return Err("The password to unlock with cannot be empty".into()),
                 Some(password) => unlock::new_hash(&password)?,
                 None => match context.unlock.way().map(|way| way.lock) {
@@ -508,6 +797,10 @@ fn set_unlock_way(context: &Context, lock: Option<Lock>) -> Result<(), String> {
             return Err("The way to unlock can be a condition, a custom text, a random text or a password; the delay is always there".into())
         }
     };
+    // The way this computer has already (another computer set it too): nothing changes.
+    if synced && context.unlock.way().is_some_and(|way| way.lock == lock) {
+        return Ok(());
+    }
     context.unlock.set_way(Some(unlock::Way { lock, opening }), now, idle)
 }
 

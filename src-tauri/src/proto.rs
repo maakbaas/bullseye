@@ -25,7 +25,7 @@ pub const PIPE: &str = r"\\.\pipe\bullseye";
 const MAX_MESSAGE: usize = 1024 * 1024;
 
 /// A change to check (`Request::Check`): the same rules as making it (`handler::check_stricter`).
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 #[serde(tag = "what", rename_all = "snake_case")]
 pub enum Check {
     /// The session's allowance set to this kind (`none`, `budget`, `pomodoro`, `delayed`).
@@ -41,7 +41,7 @@ pub enum Check {
     Condition { condition: Condition },
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 #[serde(tag = "cmd", content = "args", rename_all = "snake_case")]
 // A saved condition is larger than the rest (its weekly schedule); a request lives only as long as it is
 // answered.
@@ -131,7 +131,7 @@ pub enum Request {
     PrepareUninstall,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 // The status is the one large answer, built and sent once a second at most.
 #[allow(clippy::large_enum_variant)]

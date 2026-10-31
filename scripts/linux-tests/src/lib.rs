@@ -38,6 +38,8 @@ pub mod patterns;
 pub mod programs;
 #[path = "../../../src-tauri/src/proto.rs"]
 pub mod proto;
+#[path = "../../../src-tauri/src/replica.rs"]
+pub mod replica;
 #[path = "../../../src-tauri/src/schedule.rs"]
 pub mod schedule;
 #[path = "../../../src-tauri/src/state.rs"]

@@ -215,9 +215,25 @@ impl UnlockDelay {
         Ok(())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
+    /// When unlocking was asked for, if it was (milliseconds since the Unix epoch).
+    pub fn requested(&self) -> Option<u64> {
+        self.kept.locked().requested
+    }
+
     /// Stops the countdown, or ends the readiness: back to locked.
     pub fn abort(&self) -> Result<(), String> {
+        self.abort_since(None)
+    }
+
+    /// As `abort`; with `since`, only a countdown asked for by then: an abort made on another computer
+    /// (`replica.rs`) does not end one asked for after it.
+    pub fn abort_since(&self, since: Option<SystemTime>) -> Result<(), String> {
         let mut kept = self.kept.locked();
+        let since = since.and_then(state::to_unix);
+        if since.is_some_and(|since| kept.requested.is_none_or(|asked| asked > since)) {
+            return Ok(());
+        }
         kept.requested = None;
         if let Err(why) = self.write(&kept) {
             eprintln!("unlock: {why}");

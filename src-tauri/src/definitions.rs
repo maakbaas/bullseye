@@ -436,7 +436,13 @@ impl Definitions {
 
     /// A password lock's password is turned into a salted hash here and never kept itself; saved
     /// without a new password, a password lock keeps the hash it has.
-    pub fn save_session(&self, mut session: Definition) -> Result<(), String> {
+    pub fn save_session(&self, session: Definition) -> Result<(), String> {
+        self.save_session_from(session, false)
+    }
+
+    /// As `save_session`; `synced`: as another computer saved it (`replica.rs`), with the hash its
+    /// service made of a new password (a password never travels). A client's hash is never taken.
+    pub fn save_session_from(&self, mut session: Definition, synced: bool) -> Result<(), String> {
         session.name = session.name.trim().to_string();
         session.allowance = session.allowance.map(Terms::checked).transpose()?;
         // A random text is drawn when the session starts, never given.
@@ -446,7 +452,9 @@ impl Definitions {
         self.change(|library| {
             let old = library.session(&session.id).cloned();
             if let Lock::Password { password, hash } = &mut session.lock {
+                let given = if synced { hash.take() } else { None };
                 *hash = match password.take() {
+                    _ if given.is_some() => given,
                     Some(new) if new.is_empty() => return Err("The password of a password lock cannot be empty".into()),
                     Some(new) => Some(unlock::new_hash(&new)?),
                     // A hash from a client is not taken: only one this service made, the session's

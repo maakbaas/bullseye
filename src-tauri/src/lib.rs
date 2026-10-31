@@ -22,6 +22,8 @@ mod pipe;
 mod programs;
 mod proto;
 mod registration;
+#[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
+mod replica;
 mod schedule;
 mod service;
 mod session;

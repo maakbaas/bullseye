@@ -282,6 +282,9 @@ pub enum StartLock {
     Text(String),
     /// Until stopped with the password of this hash (`unlock::new_hash`).
     Password(String),
+    #[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
+    /// Until this moment: a duration lock as another computer started it (`replica.rs`).
+    Ends(SystemTime),
 }
 
 /// How a running session is locked, as it runs and as it is saved (`state::Saved::lock`). A
@@ -395,6 +398,25 @@ struct Session {
     zone: Zone,
     /// What lets it go quiet for a while, and what of that is used (`allowance.rs`).
     allowance: Option<Run>,
+    /// The starts it stands for (`Origin::id`); never empty while it runs.
+    starts: Vec<String>,
+    /// When it started (milliseconds since the Unix epoch).
+    started: u64,
+}
+
+/// Which start a running session comes from: one made here (`Origin::here`) or on another computer
+/// that syncs (`replica.rs`), with its id and when it was.
+#[derive(Clone, Debug)]
+pub struct Origin {
+    pub id: String,
+    pub at: SystemTime,
+}
+
+impl Origin {
+    /// A start made here, now.
+    pub fn here(now: SystemTime) -> Origin {
+        Origin { id: crate::replica::new_id(), at: now }
+    }
 }
 
 impl Session {
@@ -666,6 +688,22 @@ impl Sessions {
         allowance: Option<Terms>,
         lock: StartLock,
     ) -> Result<(), String> {
+        self.start_from(id, name, parts, condition, allowance, lock, None)
+    }
+
+    /// As `start_with`, from `origin`: a start made on another computer (`replica.rs`), whose time its
+    /// allowance counts from (never later than now); `None` is a start made here, now.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_from(
+        &self,
+        id: &str,
+        name: &str,
+        parts: Vec<Part>,
+        condition: Option<Rule>,
+        allowance: Option<Terms>,
+        lock: StartLock,
+        origin: Option<Origin>,
+    ) -> Result<(), String> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
         if inner.sessions.iter().any(|b| b.id == id) {
@@ -673,10 +711,22 @@ impl Sessions {
         }
         let zone = self.zone.clone().unwrap_or_else(Zone::current);
         let now = self.clock.now();
+        let origin = origin.map(|o| Origin { at: o.at.min(now), ..o }).unwrap_or_else(|| Origin::here(now));
         let lock = self.run_lock(lock, &zone, now)?;
         let parts = parts.into_iter().map(|p| RunPart::new(p.name, p.lists, p.actions)).collect();
-        let allowance = allowance.map(|terms| Run::new(terms, now));
-        let new = Session { id: id.to_string(), name: name.to_string(), parts, lock, condition, zone, allowance };
+        let allowance = allowance.map(|terms| Run::new(terms, origin.at));
+        let started = state::to_unix(origin.at).ok_or("Cannot tell the time")?;
+        let new = Session {
+            id: id.to_string(),
+            name: name.to_string(),
+            parts,
+            lock,
+            condition,
+            zone,
+            allowance,
+            starts: vec![origin.id],
+            started,
+        };
         // Written before the session goes live, so a session cannot be missed after a restart. A
         // session that cannot be written would not survive the service ending, so it does not start.
         let mut all: Vec<&Session> = inner.sessions.iter().collect();
@@ -708,6 +758,12 @@ impl Sessions {
             StartLock::Delay(wait) => RunLock::Delay { delay: wait.as_secs(), asked: None },
             StartLock::Text(text) => RunLock::Text { text },
             StartLock::Password(hash) => RunLock::Password { hash },
+            StartLock::Ends(end) => {
+                if end <= now {
+                    return Err("Its lock has ended".into());
+                }
+                ends(end)?
+            }
         })
     }
 
@@ -781,13 +837,19 @@ impl Sessions {
 
     /// Starts the wait of a session locked with a delay; asking again keeps the wait that runs.
     pub fn ask_to_stop(&self, id: &str) -> Result<(), String> {
+        self.ask_to_stop_at(id, self.clock.now())
+    }
+
+    /// As `ask_to_stop`, asked at `at`: on another computer (`replica.rs`). Never later than now; how
+    /// much earlier is the replica's to bound.
+    pub fn ask_to_stop_at(&self, id: &str, at: SystemTime) -> Result<(), String> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
-        let now = state::to_unix(self.clock.now()).ok_or("Cannot tell the time")?;
+        let at = state::to_unix(at.min(self.clock.now())).ok_or("Cannot tell the time")?;
         let session = inner.sessions.iter_mut().find(|b| b.id == id).ok_or("This session is not running")?;
         match &mut session.lock {
             RunLock::Delay { asked, .. } => {
-                asked.get_or_insert(now);
+                asked.get_or_insert(at);
             }
             _ => return Err("This session is not locked with a delay".into()),
         }
@@ -797,15 +859,108 @@ impl Sessions {
 
     /// Ends that wait, also when it is over: locked again.
     pub fn abort_stop(&self, id: &str) -> Result<(), String> {
+        self.abort_stop_since(id, None)
+    }
+
+    /// As `abort_stop`; with `since`, only a wait asked for by then (an abort made on another computer
+    /// does not end a wait asked for after it). A wait that is not asked for is left as it is.
+    pub fn abort_stop_since(&self, id: &str, since: Option<SystemTime>) -> Result<(), String> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
+        let since = since.and_then(state::to_unix);
         let session = inner.sessions.iter_mut().find(|b| b.id == id).ok_or("This session is not running")?;
         match &mut session.lock {
-            RunLock::Delay { asked, .. } => *asked = None,
+            RunLock::Delay { asked, .. } => {
+                if since.is_none_or(|since| asked.is_some_and(|asked| asked <= since)) {
+                    *asked = None;
+                }
+            }
             _ => return Err("This session is not locked with a delay".into()),
         }
         self.save_all(&mut inner);
         Ok(())
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
+    /// The running session `id` stands for the start `origin` too (made on another computer at about
+    /// the same time as its own): it ends only when that is stopped as well. That start's lock is taken
+    /// as `relock` would take it (a locked session only a stricter one); otherwise its own stays.
+    pub fn join(&self, id: &str, origin: &str, lock: StartLock) -> Result<(), String> {
+        let mut inner = self.inner.locked();
+        self.expire(&mut inner);
+        let now = self.clock.now();
+        let at = inner.sessions.iter().position(|b| b.id == id).ok_or("This session is not running")?;
+        if let Ok(lock) = self.lock_for(&inner.sessions[at], lock, now) {
+            inner.sessions[at].lock = lock;
+        }
+        let session = &mut inner.sessions[at];
+        if !session.starts.iter().any(|s| s == origin) {
+            session.starts.push(origin.to_string());
+        }
+        self.save_all(&mut inner);
+        Ok(())
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
+    /// Stops the starts `starts` of the running session `id` (as another computer stopped them,
+    /// `replica.rs`): it ends once none of its starts is left, and only as `stop` would end it (not while
+    /// it is locked). `Ok(true)`: it ended; `Ok(false)`: it goes on for a start not stopped yet. Nothing
+    /// changes when it is refused.
+    pub fn stop_starts(&self, id: &str, starts: &[String], answered: bool) -> Result<bool, String> {
+        let left: Vec<String> = {
+            let mut inner = self.inner.locked();
+            self.expire(&mut inner);
+            let session = inner.sessions.iter().find(|b| b.id == id).ok_or("This session is not running")?;
+            session.starts.iter().filter(|s| !starts.contains(s)).cloned().collect()
+        };
+        if left.is_empty() {
+            return self.stop(id, answered).map(|()| true);
+        }
+        let mut inner = self.inner.locked();
+        if let Some(session) = inner.sessions.iter_mut().find(|b| b.id == id) {
+            session.starts = left;
+        }
+        self.save_all(&mut inner);
+        Ok(false)
+    }
+
+    /// The starts the running session `id` stands for (empty when it does not run).
+    pub fn starts_of(&self, id: &str) -> Vec<String> {
+        let mut inner = self.inner.locked();
+        self.expire(&mut inner);
+        inner.sessions.iter().find(|b| b.id == id).map(|b| b.starts.clone()).unwrap_or_default()
+    }
+
+    /// How the running session `id` is locked.
+    pub fn lock_of(&self, id: &str) -> Option<RunLock> {
+        let mut inner = self.inner.locked();
+        self.expire(&mut inner);
+        inner.sessions.iter().find(|b| b.id == id).map(|b| b.lock.clone())
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
+    /// Whether a session started by `at` runs.
+    pub fn started_by(&self, at: SystemTime) -> bool {
+        let at = state::to_unix(at).unwrap_or(0);
+        let mut inner = self.inner.locked();
+        self.expire(&mut inner);
+        inner.sessions.iter().any(|b| b.started <= at)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))] // used by the sync client, still to come
+    /// Ends every session started by `at` whatever its lock (an unlock made on another computer at
+    /// `at`, `replica.rs`): one started after it is not ended by it.
+    pub fn reset_started_by(&self, at: SystemTime) {
+        let at = state::to_unix(at).unwrap_or(0);
+        let mut inner = self.inner.locked();
+        inner.sessions.retain(|b| b.started > at);
+        self.save_all(&mut inner);
+    }
+
+    /// Moves the session's clock on to `time` (tests only).
+    #[cfg(test)]
+    pub fn move_to(&self, time: SystemTime) {
+        self.clock.at_least(time);
     }
 
     /// Takes one of the session's breaks now (`allowance::Run::take_break`): only while its condition
@@ -875,6 +1030,9 @@ impl Sessions {
                 condition,
                 zone: Zone::named(&saved.zone),
                 allowance: saved.allowance,
+                // A session saved without its starts stands for one of its own.
+                starts: if saved.starts.is_empty() { vec![crate::replica::new_id()] } else { saved.starts },
+                started: saved.started,
             });
         }
         let mut inner = self.inner.locked();
@@ -1119,6 +1277,8 @@ impl Sessions {
                 condition: b.condition.clone(),
                 zone: b.zone.name().to_string(),
                 allowance: b.allowance.clone(),
+                starts: b.starts.clone(),
+                started: b.started,
             })
             .collect();
         store.save(&saved)
@@ -1745,6 +1905,8 @@ mod tests {
             condition: None,
             zone: "fixed:+0".into(),
             allowance: None,
+            starts: vec![id.into()],
+            started: 0,
         };
         store
             .save(&[
