@@ -4,7 +4,7 @@ The sync server keeps the computers that sync in step: each sends it what was do
 
 ## Running it
 
-The image is `ghcr.io/maakbaas/bullseye` (`:latest` is the last release, `:main` the last build of main), for amd64 and arm64. [docker-compose.yml](docker-compose.yml) runs it: put your own token in.
+The image is `ghcr.io/maakbaas/bullseye` (`:latest` is the last release, `:main` the last build of main), for amd64. [docker-compose.yml](docker-compose.yml) runs it: put your own token in.
 
 | Variable | Default | What |
 |---|---|---|

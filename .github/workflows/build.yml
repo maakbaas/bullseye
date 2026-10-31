@@ -81,8 +81,9 @@ jobs:
 
   # The sync server (server/): its checks, the platform-free modules' tests on Linux (which the server
   # is built from), and its Docker image. The image is published to GitHub's container registry from
-  # main (`:main`) and from a tag `v1.2.3` (`:1.2.3`, `:1.2` and `:latest`); other branches only build
-  # it, for amd64.
+  # main (`:main`) and from a tag `v1.2.3` (`:1.2.3`, `:1.2` and `:latest`), for amd64 only (arm64 is
+  # emulated on GitHub's runners, which made the build take a quarter of an hour); other branches only
+  # build it.
   sync-server:
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -120,7 +121,6 @@ jobs:
       - name: Test the platform-free modules on Linux
         run: cargo test --manifest-path scripts/linux-tests/Cargo.toml -- --skip only_the_installed_app --skip the_app_of_a_program
 
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -144,7 +144,7 @@ jobs:
         with:
           context: .
           file: server/Dockerfile
-          platforms: ${{ env.PUBLISH == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          platforms: linux/amd64
           push: ${{ env.PUBLISH == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
