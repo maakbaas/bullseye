@@ -241,6 +241,9 @@ struct Kept {
     /// any more (wiped, restored from a backup) is told apart (`Failure::Diverged`); none: not known.
     #[serde(default)]
     last: Option<String>,
+    /// When the last entry applied was done, or the snapshot joined from was last changed (`Entry::at`).
+    #[serde(default)]
+    seen: Option<u64>,
     /// What was done here and not yet numbered by the server, in the order it was done.
     #[serde(default)]
     pending: Vec<Entry>,
@@ -276,9 +279,9 @@ impl Replica {
 
     /// Joins the log from its entry `head` on (what came before is in the settings taken over when
     /// connecting, never replayed), as a new computer.
-    pub fn connect(&self, head: u64, last: Option<String>) -> Result<String, String> {
+    pub fn connect(&self, head: u64, last: Option<String>, seen: Option<u64>) -> Result<String, String> {
         let device = new_id();
-        let next = Kept { device: device.clone(), confirmed: Some(head), last, pending: Vec::new(), held: Vec::new() };
+        let next = Kept { device: device.clone(), confirmed: Some(head), last, seen, pending: Vec::new(), held: Vec::new() };
         let mut kept = self.kept.locked();
         self.write(&next)?;
         *kept = next;
@@ -289,11 +292,12 @@ impl Replica {
     /// is still to be sent and what waits: after being away longer than the log keeps (the snapshot taken
     /// over then is applied by `adopt`), or when the server's log is not the one synced with (what is here
     /// is sent again then: `syncing.rs`).
-    pub fn rejoin(&self, head: u64, last: Option<String>) {
+    pub fn rejoin(&self, head: u64, last: Option<String>, seen: Option<u64>) {
         let mut kept = self.kept.locked();
         if kept.confirmed.is_some() {
             kept.confirmed = Some(head);
             kept.last = last;
+            kept.seen = seen.or(kept.seen);
             self.save(&kept);
         }
     }
@@ -343,6 +347,11 @@ impl Replica {
         self.kept.locked().confirmed
     }
 
+    /// When what this computer last took in was done (`Kept::seen`).
+    pub fn seen(&self) -> Option<u64> {
+        self.kept.locked().seen
+    }
+
     /// The id of the last entry applied, if it is known.
     pub fn last(&self) -> Option<String> {
         self.kept.locked().last.clone()
@@ -390,6 +399,7 @@ impl Replica {
             confirmed = seq;
             kept.confirmed = Some(seq);
             kept.last = entry.as_ref().map(|entry| entry.id.clone());
+            kept.seen = entry.as_ref().map(|entry| entry.at).or(kept.seen);
             let Some(entry) = entry else { continue };
             if entry.device == kept.device {
                 kept.pending.retain(|own| own.id != entry.id);
@@ -549,7 +559,7 @@ mod tests {
         let context = Context::new(sessions, Definitions::at(Some(dir.join("sessions.json"))), Arc::new(AppSlot::new(false)))
             .with_unlock(UnlockDelay::at(Some(dir.join("unlock.json"))));
         let replica = Replica::at(Some(dir.join("replica.json")));
-        replica.connect(0, None).unwrap();
+        replica.connect(0, None, None).unwrap();
         Node { context, replica, dir }
     }
 
@@ -1285,11 +1295,11 @@ mod tests {
         assert!(!Replica::at(Some(file.clone())).connected());
         // What a connected computer keeps comes back.
         let replica = Replica::at(Some(file.clone()));
-        let device = replica.connect(7, None).unwrap();
+        let device = replica.connect(7, None, None).unwrap();
         replica.record(Action::AskForUnlock, SystemTime::now()).unwrap();
         let again = Replica::at(Some(file));
         assert_eq!((again.device(), again.confirmed(), again.outbox().len()), (device, Some(7), 1));
-        assert!(Replica::at(None).connect(0, None).is_ok());
+        assert!(Replica::at(None).connect(0, None, None).is_ok());
     }
 
     #[test]
@@ -1307,7 +1317,7 @@ mod tests {
         assert_eq!(held.last().unwrap().why, "again");
         // And the outbox too.
         let replica = Replica::at(None);
-        replica.connect(0, None).unwrap();
+        replica.connect(0, None, None).unwrap();
         for _ in 0..MAX_PENDING + 2 {
             replica.record(Action::AskForUnlock, SystemTime::now());
         }

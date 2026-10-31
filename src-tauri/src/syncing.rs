@@ -16,7 +16,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use crate::handler::{self, Context};
+use crate::definitions::Library;
+use crate::handler::{self, Context, Outcome};
 use crate::replica::{Action, Entry, Replica};
 use crate::sync::LockExt;
 use crate::sync_api::{
@@ -168,15 +169,17 @@ impl Syncer {
         std::mem::take(&mut *flag)
     }
 
-    /// Sends what was done here and not yet taken in. Nothing while not connected.
+    /// Sends what was done here and not yet taken in. Nothing while not connected. A log this computer does not know
+    /// refuses it: the next round finds out why (`exchange`).
     pub fn push(&self) -> Result<(), String> {
         let Some(transport) = self.transport.locked().clone() else { return Ok(()) };
-        self.send(transport.as_ref())
+        self.send(transport.as_ref()).map_err(|f| f.words())
     }
 
-    fn send(&self, transport: &dyn Transport) -> Result<(), String> {
+    fn send(&self, transport: &dyn Transport) -> Result<(), Failure> {
+        let (after, last) = (self.replica.confirmed(), self.replica.last());
         for chunk in self.replica.outbox().chunks(MAX_POST) {
-            transport.post(Posted { entries: chunk.iter().map(Entry::text).collect() }).map_err(|f| f.words())?;
+            transport.post(Posted { entries: chunk.iter().map(Entry::text).collect(), after, last: last.clone() })?;
         }
         Ok(())
     }
@@ -196,7 +199,7 @@ impl Syncer {
             }
             fs::write(path, json).map_err(|e| format!("Cannot save: {e}"))?;
         }
-        self.replica.connect(snapshot.head, snapshot.last.clone())?;
+        self.replica.connect(snapshot.head, snapshot.last.clone(), snapshot.newest)?;
         *self.settings.locked() = settings;
         *self.transport.locked() = Some(transport);
         match join {
@@ -220,12 +223,20 @@ impl Syncer {
         let _turn = self.turn();
         let now = context.now();
         for action in actions_of(snapshot) {
-            self.replica.adopt(context, action, now);
+            let import = matches!(action, Action::Import { .. });
+            if matches!(self.replica.adopt(context, action, now), Outcome::Held(_)) && import {
+                // Not all at once while a session here is locked (it waits): each target, condition and
+                // session on its own, under the same rules, so what blocks more is made now and what
+                // blocks less waits, as for any change from elsewhere.
+                for item in items_of(&snapshot.library) {
+                    self.replica.adopt(context, item, now);
+                }
+            }
         }
     }
 
     fn rejoin(&self, context: &Context, snapshot: &Snapshot) {
-        self.replica.rejoin(snapshot.head, snapshot.last.clone());
+        self.replica.rejoin(snapshot.head, snapshot.last.clone(), snapshot.newest);
         self.adopt(context, snapshot);
     }
 
@@ -278,7 +289,16 @@ impl Syncer {
 
     fn exchange(&self, context: &Context, transport: &dyn Transport, wait: Duration) -> Result<(), String> {
         self.share_use(context);
-        self.send(transport)?;
+        match self.send(transport) {
+            Ok(()) => {}
+            // Not posted to a log this computer does not know: it is told so as by the log, below.
+            Err(Failure::Diverged) => {
+                self.diverged(context, transport)?;
+                self.report(context, transport);
+                return Ok(());
+            }
+            Err(failure) => return Err(failure.words()),
+        }
         // Nothing to wait for while something of this computer's is still to come back.
         let wait = if self.replica.outbox().is_empty() { wait.min(Duration::from_secs(MAX_WAIT)) } else { Duration::ZERO };
         let after = self.replica.confirmed().unwrap_or(0);
@@ -292,18 +312,28 @@ impl Syncer {
                 let snapshot = transport.snapshot().map_err(|f| f.words())?;
                 self.rejoin(context, &snapshot);
             }
-            // The server is not the one synced with (wiped, or restored from a backup): its log is joined
-            // where it is, and what is here goes to it again, as when connecting with this computer's own
-            // settings. Nothing is taken from it: what it has now may be less than what was shared.
-            Err(Failure::Diverged) => {
-                let snapshot = transport.snapshot().map_err(|f| f.words())?;
-                let _turn = self.turn();
-                self.replica.rejoin(snapshot.head, snapshot.last);
-                self.send_mine(context);
-            }
+            // The server is not the one synced with (wiped, or restored from a backup). Whichever is newer
+            // wins: what the server has now, if it changed after what this computer saw last (another
+            // computer filled it again since: this one was away), taken over as after a long absence; or
+            // what is here, sent to it again as when connecting with this computer's own settings (it is
+            // empty, or older). Either way under each computer's rules: no lock gets looser.
+            Err(Failure::Diverged) => self.diverged(context, transport)?,
             Err(failure) => return Err(failure.words()),
         }
         self.report(context, transport);
+        Ok(())
+    }
+
+    /// What is done once the server is found not to be the one synced with (`exchange`).
+    fn diverged(&self, context: &Context, transport: &dyn Transport) -> Result<(), String> {
+        let snapshot = transport.snapshot().map_err(|f| f.words())?;
+        if newer(snapshot.newest, self.replica.seen()) {
+            self.rejoin(context, &snapshot);
+        } else {
+            let _turn = self.turn();
+            self.replica.rejoin(snapshot.head, snapshot.last, snapshot.newest);
+            self.send_mine(context);
+        }
         Ok(())
     }
 
@@ -402,6 +432,14 @@ fn ago(now: u64, at: u64) -> String {
 
 /// What a snapshot comes to as entries: everything defined, the unlock settings, and each start of each
 /// running session.
+/// What `library` holds, one save each: what it uses before what uses it.
+fn items_of(library: &Library) -> Vec<Action> {
+    let conditions = library.conditions.iter().map(|condition| Action::SaveCondition { condition: condition.clone() });
+    let targets = library.targets.iter().map(|target| Action::SaveTarget { target: target.clone() });
+    let sessions = library.sessions.iter().map(|session| Action::SaveSession { session: session.clone() });
+    conditions.chain(targets).chain(sessions).collect()
+}
+
 pub fn actions_of(snapshot: &Snapshot) -> Vec<Action> {
     let mut actions = vec![
         Action::Import { library: snapshot.library.clone() },
@@ -414,6 +452,16 @@ pub fn actions_of(snapshot: &Snapshot) -> Vec<Action> {
         }
     }
     actions
+}
+
+/// Whether the server's newest entry (`newest`) was done after what this computer saw last (`seen`). One
+/// that never saw anything takes what the server has.
+fn newer(newest: Option<u64>, seen: Option<u64>) -> bool {
+    match (newest, seen) {
+        (Some(newest), Some(seen)) => newest > seen,
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
 }
 
 /// An entry that waits, in a few words: what it would do.
@@ -461,7 +509,7 @@ pub fn describe(action: &Action, library: &crate::definitions::Library) -> Strin
 mod tests {
     use super::*;
     use crate::definitions::tests::{session, target};
-    use crate::definitions::{Definition, Kind, Library};
+    use crate::definitions::{Definition, Kind};
     use crate::handler::handle;
     use crate::hub::{self, Hub};
     use crate::lock::Lock;
@@ -713,6 +761,56 @@ mod tests {
         // (On A, B's unlock waits for A's own countdown, as any unlock from elsewhere does.)
         assert!(b.context.library().session("work").is_some() && b.context.library().target("news").is_some());
         assert_eq!(a.context.library(), b.context.library());
+    }
+
+    #[test]
+    fn a_computer_away_since_before_a_wipe_takes_what_the_others_gave_the_server_since() {
+        let server = server("stale");
+        defined(&server, Lock::timed_for("3h"));
+        let (a, b) = (computer("stale-a", &server), computer("stale-b", &server));
+        assert_eq!(a.connect(Join::UseServer), Response::Done);
+        assert_eq!(b.connect(Join::UseServer), Response::Done);
+        a.ok(Request::Start { id: "work".into() });
+        sync(&[&a, &b]);
+        assert!(b.locked());
+
+        // B is away. An hour later A blocks more and adds a target; the server is wiped and A fills it again.
+        a.later(Duration::from_secs(3600));
+        b.later(Duration::from_secs(3600));
+        a.ok(Request::SaveTarget { target: target("social", &["youtube.com", "x.com"]) });
+        a.ok(Request::SaveTarget { target: target("news", &["news.com"]) });
+        a.ok(Request::SetUnlockDelay { delay: "2h".into() });
+        server.replace(hub::tests::dir("syncing-stale-empty"));
+        sync(&[&a]);
+        sync(&[&a]);
+        assert!(server.hub().snapshot().unwrap().library.target("news").is_some());
+        // B did something of its own while away.
+        b.ok(Request::SaveTarget { target: target("mine", &["mine.com"]) });
+
+        // B comes back: what it had (social without x.com, no news, a 1 hour delay) does not undo A's.
+        sync(&[&a, &b]);
+        sync(&[&a, &b]);
+        for computer in [&a, &b] {
+            let library = computer.context.library();
+            let mut filters = library.target("social").unwrap().entries.filters.clone();
+            filters.sort();
+            assert_eq!(filters, vec!["x.com", "youtube.com"]);
+            assert!(library.target("news").is_some() && library.target("mine").is_some(), "{library:?}");
+            assert_eq!(computer.context.unlock().delay(), 2 * 3600);
+            assert!(computer.runs("work") && computer.locked());
+            assert!(computer.status().error.is_none(), "{:?}", computer.status().error);
+        }
+        assert_eq!(a.context.library(), b.context.library());
+        assert_eq!(server.hub().snapshot().unwrap().library, a.context.library());
+    }
+
+    #[test]
+    fn the_newer_of_the_server_and_what_a_computer_saw_last_wins() {
+        assert!(newer(Some(2), Some(1)));
+        assert!(!newer(Some(1), Some(1)), "a backup of the very moment seen: what is here goes to it");
+        assert!(!newer(Some(1), Some(2)));
+        assert!(newer(Some(1), None), "a computer that saw nothing takes what the server has");
+        assert!(!newer(None, Some(1)) && !newer(None, None), "an empty server is given what is here");
     }
 
     #[test]

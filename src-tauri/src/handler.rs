@@ -127,6 +127,7 @@ pub fn snapshot(context: &Context, head: u64) -> Snapshot {
     Snapshot {
         head,
         last: None,
+        newest: None,
         library,
         unlock_delay: format!("{}s", context.unlock.delay()),
         unlock_way: context.unlock.way().map(|way| way.lock),

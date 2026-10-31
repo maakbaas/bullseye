@@ -96,7 +96,7 @@ fn the_apps_own_client_talks_to_it_over_http() {
     };
     thread::sleep(Duration::from_millis(100));
     let started = Instant::now();
-    http.post(Posted { entries: vec![entry(Action::AskForUnlock)] }).unwrap();
+    http.post(Posted { entries: vec![entry(Action::AskForUnlock)], ..Posted::default() }).unwrap();
     assert_eq!(waiting.join().unwrap().entries.len(), 1);
     assert!(started.elapsed() < Duration::from_secs(5));
     // Requests, reports.
@@ -107,6 +107,8 @@ fn the_apps_own_client_talks_to_it_over_http() {
     // A computer further than this log goes, or at another entry: not the log it synced with (409).
     assert!(matches!(http.log(9, None, Duration::ZERO), Err(Failure::Diverged)));
     assert!(matches!(http.log(1, Some("0123abcd"), Duration::ZERO), Err(Failure::Diverged)));
+    let posted = Posted { entries: vec![entry(Action::AskForUnlock)], after: Some(1), last: Some("0123abcd".into()) };
+    assert!(matches!(http.post(posted), Err(Failure::Diverged)));
     assert!(http.log(1, Some("not an id!"), Duration::ZERO).is_ok(), "what is not an id is not sent");
     // A body over the limit is refused.
     let big =
@@ -122,7 +124,7 @@ fn a_computer_missing_too_much_is_told_so_over_http() {
     let entries: Vec<String> = (0..hub::KEEP + 5).map(|_| entry(Action::AskToStop { id: "x".into() })).collect();
     let http = Http::new(&address, TOKEN).unwrap();
     for chunk in entries.chunks(crate::sync_api::MAX_POST) {
-        http.post(Posted { entries: chunk.to_vec() }).unwrap();
+        http.post(Posted { entries: chunk.to_vec(), ..Posted::default() }).unwrap();
     }
     assert!(matches!(http.log(0, None, Duration::ZERO), Err(Failure::Gone)));
 }

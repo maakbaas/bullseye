@@ -55,11 +55,17 @@ pub struct Hub {
     devices_path: Option<PathBuf>,
 }
 
-/// The id of the entry numbered `seq`, if the log still serves it.
-fn id_at(log: &Log, seq: u64) -> Option<String> {
+/// Whether `log` is the one a computer that read it up to `after`, the entry `last`, synced with: it reads
+/// no further than the log goes, and finds that entry there if the log still serves it.
+fn known(log: &Log, after: u64, last: Option<&str>) -> bool {
+    after <= log.head && last.is_none_or(|last| entry_at(log, after).is_none_or(|here| here.id == last))
+}
+
+/// The entry numbered `seq`, if the log still serves it.
+fn entry_at(log: &Log, seq: u64) -> Option<Entry> {
     let oldest = log.entries.front()?.0;
     let (_, text) = log.entries.get(usize::try_from(seq.checked_sub(oldest)?).ok()?)?;
-    Entry::parse(text).ok().map(|entry| entry.id)
+    Entry::parse(text).ok()
 }
 
 impl Hub {
@@ -173,7 +179,12 @@ impl Transport for Hub {
     fn snapshot(&self) -> Result<Snapshot, Failure> {
         // Under the lock of the log, so the view is what the log comes to up to its head.
         let log = self.log.locked();
-        Ok(Snapshot { last: id_at(&log, log.head), ..handler::snapshot(&self.context, log.head) })
+        let newest = entry_at(&log, log.head);
+        Ok(Snapshot {
+            last: newest.as_ref().map(|entry| entry.id.clone()),
+            newest: newest.map(|entry| entry.at),
+            ..handler::snapshot(&self.context, log.head)
+        })
     }
 
     fn log(&self, after: u64, last: Option<&str>, wait: Duration) -> Result<LogPage, Failure> {
@@ -181,8 +192,7 @@ impl Transport for Hub {
         let mut log = self.log.locked();
         // Read further than this log goes, or another entry where the computer stopped: not the log it
         // synced with (wiped, or restored from a backup). Checked once: what comes while waiting follows it.
-        let known = last.is_none_or(|last| id_at(&log, after).is_none_or(|here| here == last));
-        if after > log.head || !known {
+        if !known(&log, after, last) {
             return Err(Failure::Diverged);
         }
         loop {
@@ -209,6 +219,9 @@ impl Transport for Hub {
             return Err(Failure::Other(format!("At most {MAX_POST} entries at once")));
         }
         let mut log = self.log.locked();
+        if posted.after.is_some_and(|after| !known(&log, after, posted.last.as_deref())) {
+            return Err(Failure::Diverged);
+        }
         for text in posted.entries {
             let Ok(entry) = Entry::parse(&text) else { continue };
             if log.ids.contains(&entry.id) || entry.device == SERVER {
@@ -293,10 +306,14 @@ pub mod tests {
         let dir = dir("kept");
         let hub = Hub::new(context(&dir), Some(dir.clone()));
         let one = entry("a", Action::SaveTarget { target: target("social", &["a.com"]) });
-        let posted =
-            hub.post(Posted { entries: vec![one.clone(), one.clone(), "garbage".into(), entry(SERVER, Action::AskForUnlock)] }).unwrap();
+        let posted = hub
+            .post(Posted {
+                entries: vec![one.clone(), one.clone(), "garbage".into(), entry(SERVER, Action::AskForUnlock)],
+                ..Posted::default()
+            })
+            .unwrap();
         assert_eq!(posted.head, 1);
-        assert_eq!(hub.post(Posted { entries: vec![one] }).unwrap().head, 1);
+        assert_eq!(hub.post(Posted { entries: vec![one], ..Posted::default() }).unwrap().head, 1);
         // Mirrored into the view.
         assert!(hub.snapshot().unwrap().library.target("social").is_some());
         let page = hub.log(0, None, Duration::ZERO).unwrap();
@@ -307,7 +324,7 @@ pub mod tests {
         assert_eq!(again.head(), 1);
         assert_eq!(again.log(0, None, Duration::ZERO).unwrap(), page);
         assert!(again.snapshot().unwrap().library.target("social").is_some());
-        assert!(hub.post(Posted { entries: vec![String::new(); MAX_POST + 1] }).is_err());
+        assert!(hub.post(Posted { entries: vec![String::new(); MAX_POST + 1], ..Posted::default() }).is_err());
     }
 
     #[test]
@@ -322,7 +339,7 @@ pub mod tests {
             std::thread::spawn(move || hub.log(0, None, Duration::from_secs(10)).unwrap())
         };
         std::thread::sleep(Duration::from_millis(50));
-        hub.post(Posted { entries: vec![entry("a", Action::AskForUnlock)] }).unwrap();
+        hub.post(Posted { entries: vec![entry("a", Action::AskForUnlock)], ..Posted::default() }).unwrap();
         assert_eq!(waiting.join().unwrap().entries.len(), 1);
         assert!(started.elapsed() < Duration::from_secs(5));
     }
@@ -333,7 +350,7 @@ pub mod tests {
         let hub = Hub::new(context(&dir), Some(dir.clone()));
         let entries: Vec<String> = (0..KEEP + KEEP / 4 + 10).map(|_| entry("a", Action::AskToStop { id: "x".into() })).collect();
         for chunk in entries.chunks(MAX_POST) {
-            hub.post(Posted { entries: chunk.to_vec() }).unwrap();
+            hub.post(Posted { entries: chunk.to_vec(), ..Posted::default() }).unwrap();
         }
         assert_eq!(hub.log(0, None, Duration::ZERO), Err(Failure::Gone));
         let head = hub.head();
@@ -351,11 +368,13 @@ pub mod tests {
     fn a_computer_whose_log_this_is_not_is_told_so() {
         let dir = dir("diverged");
         let hub = Hub::new(context(&dir), Some(dir.clone()));
-        assert_eq!(hub.snapshot().unwrap().last, None, "an empty log has no last entry");
+        let snapshot = hub.snapshot().unwrap();
+        assert_eq!((snapshot.last, snapshot.newest), (None, None), "an empty log has no last entry");
         let entries: Vec<String> = (0..3).map(|_| entry("a", Action::AskToStop { id: "x".into() })).collect();
         let ids: Vec<String> = entries.iter().map(|text| Entry::parse(text).unwrap().id).collect();
-        hub.post(Posted { entries }).unwrap();
+        hub.post(Posted { entries, ..Posted::default() }).unwrap();
         assert_eq!(hub.snapshot().unwrap().last.as_deref(), Some(ids[2].as_str()));
+        assert_eq!(hub.snapshot().unwrap().newest, Some(Entry::parse(&hub.log(2, None, Duration::ZERO).unwrap().entries[0].1).unwrap().at));
         // The entry where it stopped is the one it had: what came after.
         assert_eq!(hub.log(2, Some(&ids[1]), Duration::ZERO).unwrap().entries.len(), 1);
         assert_eq!(hub.log(3, Some(&ids[2]), Duration::ZERO).unwrap().entries.len(), 0);
@@ -366,6 +385,17 @@ pub mod tests {
         assert_eq!(hub.log(9, Some("abc"), Duration::ZERO), Err(Failure::Diverged));
         let wiped = super::tests::dir("diverged-wiped");
         assert_eq!(Hub::new(context(&wiped), Some(wiped)).log(3, Some(&ids[2]), Duration::ZERO), Err(Failure::Diverged));
+
+        // A post is checked the same way: nothing goes into a log the computer does not know.
+        let post = |after, last: Option<&String>| {
+            let entries = vec![entry("a", Action::AskToStop { id: "x".into() })];
+            hub.post(Posted { entries, after, last: last.cloned() })
+        };
+        assert_eq!(post(Some(2), Some(&ids[0])), Err(Failure::Diverged));
+        assert_eq!(post(Some(9), None), Err(Failure::Diverged));
+        assert_eq!(hub.head(), 3, "nothing refused was kept");
+        assert_eq!(post(Some(3), Some(&ids[2])).unwrap().head, 4);
+        assert_eq!(post(None, Some(&ids[0])).unwrap().head, 5, "nothing to check");
     }
 
     #[test]

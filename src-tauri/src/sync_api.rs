@@ -8,7 +8,7 @@
 //! | `GET /api/health` | | `ok` |
 //! | `GET /api/snapshot` | | `Snapshot`: what is defined, the unlock settings, what runs, the log's head |
 //! | `GET /api/log?after=N&last=ID&wait=S` | | `LogPage`: the entries after `N`, waiting up to `S` seconds for one; `410` if `N` is older than the log keeps, `409` if the log has no `N`, or another entry than `ID` at `N` (it was wiped, or restored from a backup) |
-//! | `POST /api/log` | `Posted` | `Appended`: entries of a computer's, each once (by id) |
+//! | `POST /api/log` | `Posted` | `Appended`: entries of a computer's, each once (by id); `409` as for `GET` if its `after` and `last` do not match |
 //! | `POST /api/request` | a `proto::Request` | its `proto::Response`: the server's own view, under the same rules as a computer, and shared if done |
 //! | `PUT /api/devices/<id>` | `DeviceReport` | `204` |
 //! | `GET /api/devices` | | `[Device]` |
@@ -52,6 +52,11 @@ pub struct Snapshot {
     /// empty.
     #[serde(default)]
     pub last: Option<String>,
+    /// When the entry at `head` was done (`replica::Entry::at`): a computer that finds the log is not the
+    /// one it synced with takes this snapshot over if it is newer than what it saw last, and sends its
+    /// own otherwise (`syncing.rs`).
+    #[serde(default)]
+    pub newest: Option<u64>,
     /// With password hashes: a computer needs them.
     pub library: Library,
     pub unlock_delay: String,
@@ -70,6 +75,13 @@ pub struct LogPage {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Posted {
     pub entries: Vec<String>,
+    /// Where the computer posting stands in the log, as for `log`: a post to a log that is not the one it
+    /// synced with (wiped, or restored from a backup) is refused (`Failure::Diverged`), so nothing goes
+    /// into it before the computer has noticed. Nothing given: not checked.
+    #[serde(default)]
+    pub after: Option<u64>,
+    #[serde(default)]
+    pub last: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
