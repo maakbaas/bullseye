@@ -1,12 +1,12 @@
-# The Bullseye sync server, from the image published with each release. Put the token in a `.env`
-# file next to this one (BULLSEYE_TOKEN=...: at least 16 characters, e.g. from `openssl rand -hex 32`),
-# and your reverse proxy in front of port 8080 for HTTPS.
+# The Bullseye sync server, from the image published with each release. Replace the token below with
+# your own (at least 16 characters, e.g. from `openssl rand -hex 32`), and put your reverse proxy in
+# front of port 8080 for HTTPS.
 services:
   bullseye-sync:
     image: ghcr.io/maakbaas/bullseye-sync:latest
     restart: unless-stopped
     environment:
-      BULLSEYE_TOKEN: ${BULLSEYE_TOKEN:?set BULLSEYE_TOKEN in .env}
+      BULLSEYE_TOKEN: "change-me-to-a-long-random-token"
     volumes:
       - bullseye-data:/data
     ports:

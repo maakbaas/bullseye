@@ -84,6 +84,11 @@ fn main() {
         eprintln!("bullseye-sync: set BULLSEYE_TOKEN to a token of at least {} characters", sync_api::MIN_TOKEN);
         std::process::exit(2);
     }
+    // The example's token (docker-compose.yml, the README) is known to everyone.
+    if token.trim() == "change-me-to-a-long-random-token" {
+        eprintln!("bullseye-sync: BULLSEYE_TOKEN is still the example's; set a token of your own");
+        std::process::exit(2);
+    }
     let data = PathBuf::from(std::env::var("BULLSEYE_DATA").unwrap_or_else(|_| "/data".into()));
     let listen = std::env::var("BULLSEYE_LISTEN").unwrap_or_else(|_| "0.0.0.0:8080".into());
     if let Err(e) = std::fs::create_dir_all(data.join("view")) {

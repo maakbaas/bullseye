@@ -64,13 +64,13 @@ With a Bullseye sync server, all your computers share their sessions, targets, c
 **Run the server** with Docker, behind your own reverse proxy for HTTPS (it speaks plain HTTP on port 8080). A token of at least 16 characters guards it:
 
 ```yaml
-# docker-compose.yml, with BULLSEYE_TOKEN=... in .env next to it (openssl rand -hex 32 makes one)
+# docker-compose.yml; put your own token in (openssl rand -hex 32 makes one)
 services:
   bullseye-sync:
     image: ghcr.io/maakbaas/bullseye-sync:latest
     restart: unless-stopped
     environment:
-      BULLSEYE_TOKEN: ${BULLSEYE_TOKEN}
+      BULLSEYE_TOKEN: "change-me-to-a-long-random-token"
     volumes:
       - bullseye-data:/data
     ports:
