@@ -69,6 +69,8 @@ wmi = { version = "0.18", default-features = false }
 # the requests of webhook conditions (src/webhook.rs): blocking, TLS with certificate checks
 ureq = "2"
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+# RSA signatures of timestamps (src/timestamp/), as rustls checks certificates with it
+ring = "0.17"
 
 [profile.dev]
 incremental = false       # don't accumulate a multi-GB incremental cache

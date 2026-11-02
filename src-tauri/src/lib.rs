@@ -38,6 +38,7 @@ mod sync_api;
 mod syncing;
 mod system_path;
 mod tab_closer;
+mod timestamp;
 mod ui;
 mod unlock;
 mod wake;

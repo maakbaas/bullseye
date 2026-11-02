@@ -6,6 +6,7 @@
 //! | `BULLSEYE_TOKEN` | (required) | The token every request but `/api/health` carries |
 //! | `BULLSEYE_DATA` | `/data` | The folder for the log, the computers and the view |
 //! | `BULLSEYE_LISTEN` | `0.0.0.0:8080` | Where to listen; HTTPS is the reverse proxy's |
+//! | `BULLSEYE_TIMESTAMPS` | `http://timestamp.digicert.com` | The timestamp authority (RFC 3161) each entry is timestamped by, so a computer that is off or asleep does it as of then when it is back; `off` for none |
 //!
 //! The modules below are the app's own, built from src-tauri/src; the few that need Windows are the
 //! stand-ins of scripts/linux-tests (and `boot.rs` here).
@@ -62,6 +63,8 @@ pub mod sync;
 pub mod sync_api;
 #[path = "../../src-tauri/src/syncing.rs"]
 pub mod syncing;
+#[path = "../../src-tauri/src/timestamp/mod.rs"]
+pub mod timestamp;
 #[path = "../../src-tauri/src/unlock.rs"]
 pub mod unlock;
 #[path = "../../src-tauri/src/web.rs"]
@@ -94,7 +97,21 @@ fn main() {
     }
     // Internet time, as a computer's service has it, so the view's times are the computers'.
     clock::spawn_sync();
-    let hub = Arc::new(hub::Hub::new(hub::view(&data.join("view")), Some(data.clone())));
+    let hub = hub::Hub::new(hub::view(&data.join("view")), Some(data.clone()));
+    let timestamps = std::env::var("BULLSEYE_TIMESTAMPS").unwrap_or_else(|_| timestamp::URL.into());
+    let hub = Arc::new(match timestamps.trim() {
+        "off" | "" => hub,
+        url => {
+            let url = url.to_string();
+            hub.with_stamper(Box::new(move |digest| match timestamp::fetch(&url, digest) {
+                Ok(token) => Some(token),
+                Err(why) => {
+                    eprintln!("bullseye-sync: an entry goes without a timestamp: {why}");
+                    None
+                }
+            }))
+        }
+    });
     // The window's page, for managing every computer from a browser (the image has it in /app/web).
     let page = PathBuf::from(std::env::var("BULLSEYE_PAGE").unwrap_or_else(|_| "/app/web".into()));
     let api = http::Api::new(hub, token.trim());

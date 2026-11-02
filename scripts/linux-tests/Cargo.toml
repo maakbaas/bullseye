@@ -29,6 +29,8 @@ sha2 = "0.10"
 ureq = "2"
 windows-sys = { path = "windows-sys" }
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+# RSA signatures of timestamps (src/timestamp/), as rustls checks certificates with it
+ring = "0.17"
 
 # PBKDF2 runs 600 000 rounds; unoptimised that takes seconds per password check.
 [profile.dev.package.sha2]

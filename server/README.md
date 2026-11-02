@@ -12,6 +12,7 @@ The image is `ghcr.io/maakbaas/bullseye` (`:latest` is the last release, `:main`
 | `BULLSEYE_DATA` | `/data` | Where everything is kept: a volume |
 | `BULLSEYE_LISTEN` | `0.0.0.0:8080` | Where it listens |
 | `BULLSEYE_PAGE` | `/app/web` | The window's page, served at `/`; a folder without `index.html`: no page |
+| `BULLSEYE_TIMESTAMPS` | `http://timestamp.digicert.com` | The timestamp authority (RFC 3161) every entry is timestamped by as it comes in, so a computer that was off or asleep does it as of then when it is back; `off` for none. It needs to reach that address (plain HTTP: the token is signed) |
 
 It speaks plain HTTP: put it behind your own reverse proxy for HTTPS. **The token is full control** over every computer that syncs, within each computer's rules.
 

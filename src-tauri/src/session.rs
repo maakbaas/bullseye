@@ -319,11 +319,14 @@ pub enum RunLock {
         boot: String,
     },
     /// Stopped by asking to and waiting `delay` seconds, on internet time: `asked` is when it was
-    /// asked for (milliseconds since the Unix epoch), `None` while it is not.
+    /// asked for (milliseconds since the Unix epoch), `None` while it is not; `aborted` when a wait
+    /// was last aborted, which a wait asked for as of earlier (`clock::as_of`) cannot start before.
     Delay {
         delay: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         asked: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        aborted: Option<u64>,
     },
     /// Stopped only by typing `text` in exactly.
     Text {
@@ -413,6 +416,9 @@ struct Session {
     starts: Vec<String>,
     /// When it started (milliseconds since the Unix epoch).
     started: u64,
+    /// When its lock was last set: when it started, was locked again, or its lock condition changed.
+    /// What was done before cannot have been about that lock (`locked`, `clock::as_of`).
+    lock_since: u64,
 }
 
 /// Which start a running session comes from: one made here (`Origin::here`) or on another computer
@@ -540,7 +546,7 @@ impl Session {
     /// Seconds until a delay lock can be stopped: `None` when it was not asked for, `Some(0)` when it
     /// can be stopped now.
     fn stop_remaining(&self, now: SystemTime) -> Option<u64> {
-        let RunLock::Delay { delay, asked: Some(asked) } = self.lock else { return None };
+        let RunLock::Delay { delay, asked: Some(asked), .. } = self.lock else { return None };
         let ready = asked.saturating_add(delay.saturating_mul(1000));
         Some(ready.saturating_sub(state::to_unix(now)?).div_ceil(1000))
     }
@@ -563,6 +569,11 @@ impl Session {
     /// Why it cannot be stopped at `now`, if it cannot (without its password, for a password lock).
     fn locked(&self, now: SystemTime) -> Option<String> {
         let name = &self.name;
+        // Judged as of before it started or got the lock it has (`clock::as_of`): what was done then
+        // was not about it, and is not let through by it.
+        if state::to_unix(now).is_some_and(|now| now < self.started.max(self.lock_since)) {
+            return Some(format!("“{name}” was started or locked after that was done"));
+        }
         match &self.lock {
             RunLock::None => None,
             RunLock::Ends { .. } => self.remaining(now).map(|left| format!("“{name}” is locked for the next {}", duration::left(left))),
@@ -656,7 +667,9 @@ fn stricter(old: &RunLock, new: RunLock) -> Result<RunLock, String> {
     match (old, new) {
         (RunLock::Ends { at: old }, RunLock::Ends { at }) if at > *old => Ok(RunLock::Ends { at }),
         (RunLock::Ends { .. }, RunLock::Ends { .. }) => Err("This session is locked, so its lock can only end later".into()),
-        (RunLock::Delay { delay: old, asked }, RunLock::Delay { delay, .. }) if delay > *old => Ok(RunLock::Delay { delay, asked: *asked }),
+        (RunLock::Delay { delay: old, asked, aborted }, RunLock::Delay { delay, .. }) if delay > *old => {
+            Ok(RunLock::Delay { delay, asked: *asked, aborted: *aborted })
+        }
         (RunLock::Delay { .. }, RunLock::Delay { .. }) => Err("This session is locked, so its delay can only get longer".into()),
         _ => {
             Err("This session is locked, so its lock cannot be changed until it can be stopped, except to end later or to wait longer"
@@ -752,7 +765,7 @@ impl Sessions {
             return Err("This session is already running".into());
         }
         let zone = origin.as_ref().and_then(|o| o.zone.clone()).unwrap_or_else(|| self.zone());
-        let now = self.clock.now();
+        let now = self.time();
         let origin = origin.map(|o| Origin { at: o.at.min(now), ..o }).unwrap_or_else(|| Origin::here(now));
         let lock = self.run_lock(lock, &zone, now)?;
         let parts = parts.into_iter().map(|p| RunPart::new(p.name, p.lists, p.actions)).collect();
@@ -768,6 +781,7 @@ impl Sessions {
             allowance,
             starts: vec![origin.id],
             started,
+            lock_since: started,
         };
         // Written before the session goes live, so a session cannot be missed after a restart. A
         // session that cannot be written would not survive the service ending, so it does not start.
@@ -797,7 +811,7 @@ impl Sessions {
             StartLock::UntilRestart => {
                 RunLock::UntilRestart { boot: self.boot().ok_or("Cannot tell when Windows restarts, so this lock cannot be used")? }
             }
-            StartLock::Delay(wait) => RunLock::Delay { delay: wait.as_secs(), asked: None },
+            StartLock::Delay(wait) => RunLock::Delay { delay: wait.as_secs(), asked: None, aborted: None },
             StartLock::Text(text) => RunLock::Text { text },
             StartLock::Password(hash) => RunLock::Password { hash },
             StartLock::Ends(end) => {
@@ -816,14 +830,16 @@ impl Sessions {
     pub fn relock(&self, id: &str, lock: StartLock) -> Result<(), String> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
-        let now = self.clock.now();
+        let now = self.time();
         let session = inner.sessions.iter().find(|b| b.id == id).ok_or("This session is not running")?;
         let lock = self.lock_for(session, lock, now)?;
         let at = inner.sessions.iter().position(|b| b.id == id).expect("found above");
         let old = std::mem::replace(&mut inner.sessions[at].lock, lock);
+        let since = std::mem::replace(&mut inner.sessions[at].lock_since, state::to_unix(now).unwrap_or(u64::MAX));
         // Written at once, as starting is: a lock that cannot be kept over a restart is not given.
         if let Err(e) = self.save(&inner.sessions.iter().collect::<Vec<_>>()) {
             inner.sessions[at].lock = old;
+            inner.sessions[at].lock_since = since;
             return Err(format!("Cannot save the session, so it would not survive a restart: {e}"));
         }
         inner.saved_at = Instant::now();
@@ -835,7 +851,7 @@ impl Sessions {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
         let session = inner.sessions.iter().find(|b| b.id == id).ok_or("This session is not running")?;
-        self.lock_for(session, lock, self.clock.now()).map(|_| ())
+        self.lock_for(session, lock, self.time()).map(|_| ())
     }
 
     /// The lock a running session takes when it is given `lock`: as it starts with it now, and for a
@@ -861,7 +877,7 @@ impl Sessions {
         let password_locked = session.password_hash().is_some();
         let text_locked = session.lock_text().is_some();
         if !(answered && (password_locked || text_locked)) {
-            if let Some(why) = session.locked(self.clock.now()) {
+            if let Some(why) = session.locked(self.time()) {
                 let how = if password_locked {
                     "; give its password to stop it"
                 } else if text_locked {
@@ -879,7 +895,7 @@ impl Sessions {
 
     /// Starts the wait of a session locked with a delay; asking again keeps the wait that runs.
     pub fn ask_to_stop(&self, id: &str) -> Result<(), String> {
-        self.ask_to_stop_at(id, self.clock.now())
+        self.ask_to_stop_at(id, self.time())
     }
 
     /// As `ask_to_stop`, asked at `at`: on another computer (`replica.rs`). Never later than now; how
@@ -887,11 +903,19 @@ impl Sessions {
     pub fn ask_to_stop_at(&self, id: &str, at: SystemTime) -> Result<(), String> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
-        let at = state::to_unix(at.min(self.clock.now())).ok_or("Cannot tell the time")?;
+        let at = state::to_unix(at.min(self.time())).ok_or("Cannot tell the time")?;
         let session = inner.sessions.iter_mut().find(|b| b.id == id).ok_or("This session is not running")?;
+        let started = session.started;
         match &mut session.lock {
-            RunLock::Delay { asked, .. } => {
-                asked.get_or_insert(at);
+            // A wait asked for as of earlier than the one that runs (`clock::as_of`) counts from then, as it
+            // would have had it come in time; as of before a wait was last aborted, or (proven, as of
+            // then) before this run started, it was over by then: nothing.
+            RunLock::Delay { asked, aborted, .. } => {
+                let before_run = crate::clock::judged_at().is_some() && at < started;
+                let over = before_run || aborted.is_some_and(|aborted| at < aborted);
+                if !over && asked.is_none_or(|asked| at < asked) {
+                    *asked = Some(at);
+                }
             }
             _ => return Err("This session is not locked with a delay".into()),
         }
@@ -909,12 +933,14 @@ impl Sessions {
     pub fn abort_stop_since(&self, id: &str, since: Option<SystemTime>) -> Result<(), String> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
+        let now = state::to_unix(self.time()).ok_or("Cannot tell the time")?;
         let since = since.and_then(state::to_unix);
         let session = inner.sessions.iter_mut().find(|b| b.id == id).ok_or("This session is not running")?;
         match &mut session.lock {
-            RunLock::Delay { asked, .. } => {
+            RunLock::Delay { asked, aborted, .. } => {
                 if since.is_none_or(|since| asked.is_some_and(|asked| asked <= since)) {
                     *asked = None;
+                    *aborted = (*aborted).max(Some(now));
                 }
             }
             _ => return Err("This session is not locked with a delay".into()),
@@ -929,9 +955,12 @@ impl Sessions {
     pub fn join(&self, id: &str, origin: &str, lock: StartLock) -> Result<(), String> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
-        let now = self.clock.now();
+        let now = self.time();
         let at = inner.sessions.iter().position(|b| b.id == id).ok_or("This session is not running")?;
         if let Ok(lock) = self.lock_for(&inner.sessions[at], lock, now) {
+            if lock != inner.sessions[at].lock {
+                inner.sessions[at].lock_since = state::to_unix(now).unwrap_or(u64::MAX);
+            }
             inner.sessions[at].lock = lock;
         }
         let session = &mut inner.sessions[at];
@@ -1013,12 +1042,15 @@ impl Sessions {
     pub fn take_break(&self, id: &str) -> Result<(), String> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
-        let now = self.clock.now();
+        let now = self.time();
         let session = inner.sessions.iter_mut().find(|b| b.id == id).ok_or("This session is not running")?;
         if !session.in_condition(now) {
             return Err("A break can only be taken while the session's condition is active".into());
         }
-        session.advance(now);
+        // Never moved back: a reset would be given again (`clock::as_of`).
+        if crate::clock::judged_at().is_none() {
+            session.advance(now);
+        }
         session.allowance.as_mut().ok_or("This session has no breaks")?.take_break(now)?;
         self.save_all(&mut inner);
         Ok(())
@@ -1028,7 +1060,7 @@ impl Sessions {
     pub fn end_break(&self, id: &str) -> Result<(), String> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
-        let now = self.clock.now();
+        let now = self.time();
         let session = inner.sessions.iter_mut().find(|b| b.id == id).ok_or("This session is not running")?;
         session.allowance.as_mut().ok_or("This session has no breaks")?.end_break(now)?;
         self.save_all(&mut inner);
@@ -1082,6 +1114,7 @@ impl Sessions {
                 // A session saved without its starts stands for one of its own.
                 starts: if saved.starts.is_empty() { vec![crate::replica::new_id()] } else { saved.starts },
                 started: saved.started,
+                lock_since: saved.lock_since.max(saved.started),
             });
         }
         let mut inner = self.inner.locked();
@@ -1157,9 +1190,11 @@ impl Sessions {
     pub fn charge_elsewhere(&self, id: &str, used: &std::collections::BTreeMap<String, u64>) -> Result<(), String> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
-        let now = self.clock.now();
+        let now = self.time();
         let session = inner.sessions.iter_mut().find(|b| b.id == id).ok_or("This session is not running")?;
-        session.advance(now);
+        if crate::clock::judged_at().is_none() {
+            session.advance(now);
+        }
         let counted: Vec<(String, u64)> = used.iter().filter(|(key, _)| session.counts(key)).map(|(k, m)| (k.clone(), *m)).collect();
         let run = session.allowance.as_mut().ok_or("This session has no budget")?;
         for (key, millis) in counted {
@@ -1216,7 +1251,14 @@ impl Sessions {
 
     /// The time the service goes by (internet time, `clock.rs`).
     pub fn now(&self) -> SystemTime {
-        self.clock.now()
+        self.time()
+    }
+
+    /// The time the sessions go by: internet time, or the time this thread judges as of
+    /// (`clock::as_of`), never later than that.
+    fn time(&self) -> SystemTime {
+        let now = self.clock.now();
+        crate::clock::judged_at().map_or(now, |then| then.min(now))
     }
 
     /// Whether any session runs, also one that its condition has inactive right now: it is still
@@ -1239,7 +1281,7 @@ impl Sessions {
     pub fn locked_ids(&self) -> Vec<String> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
-        let now = self.clock.now();
+        let now = self.time();
         inner.sessions.iter().filter(|b| b.locked(now).is_some()).map(|b| b.id.clone()).collect()
     }
 
@@ -1259,7 +1301,7 @@ impl Sessions {
     ) {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
-        let now = self.clock.now();
+        let now = self.time();
         let Some(session) = inner.sessions.iter_mut().find(|b| b.id == id) else { return };
         session.name = name.to_string();
         session.parts = parts.into_iter().map(|p| RunPart::new(p.name, p.lists, p.actions)).collect();
@@ -1274,7 +1316,11 @@ impl Sessions {
         // A condition lock follows its condition: its rule, or no lock once the condition is deleted
         // (it was free, or the change would not have been made).
         if matches!(session.lock, RunLock::Condition { .. }) {
-            session.lock = lock_rule.map_or(RunLock::None, |condition| RunLock::Condition { condition });
+            let lock = lock_rule.map_or(RunLock::None, |condition| RunLock::Condition { condition });
+            if lock != session.lock {
+                session.lock_since = state::to_unix(now).unwrap_or(u64::MAX);
+            }
+            session.lock = lock;
         }
         self.save_all(&mut inner);
     }
@@ -1306,14 +1352,14 @@ impl Sessions {
     pub fn locked(&self) -> Option<String> {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
-        let now = self.clock.now();
+        let now = self.time();
         inner.sessions.iter().find_map(|b| b.locked(now))
     }
 
     pub fn status(&self) -> Status {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
-        let now = self.clock.now();
+        let now = self.time();
         for session in inner.sessions.iter_mut() {
             session.advance(now);
         }
@@ -1369,7 +1415,7 @@ impl Sessions {
 
     /// Removes sessions whose duration or until lock is up; they end by themselves and leave nothing to resume.
     fn expire(&self, inner: &mut Inner) {
-        let now = self.clock.now();
+        let now = self.time();
         let before = inner.sessions.len();
         inner.sessions.retain(|b| b.ends().is_none_or(|end| now < end));
         if inner.sessions.len() != before {
@@ -1404,6 +1450,7 @@ impl Sessions {
                 allowance: b.allowance.clone(),
                 starts: b.starts.clone(),
                 started: b.started,
+                lock_since: b.lock_since,
             })
             .collect();
         store.save(&saved)
@@ -2041,6 +2088,7 @@ mod tests {
             allowance: None,
             starts: vec![id.into()],
             started: 0,
+            lock_since: 0,
         };
         store
             .save(&[
@@ -2077,6 +2125,59 @@ mod tests {
         start(&list, "b", sites(&["b.com"]), None).unwrap();
         list.reset();
         assert!(!list.is_running() && store.load().is_empty());
+    }
+
+    /// Taken as of a time gone by (`clock::as_of`), a break ends when it would have, and a budget's reset is
+    /// never given again by going back to a period that is over.
+    #[test]
+    fn a_break_as_of_a_time_gone_by_ends_then_and_gives_no_reset_again() {
+        let list = sessions("break-past");
+        list.clock.at_least(monday(16 * 3600));
+        let terms = Terms::Breaks {
+            count: 1,
+            length: "10m".into(),
+            reset: allowance::Reset::Every,
+            every: "1h".into(),
+            anchor: allowance::Anchor::Clock,
+        };
+        list.start_with("a", "A", vec![part(sites(&["a.com"]), Actions::default())], None, Some(terms), StartLock::None).unwrap();
+        list.take_break("a").unwrap();
+        list.end_break("a").unwrap();
+        // The hour before: a break of then would be over, and none is left of this hour's.
+        let before = monday(15 * 3600 + 30 * 60);
+        assert_eq!(crate::clock::as_of(before, || list.take_break("a")), Err("No breaks left".into()));
+        assert_eq!(running(&list, "a").allowance.and_then(|status| status.breaks_left), Some(0));
+        // The next hour, one taken as of a minute ago runs out nine minutes from now.
+        list.clock.at_least(monday(17 * 3600 + 60));
+        assert_eq!(running(&list, "a").allowance.and_then(|status| status.breaks_left), Some(1));
+        crate::clock::as_of(monday(17 * 3600), || list.take_break("a")).unwrap();
+        assert!(list.active().is_none_or(|active| !active.blocks_page("https://a.com/")));
+        list.clock.at_least(monday(17 * 3600 + 10 * 60));
+        assert!(list.active().unwrap().blocks_page("https://a.com/"));
+    }
+
+    /// As of before a session started or was given the lock it has, it is locked: nothing done then was
+    /// about it.
+    #[test]
+    fn as_of_before_its_start_or_its_lock_a_session_is_locked() {
+        let list = sessions("lock-since");
+        list.clock.at_least(monday(16 * 3600));
+        start(&list, "a", sites(&["a.com"]), None).unwrap();
+        assert_eq!(list.locked(), None);
+        let before = monday(15 * 3600);
+        assert!(crate::clock::as_of(before, || list.locked()).is_some_and(|why| why.contains("after that was done")));
+        list.clock.at_least(monday(17 * 3600));
+        list.relock("a", StartLock::Delay(Duration::from_secs(60))).unwrap();
+        assert!(crate::clock::as_of(monday(16 * 3600 + 60), || list.stop("a", false)).is_err());
+        // Kept over a restart.
+        let resumed = list.restarted("boot");
+        assert!(crate::clock::as_of(monday(16 * 3600 + 60), || resumed.locked()).is_some());
+        // Asked to stop as of before it started: that wait was over before; as of an hour later, it counts.
+        assert_eq!(crate::clock::as_of(before, || list.ask_to_stop("a")), Ok(()));
+        assert!(list.locked().is_some_and(|why| why.contains("asking to stop it")));
+        list.clock.at_least(monday(18 * 3600));
+        crate::clock::as_of(monday(17 * 3600 + 30), || list.ask_to_stop("a")).unwrap();
+        assert_eq!(list.locked(), None);
     }
 
     #[test]

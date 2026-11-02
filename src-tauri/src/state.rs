@@ -47,6 +47,9 @@ pub struct Saved {
     /// When it started, in milliseconds since the Unix epoch (internet time).
     #[serde(default)]
     pub started: u64,
+    /// When its lock was last set (`session::Session::lock_since`).
+    #[serde(default)]
+    pub lock_since: u64,
 }
 
 /// One target of a running session, as written to disk.
@@ -285,6 +288,7 @@ mod tests {
             allowance: None,
             starts: vec!["a".into()],
             started: 0,
+            lock_since: 0,
         }
     }
 

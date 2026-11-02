@@ -23,6 +23,8 @@ sha2 = "0.10"
 ureq = "2"
 windows-sys = { path = "../scripts/linux-tests/windows-sys" }
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+# RSA signatures of timestamps (src/timestamp/), as rustls checks certificates with it
+ring = "0.17"
 # The HTTP side.
 tiny_http = "0.12"
 

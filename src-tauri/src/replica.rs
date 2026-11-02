@@ -204,19 +204,52 @@ pub struct Entry {
     pub action: Action,
 }
 
+/// An entry as the sync server serves it with a timestamp of it (`timestamp.rs`): the entry's text,
+/// exactly as timestamped, and the token (base64).
+#[derive(Serialize, Deserialize)]
+struct Stamped {
+    entry: String,
+    stamp: String,
+}
+
 impl Entry {
-    /// An entry as it came from the log: refused when it is too long, not an entry, or its ids are
-    /// empty or too long.
+    /// An entry as it came from the log (its timestamp, if it has one, left out): refused when it is
+    /// too long, not an entry, or its ids are empty or too long.
+    #[cfg_attr(not(test), allow(dead_code))] // the sync server's
     pub fn parse(text: &str) -> Result<Entry, String> {
+        Entry::read(text).map(|(entry, _)| entry)
+    }
+
+    /// As `parse`, with the time its timestamp proves, if it has one that is believed.
+    pub fn parse_proven(text: &str) -> Result<Proven, String> {
+        let (entry, stamp) = Entry::read(text)?;
+        let proven = stamp.and_then(|stamped| {
+            let token = crate::timestamp::unbase64(&stamped.stamp)?;
+            crate::timestamp::verify(&token, &crate::timestamp::digest(stamped.entry.as_bytes())).ok()
+        });
+        Ok((entry, proven))
+    }
+
+    fn read(text: &str) -> Result<(Entry, Option<Stamped>), String> {
         if text.len() > MAX_ENTRY {
             return Err("An entry is too long".into());
         }
-        let entry: Entry = serde_json::from_str(text).map_err(|e| format!("Not an entry: {e}"))?;
+        let (entry, stamped) = match serde_json::from_str::<Stamped>(text) {
+            Ok(stamped) => (serde_json::from_str::<Entry>(&stamped.entry), Some(stamped)),
+            Err(_) => (serde_json::from_str::<Entry>(text), None),
+        };
+        let entry = entry.map_err(|e| format!("Not an entry: {e}"))?;
         let fits = |id: &str| !id.is_empty() && id.len() <= MAX_ID;
         if !fits(&entry.id) || !fits(&entry.device) {
             return Err("An entry's ids are empty or too long".into());
         }
-        Ok(entry)
+        Ok((entry, stamped))
+    }
+
+    /// The entry's `text` with a timestamp of it, `token`, as the sync server serves it.
+    #[cfg_attr(not(test), allow(dead_code))] // the sync server's
+    pub fn stamped(text: &str, token: &[u8]) -> String {
+        serde_json::to_string(&Stamped { entry: text.to_string(), stamp: crate::timestamp::base64(token) }).unwrap_or_default()
     }
 
     pub fn text(&self) -> String {
@@ -224,11 +257,18 @@ impl Entry {
     }
 }
 
+/// An entry, and the time its timestamp proves (`Entry::parse_proven`).
+type Proven = (Entry, Option<SystemTime>);
+
 /// An entry from elsewhere that is refused here for now, and why.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Held {
     pub entry: Entry,
     pub why: String,
+    /// When its timestamp proves it came to the server (milliseconds since the Unix epoch), checked
+    /// when it came in (`Entry::parse_proven`).
+    #[serde(default)]
+    pub proven: Option<u64>,
 }
 
 /// What a computer keeps of syncing (`replica.json`).
@@ -308,12 +348,12 @@ impl Replica {
     /// Applies an action taken over from the server's snapshot when joining (`syncing.rs`), as one from
     /// elsewhere: under this computer's rules, waiting if they refuse it.
     pub fn adopt(&self, context: &Context, action: Action, now: SystemTime) -> Outcome {
-        let outcome = handler::apply(context, &action, now);
+        let outcome = handler::apply(context, &action, now, None);
         if let Outcome::Held(why) = &outcome {
             let mut kept = self.kept.locked();
             let entry = Entry { id: new_id(), device: "server".into(), at: state::to_unix(now).unwrap_or(0), action };
             kept.held.retain(|held| !supersedes(&entry.action, &held.entry.action));
-            hold(&mut kept.held, entry, why.clone());
+            hold(&mut kept.held, entry, why.clone(), None);
             self.save(&kept);
         }
         outcome
@@ -391,11 +431,15 @@ impl Replica {
     pub fn receive(&self, context: &Context, batch: &[(u64, String)]) -> Vec<(String, Outcome)> {
         let mut kept = self.kept.locked();
         let Some(mut confirmed) = kept.confirmed else { return Vec::new() };
-        let entries: Vec<(u64, Option<Entry>)> =
-            batch.iter().filter(|(seq, _)| *seq > confirmed).map(|(seq, text)| (*seq, Entry::parse(text).ok())).collect();
-        let over = runs_over(entries.iter().filter_map(|(_, entry)| entry.as_ref()));
+        let entries: Vec<(u64, Option<Proven>)> =
+            batch.iter().filter(|(seq, _)| *seq > confirmed).map(|(seq, text)| (*seq, Entry::parse_proven(text).ok())).collect();
+        let over = runs_over(entries.iter().filter_map(|(_, entry)| entry.as_ref().map(|(entry, _)| entry)));
         let mut outcomes = Vec::new();
         for (seq, entry) in entries {
+            let (entry, proven) = match entry {
+                Some((entry, proven)) => (Some(entry), proven),
+                None => (None, None),
+            };
             if seq <= confirmed {
                 continue;
             }
@@ -420,18 +464,18 @@ impl Replica {
                     continue;
                 }
             }
-            let outcome = handler::apply(context, &entry.action, state::from_unix(entry.at));
+            let outcome = handler::apply(context, &entry.action, state::from_unix(entry.at), proven);
             if matches!(outcome, Outcome::Applied) && keys.iter().any(|key| key == EVERYTHING) {
                 // What was changed here since comes after the import: done again on top of it.
                 let pending: Vec<Entry> = kept.pending.iter().filter(|own| own.action.is_library()).cloned().collect();
                 for own in pending {
-                    if let Outcome::Held(why) = handler::apply(context, &own.action, state::from_unix(own.at)) {
-                        hold(&mut kept.held, own, why);
+                    if let Outcome::Held(why) = handler::apply(context, &own.action, state::from_unix(own.at), None) {
+                        hold(&mut kept.held, own, why, None);
                     }
                 }
             }
             if let Outcome::Held(why) = &outcome {
-                hold(&mut kept.held, entry.clone(), why.clone());
+                hold(&mut kept.held, entry.clone(), why.clone(), proven.and_then(state::to_unix));
             }
             outcomes.push((entry.id, outcome));
         }
@@ -446,7 +490,7 @@ impl Replica {
         let before = kept.held.clone();
         let mut still = Vec::new();
         for held in before.iter().cloned() {
-            match handler::apply(context, &held.entry.action, state::from_unix(held.entry.at)) {
+            match handler::apply(context, &held.entry.action, state::from_unix(held.entry.at), held.proven.map(state::from_unix)) {
                 Outcome::Held(why) => still.push(Held { why, ..held }),
                 Outcome::Applied | Outcome::Dropped(_) => {}
             }
@@ -483,12 +527,12 @@ impl Replica {
 }
 
 /// Puts an entry among what waits, forgetting the oldest beyond `MAX_HELD`.
-fn hold(held: &mut Vec<Held>, entry: Entry, why: String) {
+fn hold(held: &mut Vec<Held>, entry: Entry, why: String, proven: Option<u64>) {
     held.retain(|h| h.entry.id != entry.id);
     if held.len() >= MAX_HELD {
         held.remove(0);
     }
-    held.push(Held { entry, why });
+    held.push(Held { entry, why, proven });
 }
 
 /// Whether `new` sets everything `old` set, so `old` waits for nothing any more.
@@ -613,16 +657,31 @@ mod tests {
         }
     }
 
-    /// The server's log: every entry sent, numbered in the order it came.
+    /// The server's log: every entry sent, numbered in the order it came; with `stamp_at`, each
+    /// timestamped as it comes in (by the test authority, `timestamp::tests::make`), as the sync server
+    /// does, at that time.
     #[derive(Default)]
     struct Log {
         entries: Vec<(u64, String)>,
+        stamp_at: Option<SystemTime>,
     }
 
     impl Log {
         fn append(&mut self, text: String) {
+            let text = match (self.stamp_at, Entry::parse(&text)) {
+                (Some(at), Ok(entry)) if !matches!(entry.action, Action::Used { .. }) => stamp(&text, at),
+                _ => text,
+            };
             let seq = self.entries.len() as u64 + 1;
             self.entries.push((seq, text));
+        }
+
+        /// An entry with a timestamp of `proven`, as anyone with the server could keep one back and add it
+        /// later: a real token of then, for an entry of their own making.
+        fn forge_stamped(&mut self, action: Action, proven: SystemTime) {
+            let text = Entry { id: new_id(), device: "forger".into(), at: millis(proven), action }.text();
+            let seq = self.entries.len() as u64 + 1;
+            self.entries.push((seq, stamp(&text, proven)));
         }
 
         /// What a computer sent and the log does not have yet.
@@ -654,6 +713,11 @@ mod tests {
 
     fn millis(time: SystemTime) -> u64 {
         state::to_unix(time).unwrap()
+    }
+
+    /// `text` with a token of the test authority for it at `at`.
+    fn stamp(text: &str, at: SystemTime) -> String {
+        Entry::stamped(text, &crate::timestamp::tests::make(&crate::timestamp::digest(text.as_bytes()), at))
     }
 
     /// A password's hash, made once (it takes a moment).
@@ -1368,12 +1432,12 @@ mod tests {
         let mut held = Vec::new();
         let entry = |n: usize| Entry { id: format!("e{n}"), device: "x".into(), at: 0, action: Action::AskForUnlock };
         for n in 0..MAX_HELD + 5 {
-            hold(&mut held, entry(n), "why".into());
+            hold(&mut held, entry(n), "why".into(), None);
         }
         assert_eq!(held.len(), MAX_HELD);
         assert_eq!(held[0].entry.id, "e5");
         // The same entry held again is held once.
-        hold(&mut held, entry(5), "again".into());
+        hold(&mut held, entry(5), "again".into(), None);
         assert_eq!(held.len(), MAX_HELD);
         assert_eq!(held.last().unwrap().why, "again");
         // And the outbox too.
@@ -1420,6 +1484,14 @@ mod tests {
         fn pick<T: Clone>(&mut self, from: &[T]) -> T {
             from[self.roll(from.len())].clone()
         }
+    }
+
+    /// A time a timestamp proves, as anyone with the server could have one made and keep it: long ago,
+    /// a while ago, now, or (a token of a clock ahead, which an authority does not make) to come.
+    fn proven(dice: &mut Dice, b: &Node) -> SystemTime {
+        let now = b.now();
+        let ago = |seconds: u64| now.checked_sub(Duration::from_secs(seconds)).unwrap_or(now);
+        dice.pick(&[ago(30 * 86_400), ago(86_400), ago(3600), ago(1), now, now + Duration::from_secs(86_400)])
     }
 
     /// Any action at all, as anyone with the server's token could send: sensible, odd or hostile.
@@ -1483,6 +1555,233 @@ mod tests {
         }
     }
 
+    /// 2030-01-08 (a Tuesday), at `hours` past midnight UTC: the test computers' time zone.
+    fn day(hours: f64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1_894_060_800 + (hours * 3600.0) as u64)
+    }
+
+    /// Two computers and a log that timestamps what comes in, at 7:00: a session "work" locked until
+    /// Windows restarts and one "late" of the same target, unlocking open from 8:00 to 12:00 (closed
+    /// 12:00-8:00) and otherwise by a countdown of an hour.
+    fn stamped(name: &str, lock: Lock) -> (Node, Node, Log) {
+        let (a, b, mut log) = pair(name, Lock::None);
+        log.stamp_at = Some(day(7.0));
+        for node in [&a, &b] {
+            node.at(day(7.0));
+        }
+        a.ok(Request::SaveCondition { condition: crate::definitions::tests::weekly("closed", "daily 12-8") });
+        a.ok(Request::SaveCondition { condition: crate::definitions::tests::weekly("office", "daily 9-17") });
+        a.ok(Request::SaveSession { session: Definition { lock, ..session("work", &["social"]) } });
+        a.ok(Request::SaveSession { session: session("late", &["social"]) });
+        a.ok(Request::SetUnlockWay { way: Some(Lock::Condition { condition: "closed".into() }) });
+        a.ok(Request::SetUnlockDelay { delay: "1h".into() });
+        log.sync(&[&a, &b]);
+        assert_eq!(b.context.unlock().delay(), 3600);
+        (a, b, log)
+    }
+
+    /// Moves `nodes` and the log's timestamps on to `time`.
+    fn at(nodes: &[&Node], log: &mut Log, time: SystemTime) {
+        for node in nodes {
+            node.at(time);
+        }
+        log.stamp_at = log.stamp_at.map(|_| time);
+    }
+
+    /// Unlocked elsewhere while unlocking was open, B asleep until it had closed: with a timestamp, B
+    /// unlocks when it is back, as it would have then, ending only what had started by then; without
+    /// one it waits for unlocking to open here again, as before.
+    #[test]
+    fn an_unlock_while_it_was_open_reaches_a_computer_that_was_asleep_as_of_then() {
+        for stamped_log in [true, false] {
+            let (a, b, mut log) = stamped(&format!("open-{stamped_log}"), Lock::UntilRestart);
+            if !stamped_log {
+                log.stamp_at = None;
+            }
+            a.ok(Request::Start { id: "work".into() });
+            log.sync(&[&a, &b]);
+            assert!(b.runs("work") && b.locked());
+            at(&[&a, &b], &mut log, day(10.0));
+            a.ok(Request::Unlock);
+            log.sync(&[&a]);
+            // B wakes at 11:00 without the network and starts something of its own, then syncs at 13:00.
+            at(&[&a, &b], &mut log, day(11.0));
+            b.ok(Request::Start { id: "late".into() });
+            at(&[&a, &b], &mut log, day(13.0));
+            log.sync(&[&b]);
+            assert_eq!(!b.runs("work"), stamped_log, "stamped: {stamped_log}");
+            assert!(b.runs("late"), "started after the unlock, it goes on");
+            assert_eq!(b.replica.held().is_empty(), stamped_log);
+        }
+    }
+
+    /// The countdown asked for at 9:00 and unlocked by at 10:01: B, asleep all along, unlocks when it is
+    /// back, not an hour after.
+    #[test]
+    fn a_countdown_that_ran_out_elsewhere_counts_on_a_computer_that_was_asleep() {
+        let (a, b, mut log) = stamped("countdown", Lock::UntilRestart);
+        a.ok(Request::Start { id: "work".into() });
+        log.sync(&[&a, &b]);
+        // Closed from 12:00: the countdown is the way.
+        at(&[&a, &b], &mut log, day(13.0));
+        a.ok(Request::AskForUnlock);
+        log.sync(&[&a]);
+        at(&[&a, &b], &mut log, day(14.0) + Duration::from_secs(1));
+        a.ok(Request::Unlock);
+        log.sync(&[&a]);
+        at(&[&a, &b], &mut log, day(16.0));
+        log.sync(&[&b]);
+        assert!(!b.runs("work"));
+        assert!(b.replica.held().is_empty());
+    }
+
+    /// A timestamped countdown kept back by whoever has the server, and sent after B aborted its own:
+    /// it was over by then, so it does nothing, and the unlock that leans on it waits.
+    #[test]
+    fn a_countdown_from_before_an_abort_here_does_nothing() {
+        let (a, b, mut log) = stamped("kept", Lock::UntilRestart);
+        a.ok(Request::Start { id: "work".into() });
+        log.sync(&[&a, &b]);
+        log.stamp_at = None;
+        let asked = day(13.0);
+        at(&[&a, &b], &mut log, day(14.0));
+        b.ok(Request::AskForUnlock);
+        at(&[&a, &b], &mut log, day(14.5));
+        b.ok(Request::AbortUnlock);
+        at(&[&a, &b], &mut log, day(16.0));
+        log.forge_stamped(Action::AskForUnlock, asked);
+        log.forge_stamped(Action::Unlock { text: None, next: None, proof: None }, day(16.0));
+        log.sync(&[&b]);
+        assert!(b.runs("work"));
+        assert_eq!(b.context.unlock().remaining(b.now()), None, "nothing asked for");
+        // One asked for since the abort counts from then, as it would have: the unlock goes through.
+        log.forge_stamped(Action::AskForUnlock, day(15.0));
+        log.sync(&[&b]);
+        assert!(!b.runs("work"));
+    }
+
+    /// A way to unlock set here after the time an unlock proves lets nothing of it through: it was
+    /// not the way then.
+    #[test]
+    fn an_unlock_from_before_the_way_to_unlock_was_set_waits_for_it() {
+        let (a, b, mut log) = pair("way", Lock::UntilRestart);
+        for node in [&a, &b] {
+            node.at(day(7.0));
+        }
+        a.ok(Request::SaveCondition { condition: crate::definitions::tests::weekly("closed", "daily 12-8") });
+        a.ok(Request::SetUnlockDelay { delay: "1h".into() });
+        a.ok(Request::Start { id: "work".into() });
+        log.sync(&[&a, &b]);
+        log.forge_stamped(Action::Unlock { text: None, next: None, proof: None }, day(10.0));
+        // B sets the way at 12:00 through a countdown asked for at 7:00, and aborts it then.
+        b.ok(Request::AskForUnlock);
+        at(&[&a, &b], &mut log, day(11.0) + HOUR);
+        b.ok(Request::SetUnlockWay { way: Some(Lock::Condition { condition: "closed".into() }) });
+        b.ok(Request::AbortUnlock);
+        at(&[&a, &b], &mut log, day(13.0));
+        log.sync(&[&b]);
+        assert!(b.runs("work"), "the way was set after 10:00");
+        assert_eq!(b.replica.held().len(), 1);
+    }
+
+    /// Stopped elsewhere while its lock schedule had it free: B, asleep until the schedule locks it,
+    /// stops it when it is back. One locked here since the stop is not stopped by it.
+    #[test]
+    fn a_stop_while_it_was_free_reaches_a_computer_that_was_asleep_but_not_a_lock_since() {
+        let (a, b, mut log) = stamped("free", Lock::Condition { condition: "office".into() });
+        a.ok(Request::Start { id: "work".into() });
+        log.sync(&[&a, &b]);
+        at(&[&a, &b], &mut log, day(18.0));
+        a.ok(Request::Stop { id: "work".into(), password: None, text: None });
+        log.sync(&[&a]);
+        at(&[&a, &b], &mut log, day(24.0 + 9.5));
+        assert!(b.locked());
+        log.sync(&[&b]);
+        assert!(!b.runs("work"));
+        // "late" runs unlocked and is stopped elsewhere at 18:00; B, back at 19:00 without the network,
+        // locks it by the schedule then. That lock would have let the stop through at 18:00, but it was
+        // not its lock then: the stop waits.
+        at(&[&a, &b], &mut log, day(48.0 + 17.0));
+        a.ok(Request::Start { id: "late".into() });
+        log.sync(&[&a, &b]);
+        at(&[&a, &b], &mut log, day(48.0 + 18.0));
+        a.ok(Request::Stop { id: "late".into(), password: None, text: None });
+        log.sync(&[&a]);
+        at(&[&a, &b], &mut log, day(48.0 + 19.0));
+        b.ok(Request::Lock { id: "late".into(), lock: Lock::Condition { condition: "office".into() } });
+        at(&[&a, &b], &mut log, day(72.0 + 9.5));
+        log.sync(&[&b]);
+        assert!(b.runs("late"));
+        assert_eq!(b.replica.held().len(), 1);
+    }
+
+    /// A session deleted elsewhere while it could be stopped: deleted here too when B is back, though it
+    /// is locked by then.
+    #[test]
+    fn a_change_made_while_it_was_free_reaches_a_computer_that_was_asleep() {
+        let (a, b, mut log) = stamped("change", Lock::Condition { condition: "office".into() });
+        a.ok(Request::Start { id: "work".into() });
+        log.sync(&[&a, &b]);
+        at(&[&a, &b], &mut log, day(18.0));
+        a.ok(Request::DeleteSession { id: "work".into() });
+        a.ok(Request::SaveTarget { target: target("social", &["reddit.com"]) });
+        log.sync(&[&a]);
+        at(&[&a, &b], &mut log, day(24.0 + 9.5));
+        log.sync(&[&b]);
+        assert!(b.context.library().session("work").is_none() && !b.runs("work"));
+        assert_eq!(b.context.library().target("social"), a.context.library().target("social"));
+    }
+
+    /// A delay lock waited out elsewhere: stopped on B when it is back. A wait asked for before one
+    /// B aborted since does nothing.
+    #[test]
+    fn a_delay_waited_out_elsewhere_counts_but_not_one_aborted_since() {
+        let (a, b, mut log) = stamped("delay", Lock::Delay { delay: "1h".into() });
+        a.ok(Request::Start { id: "work".into() });
+        log.sync(&[&a, &b]);
+        at(&[&a, &b], &mut log, day(10.0));
+        a.ok(Request::AskToStop { id: "work".into() });
+        at(&[&a, &b], &mut log, day(11.1));
+        a.ok(Request::Stop { id: "work".into(), password: None, text: None });
+        log.sync(&[&a]);
+        at(&[&a, &b], &mut log, day(14.0));
+        log.sync(&[&b]);
+        assert!(!b.runs("work"));
+        // Again: B asks and aborts at 16:00; a wait kept back from 15:00 is over.
+        a.ok(Request::Start { id: "work".into() });
+        log.sync(&[&a, &b]);
+        log.stamp_at = None;
+        at(&[&a, &b], &mut log, day(16.0));
+        b.ok(Request::AskToStop { id: "work".into() });
+        b.ok(Request::AbortStop { id: "work".into() });
+        at(&[&a, &b], &mut log, day(18.0));
+        let starts = b.context.sessions().starts_of("work");
+        log.forge_stamped(Action::AskToStop { id: "work".into() }, day(15.0));
+        log.forge_stamped(Action::Stop { id: "work".into(), starts, text: None, proof: None }, day(18.0));
+        log.sync(&[&b]);
+        assert!(b.runs("work"));
+    }
+
+    /// A timestamp is believed only for its own entry: changed, of another entry, or not a token, the
+    /// entry is as one without.
+    #[test]
+    fn a_timestamp_counts_only_for_the_entry_it_was_made_for() {
+        let entry = Entry { id: "e".into(), device: "d".into(), at: 1, action: Action::AskForUnlock };
+        let text = entry.text();
+        let then = day(10.0);
+        let good = stamp(&text, then);
+        assert_eq!(Entry::parse_proven(&good), Ok((entry.clone(), Some(then))));
+        assert_eq!(Entry::parse(&good), Ok(entry.clone()));
+        let other = Entry { id: "f".into(), ..entry.clone() }.text();
+        let token = crate::timestamp::tests::make(&crate::timestamp::digest(other.as_bytes()), then);
+        assert_eq!(Entry::parse_proven(&Entry::stamped(&text, &token)), Ok((entry.clone(), None)));
+        let garbage = serde_json::json!({ "entry": text, "stamp": "not base64!" }).to_string();
+        assert_eq!(Entry::parse_proven(&garbage), Ok((entry.clone(), None)));
+        let not_a_token = serde_json::json!({ "entry": text, "stamp": crate::timestamp::base64(b"no") }).to_string();
+        assert_eq!(Entry::parse_proven(&not_a_token), Ok((entry, None)));
+        assert!(Entry::parse_proven(&serde_json::json!({ "entry": "{", "stamp": "" }).to_string()).is_err());
+    }
+
     /// **No sequence of entries from elsewhere takes the way out away.** Whatever arrives, in whatever
     /// order, with whatever times (and garbage among it, and this computer doing things of its own in
     /// between): the unlock delay stays at most 24 hours, disconnecting works, and once disconnected,
@@ -1524,7 +1823,11 @@ mod tests {
                     _ => {
                         let action = any_action(&mut dice, &b);
                         let at = dice.pick(&[0, millis(b.now()), millis(b.now()) + 86_400_000, u64::MAX]);
-                        log.forge(action, at);
+                        // Some with a real timestamp of a time of anyone's choosing, kept back and sent now.
+                        match dice.roll(3) {
+                            0 => log.forge_stamped(action, proven(&mut dice, &b)),
+                            _ => log.forge(action, at),
+                        }
                     }
                 }
                 // What a session that stays locked blocks never gets less by what arrives.
@@ -1573,7 +1876,10 @@ mod tests {
             for _ in 0..20 {
                 let action = any_action(&mut dice, &b);
                 let at = dice.pick(&[0, millis(b.now()), millis(b.now()) + 86_400_000, u64::MAX]);
-                log.forge(action, at);
+                match dice.roll(3) {
+                    0 => log.forge_stamped(action, proven(&mut dice, &b)),
+                    _ => log.forge(action, at),
+                }
             }
             log.sync(&[&a, &b]);
             // Unlocking here, with nothing more arriving in between, ends what runs.

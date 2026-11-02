@@ -52,6 +52,7 @@ dependencies = [
  "getrandom 0.3.4",
  "pbkdf2",
  "regex",
+ "ring",
  "serde",
  "serde_json",
  "sha2",

@@ -102,6 +102,8 @@ impl Rule {
     pub fn active(&self, zone: &Zone, now: SystemTime) -> bool {
         match self {
             Rule::Schedule { week } => zone.local(now).is_none_or(|local| week.is_on(local)),
+            // Not known for a time gone by (`clock::as_of`): active, as a drive that cannot be asked.
+            Rule::FlashDrive { .. } | Rule::Webhook(_) if crate::clock::judged_at().is_some() => true,
             Rule::FlashDrive { serial, .. } => !drives::is_present(serial),
             // What the poller last found out, or the fallback (`webhook::answer`).
             Rule::Webhook(hook) => webhook::answer(hook),
@@ -208,9 +210,36 @@ impl Rule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, UNIX_EPOCH};
 
     fn weekdays() -> Rule {
         Rule::Schedule { week: Week::parse("mon-fri 8-17").unwrap().unwrap() }
+    }
+
+    /// Judged as of a time gone by (`clock::as_of`), a schedule is read at that time, and what cannot be
+    /// known for it, a drive or a webhook, is active: alone, and in a combination.
+    #[test]
+    fn what_cannot_be_known_for_a_time_gone_by_is_active() {
+        use crate::webhook::{Match, Matcher, Method};
+        let zone = Zone::fixed(0);
+        // Monday 2030-01-07 at 7:00 and at 9:00.
+        let (seven, nine) = (UNIX_EPOCH + Duration::from_secs(1_893_999_600), UNIX_EPOCH + Duration::from_secs(1_894_006_800));
+        let drive = Rule::FlashDrive { serial: "x".into(), drive: String::new() };
+        let hook = Rule::Webhook(webhook::Hook {
+            url: "https://example.com/".into(),
+            method: Method::Get,
+            interval: 60,
+            fallback: false,
+            matcher: Matcher { on: Match::Status, status: Some(200), body: None },
+        });
+        let any = |rules: Vec<Rule>| Rule::Combined { mode: Mode::Any, rules, members: Vec::new() };
+        crate::clock::as_of(seven, || {
+            assert!(!weekdays().active(&zone, seven));
+            assert!(weekdays().active(&zone, nine));
+            assert!(drive.active(&zone, seven) && hook.active(&zone, seven));
+            assert!(any(vec![weekdays(), hook.clone()]).active(&zone, seven));
+        });
+        assert_eq!(crate::clock::judged_at(), None);
     }
 
     #[test]

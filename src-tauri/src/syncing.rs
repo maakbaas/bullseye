@@ -805,6 +805,41 @@ mod tests {
         assert!(a.status().held.is_empty());
     }
 
+    /// The same with a server that timestamps what comes in (`hub::Stamper`): the computer away does the
+    /// unlock when it is back, as of when it was made, and does not wait for unlocking to open again.
+    #[test]
+    fn with_timestamps_an_unlock_reaches_a_computer_away_when_it_is_back() {
+        let dir = hub::tests::dir("syncing-stamped");
+        let time = Arc::new(Mutex::new(std::time::UNIX_EPOCH));
+        let stamp_time = time.clone();
+        let hub = Hub::new(hub::tests::context(&dir), Some(dir))
+            .with_stamper(Box::new(move |digest| Some(crate::timestamp::tests::make(digest, *stamp_time.lock().unwrap()))));
+        let server = Arc::new(Server { hub: Mutex::new(Arc::new(hub)), down: AtomicBool::new(false), gone: AtomicBool::new(false) });
+        let ok = |request| assert_eq!(server.hub().request(&request).unwrap(), Response::Done);
+        ok(Request::SaveTarget { target: target("social", &["youtube.com"]) });
+        ok(Request::SaveCondition { condition: crate::definitions::tests::weekly("closed", "daily 12-8") });
+        ok(Request::SaveSession { session: Definition { lock: Lock::UntilRestart, ..session("work", &["social"]) } });
+        ok(Request::SetUnlockWay { way: Some(Lock::Condition { condition: "closed".into() }) });
+        ok(Request::SetUnlockDelay { delay: "1h".into() });
+        let a = computer("stamped-a", &server);
+        assert_eq!(a.connect(), Response::Done);
+        let at = |hours: u64| {
+            let moment = std::time::UNIX_EPOCH + Duration::from_secs(1_894_060_800 + hours * 3600);
+            a.context.sessions().move_to(moment);
+            server.hub().view().sessions().move_to(moment);
+            *time.lock().unwrap() = moment;
+        };
+        at(7);
+        a.ok(Request::Start { id: "work".into() });
+        sync(&[&a]);
+        at(10);
+        ok(Request::Unlock);
+        at(13);
+        sync(&[&a]);
+        assert!(!a.runs("work"));
+        assert!(a.status().held.is_empty());
+    }
+
     /// As above, with the countdown asked for too: the computer away counts it down from when it comes
     /// back, and does the unlock when it is over, before unlocking opens there again.
     #[test]

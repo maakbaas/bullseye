@@ -54,6 +54,8 @@ pub mod sync;
 pub mod sync_api;
 #[path = "../../../src-tauri/src/syncing.rs"]
 pub mod syncing;
+#[path = "../../../src-tauri/src/timestamp/mod.rs"]
+pub mod timestamp;
 #[path = "../../../src-tauri/src/system_path.rs"]
 pub mod system_path;
 #[path = "../../../src-tauri/src/unlock.rs"]

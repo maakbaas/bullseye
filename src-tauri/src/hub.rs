@@ -44,8 +44,15 @@ struct Log {
     lines: usize,
 }
 
+/// Timestamps the SHA-256 of an entry's text (`timestamp.rs`): the token, or `None` when the
+/// authority cannot be asked.
+pub type Stamper = Box<dyn Fn(&[u8; 32]) -> Option<Vec<u8>> + Send + Sync>;
+
 pub struct Hub {
     context: Context,
+    /// What timestamps each entry as it comes in, so a computer that is off or asleep then does it as of
+    /// that time when it comes back (`handler::apply`); none: entries go without (tests, or turned off).
+    stamper: Option<Stamper>,
     log: Mutex<Log>,
     changed: Condvar,
     /// `log.jsonl`; `None`: kept for this run only (tests).
@@ -104,7 +111,25 @@ impl Hub {
             .and_then(|path| fs::read(path).ok())
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
-        Hub { context, log: Mutex::new(log), changed: Condvar::new(), path, devices: Mutex::new(devices), devices_path }
+        Hub { context, stamper: None, log: Mutex::new(log), changed: Condvar::new(), path, devices: Mutex::new(devices), devices_path }
+    }
+
+    /// Timestamps the entries that come in with `stamper`.
+    pub fn with_stamper(self, stamper: Stamper) -> Hub {
+        Hub { stamper: Some(stamper), ..self }
+    }
+
+    /// An entry's text as it goes into the log: with a timestamp of it, unless it is use counted
+    /// elsewhere (`Used`: often, and the same whenever it is applied) or none can be had.
+    fn stamped(&self, entry: &Entry) -> String {
+        let text = entry.text();
+        if matches!(entry.action, replica::Action::Used { .. }) {
+            return text;
+        }
+        match self.stamper.as_ref().and_then(|stamper| stamper(&crate::timestamp::digest(text.as_bytes()))) {
+            Some(token) => Entry::stamped(&text, &token),
+            None => text,
+        }
     }
 
     /// The number of the last entry.
@@ -234,8 +259,10 @@ impl Transport for Hub {
                 continue;
             }
             handler::mirror(&self.context, &entry.action, state::from_unix(entry.at));
-            // Kept as it is now, re-written: what was read is what is served.
-            self.append(&mut log, entry.id.clone(), entry.text());
+            // Kept as it is now, re-written: what was read is what is served (a timestamp it came with
+            // left out: it is this server's to make).
+            let text = self.stamped(&entry);
+            self.append(&mut log, entry.id.clone(), text);
         }
         Ok(Appended { head: log.head })
     }
@@ -280,7 +307,8 @@ impl Transport for Hub {
         let (response, _, action) = handler::handle_shared(&self.context, 0, request.clone());
         if let Some(action) = action {
             let entry = Entry { id: replica::new_id(), device: SERVER.into(), at: millis(self.context.now()), action };
-            self.append(&mut log, entry.id.clone(), entry.text());
+            let text = self.stamped(&entry);
+            self.append(&mut log, entry.id.clone(), text);
         }
         Ok(response)
     }
@@ -448,6 +476,31 @@ pub mod tests {
         let again = Hub::new(view(&dir.join("view")), Some(dir));
         assert_eq!(again.snapshot().unwrap(), before);
         assert_eq!(before.runs.len(), 1);
+    }
+
+    /// Each entry goes into the log with a timestamp of its text as served, but use counted elsewhere;
+    /// one a computer sent is the server's to make, and with no authority to ask it goes without.
+    #[test]
+    fn entries_are_timestamped_as_they_come_in() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_894_060_800);
+        let hub =
+            Hub::new(context(&dir("stamps")), None).with_stamper(Box::new(move |digest| Some(crate::timestamp::tests::make(digest, at))));
+        assert_eq!(hub.request(&Request::SaveTarget { target: target("social", &["a.com"]) }).unwrap(), Response::Done);
+        let used = Action::Used { id: "work".into(), used: [("site:a.com".to_string(), 1000)].into() };
+        let unlock = Action::Unlock { text: None, next: None, proof: None };
+        let other = Entry { id: "e1".into(), device: "d".into(), at: 1, action: unlock.clone() };
+        let posted = vec![entry("d", used), Entry::stamped(&other.text(), &crate::timestamp::tests::make(&[0; 32], at))];
+        hub.post(Posted { after: None, last: None, entries: posted }).unwrap();
+        let page = hub.log(0, None, Duration::ZERO).unwrap();
+        let proven: Vec<Option<SystemTime>> = page.entries.iter().map(|(_, text)| Entry::parse_proven(text).unwrap().1).collect();
+        assert_eq!(proven, vec![Some(at), None, Some(at)]);
+        assert_eq!(Entry::parse(&page.entries[2].1).unwrap(), other);
+        // An authority that cannot be asked: as it was.
+        let without = Hub::new(context(&dir("no-stamps")), None).with_stamper(Box::new(|_| None));
+        without.request(&Request::SaveTarget { target: target("social", &["a.com"]) }).unwrap();
+        let page = without.log(0, None, Duration::ZERO).unwrap();
+        assert_eq!(Entry::parse_proven(&page.entries[0].1).unwrap().1, None);
+        assert!(serde_json::from_str::<Entry>(&page.entries[0].1).is_ok());
     }
 
     #[test]

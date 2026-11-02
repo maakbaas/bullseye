@@ -89,6 +89,31 @@ impl Clock {
     }
 }
 
+thread_local! {
+    static AS_OF: std::cell::Cell<Option<SystemTime>> = const { std::cell::Cell::new(None) };
+}
+
+/// Runs `f` judging as of `then` on this thread: what a computer that was off or asleep does with an
+/// entry of the sync log whose time a timestamp proves (`handler::apply`). The sessions take `then`
+/// for now (never later than now: `Sessions::time`), and a condition that cannot be known for a
+/// time gone by, a drive or a webhook, counts as active (`condition::Rule::active`). Only this
+/// thread: what enforces goes on at the time it is.
+pub fn as_of<R>(then: SystemTime, f: impl FnOnce() -> R) -> R {
+    struct Back(Option<SystemTime>);
+    impl Drop for Back {
+        fn drop(&mut self) {
+            AS_OF.with(|cell| cell.set(self.0));
+        }
+    }
+    let _back = Back(AS_OF.with(|cell| cell.replace(Some(then))));
+    f()
+}
+
+/// The time this thread judges as of, if not now (`as_of`).
+pub fn judged_at() -> Option<SystemTime> {
+    AS_OF.with(std::cell::Cell::get)
+}
+
 /// The app's clock, which `spawn_sync` keeps on internet time.
 pub fn global() -> &'static Clock {
     &CLOCK
@@ -148,6 +173,20 @@ fn parse(reply: &[u8]) -> Result<Duration, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_time_judged_as_of_is_this_threads_and_is_put_back() {
+        let (one, two) = (UNIX_EPOCH + Duration::from_secs(1), UNIX_EPOCH + Duration::from_secs(2));
+        assert_eq!(judged_at(), None);
+        as_of(one, || {
+            assert_eq!(judged_at(), Some(one));
+            as_of(two, || assert_eq!(judged_at(), Some(two)));
+            assert_eq!(judged_at(), Some(one));
+            assert_eq!(std::thread::spawn(judged_at).join().unwrap(), None, "only this thread");
+        });
+        let _ = std::panic::catch_unwind(|| as_of(one, || panic!("as it may")));
+        assert_eq!(judged_at(), None);
+    }
 
     fn reply(mode: u8, stratum: u8, ntp_seconds: u32, fraction: u32) -> [u8; 48] {
         let mut r = [0u8; 48];

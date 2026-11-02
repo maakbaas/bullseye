@@ -163,6 +163,13 @@ struct Kept {
     /// When unlocking was asked for (milliseconds since the Unix epoch, internet time); none: not asked.
     #[serde(default)]
     requested: Option<u64>,
+    /// When the countdown was last aborted or used by unlocking: one asked for as of earlier
+    /// (`clock::as_of`) cannot start before.
+    #[serde(default)]
+    reset: Option<u64>,
+    /// When the other way to unlock was last set: an unlock as of earlier is not let through by it.
+    #[serde(default)]
+    way_since: Option<u64>,
 }
 
 /// How long unlocking takes, and whether it is being waited for.
@@ -229,13 +236,15 @@ impl UnlockDelay {
         Some((kept.delay as f64 - waited).max(0.0).ceil() as u64)
     }
 
-    /// Starts the countdown (asking again while it runs changes nothing).
+    /// Starts the countdown (asking again while it runs changes nothing). Asked for as of earlier than
+    /// the one that runs (`clock::as_of`), it counts from then, as it would have had it come in time;
+    /// as of before the countdown was last aborted or used, it was over by then: nothing.
     pub fn request(&self, now: SystemTime) -> Result<(), String> {
         let mut kept = self.kept.locked();
-        if kept.requested.is_some() {
+        let at = state::to_unix(now).ok_or("Cannot tell the time")?;
+        if kept.reset.is_some_and(|reset| at < reset) || kept.requested.is_some_and(|requested| requested <= at) {
             return Ok(());
         }
-        let at = state::to_unix(now).ok_or("Cannot tell the time")?;
         kept.requested = Some(at);
         // Not being able to write it down only costs the countdown a restart: it never stops one
         // from starting, as this is the way out.
@@ -251,20 +260,21 @@ impl UnlockDelay {
         self.kept.locked().requested
     }
 
-    /// Stops the countdown, or ends the readiness: back to locked.
-    pub fn abort(&self) -> Result<(), String> {
-        self.abort_since(None)
+    /// Stops the countdown, or ends the readiness, at `now`: back to locked.
+    pub fn abort(&self, now: SystemTime) -> Result<(), String> {
+        self.abort_since(None, now)
     }
 
     /// As `abort`; with `since`, only a countdown asked for by then: an abort made on another computer
     /// (`replica.rs`) does not end one asked for after it.
-    pub fn abort_since(&self, since: Option<SystemTime>) -> Result<(), String> {
+    pub fn abort_since(&self, since: Option<SystemTime>, now: SystemTime) -> Result<(), String> {
         let mut kept = self.kept.locked();
         let since = since.and_then(state::to_unix);
         if since.is_some_and(|since| kept.requested.is_none_or(|asked| asked > since)) {
             return Ok(());
         }
         kept.requested = None;
+        kept.reset = kept.reset.max(state::to_unix(now));
         if let Err(why) = self.write(&kept) {
             eprintln!("unlock: {why}");
         }
@@ -302,6 +312,12 @@ impl UnlockDelay {
         self.kept.locked().way.clone()
     }
 
+    /// The other way to unlock as it was at `then`: none if it was set later.
+    pub fn way_at(&self, then: SystemTime) -> Option<Way> {
+        let kept = self.kept.locked();
+        kept.way.clone().filter(|_| kept.way_since.is_none_or(|since| state::to_unix(then).is_some_and(|then| since <= then)))
+    }
+
     /// Sets the other way (`None` removes it: always free). Setting one makes unlocking easier, so,
     /// unless `idle` (no session is locked, so nothing is got around), it needs unlocking to be ready.
     pub fn set_way(&self, way: Option<Way>, now: SystemTime, idle: bool) -> Result<(), String> {
@@ -309,7 +325,7 @@ impl UnlockDelay {
             return Err("Another way to unlock needs unlocking to be ready: request unlock and wait for the countdown, or set it while nothing is locked".into());
         }
         let mut kept = self.kept.locked();
-        let next = Kept { way, ..kept.clone() };
+        let next = Kept { way, way_since: state::to_unix(now), ..kept.clone() };
         self.write(&next)?;
         *kept = next;
         Ok(())
@@ -348,6 +364,39 @@ mod tests {
 
     // ---- The default: an unconfigured app can always unlock.
 
+    /// A countdown asked for as of a time gone by (`clock::as_of`) counts from then, unless the countdown
+    /// was aborted or used since: then it was over. Asked for as of later than the one that runs, it
+    /// changes nothing.
+    #[test]
+    fn a_countdown_as_of_earlier_counts_from_then_but_not_from_before_an_abort() {
+        let path = file("as-of");
+        let unlock = UnlockDelay::at(Some(path.clone()));
+        unlock.set_delay(3600, after(0)).unwrap();
+        unlock.request(after(5000)).unwrap();
+        unlock.request(after(1000)).unwrap();
+        assert_eq!(unlock.remaining(after(4600)), Some(0));
+        unlock.request(after(2000)).unwrap();
+        assert_eq!(unlock.requested(), state::to_unix(after(1000)));
+        unlock.abort(after(6000)).unwrap();
+        unlock.request(after(5999)).unwrap();
+        assert_eq!(unlock.remaining(after(9000)), None);
+        // Kept on disk.
+        assert_eq!(UnlockDelay::at(Some(path)).kept.locked().reset, state::to_unix(after(6000)));
+        unlock.request(after(6000)).unwrap();
+        assert_eq!(unlock.remaining(after(9600)), Some(0));
+    }
+
+    /// The other way to unlock as it was at a time: none before it was set.
+    #[test]
+    fn the_way_to_unlock_as_it_was_then() {
+        let unlock = UnlockDelay::at(None);
+        assert!(unlock.way_at(after(0)).is_none());
+        unlock.set_way(Some(Way { lock: Lock::Text { text: "t".into() }, opening: None }), after(100), true).unwrap();
+        assert!(unlock.way_at(after(99)).is_none());
+        assert_eq!(unlock.way_at(after(100)), unlock.way());
+        assert!(unlock.way_at(after(1000)).is_some());
+    }
+
     #[test]
     fn with_no_delay_unlocking_is_always_ready() {
         let unlock = UnlockDelay::at(Some(file("none")));
@@ -357,7 +406,7 @@ mod tests {
             assert_eq!(unlock.remaining(moment), Some(0));
         }
         unlock.request(after(5)).unwrap();
-        unlock.abort().unwrap();
+        unlock.abort(after(6)).unwrap();
         assert_eq!(unlock.remaining(after(5)), Some(0));
     }
 
@@ -419,18 +468,18 @@ mod tests {
         assert_eq!(unlock.remaining(after(10 + 3600)), Some(0));
         assert_eq!(unlock.remaining(after(10 + 90_000)), Some(0));
         // Aborted: back to locked, and it can be asked for again from the start.
-        unlock.abort().unwrap();
+        unlock.abort(after(10 + 90_000)).unwrap();
         assert_eq!(unlock.remaining(after(10 + 3600)), None);
-        unlock.request(after(5000)).unwrap();
-        assert_eq!(unlock.remaining(after(5000)), Some(3600));
+        unlock.request(after(100_000)).unwrap();
+        assert_eq!(unlock.remaining(after(100_000)), Some(3600));
     }
 
     #[test]
     fn aborting_without_a_request_is_harmless() {
         let unlock = UnlockDelay::at(Some(file("abort")));
         unlock.set_delay(60, after(0)).unwrap();
-        unlock.abort().unwrap();
-        unlock.abort().unwrap();
+        unlock.abort(after(0)).unwrap();
+        unlock.abort(after(0)).unwrap();
         assert_eq!(unlock.remaining(after(0)), None);
     }
 
@@ -513,7 +562,7 @@ mod tests {
         assert_eq!(again.remaining(after(5 + 7000)), Some(200));
         assert_eq!(again.remaining(after(5 + 7200)), Some(0));
         // And an abort is remembered too.
-        again.abort().unwrap();
+        again.abort(after(5 + 7200)).unwrap();
         assert_eq!(UnlockDelay::at(Some(path)).remaining(after(5)), None);
     }
 
@@ -528,12 +577,14 @@ mod tests {
         // The delay cannot be saved, and is not taken as set...
         assert!(unlock.set_delay(60, after(0)).is_err());
         // ...but a countdown that is already set runs in memory without a disk.
-        let fine =
-            UnlockDelay { kept: Mutex::new(Kept { delay: 60, requested: None, way: None }), path: Some(blocker.join("unlock.json")) };
+        let fine = UnlockDelay {
+            kept: Mutex::new(Kept { delay: 60, requested: None, way: None, reset: None, way_since: None }),
+            path: Some(blocker.join("unlock.json")),
+        };
         fine.request(after(0)).unwrap();
         assert_eq!(fine.remaining(after(0)), Some(60));
         assert_eq!(fine.remaining(after(60)), Some(0));
-        fine.abort().unwrap();
+        fine.abort(after(60)).unwrap();
         assert_eq!(fine.remaining(after(60)), None);
     }
 

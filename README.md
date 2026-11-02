@@ -61,6 +61,8 @@ With a sync server, your computers share their sessions, targets, conditions, un
 
 **Each computer keeps its own hardening.** What comes from another computer is applied under this computer's rules, as if it was done at its keyboard. A stop that the lock does not allow here yet waits, and Settings shows why. Passwords never leave a computer, and Unlock and **Disconnect** always work on each computer by themselves.
 
+**A computer that was off or asleep catches up as if it had been on.** The server has everything it receives timestamped by DigiCert's free timestamp service, so a computer that comes back later knows, from a signature nobody with the server can make, when it was done. An unlock made while unlocking was open, a countdown that ran out, a stop while the lock schedule allowed it: each is done as of then, under this computer's rules as they were then, and never lets more through than its keyboard would have at that time. Without the timestamp service (`BULLSEYE_TIMESTAMPS=off`, or it cannot be reached) a computer judges what arrives when it arrives, which can mean waiting, for instance until unlocking opens again.
+
 **Run the server** with Docker: put your own token in [server/docker-compose.yml](server/docker-compose.yml), run `docker compose up -d`, and put a reverse proxy in front of it for HTTPS.
 
 **Connect each computer** under Sync in Settings, with the server's address and token. The first computer fills a new server with its settings; every computer after it takes the server's. The server also shows the window in a browser at its address, to manage every computer from anywhere.

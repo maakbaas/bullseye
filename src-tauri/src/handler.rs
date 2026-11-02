@@ -306,7 +306,19 @@ pub enum Outcome {
 /// the same rules, so it can do nothing here that could not be done at this computer's own keyboard.
 /// `at` is when it was done there: a countdown it starts is bounded to have begun at most
 /// `replica::GRACE` before now, so a time from elsewhere cannot shorten a wait here.
-pub fn apply(context: &Context, action: &Action, at: SystemTime) -> Outcome {
+///
+/// `proven`: when a timestamp proves it came to the sync server (`timestamp.rs`). It is then first done
+/// as this computer would have done it then, had it been on: judged, and taking effect, as of that time
+/// (`clock::as_of`): what it would have allowed at its keyboard then, and only that. What that refuses is
+/// judged as now, as an action without a timestamp is.
+pub fn apply(context: &Context, action: &Action, at: SystemTime, proven: Option<SystemTime>) -> Outcome {
+    settle(context);
+    if let Some(then) = proven {
+        let outcome = crate::clock::as_of(then, || apply_as(context, action, then, false));
+        if outcome == Outcome::Applied {
+            return outcome;
+        }
+    }
     apply_as(context, action, at, false)
 }
 
@@ -316,6 +328,7 @@ pub fn apply(context: &Context, action: &Action, at: SystemTime) -> Outcome {
 /// server's API go through `handle_shared` and its rules, as a computer's do.
 #[cfg_attr(not(test), allow(dead_code))] // the sync server's (`hub.rs`, `server/`)
 pub fn mirror(context: &Context, action: &Action, at: SystemTime) -> Outcome {
+    settle(context);
     match apply_as(context, action, at, true) {
         Outcome::Held(_) => forced(context, action, at.min(context.sessions.now())),
         other => other,
@@ -355,7 +368,7 @@ fn forced(context: &Context, action: &Action, at: SystemTime) -> Outcome {
             Action::Stop { id, starts, .. } => context.sessions.stop_forced(&id, &starts).map(|()| Vec::new()),
             Action::Unlock { .. } => {
                 context.sessions.reset_started_by(at);
-                context.unlock.abort_since(Some(at)).map(|()| Vec::new())
+                context.unlock.abort_since(Some(at), context.sessions.now()).map(|()| Vec::new())
             }
             Action::SetUnlockDelay { delay } => unlock::parse_delay(&delay)
                 .and_then(|seconds| context.unlock.set_delay_idle(seconds, context.sessions.now()))
@@ -382,8 +395,9 @@ fn forced(context: &Context, action: &Action, at: SystemTime) -> Outcome {
     }
 }
 
+/// What `apply` and `mirror` do, what waits settled first (never as of a time gone by: what waits
+/// came later).
 fn apply_as(context: &Context, action: &Action, at: SystemTime, mirroring: bool) -> Outcome {
-    settle(context);
     use Outcome::{Applied, Dropped, Held};
     let sessions = &context.sessions;
     let now = sessions.now();
@@ -441,7 +455,7 @@ fn apply_as(context: &Context, action: &Action, at: SystemTime, mirroring: bool)
         Action::TakeBreak { id } => dropped(sessions.take_break(&id)),
         Action::EndBreak { id } => dropped(sessions.end_break(&id)),
         Action::AskForUnlock => dropped(context.unlock.request(countdown_from)),
-        Action::AbortUnlock => dropped(context.unlock.abort_since(Some(at))),
+        Action::AbortUnlock => dropped(context.unlock.abort_since(Some(at), now)),
         Action::Unlock { text, next, proof } => held(unlock_synced(context, at, text.as_deref(), next, proof)),
         Action::SetUnlockDelay { delay } => held(set_unlock_delay(context, &delay)),
         Action::SetUnlockWay { way } => held(set_unlock_way(context, way, true)),
@@ -507,7 +521,8 @@ fn lock_running_from(context: &Context, id: &str, lock: Lock, decided: Decided) 
 /// carries the password's signature of when it was made (`proof`): then that is the time it was made.
 fn unlock_synced(context: &Context, at: SystemTime, text: Option<&str>, next: Option<String>, proof: Option<Proof>) -> Result<(), String> {
     let now = context.sessions.now();
-    let way = context.unlock.way();
+    // As it was then: one set since lets nothing through that came before it (`clock::as_of`).
+    let way = context.unlock.way_at(now);
     let signed = proof.filter(|proof| match way.as_ref().map(|way| &way.lock) {
         Some(Lock::Password { hash: Some(hash), .. }) => unlock::verify(hash, &unlock_message(proof.at), &proof.signature),
         _ => false,
@@ -525,7 +540,7 @@ fn unlock_synced(context: &Context, at: SystemTime, text: Option<&str>, next: Op
             context.unlock.set_way(Some(unlock::Way { lock: Lock::RandomText { length, text: Some(next) }, opening }), now, true)?;
         }
     }
-    context.unlock.abort_since(Some(at))
+    context.unlock.abort_since(Some(at), now)
 }
 
 fn answer(context: &Context, caller: u32, request: Request) -> (Response, Option<Shutdown>) {
@@ -637,7 +652,7 @@ fn answer(context: &Context, caller: u32, request: Request) -> (Response, Option
         Request::SetUnlockWay { way } => (done(set_unlock_way(context, way, false)), None),
         Request::Export => (Response::Library(context.definitions.library()), None),
         Request::AskForUnlock => (done(context.unlock.request(sessions.now())), None),
-        Request::AbortUnlock => (done(context.unlock.abort()), None),
+        Request::AbortUnlock => (done(context.unlock.abort(sessions.now())), None),
         Request::SetUnlockDelay { delay } => (done(set_unlock_delay(context, &delay)), None),
         // Refused while a session cannot be stopped, judged by internet time, like the session itself.
         Request::SyncStatus | Request::SyncConnect { .. } | Request::SyncDisconnect | Request::SyncNow => {
@@ -1084,7 +1099,7 @@ fn unlock_with(context: &Context, password: Option<&str>, text: Option<&str>) ->
             eprintln!("unlock: the random text stays as it was: {e}");
         }
     }
-    context.unlock.abort()
+    context.unlock.abort(context.sessions.now())
 }
 
 #[cfg(test)]
