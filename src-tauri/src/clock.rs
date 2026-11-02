@@ -12,6 +12,11 @@
 //! the PC off counts only once the internet time is back.
 //!
 //! With neither, there is no session to protect, and the Windows clock is used.
+//!
+//! Resumed from the floor after a restart (`resume`), the time of day is not known until a server
+//! answers: the PC may have been off for hours, and the floor is when it was shut down. A schedule
+//! read by it then could put it in a free time that is long over, so what a schedule decides counts
+//! as active until then (`time_known`, `condition::Rule::active_with`).
 
 use std::net::UdpSocket;
 use std::sync::Mutex;
@@ -44,6 +49,8 @@ struct Anchor {
     at: Instant,
     /// From an NTP server, rather than the floor saved with a session.
     synced: bool,
+    /// The floor of a restart (`resume`): the time of day is not known.
+    resumed: bool,
 }
 
 impl Anchor {
@@ -74,7 +81,7 @@ impl Clock {
 
     /// Internet time, as just read from a server.
     fn set(&self, unix: Duration, at: Instant) {
-        *self.anchor.locked() = Some(Anchor { unix, at, synced: true });
+        *self.anchor.locked() = Some(Anchor { unix, at, synced: true, resumed: false });
     }
 
     /// Until internet time is in, the time is at least `time`: a time the running session was seen
@@ -84,8 +91,30 @@ impl Clock {
         let floor = time.duration_since(UNIX_EPOCH).unwrap_or_default();
         match *anchor {
             Some(a) if a.synced || a.now() >= floor => {}
-            _ => *anchor = Some(Anchor { unix: floor, at: Instant::now(), synced: false }),
+            _ => *anchor = Some(Anchor { unix: floor, at: Instant::now(), synced: false, resumed: false }),
         }
+    }
+
+    /// As `at_least`, after a restart (`Sessions::restore`): `time` is when the sessions were last seen
+    /// running, and how long the PC was off is not known, so neither is the time of day until internet
+    /// time is in (`time_known`).
+    pub fn resume(&self, time: SystemTime) {
+        self.at_least(time);
+        if let Some(anchor) = self.anchor.locked().as_mut().filter(|anchor| !anchor.synced) {
+            anchor.resumed = true;
+        }
+    }
+
+    /// Whether the time of day is known: internet time is in, or the clock was not resumed after a
+    /// restart (`resume`).
+    pub fn time_known(&self) -> bool {
+        self.anchor.locked().is_none_or(|anchor| anchor.synced || !anchor.resumed)
+    }
+
+    /// Internet time, as a server would give it: for tests elsewhere.
+    #[cfg(test)]
+    pub fn synced_to(&self, time: SystemTime) {
+        self.set(time.duration_since(UNIX_EPOCH).unwrap_or_default(), Instant::now());
     }
 }
 
@@ -173,6 +202,23 @@ fn parse(reply: &[u8]) -> Result<Duration, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Resumed after a restart, the time of day is not known until internet time is in; a floor set
+    /// otherwise (tests, a clock moved on) leaves it known.
+    #[test]
+    fn after_a_restart_the_time_of_day_is_known_only_from_the_internet() {
+        let clock = Clock::default();
+        assert!(clock.time_known(), "the Windows clock, with nothing to protect");
+        clock.at_least(UNIX_EPOCH + Duration::from_secs(1_900_000_000));
+        assert!(clock.time_known());
+        clock.resume(UNIX_EPOCH + Duration::from_secs(1_800_000_000));
+        assert!(!clock.time_known());
+        assert!(clock.now() >= UNIX_EPOCH + Duration::from_secs(1_900_000_000), "never back");
+        clock.synced_to(UNIX_EPOCH + Duration::from_secs(1_900_000_100));
+        assert!(clock.time_known());
+        clock.resume(UNIX_EPOCH + Duration::from_secs(1_800_000_000));
+        assert!(clock.time_known(), "internet time stays");
+    }
 
     #[test]
     fn a_time_judged_as_of_is_this_threads_and_is_put_back() {

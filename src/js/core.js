@@ -123,7 +123,7 @@ function whenRefreshed(draw) {
   redraw = draw;
 }
 
-let overview = { targets: [], conditions: [], sessions: [], running: [], unlock: { delay: 0, delay_words: "", remaining: 0, remaining_words: "" }, clock_synced: true };
+let overview = { targets: [], conditions: [], sessions: [], running: [], unlock: { delay: 0, delay_words: "", remaining: 0, remaining_words: "" }, clock_synced: true, time_known: true };
 let reachable = true;
 
 async function refresh() {

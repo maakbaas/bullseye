@@ -91,6 +91,8 @@ main { padding-block: var(--cds-spacing-06); }
    items anyway; only a trail too long for the window goes on to the next line. */
 .trail cds-breadcrumb-item { display: inline-flex; }
 .notices:empty { display: none; }
+.clock-note { max-width: none; margin-block: var(--cds-spacing-05) 0; }
+.clock-note[hidden] { display: none; }
 .notices { margin-bottom: var(--cds-spacing-05); }
 .notices cds-inline-notification, .webhook-result cds-inline-notification, .form-note { max-width: none; }
 /* A form's note (`errorNote`, `infoNote`): Carbon's notification keeps its margin otherwise. */

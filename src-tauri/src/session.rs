@@ -416,6 +416,8 @@ struct Session {
     starts: Vec<String>,
     /// When it started (milliseconds since the Unix epoch).
     started: u64,
+    /// The clock it goes by (its `Sessions`'): whether the time of day is known (`time_known`).
+    clock: &'static Clock,
     /// When its lock was last set: when it started, was locked again, or its lock condition changed.
     /// What was done before cannot have been about that lock (`locked`, `clock::as_of`).
     lock_since: u64,
@@ -458,10 +460,12 @@ impl Session {
     /// cycle allows everything; with a budget, what has time left is not enforced but watched
     /// (`Free`), so its use can be counted. Obsidian's action has no list to watch, so it stays.
     fn enforced(&mut self, now: SystemTime) -> Vec<Enforced> {
+        // A delayed start and a cycle go by the clock: not knowing the time of day, they let nothing go.
+        let known = self.time_known();
         let Session { id, zone, allowance, parts, .. } = self;
         let Some(run) = allowance.as_ref() else { return parts.iter().map(|p| p.enforced.clone()).collect() };
         match run.scope() {
-            None if run.everything_allowed(zone, now) => Vec::new(),
+            None if known && run.everything_allowed(zone, now) => Vec::new(),
             None => parts.iter().map(|p| p.enforced.clone()).collect(),
             Some(Scope::Total) if !run.is_free(TOTAL) => parts.iter().map(|p| p.enforced.clone()).collect(),
             Some(Scope::Total) => parts
@@ -500,11 +504,18 @@ impl Session {
     /// Whether its condition has the session active at `now`. If it cannot be known (the local time,
     /// the connected drives), it is: a session errs on the side of blocking.
     fn in_condition(&self, now: SystemTime) -> bool {
-        self.condition.as_ref().is_none_or(|rule| rule.active(&self.zone, now))
+        self.condition.as_ref().is_none_or(|rule| rule.active_with(&self.zone, now, self.time_known()))
+    }
+
+    /// Whether the time of day is known (`clock::Clock::time_known`); as of a proven time it is.
+    fn time_known(&self) -> bool {
+        self.clock.time_known() || crate::clock::judged_at().is_some()
     }
 
     /// Seconds until the condition turns the session on or off, if it has a time for that.
     fn condition_change(&self, now: SystemTime) -> Option<u64> {
+        // Not knowing the time of day, not when either.
+        self.time_known().then_some(())?;
         self.condition.as_ref()?.next_change(&self.zone, now)
     }
 
@@ -532,6 +543,7 @@ impl Session {
 
     /// Seconds until its lock condition locks or frees it, if it has a time for that.
     fn lock_change(&self, now: SystemTime) -> Option<u64> {
+        self.time_known().then_some(())?;
         self.lock_rule()?.next_change(&self.zone, now)
     }
 
@@ -578,6 +590,10 @@ impl Session {
             RunLock::None => None,
             RunLock::Ends { .. } => self.remaining(now).map(|left| format!("“{name}” is locked for the next {}", duration::left(left))),
             // Like `in_condition`, locked if it cannot be known.
+            // Not knowing the time of day, a lock schedule locks: until internet time is in.
+            RunLock::Condition { condition } if !self.time_known() && !condition.active(&self.zone, now) => condition
+                .active_with(&self.zone, now, false)
+                .then(|| format!("“{name}” is locked by its lock schedule until the time is known")),
             RunLock::Condition { condition } => condition.active(&self.zone, now).then(|| {
                 let until = self.lock_change(now).map(|s| format!(" for the next {}", duration::left(s))).unwrap_or_default();
                 match condition {
@@ -658,6 +674,9 @@ pub struct Status {
     /// Whether the time comes from the internet yet; until then, time with the service not running
     /// does not count.
     pub clock_synced: bool,
+    /// Whether the time of day is known (`clock::Clock::time_known`): not after a restart until
+    /// internet time is in, and schedules count as on until then.
+    pub time_known: bool,
 }
 
 /// The lock a locked session may take instead of `old`: only a stricter one of the same kind. A
@@ -782,6 +801,7 @@ impl Sessions {
             starts: vec![origin.id],
             started,
             lock_since: started,
+            clock: self.clock,
         };
         // Written before the session goes live, so a session cannot be missed after a restart. A
         // session that cannot be written would not survive the service ending, so it does not start.
@@ -1077,7 +1097,7 @@ impl Sessions {
             // Until internet time is in, the clock carries on from where the sessions last were,
             // rather than from a Windows clock that may have been set forward meanwhile.
             if let Some(seen) = saved.seen {
-                self.clock.at_least(state::from_unix(seen));
+                self.clock.resume(state::from_unix(seen));
             }
         }
         let mut restarted = Vec::new();
@@ -1115,6 +1135,7 @@ impl Sessions {
                 starts: if saved.starts.is_empty() { vec![crate::replica::new_id()] } else { saved.starts },
                 started: saved.started,
                 lock_since: saved.lock_since.max(saved.started),
+                clock: self.clock,
             });
         }
         let mut inner = self.inner.locked();
@@ -1250,6 +1271,17 @@ impl Sessions {
     }
 
     /// The time the service goes by (internet time, `clock.rs`).
+    /// Internet time comes in at `time`: for tests elsewhere.
+    #[cfg(test)]
+    pub fn synced_to(&self, time: SystemTime) {
+        self.clock.synced_to(time);
+    }
+
+    /// Whether the time of day is known (`clock::Clock::time_known`); as of a proven time it is.
+    pub fn time_known(&self) -> bool {
+        self.clock.time_known() || crate::clock::judged_at().is_some()
+    }
+
     pub fn now(&self) -> SystemTime {
         self.time()
     }
@@ -1398,7 +1430,7 @@ impl Sessions {
                 }),
             })
             .collect();
-        Status { running, clock_synced: self.clock.synced() }
+        Status { running, clock_synced: self.clock.synced(), time_known: self.clock.time_known() }
     }
 
     /// Ends every session whatever its lock, and forgets them. Only for unlocking
@@ -2180,6 +2212,49 @@ mod tests {
         assert_eq!(list.locked(), None);
     }
 
+    /// After a restart, until internet time is in, the time of day is not known: a schedule counts as on.
+    /// A session with one blocks, a lock schedule locks, a delayed start lets nothing go; with internet
+    /// time they go by the schedule again. A drive's lock is not about the time.
+    #[test]
+    fn after_a_restart_schedules_count_as_on_until_internet_time_is_in() {
+        let list = sessions("time-unknown");
+        // Monday 18:00: outside office hours, so nothing of these blocks or locks.
+        list.clock.at_least(monday(18 * 3600));
+        let parts = || vec![part(sites(&["a.com"]), Actions::default())];
+        list.start("office", "Office", parts(), weekly("mon-fri 08:00-17:00"), StartLock::None).unwrap();
+        let elsewhere = vec![part(sites(&["c.com"]), Actions::default())];
+        list.start("locked", "Locked", elsewhere, None, StartLock::Condition(weekly("mon-fri 08:00-17:00").unwrap())).unwrap();
+        let delayed = Terms::Delayed { kind: allowance::DelayKind::After, value: "1h".into() };
+        list.start_with("later", "Later", vec![part(sites(&["b.com"]), Actions::default())], None, Some(delayed), StartLock::None).unwrap();
+        let drive = Rule::FlashDrive { serial: "x".into(), drive: "Key".into() };
+        assert!(list.active().is_none_or(|active| !active.blocks_page("https://a.com/") && !active.blocks_page("https://b.com/")));
+        assert_eq!(list.locked(), None);
+        assert!(list.status().time_known);
+        let resumed = list.restarted("boot");
+        assert!(!resumed.time_known() && !resumed.status().time_known);
+        let active = resumed.active().unwrap();
+        assert!(active.blocks_page("https://a.com/") && active.blocks_page("https://b.com/"));
+        assert!(resumed.locked().is_some_and(|why| why.contains("until the time is known")), "{:?}", resumed.locked());
+        assert!(resumed.stop("locked", false).is_err());
+        assert!(running(&resumed, "office").enforcing);
+        assert_eq!(
+            (running(&resumed, "office").condition_change, running(&resumed, "locked").lock_change),
+            (None, None),
+            "not when either"
+        );
+        // A drive's condition is the drive's: no different without the time.
+        assert_eq!(drive.active_with(&Zone::fixed(0), monday(18 * 3600), false), drive.active(&Zone::fixed(0), monday(18 * 3600)));
+        // Internet time: Monday 18:30, by the schedules again.
+        resumed.clock.synced_to(monday(18 * 3600 + 1800));
+        assert!(resumed.time_known());
+        assert!(resumed.active().is_none_or(|active| !active.blocks_page("https://a.com/")));
+        assert_eq!(resumed.locked(), None);
+        // As of a proven time (`clock::as_of`), the time is that one, known.
+        let again = list.restarted("boot");
+        assert!(!again.time_known() || again.clock.time_known());
+        assert_eq!(crate::clock::as_of(monday(18 * 3600 + 60), || again.locked()), None);
+    }
+
     #[test]
     fn a_break_is_taken_by_hand_while_the_condition_is_active_and_survives_a_restart() {
         let list = sessions("breaks");
@@ -2206,17 +2281,20 @@ mod tests {
         list.take_break("a").unwrap();
         assert!(!list.active().unwrap().blocks_page("https://a.com/") && list.active().unwrap().blocks_page("https://b.com/"));
         assert_eq!(running(&list, "a").allowance.and_then(|status| status.breaks_left), Some(0));
-        // A restart keeps the break going and the one taken.
+        // A restart keeps the break going and the one taken, once the time is known again: until then, how
+        // long the PC was off is not, and the break lets nothing go.
         let resumed = reopened("breaks");
         resumed.clock.at_least(monday(16 * 3600 + 60));
         resumed.restore();
+        assert!(resumed.active().unwrap().blocks_page("https://a.com/"));
+        resumed.synced_to(monday(16 * 3600 + 60));
         assert!(!resumed.active().unwrap().blocks_page("https://a.com/"));
         // Ended early: enforced again, and still used up.
         resumed.end_break("a").unwrap();
         assert!(resumed.active().unwrap().blocks_page("https://a.com/"));
         assert_eq!(resumed.take_break("a"), Err("No breaks left".into()));
         // Outside its condition there is nothing to take a break from.
-        resumed.clock.at_least(monday(17 * 3600));
+        resumed.synced_to(monday(17 * 3600));
         assert_eq!(resumed.take_break("a"), Err("A break can only be taken while the session's condition is active".into()));
         // And the status says so, with breaks left.
         let one = Terms::Breaks {

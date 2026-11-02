@@ -564,6 +564,7 @@ fn library() -> Overview {
         running: vec![],
         unlock: UnlockStatus::default(),
         clock_synced: true,
+        time_known: true,
         status: vec![],
         waiting: Default::default(),
     }
@@ -958,6 +959,7 @@ fn the_status_reads_like_the_pages() {
         running: vec![],
         unlock: UnlockStatus::default(),
         clock_synced: true,
+        time_known: true,
         status: vec![],
         waiting: Default::default(),
     };
@@ -996,7 +998,9 @@ fn the_status_reads_like_the_pages() {
     assert!(text.contains("  Work  Inactive · Inactive for 1 hour · Never paused · Unlocked for 1 hour"), "{text}");
     assert!(text.contains("Targets:\n  Social  Used by Work"), "{text}");
     assert!(text.contains("Conditions:\n  Work hours  Active Mon-Fri 08:00-17:00 · Used by Work"), "{text}");
-    assert!(text.contains("Waiting for internet time"), "{text}");
+    assert!(text.contains(&format!("({}: {}.)", t("clock.offlineTitle", &[]), t("clock.offlineText", &[]))), "{text}");
+    let unknown = describe_overview(&Overview { time_known: false, ..overview.clone() });
+    assert!(unknown.contains(&format!("({}: {}.)", t("clock.unknownTitle", &[]), t("clock.unknownText", &[]))), "{unknown}");
 
     let session = describe_session(&overview, &overview.sessions[0]);
     assert!(session.contains("State:       Inactive\n"), "{session}");

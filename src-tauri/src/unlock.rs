@@ -124,9 +124,11 @@ pub enum Opening {
 impl Way {
     /// Whether it lets go at `now` without an answer. What cannot be known counts as locked here
     /// (`Rule::active` errs towards blocking): the delay is the way out then, so the hatch stays open.
-    pub fn is_open(&self, now: SystemTime) -> bool {
+    /// `known`: whether the time of day is known (`clock::Clock::time_known`); a schedule's free time
+    /// does not open it while it is not.
+    pub fn is_open(&self, now: SystemTime, known: bool) -> bool {
         match &self.opening {
-            Some(Opening::While { rule, zone }) => !rule.active(&Zone::named(zone), now),
+            Some(Opening::While { rule, zone }) => !rule.active_with(&Zone::named(zone), now, known),
             None => false,
         }
     }
@@ -641,15 +643,16 @@ mod tests {
         };
         // 1970-01-05 was a Monday.
         let monday = |hour: u64| std::time::UNIX_EPOCH + Duration::from_secs(4 * 86400 + hour * 3600);
-        assert!(!way.is_open(monday(10)), "in office hours: locked");
+        assert!(!way.is_open(monday(10), true), "in office hours: locked");
         assert_eq!(way.left(monday(10)), Some(7 * 3600));
-        assert!(way.is_open(monday(18)));
+        assert!(way.is_open(monday(18), true));
+        assert!(!way.is_open(monday(18), false), "shut while the time of day is not known");
         assert_eq!(way.left(monday(18)), Some(6 * 86400 + 14 * 3600));
         // Nothing to answer: a condition way only lets go by itself.
         assert!(!way.answered(Some("anything"), Some("anything")));
         // A text or password way never lets go by itself, and has no time.
         let text = Way { lock: Lock::Text { text: "a\nb".into() }, opening: None };
-        assert!(!text.is_open(monday(18)) && text.left(monday(18)).is_none());
+        assert!(!text.is_open(monday(18), true) && text.left(monday(18)).is_none());
         assert!(text.answered(None, Some("a\r\nb")) && !text.answered(Some("a\nb"), None));
     }
 }

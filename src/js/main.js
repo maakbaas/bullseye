@@ -16,6 +16,7 @@ let page = "sessions"; // the kind whose page or editor is shown
 let single = null; // the session shown on its own (`#/edit/<id>`), or null
 
 function render() {
+  renderClock();
   if (!$("view-settings").hidden) renderSettings();
   if (!$("view-list").hidden) {
     // A session shown on its own that is gone (deleted), or the only one: back to all of them.
@@ -27,6 +28,19 @@ function render() {
     showSingle();
   }
   renderEditorLock();
+}
+
+// ---- Internet time: a banner above every page while Bullseye has none (`clock.rs`). Not knowing the
+// time of day since Windows started, schedules count as on; the service says which (`time_known`).
+let clockShown = null;
+function renderClock() {
+  const shown = overview.clock_synced ? "" : overview.time_known ? "offline" : "unknown";
+  if (shown === clockShown) return;
+  clockShown = shown;
+  $("clock-note").hidden = !shown;
+  if (!shown) return;
+  $("clock-note").title = t(`clock.${shown}Title`);
+  $("clock-note").subtitle = t(`clock.${shown}Text`);
 }
 
 // ---- Settings: unlocking.

@@ -201,7 +201,8 @@ pub(super) fn describe_overview(overview: &Overview) -> String {
         text.push_str(&if rows.is_empty() { empty.to_string() } else { table(&rows) });
     }
     if !overview.clock_synced {
-        text.push_str("(Waiting for internet time: until then, time with the service not running does not count.)\n");
+        let shown = if overview.time_known { "offline" } else { "unknown" };
+        text.push_str(&format!("({}: {}.)\n", t(&format!("clock.{shown}Title"), &[]), t(&format!("clock.{shown}Text"), &[])));
     }
     text
 }

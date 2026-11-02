@@ -529,7 +529,8 @@ fn unlock_synced(context: &Context, at: SystemTime, text: Option<&str>, next: Op
     });
     let at = signed.as_ref().map_or(at, |proof| crate::state::from_unix(proof.at).min(now));
     if context.sessions.started_by(at) {
-        let by_way = signed.is_some() || way.as_ref().is_some_and(|way| way.is_open(now) || way.answered(None, text));
+        let known = context.sessions.time_known();
+        let by_way = signed.is_some() || way.as_ref().is_some_and(|way| way.is_open(now, known) || way.answered(None, text));
         if !by_way && context.unlock.remaining(now) != Some(0) {
             return Err("Unlocking is not ready on this computer yet".into());
         }
@@ -572,6 +573,7 @@ fn answer(context: &Context, caller: u32, request: Request) -> (Response, Option
                 running: status.running,
                 unlock: unlock_status(context),
                 clock_synced: status.clock_synced,
+                time_known: status.time_known,
                 status: rows,
                 waiting,
             };
@@ -995,7 +997,7 @@ fn unlock_status(context: &Context) -> UnlockStatus {
     let now = context.sessions.now();
     let remaining = context.unlock.remaining(now);
     let way = context.unlock.way();
-    let way_open = way.as_ref().is_some_and(|way| way.is_open(now));
+    let way_open = way.as_ref().is_some_and(|way| way.is_open(now, context.sessions.time_known()));
     let way_left = way.as_ref().and_then(|way| way.left(now));
     UnlockStatus {
         delay,
@@ -1084,7 +1086,8 @@ fn unlock(context: &Context) -> Result<(), String> {
 /// answer given), **or** the countdown is over: either is enough, never both.
 fn unlock_with(context: &Context, password: Option<&str>, text: Option<&str>) -> Result<(), String> {
     let now = context.sessions.now();
-    let by_way = context.unlock.way().is_some_and(|way| way.is_open(now) || way.answered(password, text));
+    let known = context.sessions.time_known();
+    let by_way = context.unlock.way().is_some_and(|way| way.is_open(now, known) || way.answered(password, text));
     if !by_way && context.unlock.remaining(now) != Some(0) {
         return Err("Unlocking is not ready yet: ask for it and wait for the countdown, or use the other way to unlock".into());
     }
@@ -1188,6 +1191,38 @@ mod tests {
 
     fn failed(response: Response) -> bool {
         matches!(response, Response::Failed(_))
+    }
+
+    /// Unlocking by a schedule's free time waits after a restart until internet time is in: the time of
+    /// day is not known before, and the window and the CLI say so (`time_known`).
+    #[test]
+    fn unlocking_by_a_schedule_waits_for_internet_time_after_a_restart() {
+        let context = context("unlock-time").with_unlock(UnlockDelay::at(None));
+        // Monday 2030-01-07 at 18:00 UTC (the tests' zone): unlocking is open outside 9-17.
+        let evening = SystemTime::UNIX_EPOCH + Duration::from_secs(1_893_974_400 + 18 * 3600);
+        context.sessions.move_to(evening);
+        assert_eq!(handle(&context, 0, Request::SaveTarget { target: target("t", &["a.com"]) }).0, Response::Done);
+        let session = Definition { lock: Lock::UntilRestart, ..session("s", &["t"]) };
+        assert_eq!(handle(&context, 0, Request::SaveSession { session }).0, Response::Done);
+        assert_eq!(handle(&context, 0, Request::SaveCondition { condition: weekly("office", "daily 9-17") }).0, Response::Done);
+        assert_eq!(
+            handle(&context, 0, Request::SetUnlockWay { way: Some(Lock::Condition { condition: "office".into() }) }).0,
+            Response::Done
+        );
+        assert_eq!(handle(&context, 0, Request::SetUnlockDelay { delay: "1h".into() }).0, Response::Done);
+        assert_eq!(handle(&context, 0, Request::Start { id: "s".into() }).0, Response::Done);
+        let overview = |context: &Context| match handle(context, 0, Request::Status).0 {
+            Response::Status(overview) => overview,
+            other => panic!("{other:?}"),
+        };
+        assert!(overview(&context).unlock.way_open && overview(&context).time_known);
+        // Windows starts again, with no internet.
+        context.sessions.restore();
+        assert!(!overview(&context).time_known && !overview(&context).unlock.way_open);
+        assert!(failed(handle(&context, 0, Request::Unlock).0));
+        context.sessions.synced_to(evening + Duration::from_secs(60));
+        assert!(overview(&context).time_known);
+        assert_eq!(handle(&context, 0, Request::Unlock).0, Response::Done);
     }
 
     #[test]

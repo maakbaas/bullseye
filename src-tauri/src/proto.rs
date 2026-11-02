@@ -194,6 +194,9 @@ pub struct Overview {
     /// Whether the time comes from the internet yet; until then, time with the service not
     /// running does not count.
     pub clock_synced: bool,
+    /// Whether the time of day is known: not after a restart until internet time is in, when
+    /// schedules count as on (`clock::Clock::time_known`).
+    pub time_known: bool,
     /// What each session's Condition, Allowance and Lock rows say now (`status.rs`), for its tile.
     #[serde(default)]
     pub status: Vec<Status>,

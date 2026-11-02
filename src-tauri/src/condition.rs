@@ -100,8 +100,14 @@ impl Rule {
     /// cannot be known, or the connected drives cannot be asked, it is: a session errs on the side
     /// of blocking, and a lock on the side of locking.
     pub fn active(&self, zone: &Zone, now: SystemTime) -> bool {
+        self.active_with(zone, now, true)
+    }
+
+    /// As `active`, knowing whether the time of day is known (`clock::Clock::time_known`): when it is
+    /// not, a schedule is active (a session blocks, a lock schedule locks, an unlock window is shut).
+    pub fn active_with(&self, zone: &Zone, now: SystemTime, known: bool) -> bool {
         match self {
-            Rule::Schedule { week } => zone.local(now).is_none_or(|local| week.is_on(local)),
+            Rule::Schedule { week } => !known || zone.local(now).is_none_or(|local| week.is_on(local)),
             // Not known for a time gone by (`clock::as_of`): active, as a drive that cannot be asked.
             Rule::FlashDrive { .. } | Rule::Webhook(_) if crate::clock::judged_at().is_some() => true,
             Rule::FlashDrive { serial, .. } => !drives::is_present(serial),
@@ -111,8 +117,8 @@ impl Rule {
             Rule::Combined { mode, rules, .. } => {
                 rules.is_empty()
                     || match mode {
-                        Mode::Any => rules.iter().any(|rule| rule.active(zone, now)),
-                        Mode::All => rules.iter().all(|rule| rule.active(zone, now)),
+                        Mode::Any => rules.iter().any(|rule| rule.active_with(zone, now, known)),
+                        Mode::All => rules.iter().all(|rule| rule.active_with(zone, now, known)),
                     }
             }
         }

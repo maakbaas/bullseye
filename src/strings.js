@@ -66,6 +66,15 @@ window.STRINGS = {
     weeklyStandIn: "a weekly schedule",
   },
 
+  // A banner above every page while Bullseye has no internet time (`clock.rs`); the CLI's status says
+  // the same.
+  clock: {
+    unknownTitle: "The time is not known yet",
+    unknownText: "Bullseye has had no internet time since Windows started. Until it has, schedules count as on: sessions with one block, lock schedules lock, and unlocking by a schedule waits",
+    offlineTitle: "No internet time",
+    offlineText: "Bullseye cannot reach internet time, so it does not trust the Windows clock: time with the computer off counts once it is online again",
+  },
+
   sessions: {
     title: "Sessions", // reviewed
     noun: "session", // reviewed
