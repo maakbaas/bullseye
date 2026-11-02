@@ -49,7 +49,7 @@ It sends the same requests to the Bullseye service as the window, so the service
 | `bullseye unlock-delay [<time>]` | **Unlock delay** in Settings: show it, or set it |
 | `bullseye sync status [--json]` (or `bullseye sync`) | **Sync** in Settings: where syncing stands, the computers and what waits here |
 | `bullseye sync connect <url> [--token <token>] [--force]` | **Connect** under Sync in Settings |
-| `bullseye sync disconnect [--force] [--password <pw> \| --text <text>]` | **Disconnect** under Sync in Settings: at once with the server reached; without it as hard as unlocking (run again after the countdown, or answer the other way to unlock) |
+| `bullseye sync disconnect [--force] [--password <pw> \| --text <text>] [--abort]` | **Disconnect** and **Keep connected** under Sync in Settings: at once with the server reached; without it as hard as unlocking (run again after the countdown, or answer the other way to unlock); `--abort` ends the countdown |
 | `bullseye sync now` | **Sync now** under Sync in Settings |
 | `bullseye --server <url> [--token <token>] <command>` | any command, sent to the sync server instead of this computer |
 | `bullseye help` | |

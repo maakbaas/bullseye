@@ -46,7 +46,7 @@ use parse::*;
 
 /// Each command the window can invoke, and the CLI commands that do the same. Empty: it is about
 /// the window itself.
-pub const GUI_COMMANDS: [(&str, &[&str]); 38] = [
+pub const GUI_COMMANDS: [(&str, &[&str]); 39] = [
     ("status", &["status", "show", "target show", "condition show"]),
     ("save_session", &["new", "edit"]),
     ("delete_session", &["delete"]),
@@ -89,6 +89,7 @@ pub const GUI_COMMANDS: [(&str, &[&str]); 38] = [
     ("sync_status", &["sync status"]),
     ("sync_connect", &["sync connect"]),
     ("sync_disconnect", &["sync disconnect"]),
+    ("sync_abort_disconnect", &["sync disconnect"]),
     ("sync_now", &["sync now"]),
     ("window_ready", &[]),
     // Asked before a confirmation in the window; the CLI asks, and the service answers when it does it.
@@ -564,7 +565,11 @@ fn execute(command: Command) -> Result<(), Failure> {
             send(Request::SyncConnect { url, token })?;
             out(&describe_sync(&sync_status()?));
         }
-        Command::SyncDisconnect { force, password, text } => {
+        Command::SyncDisconnect { abort: true, .. } => {
+            send(Request::SyncAbortDisconnect)?;
+            say!("{}.", t("sync.disconnectAborted", &[]));
+        }
+        Command::SyncDisconnect { force, password, text, .. } => {
             if !confirm(&format!("{} {}.", t("sync.disconnectHeading", &[]), t("sync.disconnectBody", &[])), force)? {
                 return Err(failed("Still connected."));
             }

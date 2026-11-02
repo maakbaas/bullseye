@@ -290,6 +290,7 @@ if (window.BULLSEYE_WEB) {
 $("sync-connect").replaceChildren(t("sync.connect"), carbonIcon("plug-16", "icon"));
 $("sync-now").replaceChildren(t("sync.now"), carbonIcon("renew", "icon"));
 $("sync-disconnect").replaceChildren(t("sync.disconnect"), carbonIcon("close", "icon"));
+$("sync-abort-disconnect").replaceChildren(t("sync.keepConnected"), carbonIcon("plug-16", "icon"));
 let syncShown = ""; // what the section shows, so it is drawn again only when that changes
 
 async function renderSync() {
@@ -308,6 +309,7 @@ async function renderSync() {
   $("sync-connect").hidden = web || sync.connected;
   $("sync-now").hidden = web || !sync.connected;
   $("sync-disconnect").hidden = web || !sync.connected;
+  $("sync-abort-disconnect").hidden = web || !sync.disconnect;
   const devices = sync.devices.map((device) => {
     const about = [t("sync.seen", { ago: device.seen })];
     if (device.running.length) about.push(t("sync.running", { names: joined(device.running.map(quoted)).join("") }));
@@ -366,6 +368,18 @@ $("sync-disconnect").addEventListener("click", async () => {
   } catch (e) {
     const answered = await disconnectWithAnswer(String(e));
     if (answered === null) notify("sync-notices", "warning", t("sync.disconnectNotYet"), String(e));
+  }
+  syncShown = "";
+  await refresh();
+});
+
+// Keep connected: the countdown of a disconnect without the server ends.
+$("sync-abort-disconnect").addEventListener("click", async () => {
+  try {
+    await invoke("sync_abort_disconnect");
+    notify("sync-notices", "success", t("sync.disconnectAborted"));
+  } catch (e) {
+    notify("sync-notices", "error", t("sync.nowFailed"), String(e));
   }
   syncShown = "";
   await refresh();

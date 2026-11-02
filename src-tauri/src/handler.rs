@@ -142,6 +142,7 @@ fn answer_sync(context: &Context, request: Request) -> Response {
     match request {
         Request::SyncConnect { url, token } => done(syncer.connect(context, &url, &token)),
         Request::SyncDisconnect { password, text } => done(disconnect(context, syncer, password.as_deref(), text.as_deref())),
+        Request::SyncAbortDisconnect => done(syncer.abort_disconnect()),
         Request::SyncNow => done(syncer.now(context)),
         _ => Response::Sync(Box::new(syncer.status(context))),
     }
@@ -267,6 +268,7 @@ fn shareable(request: &Request) -> Option<Request> {
         | Request::SyncStatus
         | Request::SyncConnect { .. }
         | Request::SyncDisconnect { .. }
+        | Request::SyncAbortDisconnect
         | Request::SyncNow => None,
     }
 }
@@ -696,9 +698,11 @@ fn answer(context: &Context, caller: u32, request: Request) -> (Response, Option
         Request::AbortUnlock => (done(context.unlock.abort(sessions.now())), None),
         Request::SetUnlockDelay { delay } => (done(set_unlock_delay(context, &delay)), None),
         // Refused while a session cannot be stopped, judged by internet time, like the session itself.
-        Request::SyncStatus | Request::SyncConnect { .. } | Request::SyncDisconnect { .. } | Request::SyncNow => {
-            (answer_sync(context, request), None)
-        }
+        Request::SyncStatus
+        | Request::SyncConnect { .. }
+        | Request::SyncDisconnect { .. }
+        | Request::SyncAbortDisconnect
+        | Request::SyncNow => (answer_sync(context, request), None),
         Request::PrepareUninstall => match sessions.locked() {
             Some(why) => (Response::Refused(why), None),
             None => (Response::Done, Some(Shutdown)),

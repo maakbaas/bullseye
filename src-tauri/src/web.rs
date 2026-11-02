@@ -23,9 +23,10 @@ use crate::sync_api::{Device, SyncStatus};
 
 /// The app's commands a browser cannot use: what is this computer's own (its syncing, its installed
 /// Store apps and flash drives, files to export to and import from, its window).
-pub const COMPUTER_ONLY: [&str; 9] = [
+pub const COMPUTER_ONLY: [&str; 10] = [
     "sync_connect",
     "sync_disconnect",
+    "sync_abort_disconnect",
     "sync_now",
     "installed_apps",
     "connected_drives",

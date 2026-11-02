@@ -143,6 +143,8 @@ pub enum Request {
         #[serde(default)]
         text: Option<String>,
     },
+    /// Ends the countdown of a disconnect asked for without the server: back to needing it again.
+    SyncAbortDisconnect,
     /// One round with the sync server now.
     SyncNow,
 }

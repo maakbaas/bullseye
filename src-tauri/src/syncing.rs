@@ -307,6 +307,16 @@ impl Syncer {
         }
     }
 
+    /// Ends the countdown of a disconnect asked for without the server (`disconnect_wait`): one asked for
+    /// again starts from the beginning. Nothing to end is fine too.
+    pub fn abort_disconnect(&self) -> Result<(), String> {
+        let mut settings = self.settings.locked();
+        if settings.disconnect_asked.take().is_some() {
+            self.save_settings(&settings)?;
+        }
+        Ok(())
+    }
+
     /// One round with the server: what was done here goes out, the log comes in (waiting up to `wait` for
     /// something new), what waits is tried again, the use counted here is shared and this computer says how
     /// it is. Nothing while not connected.
@@ -1295,6 +1305,12 @@ mod tests {
         // A service started again keeps it.
         let again = Syncer::at(Some(a.dir.clone()), connector(&server), "again".into());
         assert!(again.settings.locked().disconnect_asked.is_some());
+        // Aborted (Keep connected): over, and kept so over a restart; asked for again it starts anew.
+        assert_eq!(a.ask(Request::SyncAbortDisconnect), Response::Done);
+        assert_eq!(a.status().disconnect, None);
+        assert!(Syncer::at(Some(a.dir.clone()), connector(&server), "again".into()).settings.locked().disconnect_asked.is_none());
+        assert_eq!(a.ask(Request::SyncAbortDisconnect), Response::Done, "nothing to abort is fine");
+        assert_eq!(disconnect(&a, None, None), Response::Failed(t("sync.disconnectWaits", &[("delay", "1 hour")])));
         // The server back: over, and asked for again it starts from the beginning.
         server.down.store(false, Ordering::SeqCst);
         sync(&[&a]);

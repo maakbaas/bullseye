@@ -200,12 +200,13 @@ Syncing with your other computers, through a Bullseye sync server:
                                     sessions, targets, conditions, unlock settings and running
                                     sessions; otherwise this computer takes the server's. Asks
                                     first, unless --force.
-  sync disconnect [--force] [--password <pw> | --text <text>]
+  sync disconnect [--force] [--password <pw> | --text <text>] [--abort]
                                     Stop syncing: the sessions here stay and run on by their own
                                     rules. With the server reached, at once, once what waits there is
                                     in. Without it, as hard as unlocking: run it again when its
                                     countdown is over, or give the password or text of the other way
-                                    to unlock. Asks first, unless --force.
+                                    to unlock; --abort ends that countdown. Asks first, unless
+                                    --force.
   sync now                          Sync at once rather than waiting.
   --server <url> [--token <token>]  Given with any other command: send it to the sync server rather
                                     than to this computer, under the same rules (the token as
@@ -387,6 +388,7 @@ pub(super) enum Command {
         force: bool,
         password: Option<String>,
         text: Option<String>,
+        abort: bool,
     },
     SyncNow,
 }
@@ -613,6 +615,7 @@ fn parse_command(args: &[String]) -> Result<Command, String> {
             force: options.flag("--force"),
             password: options.value("--password")?,
             text: options.value("--text")?,
+            abort: options.flag("--abort"),
         },
         "sync now" => Command::SyncNow,
         other => return Err(format!("Unknown command “{other}”")),

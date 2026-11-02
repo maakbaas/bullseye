@@ -1286,14 +1286,21 @@ fn sync_is_read_with_its_server_and_token() {
     // Which side everything starts from is not a choice: the service decides.
     assert!(parse(&args(&["sync", "connect", "https://s", "--token=t", "--send-mine"])).is_err());
     assert!(parse(&args(&["sync", "connect", "--token", token])).unwrap_err().contains("address"));
-    assert_eq!(parse(&args(&["sync", "disconnect"])), Ok(Command::SyncDisconnect { force: false, password: None, text: None }));
+    assert_eq!(
+        parse(&args(&["sync", "disconnect"])),
+        Ok(Command::SyncDisconnect { force: false, password: None, text: None, abort: false })
+    );
     assert_eq!(
         parse(&args(&["sync", "disconnect", "--text", "let me go", "--force"])),
-        Ok(Command::SyncDisconnect { force: true, password: None, text: Some("let me go".into()) })
+        Ok(Command::SyncDisconnect { force: true, password: None, text: Some("let me go".into()), abort: false })
     );
     assert_eq!(
         parse(&args(&["sync", "disconnect", "--password", "pw"])),
-        Ok(Command::SyncDisconnect { force: false, password: Some("pw".into()), text: None })
+        Ok(Command::SyncDisconnect { force: false, password: Some("pw".into()), text: None, abort: false })
+    );
+    assert_eq!(
+        parse(&args(&["sync", "disconnect", "--abort"])),
+        Ok(Command::SyncDisconnect { force: false, password: None, text: None, abort: true })
     );
     assert_eq!(parse(&args(&["sync", "now"])), Ok(Command::SyncNow));
     assert!(parse(&args(&["sync", "later"])).is_err());

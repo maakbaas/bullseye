@@ -330,6 +330,12 @@ async fn sync_disconnect(password: Option<String>, text: Option<String>, remote:
         .map_err(|e| e.to_string())?
 }
 
+/// Ends the countdown of a disconnect asked for without the server.
+#[tauri::command]
+fn sync_abort_disconnect(remote: State<Remote>) -> Result<(), String> {
+    remote.command(Request::SyncAbortDisconnect)
+}
+
 /// Syncs at once. Async: the service waits on the server.
 #[tauri::command]
 async fn sync_now(remote: State<'_, Remote>) -> Result<(), String> {
@@ -398,6 +404,7 @@ pub fn run() {
             sync_status,
             sync_connect,
             sync_disconnect,
+            sync_abort_disconnect,
             sync_now,
             check_stricter,
             save_session,

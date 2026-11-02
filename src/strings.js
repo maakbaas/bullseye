@@ -771,6 +771,9 @@ window.STRINGS = {
     disconnectPending: "Disconnecting can be done in {left}",
     disconnectReady: "Disconnecting can be done now",
     disconnectNotYet: "Not disconnected",
+    // Ends that countdown: back to needing it again.
+    keepConnected: "Keep connected",
+    disconnectAborted: "Disconnecting aborted: asked for again, the countdown starts from the beginning",
     disconnected: "Disconnected",
     heldTitle: "Waiting on this computer",
     heldText: "Changes from other computers that this computer's rules do not allow yet. They are tried again and apply as soon as they are allowed",
