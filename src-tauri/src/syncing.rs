@@ -39,6 +39,11 @@ pub type Connector = Box<dyn Fn(&str, &str) -> Result<Arc<dyn Transport>, String
 struct Settings {
     url: String,
     token: String,
+    /// When disconnecting was asked for while the server could not be reached (milliseconds since the
+    /// Unix epoch): it counts down as unlocking does (`handler::disconnect`), and ends when the server
+    /// is reached again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    disconnect_asked: Option<u64>,
 }
 
 #[derive(Default)]
@@ -208,14 +213,8 @@ impl Syncer {
         let transport = (self.connector)(url, token)?;
         let snapshot = transport.snapshot().map_err(|failure| failure.words())?;
         self.disconnect();
-        let settings = Settings { url: url.trim().to_string(), token: token.trim().to_string() };
-        if let Some(path) = &self.path {
-            let json = serde_json::to_vec(&settings).map_err(|e| e.to_string())?;
-            if let Some(dir) = path.parent() {
-                fs::create_dir_all(dir).map_err(|e| format!("Cannot save: {e}"))?;
-            }
-            fs::write(path, json).map_err(|e| format!("Cannot save: {e}"))?;
-        }
+        let settings = Settings { url: url.trim().to_string(), token: token.trim().to_string(), disconnect_asked: None };
+        self.save_settings(&settings)?;
         self.replica.connect(snapshot.head, snapshot.last.clone(), snapshot.newest)?;
         *self.settings.locked() = settings;
         *self.transport.locked() = Some(transport);
@@ -277,6 +276,37 @@ impl Syncer {
         }
     }
 
+    fn save_settings(&self, settings: &Settings) -> Result<(), String> {
+        let Some(path) = &self.path else { return Ok(()) };
+        let json = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir).map_err(|e| format!("Cannot save: {e}"))?;
+        }
+        fs::write(path, json).map_err(|e| format!("Cannot save: {e}"))
+    }
+
+    /// Disconnecting without the server, as unlocking (`handler::disconnect`): `None` when its countdown
+    /// of `delay` seconds is over (or there is none); otherwise the seconds left and whether it was asked
+    /// for just now, at `now`. Kept in `sync.json`, so a restart does not start it again.
+    pub fn disconnect_wait(&self, now: SystemTime, delay: u64) -> Option<(u64, bool)> {
+        let now = state::to_unix(now).unwrap_or(0);
+        let mut settings = self.settings.locked();
+        let asked = settings.disconnect_asked;
+        let left = |asked: u64| (delay * 1000).saturating_sub(now.saturating_sub(asked)).div_ceil(1000);
+        match asked {
+            _ if delay == 0 => None,
+            Some(asked) if left(asked) == 0 => None,
+            Some(asked) => Some((left(asked), false)),
+            None => {
+                settings.disconnect_asked = Some(now);
+                if let Err(why) = self.save_settings(&settings) {
+                    note("sync", &format!("disconnecting was asked for, but cannot be kept: {why}"));
+                }
+                Some((delay, true))
+            }
+        }
+    }
+
     /// One round with the server: what was done here goes out, the log comes in (waiting up to `wait` for
     /// something new), what waits is tried again, the use counted here is shared and this computer says how
     /// it is. Nothing while not connected.
@@ -286,6 +316,13 @@ impl Syncer {
         {
             let _turn = self.turn();
             self.replica.retry(context);
+        }
+        // The server is there: a disconnect asked for without it is no longer waited for.
+        if result.is_ok() {
+            let mut settings = self.settings.locked();
+            if settings.disconnect_asked.take().is_some() {
+                let _ = self.save_settings(&settings);
+            }
         }
         let mut runtime = self.runtime.locked();
         match &result {
@@ -428,6 +465,13 @@ impl Syncer {
                 .collect(),
             devices,
             device,
+            disconnect: self.settings.locked().disconnect_asked.map(|asked| {
+                let left = (context.unlock().delay() * 1000).saturating_sub(now.saturating_sub(asked)).div_ceil(1000);
+                match left {
+                    0 => strings::t("sync.disconnectReady", &[]),
+                    left => strings::t("sync.disconnectPending", &[("left", &crate::duration::left(left))]),
+                }
+            }),
         }
     }
 }
@@ -559,6 +603,7 @@ mod tests {
     use crate::hub::{self, Hub};
     use crate::lock::Lock;
     use crate::proto::{Request, Response};
+    use crate::strings::t;
     use crate::sync_api::{Appended, Device, LogPage};
     use crate::unlock;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1208,29 +1253,127 @@ mod tests {
         assert!(a.context.sessions().take_restarted().is_empty());
     }
 
+    fn disconnect(computer: &Computer, password: Option<&str>, text: Option<&str>) -> Response {
+        computer.ask(Request::SyncDisconnect { password: password.map(str::to_string), text: text.map(str::to_string) })
+    }
+
+    /// With the server reached, disconnecting is at once, after one more round: a session started
+    /// elsewhere and not yet here comes in first, and runs on here, locked, by its own rules.
     #[test]
-    fn disconnecting_always_works_and_the_sessions_go_on_by_their_own_rules() {
-        let server = server("disconnect");
+    fn disconnecting_with_the_server_takes_in_what_waits_there_first() {
+        let server = server("disconnect-reached");
         defined(&server, Lock::UntilRestart);
-        let a = computer("disconnect-a", &server);
+        let a = computer("disconnect-reached-a", &server);
+        a.connect();
+        assert_eq!(server.hub().request(&Request::Start { id: "work".into() }).unwrap(), Response::Done);
+        assert!(!a.runs("work"), "not taken in yet");
+        assert_eq!(disconnect(&a, None, None), Response::Done);
+        assert!(!a.status().connected && !a.dir.join("sync.json").exists());
+        assert!(a.runs("work") && a.locked());
+        // Not connected: nothing to do.
+        assert_eq!(disconnect(&a, None, None), Response::Done);
+    }
+
+    /// Without the server, for whatever reason, disconnecting is as hard as unlocking, locked or not: a
+    /// countdown of the unlock delay, said in the status, kept over a restart, and over once the server is
+    /// reached again. The sessions go on by their own rules either way, and the way out stays.
+    #[test]
+    fn disconnecting_without_the_server_takes_the_unlock_countdown() {
+        let server = server("disconnect-away");
+        defined(&server, Lock::UntilRestart);
+        let a = computer("disconnect-away-a", &server);
         a.connect();
         assert_eq!(server.hub().request(&Request::Start { id: "work".into() }).unwrap(), Response::Done);
         sync(&[&a]);
-        assert!(a.locked());
-        assert!(a.dir.join("sync.json").exists());
-        // Locked, with the server down and something waiting: disconnecting still works.
         server.down.store(true, Ordering::SeqCst);
-        a.ok(Request::AskForUnlock);
-        assert_eq!(a.ask(Request::SyncDisconnect), Response::Done);
-        let status = a.status();
-        assert!(!status.connected && status.url.is_empty() && status.outbox == 0);
-        assert!(!a.dir.join("sync.json").exists());
-        assert!(a.locked());
-        // Its lock ends by its own rule, and the way out is there.
-        assert!(a.unlocks());
-        // A service started again over the same folder is not connected either.
+        let waits = t("sync.disconnectWaits", &[("delay", "1 hour")]);
+        assert_eq!(disconnect(&a, None, None), Response::Failed(waits.clone()));
+        assert!(a.status().connected);
+        assert_eq!(a.status().disconnect, Some(t("sync.disconnectPending", &[("left", "60 minutes")])));
+        a.later(Duration::from_secs(1800));
+        assert_eq!(disconnect(&a, None, None), Response::Failed(t("sync.disconnectLeft", &[("left", "30 minutes")])));
+        // A service started again keeps it.
         let again = Syncer::at(Some(a.dir.clone()), connector(&server), "again".into());
-        assert!(!again.connected());
+        assert!(again.settings.locked().disconnect_asked.is_some());
+        // The server back: over, and asked for again it starts from the beginning.
+        server.down.store(false, Ordering::SeqCst);
+        sync(&[&a]);
+        assert_eq!(a.status().disconnect, None);
+        server.down.store(true, Ordering::SeqCst);
+        assert_eq!(disconnect(&a, None, None), Response::Failed(waits));
+        a.later(Duration::from_secs(3601));
+        assert_eq!(a.status().disconnect, Some(t("sync.disconnectReady", &[])));
+        assert_eq!(disconnect(&a, None, None), Response::Done);
+        let status = a.status();
+        assert!(!status.connected && status.url.is_empty() && status.outbox == 0 && status.disconnect.is_none());
+        assert!(!a.dir.join("sync.json").exists());
+        assert!(a.locked(), "running sessions are not ended by it");
+        assert!(a.unlocks());
+        assert!(!Syncer::at(Some(a.dir.clone()), connector(&server), "again".into()).connected());
+        // With no unlock delay, at once, as unlocking is.
+        let free = server_and_computer("disconnect-free", "0");
+        free.1.down.store(true, Ordering::SeqCst);
+        assert_eq!(disconnect(&free.0, None, None), Response::Done);
+    }
+
+    /// A server with "work" defined, its unlock delay `delay`, and a computer connected to it.
+    fn server_and_computer(name: &str, delay: &str) -> (Computer, Arc<Server>) {
+        let server = server(name);
+        defined(&server, Lock::UntilRestart);
+        assert_eq!(server.hub().request(&Request::SetUnlockDelay { delay: delay.into() }).unwrap(), Response::Done);
+        let a = computer(&format!("{name}-a"), &server);
+        a.connect();
+        (a, server)
+    }
+
+    /// Without the server, the other way to unlock also disconnects: its text or password at once (a
+    /// random text drawn again after), an unlock window while it is open. A wrong answer starts the
+    /// countdown, as no answer does.
+    #[test]
+    fn disconnecting_without_the_server_takes_the_other_way_to_unlock() {
+        let way = |server: &Arc<Server>, lock: Lock| {
+            assert_eq!(server.hub().request(&Request::SetUnlockWay { way: Some(lock) }).unwrap(), Response::Done);
+        };
+        let (a, server) = server_and_computer("disconnect-text", "1h");
+        way(&server, Lock::Text { text: "let me go".into() });
+        sync(&[&a]);
+        server.down.store(true, Ordering::SeqCst);
+        assert!(matches!(disconnect(&a, None, Some("wrong")), Response::Failed(_)));
+        assert_eq!(disconnect(&a, None, Some("let me go")), Response::Done);
+
+        let (a, server) = server_and_computer("disconnect-random", "1h");
+        way(&server, Lock::RandomText { length: 8, text: None });
+        sync(&[&a]);
+        let drawn = |a: &Computer| match a.context.unlock().way().map(|way| way.lock) {
+            Some(Lock::RandomText { text: Some(text), .. }) => text,
+            other => panic!("{other:?}"),
+        };
+        let before = drawn(&a);
+        server.down.store(true, Ordering::SeqCst);
+        assert_eq!(disconnect(&a, None, Some(&before)), Response::Done);
+        assert_ne!(drawn(&a), before, "used up: drawn again");
+
+        let (a, server) = server_and_computer("disconnect-password", "1h");
+        way(&server, Lock::Password { password: Some("secret".into()), hash: None });
+        sync(&[&a]);
+        server.down.store(true, Ordering::SeqCst);
+        assert!(matches!(disconnect(&a, Some("nope"), None), Response::Failed(_)));
+        assert_eq!(disconnect(&a, Some("secret"), None), Response::Done);
+
+        // An unlock window: open now (it is closed only from 9:00 to 17:00 on a day that never comes).
+        let (a, server) = server_and_computer("disconnect-window", "1h");
+        assert_eq!(
+            server
+                .hub()
+                .request(&Request::SaveCondition { condition: crate::definitions::tests::weekly("never", "daily 0-0:01") })
+                .unwrap(),
+            Response::Done
+        );
+        way(&server, Lock::Condition { condition: "never".into() });
+        sync(&[&a]);
+        server.down.store(true, Ordering::SeqCst);
+        a.context.sessions().move_to(std::time::UNIX_EPOCH + Duration::from_secs(1_894_060_800 + 12 * 3600));
+        assert_eq!(disconnect(&a, None, None), Response::Done);
     }
 
     #[test]
@@ -1258,7 +1401,11 @@ mod tests {
         fs::write(a.dir.join("sync.json"), b"{").unwrap();
         assert!(!Syncer::at(Some(a.dir.clone()), connector(&server), "x".into()).connected());
         a.connect();
-        fs::write(a.dir.join("sync.json"), serde_json::to_vec(&Settings { url: URL.into(), token: " ".into() }).unwrap()).unwrap();
+        fs::write(
+            a.dir.join("sync.json"),
+            serde_json::to_vec(&Settings { url: URL.into(), token: " ".into(), disconnect_asked: None }).unwrap(),
+        )
+        .unwrap();
         assert!(!Syncer::at(Some(a.dir.clone()), connector(&server), "x".into()).connected());
     }
 
@@ -1288,7 +1435,7 @@ mod tests {
         assert_eq!(a.connect(), Response::Done);
         sync(&[&a]);
         let first = a.status().device;
-        a.ok(Request::SyncDisconnect);
+        a.ok(Request::SyncDisconnect { password: None, text: None });
         assert_eq!(a.connect(), Response::Done);
         sync(&[&a]);
         let status = a.status();

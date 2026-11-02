@@ -182,8 +182,8 @@ fn two_computers_sync_over_http_and_each_can_always_get_out() {
     // Locked everywhere, the server's API too.
     assert!(matches!(http.request(&Request::Stop { id: "work".into(), password: None, text: None }).unwrap(), Answered::Failed(_)));
     assert!(matches!(b.ask(Request::Stop { id: "work".into(), password: None, text: None }), Answered::Failed(_)));
-    // Disconnecting always works, and the way out is there.
-    assert_eq!(b.ask(Request::SyncDisconnect), Answered::Done);
+    // Disconnecting, with the server reached, is at once; the way out is there.
+    assert_eq!(b.ask(Request::SyncDisconnect { password: None, text: None }), Answered::Done);
     assert!(!b.status().connected);
     b.ask(Request::AskForUnlock);
     b.context.sessions().move_to(b.context.sessions().now() + Duration::from_secs(crate::unlock::MAX_DELAY + 1));

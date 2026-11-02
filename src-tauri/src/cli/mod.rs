@@ -564,11 +564,11 @@ fn execute(command: Command) -> Result<(), Failure> {
             send(Request::SyncConnect { url, token })?;
             out(&describe_sync(&sync_status()?));
         }
-        Command::SyncDisconnect { force } => {
+        Command::SyncDisconnect { force, password, text } => {
             if !confirm(&format!("{} {}.", t("sync.disconnectHeading", &[]), t("sync.disconnectBody", &[])), force)? {
                 return Err(failed("Still connected."));
             }
-            send(Request::SyncDisconnect)?;
+            send(Request::SyncDisconnect { password, text })?;
             say!("{}.", t("sync.disconnected", &[]));
         }
         Command::SyncNow => {

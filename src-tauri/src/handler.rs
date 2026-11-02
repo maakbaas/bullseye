@@ -61,8 +61,7 @@ impl Context {
         &self.sessions
     }
 
-    /// Its unlock settings (tests of other modules).
-    #[cfg(test)]
+    /// Its unlock settings.
     pub fn unlock(&self) -> &UnlockDelay {
         &self.unlock
     }
@@ -142,12 +141,52 @@ fn answer_sync(context: &Context, request: Request) -> Response {
     let done = |result: Result<(), String>| result.map_or_else(Response::Failed, |()| Response::Done);
     match request {
         Request::SyncConnect { url, token } => done(syncer.connect(context, &url, &token)),
-        Request::SyncDisconnect => {
-            syncer.disconnect();
-            Response::Done
-        }
+        Request::SyncDisconnect { password, text } => done(disconnect(context, syncer, password.as_deref(), text.as_deref())),
         Request::SyncNow => done(syncer.now(context)),
         _ => Response::Sync(Box::new(syncer.status(context))),
+    }
+}
+
+/// Stops syncing. With the server reached, at once, after one more round: whatever waits there comes in
+/// first (a session started elsewhere runs on here, by its own rules), so disconnecting cannot be used
+/// to keep it from arriving. Without the server, for whatever reason (no network, the server stopped,
+/// blocked), it is as hard as unlocking: the unlock window open, the other way to unlock answered with
+/// `password` or `text`, or a countdown of the unlock delay (`Syncer::disconnect_wait`) over. Running
+/// sessions are never ended by it.
+fn disconnect(context: &Context, syncer: &Syncer, password: Option<&str>, text: Option<&str>) -> Result<(), String> {
+    if !syncer.connected() || syncer.round(context, std::time::Duration::ZERO).is_ok() {
+        syncer.disconnect();
+        return Ok(());
+    }
+    let now = context.sessions.now();
+    let way = context.unlock.way();
+    let answered = way.as_ref().is_some_and(|way| way.answered(password, text));
+    let open = way.as_ref().is_some_and(|way| way.is_open(now, context.sessions.time_known()));
+    if !answered && !open {
+        let delay = context.unlock.delay();
+        match syncer.disconnect_wait(now, delay) {
+            None => {}
+            Some((_, true)) => return Err(crate::strings::t("sync.disconnectWaits", &[("delay", &crate::duration::countdown(delay))])),
+            Some((left, false)) => return Err(crate::strings::t("sync.disconnectLeft", &[("left", &crate::duration::left(left))])),
+        }
+    }
+    syncer.disconnect();
+    if answered {
+        redraw_random_text(context, now);
+    }
+    Ok(())
+}
+
+/// A random text of the other way to unlock is used up: the next one is new. (If none can be drawn or
+/// kept, the old one stays.)
+fn redraw_random_text(context: &Context, now: SystemTime) {
+    if let Some(unlock::Way { lock: Lock::RandomText { length, .. }, opening }) = context.unlock.way() {
+        let redrawn = lock::random_text(length).and_then(|text| {
+            context.unlock.set_way(Some(unlock::Way { lock: Lock::RandomText { length, text: Some(text) }, opening }), now, true)
+        });
+        if let Err(e) = redrawn {
+            eprintln!("unlock: the random text stays as it was: {e}");
+        }
     }
 }
 
@@ -227,7 +266,7 @@ fn shareable(request: &Request) -> Option<Request> {
         | Request::PrepareUninstall
         | Request::SyncStatus
         | Request::SyncConnect { .. }
-        | Request::SyncDisconnect
+        | Request::SyncDisconnect { .. }
         | Request::SyncNow => None,
     }
 }
@@ -657,7 +696,7 @@ fn answer(context: &Context, caller: u32, request: Request) -> (Response, Option
         Request::AbortUnlock => (done(context.unlock.abort(sessions.now())), None),
         Request::SetUnlockDelay { delay } => (done(set_unlock_delay(context, &delay)), None),
         // Refused while a session cannot be stopped, judged by internet time, like the session itself.
-        Request::SyncStatus | Request::SyncConnect { .. } | Request::SyncDisconnect | Request::SyncNow => {
+        Request::SyncStatus | Request::SyncConnect { .. } | Request::SyncDisconnect { .. } | Request::SyncNow => {
             (answer_sync(context, request), None)
         }
         Request::PrepareUninstall => match sessions.locked() {
@@ -1092,16 +1131,8 @@ fn unlock_with(context: &Context, password: Option<&str>, text: Option<&str>) ->
         return Err("Unlocking is not ready yet: ask for it and wait for the countdown, or use the other way to unlock".into());
     }
     context.sessions.reset();
-    // A random text is used up: the next unlock has a new one. (Unlocked either way: if none can be
-    // drawn or kept, the old one stays.)
-    if let Some(unlock::Way { lock: Lock::RandomText { length, .. }, opening }) = context.unlock.way() {
-        let redrawn = lock::random_text(length).and_then(|text| {
-            context.unlock.set_way(Some(unlock::Way { lock: Lock::RandomText { length, text: Some(text) }, opening }), now, true)
-        });
-        if let Err(e) = redrawn {
-            eprintln!("unlock: the random text stays as it was: {e}");
-        }
-    }
+    // A random text is used up: the next unlock has a new one (unlocked either way).
+    redraw_random_text(context, now);
     context.unlock.abort(context.sessions.now())
 }
 

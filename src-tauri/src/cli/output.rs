@@ -320,6 +320,9 @@ pub(super) fn per_day(week: &Week) -> String {
 /// Where syncing stands, the computers that sync and what waits here, as Settings shows it.
 pub(super) fn describe_sync(status: &SyncStatus) -> String {
     let mut text = format!("{}\n", status.summary);
+    if let Some(disconnect) = &status.disconnect {
+        text.push_str(&format!("{disconnect}.\n"));
+    }
     if !status.devices.is_empty() {
         text.push_str(&format!("\n{}:\n", t("sync.devicesTitle", &[])));
         for device in &status.devices {

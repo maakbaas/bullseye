@@ -303,7 +303,7 @@ async function renderSync() {
   if (shown === syncShown) return;
   syncShown = shown;
   $("sync-state").kind = sync.error ? "warning" : "info";
-  $("sync-state").subtitle = sync.summary;
+  $("sync-state").subtitle = sync.disconnect ? `${sync.summary}. ${sync.disconnect}` : sync.summary;
   const web = Boolean(window.BULLSEYE_WEB);
   $("sync-connect").hidden = web || sync.connected;
   $("sync-now").hidden = web || !sync.connected;
@@ -355,17 +355,53 @@ $("sync-now").addEventListener("click", async () => {
   await refresh();
 });
 
+// Disconnecting: the service tries the server first. Without it, it is as hard as unlocking: the service
+// says when it can be done, and a text or password of the other way to unlock does it at once.
 $("sync-disconnect").addEventListener("click", async () => {
   const sure = await ask({ heading: t("sync.disconnectHeading"), body: t("sync.disconnectBody"), action: t("sync.disconnect"), kind: "danger" });
   if (!sure) return;
   try {
-    await invoke("sync_disconnect");
+    await invoke("sync_disconnect", { password: null, text: null });
     notify("sync-notices", "success", t("sync.disconnected"));
   } catch (e) {
-    notify("sync-notices", "error", t("sync.nowFailed"), String(e));
+    const answered = await disconnectWithAnswer(String(e));
+    if (answered === null) notify("sync-notices", "warning", t("sync.disconnectNotYet"), String(e));
   }
+  syncShown = "";
   await refresh();
 });
+
+// The other way to unlock answered for disconnecting: true when it worked, null when there is no answer
+// to give (or none was given).
+async function disconnectWithAnswer(why) {
+  const way = overview.unlock.way;
+  if (!way || !["text", "random_text", "password"].includes(way.method)) return null;
+  let password = null;
+  let text = null;
+  if (way.method === "password") {
+    const field = el("cds-password-input", { label: t("locks.password.field"), autocomplete: "off" });
+    password = await ask({
+      heading: t("sync.disconnectHeading"),
+      body: why,
+      action: t("sync.disconnect"),
+      kind: "danger",
+      fields: [field],
+      read: async () => (invalid(field, field.value ? null : t("sessions.stopPasswordMissing")) ? null : field.value),
+    });
+    if (!password) return null;
+  } else {
+    text = await askText(t("sync.disconnectHeading"), way.text, t("sync.disconnect"));
+    if (text === null) return null;
+  }
+  try {
+    await invoke("sync_disconnect", { password, text });
+    notify("sync-notices", "success", t("sync.disconnected"));
+    return true;
+  } catch (e) {
+    notify("sync-notices", "error", t("sync.disconnectNotYet"), String(e));
+    return false;
+  }
+}
 
 // ---- Pages, by the address after #: #/ (sessions), #/new, #/edit/<id>, the same under
 // #/targets and #/conditions, and #/settings.

@@ -320,10 +320,14 @@ async fn sync_connect(url: String, token: String, remote: State<'_, Remote>) -> 
     tauri::async_runtime::spawn_blocking(move || remote.command(Request::SyncConnect { url, token })).await.map_err(|e| e.to_string())?
 }
 
-/// Stops syncing; always works.
+/// Stops syncing: at once with the server reached; without it as hard as unlocking, by its countdown or
+/// the other way to unlock (`password` or `text`). Async: the service tries the server first.
 #[tauri::command]
-fn sync_disconnect(remote: State<Remote>) -> Result<(), String> {
-    remote.command(Request::SyncDisconnect)
+async fn sync_disconnect(password: Option<String>, text: Option<String>, remote: State<'_, Remote>) -> Result<(), String> {
+    let remote = remote.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || remote.command(Request::SyncDisconnect { password, text }))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Syncs at once. Async: the service waits on the server.

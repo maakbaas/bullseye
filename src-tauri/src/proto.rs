@@ -135,7 +135,14 @@ pub enum Request {
     /// Joins the sync server at `url` with `token`: a new server takes this computer's settings, any other gives it its own.
     SyncConnect { url: String, token: String },
     /// Stops syncing; always works.
-    SyncDisconnect,
+    /// Stops syncing: at once once the server is reached (`handler::disconnect`); without it, as unlocking
+    /// would, by its countdown or the other way to unlock (its text or password here).
+    SyncDisconnect {
+        #[serde(default)]
+        password: Option<String>,
+        #[serde(default)]
+        text: Option<String>,
+    },
     /// One round with the sync server now.
     SyncNow,
 }

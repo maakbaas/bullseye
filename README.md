@@ -59,7 +59,9 @@ You can ignore the warning if the installer comes from this repository's Release
 
 With a sync server, your computers share their sessions, targets, conditions, unlock settings and running sessions: start a block on your desktop and it runs on your laptop too.
 
-**Each computer keeps its own hardening.** What comes from another computer is applied under this computer's rules, as if it was done at its keyboard. A stop that the lock does not allow here yet waits, and Settings shows why. Passwords never leave a computer, and Unlock and **Disconnect** always work on each computer by themselves.
+**Each computer keeps its own hardening.** What comes from another computer is applied under this computer's rules, as if it was done at its keyboard. A stop that the lock does not allow here yet waits, and Settings shows why. Passwords never leave a computer, and Unlock always works on each computer by itself.
+
+**Disconnect** never ends what runs. With the server reached it first takes in what waits there, so a block started from elsewhere still arrives. Without the server (no network, or the server stopped), disconnecting is as hard as unlocking: the unlock countdown, or the other way to unlock.
 
 **A computer that was off or asleep catches up as if it had been on.** The server has everything it receives timestamped by DigiCert's free timestamp service, so a computer that comes back later knows, from a signature nobody with the server can make, when it was done. An unlock made while unlocking was open, a countdown that ran out, a stop while the lock schedule allowed it: each is done as of then, under this computer's rules as they were then, and never lets more through than its keyboard would have at that time. Without the timestamp service (`BULLSEYE_TIMESTAMPS=off`, or it cannot be reached) a computer judges what arrives when it arrives, which can mean waiting, for instance until unlocking opens again.
 

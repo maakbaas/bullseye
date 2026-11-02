@@ -237,6 +237,10 @@ pub struct SyncStatus {
     pub connected: bool,
     /// Where it stands, in words (the window and the CLI say the same).
     pub summary: String,
+    /// A disconnect asked for while the server could not be reached, counting down: when it can be
+    /// done, in words.
+    #[serde(default)]
+    pub disconnect: Option<String>,
     /// The server's address, while connected.
     pub url: String,
     /// The last entry of the log applied here.
