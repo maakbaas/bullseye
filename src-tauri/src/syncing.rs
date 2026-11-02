@@ -377,6 +377,7 @@ impl Syncer {
             confirmed: self.replica.confirmed().unwrap_or(0),
             held: self.replica.held().into_iter().map(|held| held.why).collect(),
             running: context.sessions().status().running.into_iter().map(|running| running.name).collect(),
+            zone: Some(context.sessions().zone().name().to_string()),
         };
         let device = self.replica.device();
         let reported = transport.report(&device, report).is_ok();
@@ -465,7 +466,8 @@ pub fn actions_of(snapshot: &Snapshot) -> Vec<Action> {
     ];
     for run in &snapshot.runs {
         for start in &run.starts {
-            actions.push(Action::Start { id: run.id.clone(), start: start.clone(), ends: run.ends, text: run.text.clone() });
+            let (ends, text, zone) = (run.ends, run.text.clone(), run.zone.clone());
+            actions.push(Action::Start { id: run.id.clone(), start: start.clone(), ends, text, zone });
         }
     }
     actions
@@ -619,9 +621,14 @@ mod tests {
     }
 
     fn computer(name: &str, server: &Arc<Server>) -> Computer {
+        computer_in(name, server, crate::localtime::Zone::fixed(0))
+    }
+
+    /// As `computer`, in Windows' time zone `zone`.
+    fn computer_in(name: &str, server: &Arc<Server>, zone: crate::localtime::Zone) -> Computer {
         let dir = hub::tests::dir(&format!("syncing-{name}"));
         let syncer = Arc::new(Syncer::at(Some(dir.clone()), connector(server), name.into()));
-        let context = Arc::new(hub::tests::context(&dir).with_syncer(syncer.clone()));
+        let context = Arc::new(hub::tests::context_in(&dir, zone).with_syncer(syncer.clone()));
         Computer { context, syncer, dir }
     }
 
@@ -684,6 +691,155 @@ mod tests {
         ok(Request::SaveTarget { target: target("social", &["youtube.com"]) });
         ok(Request::SaveSession { session: Definition { lock, ..session("work", &["social"]) } });
         ok(Request::SetUnlockDelay { delay: "1h".into() });
+    }
+
+    /// A computer in UTC+1 with a lock schedule of 9:00-17:00: the server reads the schedule in its own
+    /// time zone (UTC, the sync server's), not the computer's.
+    #[test]
+    fn the_server_reads_a_lock_schedule_in_the_computers_time_zone() {
+        let server = server("zone");
+        let ok = |request| assert_eq!(server.hub().request(&request).unwrap(), Response::Done);
+        ok(Request::SaveTarget { target: target("social", &["youtube.com"]) });
+        ok(Request::SaveCondition { condition: crate::definitions::tests::weekly("office", "daily 9-17") });
+        ok(Request::SaveSession {
+            session: Definition { lock: Lock::Condition { condition: "office".into() }, ..session("work", &["social"]) },
+        });
+        let a = computer_in("zone-a", &server, crate::localtime::Zone::fixed(60));
+        assert_eq!(a.connect(), Response::Done);
+        a.ok(Request::Start { id: "work".into() });
+        sync(&[&a]);
+        assert_eq!(server.hub().snapshot().unwrap().runs.len(), 1);
+        let at = |hours: u64, minutes: u64| {
+            // 2030-01-08, at this time UTC.
+            let time = std::time::UNIX_EPOCH + Duration::from_secs(1_894_060_800 + hours * 3600 + minutes * 60);
+            a.context.sessions().move_to(time);
+            server.hub().view().sessions().move_to(time);
+        };
+        let stop = || server.hub().request(&Request::Stop { id: "work".into(), password: None, text: None }).unwrap();
+        // 16:30 UTC is 17:30 at the computer: free there, so free at the server too.
+        at(16, 30);
+        assert!(!a.locked(), "free at the computer at 17:30 its time");
+        assert_eq!(stop(), Response::Done, "the server refuses a stop the computer would take");
+        sync(&[&a]);
+        assert!(!a.runs("work"));
+        // Started again: at 8:30 UTC the next day it is 9:30 at the computer, locked there, so at the server too.
+        a.ok(Request::Start { id: "work".into() });
+        sync(&[&a]);
+        at(24 + 8, 30);
+        assert!(a.locked(), "locked at the computer at 9:30 its time");
+        assert!(matches!(stop(), Response::Failed(_)), "the server takes a stop the computer refuses");
+    }
+
+    /// The server's page starts sessions and sets the way to unlock in the zone of the computer it heard
+    /// from last; a new server takes a running session's zone from the first computer; and a computer
+    /// reads a session another one started in its own zone.
+    #[test]
+    fn the_servers_page_and_a_new_server_read_in_the_zone_of_the_computers() {
+        let server = server("zones");
+        let a = computer_in("zones-a", &server, crate::localtime::Zone::fixed(60));
+        // 2030-01-08 05:00 UTC, 6:00 at A: nothing is locked by the office hours yet.
+        let free = std::time::UNIX_EPOCH + Duration::from_secs(1_894_060_800 + 5 * 3600);
+        a.context.sessions().move_to(free);
+        server.hub().view().sessions().move_to(free);
+        // Before the server has anything: A's settings and what runs there become the server's.
+        a.ok(Request::SaveTarget { target: target("social", &["youtube.com"]) });
+        a.ok(Request::SaveCondition { condition: crate::definitions::tests::weekly("office", "daily 9-17") });
+        let locked = Definition { lock: Lock::Condition { condition: "office".into() }, ..session("work", &["social"]) };
+        a.ok(Request::SaveSession { session: locked.clone() });
+        a.ok(Request::Start { id: "work".into() });
+        assert_eq!(a.connect(), Response::Done);
+        sync(&[&a]);
+        let runs = server.hub().snapshot().unwrap().runs;
+        assert_eq!(runs[0].zone.as_deref(), Some("fixed:+60"));
+        // From the server's page, after A said its zone.
+        let ok = |request| assert_eq!(server.hub().request(&request).unwrap(), Response::Done);
+        ok(Request::SaveSession { session: Definition { id: "home".into(), name: "Home".into(), ..locked } });
+        ok(Request::Start { id: "home".into() });
+        assert_eq!(server.hub().view().sessions().zone_of("home").unwrap().name(), "fixed:+60");
+        ok(Request::SetUnlockWay { way: Some(Lock::Condition { condition: "office".into() }) });
+        let opening = server.hub().view().unlock().way().and_then(|way| way.opening);
+        assert!(matches!(opening, Some(unlock::Opening::While { zone, .. }) if zone == "fixed:+60"));
+        // B, in UTC, reads them in its own zone.
+        let b = computer("zones-b", &server);
+        assert_eq!(b.connect(), Response::Done);
+        sync(&[&a, &b]);
+        assert_eq!(b.context.sessions().zone_of("work").unwrap().name(), "fixed:+0");
+        assert_eq!(b.context.sessions().zone_of("home").unwrap().name(), "fixed:+0");
+    }
+
+    /// Unlocking open 8:00-12:00, unlocked at the server at 10:00, a computer away until 13:00: it holds
+    /// the unlock then, and does it when unlocking opens there again, at 8:00 the next day.
+    #[test]
+    fn an_unlock_reaches_a_computer_away_while_it_was_open_when_it_opens_there() {
+        let server = server("late");
+        let ok = |request| assert_eq!(server.hub().request(&request).unwrap(), Response::Done);
+        ok(Request::SaveTarget { target: target("social", &["youtube.com"]) });
+        ok(Request::SaveCondition { condition: crate::definitions::tests::weekly("closed", "daily 12-8") });
+        ok(Request::SaveSession { session: Definition { lock: Lock::UntilRestart, ..session("work", &["social"]) } });
+        ok(Request::SetUnlockWay { way: Some(Lock::Condition { condition: "closed".into() }) });
+        ok(Request::SetUnlockDelay { delay: "1h".into() });
+        let a = computer("late-a", &server);
+        assert_eq!(a.connect(), Response::Done);
+        let at = |hours: u64| {
+            // 2030-01-08, at this hour UTC.
+            let time = std::time::UNIX_EPOCH + Duration::from_secs(1_894_060_800 + hours * 3600);
+            a.context.sessions().move_to(time);
+            server.hub().view().sessions().move_to(time);
+        };
+        at(7);
+        a.ok(Request::Start { id: "work".into() });
+        sync(&[&a]);
+        at(10);
+        ok(Request::Unlock);
+        assert!(server.hub().snapshot().unwrap().runs.is_empty());
+        // Away until 13:00: closed there by then, so it waits.
+        at(13);
+        sync(&[&a]);
+        assert!(a.runs("work"));
+        assert_eq!(a.status().held.len(), 1);
+        assert!(a.status().held[0].why.contains("not ready"), "{}", a.status().held[0].why);
+        // Open again at 8:00 the next day: done then.
+        at(24 + 8);
+        sync(&[&a]);
+        assert!(!a.runs("work"));
+        assert!(a.status().held.is_empty());
+    }
+
+    /// As above, with the countdown asked for too: the computer away counts it down from when it comes
+    /// back, and does the unlock when it is over, before unlocking opens there again.
+    #[test]
+    fn a_countdown_asked_for_with_the_unlock_lets_a_computer_away_unlock_after_the_delay() {
+        let server = server("late-countdown");
+        let ok = |request| assert_eq!(server.hub().request(&request).unwrap(), Response::Done);
+        ok(Request::SaveTarget { target: target("social", &["youtube.com"]) });
+        ok(Request::SaveCondition { condition: crate::definitions::tests::weekly("closed", "daily 12-8") });
+        ok(Request::SaveSession { session: Definition { lock: Lock::UntilRestart, ..session("work", &["social"]) } });
+        ok(Request::SetUnlockWay { way: Some(Lock::Condition { condition: "closed".into() }) });
+        ok(Request::SetUnlockDelay { delay: "1h".into() });
+        let a = computer("late-countdown-a", &server);
+        assert_eq!(a.connect(), Response::Done);
+        let at = |minutes: u64| {
+            // 2030-01-08, this many minutes after midnight UTC.
+            let time = std::time::UNIX_EPOCH + Duration::from_secs(1_894_060_800 + minutes * 60);
+            a.context.sessions().move_to(time);
+            server.hub().view().sessions().move_to(time);
+        };
+        at(7 * 60);
+        a.ok(Request::Start { id: "work".into() });
+        sync(&[&a]);
+        at(10 * 60);
+        ok(Request::AskForUnlock);
+        ok(Request::Unlock);
+        at(13 * 60);
+        sync(&[&a]);
+        assert!(a.runs("work"));
+        at(13 * 60 + 30);
+        sync(&[&a]);
+        assert!(a.runs("work"), "the delay counts from when the computer came back");
+        at(14 * 60 + 1);
+        sync(&[&a]);
+        assert!(!a.runs("work"));
+        assert!(a.status().held.is_empty());
     }
 
     #[test]
@@ -1119,7 +1275,7 @@ mod tests {
         library.targets.push(target("social", &["a.com"]));
         library.sessions.push(session("work", &["social"]));
         let say = |action: Action| describe(&action, &library);
-        assert_eq!(say(Action::Start { id: "work".into(), start: "s".into(), ends: None, text: None }), "Start “Session work”");
+        assert_eq!(say(Action::Start { id: "work".into(), start: "s".into(), ends: None, text: None, zone: None }), "Start “Session work”");
         assert_eq!(say(Action::Stop { id: "gone".into(), starts: vec![], text: None, proof: None }), "Stop gone");
         assert_eq!(say(Action::DeleteTarget { id: "social".into() }), "Delete target “List social”");
         assert_eq!(say(Action::Duplicate { kind: Kind::Target, id: "social".into(), new_id: "copy".into() }), "Duplicate “List social”");

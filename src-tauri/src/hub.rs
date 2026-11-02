@@ -69,6 +69,12 @@ fn entry_at(log: &Log, seq: u64) -> Option<Entry> {
 }
 
 impl Hub {
+    /// The server's view, for tests that move its clock.
+    #[cfg(test)]
+    pub fn view(&self) -> &Context {
+        &self.context
+    }
+
     /// Over the view `context` and the log in `dir` (`None`: in memory), read back from the last run.
     /// The view keeps its own files: it is what the log came to, up to the entry it had last.
     pub fn new(context: Context, dir: Option<PathBuf>) -> Hub {
@@ -238,6 +244,10 @@ impl Transport for Hub {
         if device.is_empty() || device.len() > 64 {
             return Err(Failure::Other("A computer's id is empty or too long".into()));
         }
+        // Sessions started on the server's page are read in the zone of the computer heard from last.
+        if let Some(zone) = report.zone.as_deref().and_then(crate::localtime::Zone::parse) {
+            self.context.sessions().set_zone(zone);
+        }
         let mut devices = self.devices.locked();
         devices.retain(|known| known.id != device);
         if devices.len() >= MAX_DEVICES {
@@ -292,7 +302,12 @@ pub mod tests {
     }
 
     pub fn context(dir: &std::path::Path) -> Context {
-        let sessions = Sessions::with_store(Store::new(dir.join("state.json")));
+        context_in(dir, crate::localtime::Zone::fixed(0))
+    }
+
+    /// As `context`, in `zone`.
+    pub fn context_in(dir: &std::path::Path, zone: crate::localtime::Zone) -> Context {
+        let sessions = Sessions::with_store(Store::new(dir.join("state.json"))).in_zone(zone);
         Context::new(sessions, Definitions::at(Some(dir.join("sessions.json"))), Arc::new(AppSlot::new(false)))
             .with_unlock(UnlockDelay::at(Some(dir.join("unlock.json"))))
     }
@@ -440,7 +455,7 @@ pub mod tests {
         let dir = dir("devices");
         let hub = Hub::new(context(&dir), Some(dir.clone()));
         fs::create_dir_all(&dir).unwrap();
-        let report = DeviceReport { name: "Desk".into(), confirmed: 3, held: vec!["why".into()], running: vec!["Work".into()] };
+        let report = DeviceReport { name: "Desk".into(), confirmed: 3, held: vec!["why".into()], running: vec!["Work".into()], zone: None };
         hub.report("d1", report.clone()).unwrap();
         hub.report("d1", DeviceReport { name: "x".repeat(500), ..report.clone() }).unwrap();
         assert!(hub.report("", report.clone()).is_err());

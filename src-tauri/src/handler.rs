@@ -120,6 +120,7 @@ pub fn snapshot(context: &Context, head: u64) -> Snapshot {
                     RunLock::Text { text } if drawn => Some(text),
                     _ => None,
                 },
+                zone: context.sessions.zone_of(&id).map(|zone| zone.name().to_string()),
                 id,
             })
         })
@@ -259,7 +260,8 @@ fn shared_action(context: &Context, request: Request, stopping: Vec<String>, pro
         Request::Start { id } => {
             let start = context.sessions.starts_of(&id).pop()?;
             let (ends, text) = decided(&id);
-            Action::Start { id, start, ends, text }
+            let zone = context.sessions.zone_of(&id).map(|zone| zone.name().to_string());
+            Action::Start { id, start, ends, text, zone }
         }
         Request::Lock { id, .. } => {
             let lock = library.session(&id)?.lock.clone();
@@ -406,11 +408,17 @@ fn apply_as(context: &Context, action: &Action, at: SystemTime, mirroring: bool)
             dropped(context.definitions.duplicate(kind, &id, &new_id))
         }
         Action::Import { library } => held(import(context, library)),
-        Action::Start { id, start, ends, text } => {
+        Action::Start { id, start, ends, text, zone } => {
+            // The sync server reads it in the zone it was started in, and sessions started on its page
+            // in the zone of the computer it heard from last; a computer, as it was started here.
+            let zone = zone.as_deref().and_then(Zone::parse).filter(|_| mirroring);
+            if let Some(zone) = &zone {
+                sessions.set_zone(zone.clone());
+            }
             if sessions.starts_of(&id).contains(&start) {
                 return Dropped("Started already".into());
             }
-            dropped(start_synced(context, &id, Origin { id: start, at }, Decided { ends, text }))
+            dropped(start_synced(context, &id, Origin { id: start, at, zone }, Decided { ends, text }))
         }
         Action::Lock { id, .. } if !running(&id) => Dropped("This session is not running".into()),
         Action::Lock { id, lock, ends, text } => dropped(lock_running_from(context, &id, lock, Decided { ends, text })),
@@ -1001,7 +1009,7 @@ fn set_unlock_way(context: &Context, lock: Option<Lock>, synced: bool) -> Result
     let (lock, opening) = match lock {
         Lock::Condition { ref condition } => {
             let rule = context.definitions.library().rule_of(condition)?;
-            let opening = unlock::Opening::While { rule, zone: Zone::current().name().to_string() };
+            let opening = unlock::Opening::While { rule, zone: context.sessions.zone().name().to_string() };
             (lock, Some(opening))
         }
         Lock::Text { .. } => (lock, None),

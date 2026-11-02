@@ -35,9 +35,11 @@ pub struct RunShare {
     pub starts: Vec<String>,
     /// When it started (milliseconds since the Unix epoch).
     pub started: u64,
-    /// A duration lock's end, a drawn text (`replica::Action::Start`).
+    /// A duration lock's end, a drawn text and the time zone it is read in (`replica::Action::Start`).
     pub ends: Option<u64>,
     pub text: Option<String>,
+    #[serde(default)]
+    pub zone: Option<String>,
 }
 
 /// Everything a computer that joins takes over, as of the entry `head` of the log.
@@ -97,6 +99,10 @@ pub struct DeviceReport {
     pub held: Vec<String>,
     /// The names of the sessions running there.
     pub running: Vec<String>,
+    /// Its time zone (`localtime::Zone::name`): the server reads the sessions started on its page in
+    /// the zone of the computer it heard from last.
+    #[serde(default)]
+    pub zone: Option<String>,
 }
 
 /// A computer as the server knows it.

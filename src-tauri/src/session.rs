@@ -46,8 +46,8 @@ pub struct Sessions {
     /// The app's internet clock; tests have their own.
     clock: &'static Clock,
     /// The time zone a new session's schedule is read in; `None` is Windows' own (`localtime.rs`).
-    /// Tests use a fixed one.
-    zone: Option<Zone>,
+    /// Tests use a fixed one; the sync server takes its computers' (`set_zone`).
+    zone: Arc<Mutex<Option<Zone>>>,
     /// This start of Windows, for locks until it restarts; `None` is Windows' own (`boot.rs`).
     /// Tests use their own.
     boot: Option<String>,
@@ -421,12 +421,15 @@ struct Session {
 pub struct Origin {
     pub id: String,
     pub at: SystemTime,
+    /// The time zone it is read in, when not this computer's own: the sync server reads a session in
+    /// the zone of the computer that started it (`handler::mirror`).
+    pub zone: Option<Zone>,
 }
 
 impl Origin {
     /// A start made here, now.
     pub fn here(now: SystemTime) -> Origin {
-        Origin { id: crate::replica::new_id(), at: now }
+        Origin { id: crate::replica::new_id(), at: now, zone: None }
     }
 }
 
@@ -665,13 +668,13 @@ fn stricter(old: &RunLock, new: RunLock) -> Result<RunLock, String> {
 impl Sessions {
     /// The service's target, over the real store in its data folder.
     pub fn new() -> Sessions {
-        Sessions { inner: Arc::default(), store: state::store().map(Arc::new), clock: clock::global(), zone: None, boot: None }
+        Sessions { inner: Arc::default(), store: state::store().map(Arc::new), clock: clock::global(), zone: Arc::default(), boot: None }
     }
 
     /// Over `store`, with the clock everything else has: the sync server's view (`hub::view`).
     #[cfg_attr(not(test), allow(dead_code))] // the sync server's
     pub fn at(store: Store) -> Sessions {
-        Sessions { inner: Arc::default(), store: Some(Arc::new(store)), clock: clock::global(), zone: None, boot: None }
+        Sessions { inner: Arc::default(), store: Some(Arc::new(store)), clock: clock::global(), zone: Arc::default(), boot: None }
     }
 
     /// A target over a store of its own and a clock of its own, for other modules' tests.
@@ -681,9 +684,31 @@ impl Sessions {
             inner: Arc::default(),
             store: Some(Arc::new(store)),
             clock: Box::leak(Box::default()),
-            zone: Some(Zone::fixed(0)),
+            zone: Arc::new(Mutex::new(Some(Zone::fixed(0)))),
             boot: Some("boot".into()),
         }
+    }
+
+    /// As `with_store`, for a computer in another time zone.
+    #[cfg(test)]
+    pub fn in_zone(self, zone: Zone) -> Sessions {
+        Sessions { zone: Arc::new(Mutex::new(Some(zone))), ..self }
+    }
+
+    /// The time zone a session started now is read in: Windows' own, unless set (`set_zone`).
+    pub fn zone(&self) -> Zone {
+        self.zone.locked().clone().unwrap_or_else(Zone::current)
+    }
+
+    /// Reads sessions started from now on in `zone`: the sync server's, which is not Windows, takes
+    /// the zone of its computers.
+    pub fn set_zone(&self, zone: Zone) {
+        *self.zone.locked() = Some(zone);
+    }
+
+    /// The time zone the running session `id` is read in.
+    pub fn zone_of(&self, id: &str) -> Option<Zone> {
+        self.inner.locked().sessions.iter().find(|b| b.id == id).map(|b| b.zone.clone())
     }
 
     /// Starts a session from the definition `id`, unless that one is running: checked here rather
@@ -726,7 +751,7 @@ impl Sessions {
         if inner.sessions.iter().any(|b| b.id == id) {
             return Err("This session is already running".into());
         }
-        let zone = self.zone.clone().unwrap_or_else(Zone::current);
+        let zone = origin.as_ref().and_then(|o| o.zone.clone()).unwrap_or_else(|| self.zone());
         let now = self.clock.now();
         let origin = origin.map(|o| Origin { at: o.at.min(now), ..o }).unwrap_or_else(|| Origin::here(now));
         let lock = self.run_lock(lock, &zone, now)?;
@@ -1413,7 +1438,7 @@ mod tests {
         Sessions {
             inner: Arc::default(),
             clock: test_clock(),
-            zone: Some(Zone::fixed(0)),
+            zone: Arc::new(Mutex::new(Some(Zone::fixed(0)))),
             store: Some(Arc::new(Store::new(dir.join("state.json")))),
             boot: Some("boot".into()),
         }
@@ -1562,7 +1587,7 @@ mod tests {
         let list = Sessions {
             inner: Arc::default(),
             clock: test_clock(),
-            zone: Some(Zone::fixed(0)),
+            zone: Arc::new(Mutex::new(Some(Zone::fixed(0)))),
             store: Some(Arc::new(Store::new(dir.join("not-a-folder").join("state.json")))),
             boot: Some("boot".into()),
         };
@@ -1639,8 +1664,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("not-a-folder"), "").unwrap();
-        let list =
-            Sessions { inner: Arc::default(), clock: test_clock(), zone: Some(Zone::fixed(0)), store: None, boot: Some("boot".into()) };
+        let list = Sessions {
+            inner: Arc::default(),
+            clock: test_clock(),
+            zone: Arc::new(Mutex::new(Some(Zone::fixed(0)))),
+            store: None,
+            boot: Some("boot".into()),
+        };
         start(&list, "a", sites(&["a.com"]), None).unwrap();
         // The same sessions, now with a state file that can never be written.
         let unsaved =
@@ -2577,8 +2607,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("state.json");
 
-        let list =
-            Sessions { inner: Arc::default(), clock: test_clock(), zone: Some(Zone::fixed(0)), store: None, boot: Some("boot".into()) };
+        let list = Sessions {
+            inner: Arc::default(),
+            clock: test_clock(),
+            zone: Arc::new(Mutex::new(Some(Zone::fixed(0)))),
+            store: None,
+            boot: Some("boot".into()),
+        };
         start(&list, "a", sites(&["a.com"]), Some(Duration::from_secs(60))).unwrap();
         assert!(list.is_running());
         list.restore();

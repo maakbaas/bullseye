@@ -89,12 +89,15 @@ pub enum Action {
         library: Library,
     },
     /// `start` is the start's own id (`session::Origin`); `ends` a duration lock's end there, `text`
-    /// a random text drawn there (milliseconds since the Unix epoch).
+    /// a random text drawn there (milliseconds since the Unix epoch); `zone` the time zone it is read
+    /// in there (`localtime::Zone::name`), which only the sync server goes by.
     Start {
         id: String,
         start: String,
         ends: Option<u64>,
         text: Option<String>,
+        #[serde(default)]
+        zone: Option<String>,
     },
     Lock {
         id: String,
@@ -728,13 +731,13 @@ mod tests {
     #[test]
     fn a_start_from_elsewhere_never_locks_longer_than_a_start_here_would() {
         let (_a, b, mut log) = pair("longer", Lock::timed_for("1h"));
-        log.forge(Action::Start { id: "work".into(), start: new_id(), ends: Some(u64::MAX / 2), text: None }, millis(b.now()));
+        log.forge(Action::Start { id: "work".into(), start: new_id(), ends: Some(u64::MAX / 2), text: None, zone: None }, millis(b.now()));
         log.sync(&[&b]);
         let Some(RunLock::Ends { at }) = b.context.sessions().lock_of("work") else { panic!("not timed") };
         assert!(at <= millis(b.now() + HOUR) + 1000);
         // A lock that has ended there starts nothing here.
         b.context.sessions().reset();
-        log.forge(Action::Start { id: "work".into(), start: new_id(), ends: Some(1), text: None }, 1);
+        log.forge(Action::Start { id: "work".into(), start: new_id(), ends: Some(1), text: None, zone: None }, 1);
         log.sync(&[&b]);
         assert!(!b.runs("work"));
     }
@@ -743,7 +746,7 @@ mod tests {
     fn a_start_from_elsewhere_has_the_lock_this_computer_has_defined() {
         // The entry names a random text, but the session here has a text of its own to type.
         let (_a, b, mut log) = pair("defined", Lock::Text { text: "my own text".into() });
-        log.forge(Action::Start { id: "work".into(), start: new_id(), ends: Some(u64::MAX), text: Some("x".into()) }, 0);
+        log.forge(Action::Start { id: "work".into(), start: new_id(), ends: Some(u64::MAX), text: Some("x".into()), zone: None }, 0);
         log.sync(&[&b]);
         assert_eq!(b.context.sessions().lock_of("work"), Some(RunLock::Text { text: "my own text".into() }));
     }
@@ -1461,7 +1464,7 @@ mod tests {
             3 => Action::DeleteTarget { id: dice.pick(&["social".to_string(), id]) },
             4 => Action::Duplicate { kind: Kind::Session, id, new_id: new_id() },
             5 => Action::Import { library },
-            6 | 7 => Action::Start { id, start: new_id(), ends: time, text },
+            6 | 7 => Action::Start { id, start: new_id(), ends: time, text, zone: None },
             8 => Action::Lock { id, lock, ends: time, text },
             9 => Action::Stop { id, starts, text, proof: dice.pick(&[None, Some("00".repeat(64)), Some("not hex".to_string())]) },
             10 => Action::Used { id, used: [("".to_string(), u64::MAX), ("site:youtube.com".to_string(), 1000)].into() },
