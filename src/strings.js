@@ -723,6 +723,8 @@ window.STRINGS = {
     computerOnly: "Only in the app on a computer",
     // The Settings page's description there, without what only a computer has.
     settingsDescription: "Unlocking and the unlock delay, for every computer that syncs",
+    // Above the computers that sync, on the server's page.
+    syncSummary: "The computers that sync through this server, as each last said",
     signOut: "Sign out",
     signOutText: "This browser keeps the token until you sign out",
   },

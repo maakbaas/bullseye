@@ -123,7 +123,8 @@ pub fn answer(api: &Api, method: &Method, url: &str, authorization: Option<&str>
         }
         // A command of the window's page (`web.rs`): its value, or what went wrong as `{"error": ...}`.
         (Method::Post, "/api/invoke") => done(read::<Invoked>(body).map(|invoked| {
-            match web::invoke(invoked, &|request| hub.request(&request).map_err(|failure| failure.words())) {
+            let send = |request| hub.request(&request).map_err(|failure: Failure| failure.words());
+            match web::invoke(invoked, &send, &|| hub.devices().map_err(|failure| failure.words())) {
                 Ok(value) => json(&value),
                 Err(why) => Answer { status: 400, body: serde_json::json!({ "error": why }).to_string() },
             }

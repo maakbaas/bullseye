@@ -19,11 +19,11 @@ use serde_json::{Map, Value};
 use crate::localtime::{self, Zone};
 use crate::proto::{Request, Response};
 use crate::strings::t;
+use crate::sync_api::{Device, SyncStatus};
 
 /// The app's commands a browser cannot use: what is this computer's own (its syncing, its installed
 /// Store apps and flash drives, files to export to and import from, its window).
-pub const COMPUTER_ONLY: [&str; 10] = [
-    "sync_status",
+pub const COMPUTER_ONLY: [&str; 9] = [
     "sync_connect",
     "sync_disconnect",
     "sync_now",
@@ -49,8 +49,13 @@ pub struct Invoked {
 }
 
 /// The answer to `invoked`, as Tauri gives the window one: its value, or what went wrong (mostly
-/// words; an allowance's problem names its field). `send` answers a request as the server's view.
-pub fn invoke(invoked: Invoked, send: &dyn Fn(Request) -> Result<Response, String>) -> Result<Value, Value> {
+/// words; an allowance's problem names its field). `send` answers a request as the server's view;
+/// `devices` gives the computers that sync, as the server knows them.
+pub fn invoke(
+    invoked: Invoked,
+    send: &dyn Fn(Request) -> Result<Response, String>,
+    devices: &dyn Fn() -> Result<Vec<Device>, String>,
+) -> Result<Value, Value> {
     let Invoked { cmd, args, zone } = invoked;
     let zone = Zone::fixed(zone);
     // An argument, of whatever type it is taken as; one that cannot be read ends the command.
@@ -65,6 +70,17 @@ pub fn invoke(invoked: Invoked, send: &dyn Fn(Request) -> Result<Response, Strin
     let words = |result: Result<String, String>| result.map(Value::String).map_err(Value::String);
     let request = match cmd.as_str() {
         "status" => return status(send(Request::Status).map_err(Value::String)?, &zone),
+        // Syncing as the server sees it: the computers, as each last said. Connecting is a computer's.
+        "sync_status" => {
+            let now = crate::state::to_unix(SystemTime::now()).unwrap_or(0);
+            let devices = devices().map_err(Value::String)?;
+            return value(&SyncStatus {
+                connected: true,
+                summary: t("web.syncSummary", &[]),
+                devices: crate::syncing::device_views(&devices, "", now),
+                ..SyncStatus::default()
+            });
+        }
         "save_session" => Request::SaveSession { session: arg!("session") },
         "delete_session" => Request::DeleteSession { id: arg!("id") },
         "save_target" => Request::SaveTarget { target: arg!("target") },
@@ -177,7 +193,7 @@ mod tests {
 
     fn call(context: &Context, cmd: &str, args: Value) -> Result<Value, Value> {
         let invoked = Invoked { cmd: cmd.into(), args: args.as_object().cloned().unwrap_or_default(), zone: 60 };
-        invoke(invoked, &|request| Ok(handle(context, 0, request).0))
+        invoke(invoked, &|request| Ok(handle(context, 0, request).0), &|| Ok(Vec::new()))
     }
 
     /// Every command the window can invoke is answered here, or refused as a computer's own: when
@@ -201,6 +217,26 @@ mod tests {
         assert_eq!(call(&context, "lasers", json!({})), Err(json!("No such command: lasers")));
     }
 
+    /// Syncing on the server's page: the computers, as each last said; none of them is "this computer".
+    #[test]
+    fn the_servers_page_lists_the_computers_that_sync() {
+        use crate::sync_api::{Device, DeviceReport};
+        let now = crate::state::to_unix(SystemTime::now()).unwrap();
+        let report = DeviceReport { name: "Desk".into(), confirmed: 3, held: vec!["why".into()], running: vec!["Work".into()], zone: None };
+        let devices = vec![Device { id: "d1".into(), seen: now - 3 * 3_600_000, report }];
+        let invoked = Invoked { cmd: "sync_status".into(), args: Map::new(), zone: 0 };
+        let answer = invoke(invoked, &|_| Err("unused".into()), &|| Ok(devices.clone())).unwrap();
+        let status: SyncStatus = serde_json::from_value(answer).unwrap();
+        assert!(status.connected);
+        assert_eq!(status.summary, t("web.syncSummary", &[]));
+        assert_eq!(status.devices.len(), 1);
+        let desk = &status.devices[0];
+        assert_eq!((desk.name.as_str(), desk.this, desk.seen.as_str(), desk.held), ("Desk", false, "3 hours ago", 1));
+        assert_eq!(desk.running, vec!["Work".to_string()]);
+        let invoked = Invoked { cmd: "sync_status".into(), args: Map::new(), zone: 0 };
+        assert_eq!(invoke(invoked, &|_| Err("unused".into()), &|| Err("away".into())), Err(json!("away")));
+    }
+
     #[test]
     fn requests_go_to_the_view_under_its_rules_and_come_back_as_the_app_gives_them() {
         let context = context("requests");
@@ -221,11 +257,13 @@ mod tests {
         assert_eq!(call(&context, "request_unlock", json!({})), Ok(Value::Null));
         assert_eq!(call(&context, "abort_unlock", json!({})), Ok(Value::Null));
         // What the view cannot answer is said.
-        let failing = invoke(Invoked { cmd: "status".into(), args: Map::new(), zone: 0 }, &|_| Err("away".into()));
+        let failing = invoke(Invoked { cmd: "status".into(), args: Map::new(), zone: 0 }, &|_| Err("away".into()), &|| Ok(Vec::new()));
         assert_eq!(failing, Err(json!("away")));
-        let odd = invoke(Invoked { cmd: "start_session".into(), args: json!({"id": "x"}).as_object().cloned().unwrap(), zone: 0 }, &|_| {
-            Ok(Response::Status(serde_json::from_value(call(&context, "status", json!({})).unwrap()).unwrap()))
-        });
+        let odd = invoke(
+            Invoked { cmd: "start_session".into(), args: json!({"id": "x"}).as_object().cloned().unwrap(), zone: 0 },
+            &|_| Ok(Response::Status(serde_json::from_value(call(&context, "status", json!({})).unwrap()).unwrap())),
+            &|| Ok(Vec::new()),
+        );
         assert!(odd.unwrap_err().as_str().unwrap().starts_with("Unexpected answer"));
         assert!(status(Response::Done, &Zone::fixed(0)).unwrap_err().as_str().unwrap().starts_with("Unexpected answer"));
     }

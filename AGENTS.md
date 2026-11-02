@@ -19,7 +19,7 @@ Bullseye is a Windows tray app (Tauri 2, Rust, a Carbon web page) that blocks di
 - **App** (`bullseye-app.exe`, the user): the tray, the window, and the closing worker. It asks the service for its policy every second and keeps no state; if the service is away it keeps enforcing the last answer and asks Windows to start it.
 - **CLI** (`bullseye.exe`, on `PATH`): everything the window can do, as the same requests; with `--server`, to the sync server.
 - One pipe, `\\.\pipe\bullseye`; every action is a `proto::Request`, handled by `handler.rs` (in debug builds in-process: `npm run dev` needs no service).
-- **Sync**: the service's sync threads (`Syncer::spawn`) long-poll the server's log and send what is done here at once (`sync.json`, `replica.json`). The server (`server/`) is the same modules on Linux behind `tiny_http`, with its own view of what the log comes to (`handler::mirror`); its API takes any `proto::Request` under a computer's rules.
+- **Sync**: the service's sync threads (`Syncer::spawn`) long-poll the server's log and send what is done here at once (`sync.json`, `replica.json`). The server (`server/`) is the same modules on Linux behind `tiny_http`, with its own view of what the log comes to (`handler::mirror`); its API takes any `proto::Request` under a computer's rules. A computer reports how it is under an id of its own that never changes (`computer` beside `sync.json`), not its id in the log (new with each connect), so the server lists it once; the server forgets one not heard from for a week (`FORGET_DEVICE`). The server's page shows that list in Settings (`sync_status` in `web.rs`).
 
 ## Code map (`src-tauri/src`)
 

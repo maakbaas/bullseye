@@ -381,6 +381,7 @@ impl Replica {
     }
 
     /// This computer's id in the log (empty while not connected).
+    #[cfg(test)]
     pub fn device(&self) -> String {
         self.kept.locked().device.clone()
     }

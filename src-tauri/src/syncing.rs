@@ -65,6 +65,9 @@ pub struct Syncer {
     turn: Mutex<()>,
     /// Set when something was recorded, for the sending thread.
     nudge: (Mutex<bool>, Condvar),
+    /// This computer's id among those that sync (`computer`): the same across connecting again, so the
+    /// server lists it once. Not the id its entries go by in the log, which is new with each connect.
+    computer: String,
 }
 
 impl Syncer {
@@ -78,6 +81,7 @@ impl Syncer {
     /// Over the files in `dir` (`None`: for this run only), reaching the server through `connector`.
     pub fn at(dir: Option<PathBuf>, connector: Connector, name: String) -> Syncer {
         let path = dir.as_ref().map(|dir| dir.join("sync.json"));
+        let computer = dir.as_ref().map_or_else(crate::replica::new_id, |dir| computer_id(&dir.join("computer")));
         let replica = Replica::at(dir.map(|dir| dir.join("replica.json")));
         let settings: Settings =
             path.as_ref().and_then(|path| fs::read(path).ok()).and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
@@ -97,6 +101,7 @@ impl Syncer {
             connector,
             runtime: Mutex::default(),
             name,
+            computer,
             turn: Mutex::new(()),
             nudge: (Mutex::new(false), Condvar::new()),
         }
@@ -379,8 +384,7 @@ impl Syncer {
             running: context.sessions().status().running.into_iter().map(|running| running.name).collect(),
             zone: Some(context.sessions().zone().name().to_string()),
         };
-        let device = self.replica.device();
-        let reported = transport.report(&device, report).is_ok();
+        let reported = transport.report(&self.computer, report).is_ok();
         let devices = transport.devices().unwrap_or_default();
         let mut runtime = self.runtime.locked();
         if reported {
@@ -396,7 +400,7 @@ impl Syncer {
         let now = state::to_unix(context.now()).unwrap_or(0);
         let url = self.settings.locked().url.clone();
         let outbox = self.replica.outbox().len();
-        let device = self.replica.device();
+        let device = self.computer.clone();
         let connected = self.connected();
         let summary = match (&runtime.error, runtime.last_contact) {
             _ if !connected => strings::t("sync.notConnected", &[]),
@@ -407,18 +411,7 @@ impl Syncer {
             }
             (None, Some(at)) => strings::t("sync.inSync", &[("url", &url), ("ago", &ago(now, at))]),
         };
-        let devices = runtime
-            .devices
-            .iter()
-            .map(|known| DeviceView {
-                id: known.id.clone(),
-                name: known.report.name.clone(),
-                this: known.id == device,
-                seen: ago(now, known.seen),
-                running: known.report.running.clone(),
-                held: known.report.held.len(),
-            })
-            .collect();
+        let devices = device_views(&runtime.devices, &device, now);
         SyncStatus {
             connected,
             summary,
@@ -440,6 +433,39 @@ impl Syncer {
 }
 
 /// How long ago `at` was at `now` (both in milliseconds since the Unix epoch), in words: one unit, rounded.
+/// The computers that sync as people see them, at `now`; `this` is the id of the one asking, if any.
+pub fn device_views(devices: &[crate::sync_api::Device], this: &str, now: u64) -> Vec<DeviceView> {
+    devices
+        .iter()
+        .map(|known| DeviceView {
+            id: known.id.clone(),
+            name: known.report.name.clone(),
+            this: known.id == this,
+            seen: ago(now, known.seen),
+            running: known.report.running.clone(),
+            held: known.report.held.len(),
+        })
+        .collect()
+}
+
+/// This computer's id among those that sync, kept in `path` (`computer`): made the first time, the same
+/// ever after. One that cannot be kept is new each time the service starts: then the server lists it
+/// again, which is all it costs.
+fn computer_id(path: &std::path::Path) -> String {
+    let kept = fs::read_to_string(path).ok().map(|text| text.trim().to_string());
+    if let Some(id) = kept.filter(|id| !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')) {
+        return id;
+    }
+    let id = crate::replica::new_id();
+    if let Some(dir) = path.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    if let Err(e) = fs::write(path, &id) {
+        note("sync", &format!("this computer's id cannot be kept: {e}"));
+    }
+    id
+}
+
 fn ago(now: u64, at: u64) -> String {
     let seconds = now.saturating_sub(at) / 1000;
     match seconds < 60 {
@@ -1250,6 +1276,38 @@ mod tests {
         assert!(a.context.library().target("news").is_some());
         assert!(a.runs("work") && b.runs("work"));
         assert_eq!(a.status().confirmed, server.hub().head());
+    }
+
+    /// Connected again, a computer is the same one to the server: listed once, as this computer. Its
+    /// id is kept in its own file; one that cannot be read is made anew and kept.
+    #[test]
+    fn a_computer_connected_again_is_listed_once() {
+        let server = server("again");
+        defined(&server, Lock::None);
+        let a = computer("again-a", &server);
+        assert_eq!(a.connect(), Response::Done);
+        sync(&[&a]);
+        let first = a.status().device;
+        a.ok(Request::SyncDisconnect);
+        assert_eq!(a.connect(), Response::Done);
+        sync(&[&a]);
+        let status = a.status();
+        assert_eq!(status.device, first);
+        assert_eq!(server.hub().devices().unwrap().len(), 1);
+        assert!(status.devices.iter().all(|d| d.this && d.id == first));
+        // The same after the service starts again.
+        let again = Syncer::at(Some(a.dir.clone()), connector(&server), "again-a".into());
+        assert_eq!(again.computer, first);
+        // An id that is not one (a file changed by hand) is made anew and kept.
+        fs::write(a.dir.join("computer"), "not an id!").unwrap();
+        let fresh = Syncer::at(Some(a.dir.clone()), connector(&server), "again-a".into()).computer;
+        assert_ne!(fresh, first);
+        assert_eq!(fs::read_to_string(a.dir.join("computer")).unwrap(), fresh);
+        // Where nothing can be kept, a new one each time.
+        assert_ne!(Syncer::at(None, connector(&server), "x".into()).computer, Syncer::at(None, connector(&server), "x".into()).computer);
+        let blocked = a.dir.join("blocked");
+        fs::write(&blocked, "a file, not a folder").unwrap();
+        assert!(!computer_id(&blocked.join("computer")).is_empty());
     }
 
     #[test]

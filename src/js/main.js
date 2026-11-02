@@ -258,10 +258,10 @@ $("import").addEventListener("click", async () => {
     notify("transfer-notices", "error", t("settings.importFailed"), String(e));
   }
 });
-// On the sync server's page (`web.js`) the computer's own settings are left out: its files and its syncing.
+// On the sync server's page (`web.js`) the computer's own settings are left out: its files, and of its
+// syncing all but the computers that sync (connecting is a computer's).
 if (window.BULLSEYE_WEB) {
   $("transfer-setting").hidden = true;
-  $("sync-setting").hidden = true;
   const description = document.querySelector('[data-t="settings.description"]');
   description.dataset.t = "web.settingsDescription";
   description.textContent = t("web.settingsDescription");
@@ -279,7 +279,6 @@ $("sync-disconnect").replaceChildren(t("sync.disconnect"), carbonIcon("close", "
 let syncShown = ""; // what the section shows, so it is drawn again only when that changes
 
 async function renderSync() {
-  if (window.BULLSEYE_WEB) return;
   let sync;
   try {
     sync = await invoke("sync_status");
@@ -291,9 +290,10 @@ async function renderSync() {
   syncShown = shown;
   $("sync-state").kind = sync.error ? "warning" : "info";
   $("sync-state").subtitle = sync.summary;
-  $("sync-connect").hidden = sync.connected;
-  $("sync-now").hidden = !sync.connected;
-  $("sync-disconnect").hidden = !sync.connected;
+  const web = Boolean(window.BULLSEYE_WEB);
+  $("sync-connect").hidden = web || sync.connected;
+  $("sync-now").hidden = web || !sync.connected;
+  $("sync-disconnect").hidden = web || !sync.connected;
   const devices = sync.devices.map((device) => {
     const about = [t("sync.seen", { ago: device.seen })];
     if (device.running.length) about.push(t("sync.running", { names: joined(device.running.map(quoted)).join("") }));

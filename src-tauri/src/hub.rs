@@ -35,6 +35,10 @@ pub const SERVER: &str = "server";
 /// The most computers the server keeps track of.
 const MAX_DEVICES: usize = 100;
 
+/// A computer not heard from for this long is forgotten (milliseconds): one that was connected again, or
+/// is gone. It is listed again the next time it reports.
+const FORGET_DEVICE: u64 = 7 * 24 * 3600 * 1000;
+
 struct Log {
     entries: VecDeque<(u64, String)>,
     /// The ids of the entries in `entries`, so one sent twice is taken once.
@@ -276,7 +280,8 @@ impl Transport for Hub {
             self.context.sessions().set_zone(zone);
         }
         let mut devices = self.devices.locked();
-        devices.retain(|known| known.id != device);
+        let now = millis(self.context.now());
+        devices.retain(|known| known.id != device && now.saturating_sub(known.seen) < FORGET_DEVICE);
         if devices.len() >= MAX_DEVICES {
             // The one not heard from the longest goes.
             if let Some(oldest) = devices.iter().enumerate().min_by_key(|(_, d)| d.seen).map(|(at, _)| at) {
@@ -285,7 +290,7 @@ impl Transport for Hub {
         }
         let report =
             DeviceReport { name: report.name.chars().take(100).collect(), held: report.held.into_iter().take(50).collect(), ..report };
-        devices.push(Device { id: device.to_string(), seen: millis(self.context.now()), report });
+        devices.push(Device { id: device.to_string(), seen: now, report });
         if let Some(path) = &self.devices_path {
             if let Err(e) =
                 serde_json::to_vec(&*devices).map_err(|e| e.to_string()).and_then(|json| fs::write(path, json).map_err(|e| e.to_string()))
@@ -297,7 +302,8 @@ impl Transport for Hub {
     }
 
     fn devices(&self) -> Result<Vec<Device>, Failure> {
-        Ok(self.devices.locked().clone())
+        let now = millis(self.context.now());
+        Ok(self.devices.locked().iter().filter(|known| now.saturating_sub(known.seen) < FORGET_DEVICE).cloned().collect())
     }
 
     /// A request to the server's API, under the same rules as at a computer: what it does goes into
@@ -501,6 +507,24 @@ pub mod tests {
         let page = without.log(0, None, Duration::ZERO).unwrap();
         assert_eq!(Entry::parse_proven(&page.entries[0].1).unwrap().1, None);
         assert!(serde_json::from_str::<Entry>(&page.entries[0].1).is_ok());
+    }
+
+    /// A computer not heard from for a week is forgotten (connected again under another id, or gone),
+    /// and listed again once it reports.
+    #[test]
+    fn a_computer_not_heard_from_for_a_week_is_forgotten() {
+        let hub = Hub::new(context(&dir("forget")), None);
+        let report = DeviceReport { name: "Desk".into(), confirmed: 0, held: vec![], running: vec![], zone: None };
+        hub.report("old", report.clone()).unwrap();
+        hub.context.sessions().move_to(SystemTime::now() + Duration::from_secs(6 * 24 * 3600));
+        hub.report("new", report.clone()).unwrap();
+        assert_eq!(hub.devices().unwrap().len(), 2);
+        hub.context.sessions().move_to(SystemTime::now() + Duration::from_secs(7 * 24 * 3600 + 60));
+        let ids: Vec<String> = hub.devices().unwrap().into_iter().map(|d| d.id).collect();
+        assert_eq!(ids, vec!["new".to_string()]);
+        hub.report("old", report).unwrap();
+        assert_eq!(hub.devices().unwrap().len(), 2);
+        assert_eq!(hub.devices.locked().len(), 2, "forgotten when another reports");
     }
 
     #[test]
