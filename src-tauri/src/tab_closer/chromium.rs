@@ -217,6 +217,17 @@ impl Closer {
         if let Some(strips) = self.vscode_strips(handle) {
             return self.tick_vscode(handle, &strips, active);
         }
+        // So has Orca, whose browser tabs are beside its terminals (`orca.rs`).
+        if let Some(app) = self.orca_app(handle) {
+            if let Some(app) = app {
+                self.tick_orca(handle, &app, active);
+            }
+            return;
+        }
+        // And Claude's desktop app, with a browser pane beside its chat (`claude.rs`).
+        if self.is_claude(handle) {
+            return self.tick_claude(handle, active);
+        }
         let Some(browser) = self.browser(handle) else {
             self.close_panel(handle, active);
             return;

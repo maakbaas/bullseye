@@ -8,9 +8,9 @@ use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, POINT};
 use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
 use windows_sys::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetClientRect, GetWindow, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW,
-    GetWindowThreadProcessId, IsIconic, IsWindowVisible, PostMessageW, GWL_EXSTYLE, GW_OWNER, WM_CLOSE, WM_MBUTTONDOWN, WM_MBUTTONUP,
-    WM_MOUSEMOVE, WS_EX_TOOLWINDOW,
+    EnumWindows, GetClassNameW, GetClientRect, GetForegroundWindow, GetWindow, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, IsIconic, IsWindowVisible, PostMessageW, GWL_EXSTYLE, GW_OWNER, WM_CLOSE, WM_KEYDOWN, WM_KEYUP,
+    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WS_EX_TOOLWINDOW,
 };
 
 /// The programs whose windows without tabs are app windows (`chrome --app=<url>`, installed web apps,
@@ -223,9 +223,53 @@ pub(super) fn middle_click(handle: isize, tab: &UIElement) -> uiautomation::Resu
     Ok(())
 }
 
+/// Whether a window is the one in front, which gets what is typed.
+pub(super) fn is_foreground(handle: isize) -> bool {
+    // SAFETY: no arguments; it only reads which window is in front.
+    handle != 0 && unsafe { GetForegroundWindow() } as isize == handle
+}
+
+/// The Delete key: its virtual key, and the message words of pressing and letting go of it (one
+/// press, its scan code, an extended key; letting go also says it was down and is released).
+const DELETE: usize = 0x2E;
+fn delete_words() -> (isize, isize) {
+    let down = 1 | (0x53 << 16) | (1 << 24);
+    (down, down | (0b11 << 30))
+}
+
+/// Presses Delete in a window, with messages posted to it: it goes to what has the focus in that
+/// window, whatever is in front, and nothing is typed on the keyboard.
+pub(super) fn press_delete(handle: isize) {
+    let (down, up) = delete_words();
+    // SAFETY: a window handle Windows handed over a moment ago (a stale one only fails); posted, so a
+    // window that does not answer holds nothing up.
+    unsafe {
+        PostMessageW(handle as HWND, WM_KEYDOWN, DELETE, down);
+        PostMessageW(handle as HWND, WM_KEYUP, DELETE, up);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delete_is_pressed_once_and_let_go() {
+        let (down, up) = delete_words();
+        // One press, Delete's scan code, an extended key (the one beside Enter, not the keypad's).
+        assert_eq!(down & 0xFFFF, 1);
+        assert_eq!((down >> 16) & 0xFF, 0x53);
+        assert_eq!((down >> 24) & 1, 1);
+        // Letting go: the same, and was down (bit 30), released (bit 31).
+        assert_eq!(up & 0x3FFF_FFFF, down);
+        assert_eq!((up >> 30) & 0b11, 0b11);
+        assert_eq!(DELETE, 0x2E);
+    }
+
+    #[test]
+    fn a_window_that_is_not_there_is_not_in_front() {
+        assert!(!is_foreground(0) && !is_foreground(-1));
+    }
 
     #[test]
     fn only_a_browsers_own_programs_are_browsers() {

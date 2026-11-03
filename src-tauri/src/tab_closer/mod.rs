@@ -19,7 +19,7 @@
 //! its own actions and lists (`session::Active`).
 //!
 //! Where things are: this file is the loop and what the passes share (`Closer`); `chromium.rs`,
-//! `firefox.rs` read and close a browser's pages; `vscode.rs` VS Code's built-in browser; `others.rs` closes programs, Obsidian and windows by
+//! `firefox.rs` read and close a browser's pages; `vscode.rs` VS Code's built-in browser; `orca.rs` Orca's; `claude.rs` Claude's desktop app's; `others.rs` closes programs, Obsidian and windows by
 //! title; `win.rs` is the plain Windows calls; `ledger.rs` remembers what was tried, so a close that
 //! did not work is noticed (and not repeated at once).
 //!
@@ -28,8 +28,10 @@
 //! to be seen twice, or something just closed) is looked at every `QUICK` for a while.
 
 mod chromium;
+mod claude;
 mod firefox;
 mod ledger;
+mod orca;
 mod others;
 mod vscode;
 mod win;
@@ -186,6 +188,11 @@ enum Window {
     /// A VS Code window (`vscode.rs`): its editor area (none: it has none, as its developer tools), and
     /// when that was looked for.
     VsCode(Option<UIElement>, Instant),
+    /// An Orca window (`orca.rs`): its own page, in which its browser tabs' pages are (none: not found
+    /// yet, or its developer tools), and when that was looked for.
+    Orca(Option<UIElement>, Instant),
+    /// A window of Claude's desktop app (`claude.rs`): its pages and its browser's controls.
+    Claude(Box<claude::Claude>),
     /// Not a browser window (Electron app, devtools, popup); searched again after `RECHECK`.
     Other(Instant),
 }

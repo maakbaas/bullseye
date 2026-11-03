@@ -45,7 +45,7 @@ impl Closer {
             Some(Window::VsCode(Some(part), _)) => part.clone(),
             Some(Window::VsCode(None, since)) if since.elapsed() < NO_EDITOR_AGAIN => return Some(Vec::new()),
             Some(Window::Browser(_) | Window::Firefox(_)) => return None,
-            Some(Window::Other(_)) => return None,
+            Some(Window::Other(_) | Window::Orca(..) | Window::Claude(_)) => return None,
             Some(Window::VsCode(None, _)) => self.vscode_editor(handle)?,
             None if program_file(handle).is_some_and(|file| is_vscode_program(&file)) => self.vscode_editor(handle)?,
             None => return None,
