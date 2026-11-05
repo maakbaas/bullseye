@@ -216,6 +216,7 @@ impl Syncer {
         let settings = Settings { url: url.trim().to_string(), token: token.trim().to_string(), disconnect_asked: None };
         self.save_settings(&settings)?;
         self.replica.connect(snapshot.head, snapshot.last.clone(), snapshot.newest)?;
+        context.log_known_from(context.now());
         *self.settings.locked() = settings;
         *self.transport.locked() = Some(transport);
         if snapshot.head == 0 {
@@ -259,6 +260,8 @@ impl Syncer {
     fn rejoin(&self, context: &Context, snapshot: &Snapshot) {
         self.replica.rejoin(snapshot.head, snapshot.last.clone(), snapshot.newest);
         self.adopt(context, snapshot);
+        // The server's view as of now: what came before it is here.
+        context.log_known_until(context.now());
     }
 
     /// Stops syncing. Always works: what was not sent and what waits is forgotten, the settings here stay

@@ -38,11 +38,40 @@ pub struct Context {
     /// Syncing with the other computers (`syncing.rs`), in the service; `None` in the sync server's own
     /// view (`hub.rs`).
     syncer: Option<Arc<Syncer>>,
+    /// While syncing: the time up to which this computer has every entry the server took in (it
+    /// timestamps them as they come, in the log's order: `replica::Replica::receive`). What waits of a
+    /// target is caught up only to before it (`free_since`), so not past an entry still to come that
+    /// made it stricter. `None`: not syncing, so nothing is still to come.
+    log_known: Mutex<Option<SystemTime>>,
 }
 
 impl Context {
     pub fn new(sessions: Sessions, definitions: Definitions, slot: Arc<AppSlot>) -> Context {
-        Context { sessions, definitions, slot, unlock: UnlockDelay::default(), editing: Mutex::default(), syncer: None }
+        Context {
+            sessions,
+            definitions,
+            slot,
+            unlock: UnlockDelay::default(),
+            editing: Mutex::default(),
+            syncer: None,
+            log_known: Mutex::default(),
+        }
+    }
+
+    /// Every entry the server took in before `at` is here (`log_known`); never moved back.
+    pub fn log_known_until(&self, at: SystemTime) {
+        let mut known = self.log_known.locked();
+        *known = Some(known.map_or(at, |old| old.max(at)));
+    }
+
+    /// Connecting: from now on what the server has is still to come (`log_known`).
+    pub fn log_known_from(&self, at: SystemTime) {
+        *self.log_known.locked() = Some(at);
+    }
+
+    /// Not syncing any more: nothing is still to come (`log_known`).
+    pub fn log_all_known(&self) {
+        *self.log_known.locked() = None;
     }
 
     /// With the unlock delay kept in its own file (the service's, `UnlockDelay::new`).
@@ -157,6 +186,7 @@ fn answer_sync(context: &Context, request: Request) -> Response {
 fn disconnect(context: &Context, syncer: &Syncer, password: Option<&str>, text: Option<&str>) -> Result<(), String> {
     if !syncer.connected() || syncer.round(context, std::time::Duration::ZERO).is_ok() {
         syncer.disconnect();
+        context.log_all_known();
         return Ok(());
     }
     let now = context.sessions.now();
@@ -172,6 +202,7 @@ fn disconnect(context: &Context, syncer: &Syncer, password: Option<&str>, text: 
         }
     }
     syncer.disconnect();
+    context.log_all_known();
     if answered {
         redraw_random_text(context, now);
     }
@@ -845,7 +876,14 @@ fn edit_shared(context: &Context, proposed: Proposed) -> Result<(), String> {
         Proposed::List(list) => {
             let locked = context.sessions.locked_ids();
             let list = match library.target(&list.id) {
-                Some(old) if users.iter().any(|user| locked.contains(user)) => old.split(list),
+                Some(old) if users.iter().any(|user| locked.contains(user)) => {
+                    let mut list = old.split(list);
+                    // From when it was done: a time proven elsewhere when done as of it (`clock::as_of`).
+                    if let Some(waiting) = &mut list.waiting {
+                        waiting.since = crate::state::to_unix(context.sessions.now());
+                    }
+                    list
+                }
                 _ => Target { waiting: None, ..list },
             };
             context.definitions.save_target(list)?
@@ -859,7 +897,10 @@ fn edit_shared(context: &Context, proposed: Proposed) -> Result<(), String> {
 /// Makes what waits of each target (`Target::split`) once no locked session uses it, and the running
 /// sessions that use it follow. Before every request is answered, and every entry from the log
 /// applied: so when a lock ends, by itself, a stop, Unlock or a restart, a session started next has it.
-/// Each computer does this for itself, under its own locks: it is not shared.
+/// It is also made while a session that uses it is locked again, if since it began waiting there was a
+/// moment when none of those were (`free_since`): what a computer that was on then made then, one that
+/// was off or asleep makes when it is back, and no sooner. Each computer does this for itself, under
+/// its own locks: it is not shared.
 fn settle(context: &Context) {
     let waiting = context.definitions.waiting_ids();
     if waiting.is_empty() {
@@ -870,10 +911,11 @@ fn settle(context: &Context) {
     let (locked, running) = (context.sessions.locked_ids(), context.sessions.running_ids());
     for id in waiting {
         let users = library.users_of(&id);
-        if users.iter().any(|user| locked.contains(&user.id)) {
+        let Some(target) = library.target(&id) else { continue };
+        let holding: Vec<String> = users.iter().filter(|user| locked.contains(&user.id)).map(|user| user.id.clone()).collect();
+        if !holding.is_empty() && free_since(context, target, &holding).is_none() {
             continue;
         }
-        let Some(target) = library.target(&id) else { continue };
         match context.definitions.save_target(target.desired()) {
             Ok(()) => {
                 let running: Vec<String> = users.iter().filter(|user| running.contains(&user.id)).map(|user| user.id.clone()).collect();
@@ -887,6 +929,29 @@ fn settle(context: &Context) {
             Err(why) => crate::watchdog::note("service", &format!("what waits of “{}” could not be made: {why}", target.name)),
         }
     }
+}
+
+/// The first moment since what waits of `target` began waiting at which none of the sessions `holding`
+/// (those that use it and are locked now) was locked: when a computer that was on then made it. Each
+/// moment one of their locks may have let go (`Sessions::lock_moments`) is judged as a request then
+/// would be (`clock::as_of`): a session started or locked since then, a drive or webhook, all count as
+/// locked, and the conditions are as they are now, which a locked session can only have made
+/// stricter; and only moments before what of the log is not here yet (`log_known`). None when it is
+/// not known since when it waits, or what time it is.
+fn free_since(context: &Context, target: &Target, holding: &[String]) -> Option<SystemTime> {
+    let sessions = &context.sessions;
+    let since = crate::state::from_unix(target.waiting.as_ref()?.since?);
+    if !sessions.time_known() {
+        return None;
+    }
+    // Not past what of the log is here yet: an entry still to come may have made it stricter by then.
+    let known = context.log_known.locked().map_or(sessions.now(), |known| known.min(sessions.now()));
+    sessions.lock_moments(holding, since, known).into_iter().find(|&at| {
+        crate::clock::as_of(at, || {
+            let locked = sessions.locked_ids();
+            holding.iter().all(|id| !locked.contains(id))
+        })
+    })
 }
 
 /// Whether a target or condition may be saved like this: a target any way (what loosens it waits

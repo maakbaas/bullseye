@@ -55,11 +55,23 @@ pub struct Target {
 }
 
 /// A target's lists and actions as they are to be once no locked session uses it.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Waiting {
     #[serde(flatten)]
     pub entries: Entries,
     pub actions: Actions,
+    /// When it began waiting (milliseconds since the Unix epoch), as the change was judged: so a
+    /// computer that was off can make it as of the first moment since that no locked session held it
+    /// (`handler::settle`). None: not known, and it waits until it can be made now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<u64>,
+}
+
+/// The same change: when it began waiting is each computer's own (`since`), not part of what waits.
+impl PartialEq for Waiting {
+    fn eq(&self, other: &Waiting) -> bool {
+        self.entries == other.entries && self.actions == other.actions
+    }
 }
 
 /// When a session is active, and what a condition lock locks by, with a name: a weekly schedule or a
@@ -209,7 +221,7 @@ impl Target {
             a.actions != b.actions || keys(a) != keys(b)
         };
         if differs(&now, &desired) {
-            now.waiting = Some(Waiting { entries: desired.entries, actions: desired.actions });
+            now.waiting = Some(Waiting { entries: desired.entries, actions: desired.actions, since: None });
         }
         now
     }
@@ -1346,7 +1358,8 @@ pub mod tests {
         let stricter = listed(&[("filters", &["YOUTUBE.com", "reddit.com", "a.com"]), ("programs", &["steam.exe"])]);
         assert_eq!(old.split(stricter.clone()), stricter);
         // A request's own `waiting` is no part of it.
-        let claimed = Target { waiting: Some(Waiting { entries: Entries::default(), actions: Actions::default() }), ..stricter.clone() };
+        let claimed =
+            Target { waiting: Some(Waiting { entries: Entries::default(), actions: Actions::default(), since: None }), ..stricter.clone() };
         assert_eq!(old.split(claimed), stricter);
         assert_eq!(stricter.desired(), stricter);
         assert_eq!(stricter.waiting_words(), None);
@@ -1379,7 +1392,7 @@ pub mod tests {
 
         // What differs only in how it is typed is no change to name.
         let typed = Target {
-            waiting: Some(Waiting { entries: listed(&[("programs", &["Steam"])]).entries, actions: Actions::default() }),
+            waiting: Some(Waiting { entries: listed(&[("programs", &["Steam"])]).entries, actions: Actions::default(), since: None }),
             ..listed(&[("programs", &["steam.exe"])])
         };
         assert_eq!(typed.waiting_words(), None);

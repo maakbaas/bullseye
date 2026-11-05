@@ -36,6 +36,9 @@ const CHECKPOINT: Duration = Duration::from_secs(60);
 /// The longest time that one report of use is counted for, whatever the time since the last look:
 /// the app asks every second, so more means it was not asking.
 const MAX_GAP: Duration = Duration::from_secs(5);
+/// The most moments a lock is looked at for (`Session::lock_moments`): a schedule that changes twice a
+/// day, for well over a year. Past that, what waits is made once it can be now.
+const MOMENTS: usize = 1000;
 
 /// Shared between the request handling and the ticker thread.
 #[derive(Clone)]
@@ -576,6 +579,34 @@ impl Session {
             RunLock::Password { hash } => Some(hash),
             _ => None,
         }
+    }
+
+    /// The moments after `from` and up to `to` at which its lock may have let go: when it started or
+    /// got its lock, and each change of its lock condition. Whether it did is
+    /// `locked`'s to judge as of each (`clock::as_of`, `handler::settle`). At most `MOMENTS` of them.
+    fn lock_moments(&self, from: SystemTime, to: SystemTime) -> Vec<SystemTime> {
+        let mut moments = Vec::new();
+        let set = state::from_unix(self.started.max(self.lock_since));
+        if set > from && set <= to {
+            moments.push(set);
+        }
+        // Only a lock condition lets go by the time alone: a wait asked for that is over leaves it
+        // unlocked now, holding nothing back; the others let go by a stop or a restart, which a computer
+        // hears of.
+        if let RunLock::Condition { condition } = &self.lock {
+            let mut at = from.max(set);
+            while moments.len() < MOMENTS {
+                let Some(step) = condition.next_change(&self.zone, at) else { break };
+                at += Duration::from_secs(step.max(1));
+                // A second in: past the change, where the condition is as it changed to.
+                let moment = at + Duration::from_secs(1);
+                if moment > to {
+                    break;
+                }
+                moments.push(moment);
+            }
+        }
+        moments
     }
 
     /// Why it cannot be stopped at `now`, if it cannot (without its password, for a password lock).
@@ -1306,6 +1337,19 @@ impl Sessions {
         let mut inner = self.inner.locked();
         self.expire(&mut inner);
         inner.sessions.iter().map(|b| b.id.clone()).collect()
+    }
+
+    /// The moments after `from` and up to `to` at which the lock of one of the running sessions `ids`
+    /// may have let go (`Session::lock_moments`), in order: where a computer that was off looks for
+    /// when what waits of a target would have been made (`handler::settle`).
+    pub fn lock_moments(&self, ids: &[String], from: SystemTime, to: SystemTime) -> Vec<SystemTime> {
+        let mut inner = self.inner.locked();
+        self.expire(&mut inner);
+        let mut moments: Vec<SystemTime> =
+            inner.sessions.iter().filter(|b| ids.contains(&b.id)).flat_map(|b| b.lock_moments(from, to)).collect();
+        moments.sort();
+        moments.dedup();
+        moments
     }
 
     /// The ids of the running sessions that cannot be stopped right now (`Session::locked`): what a
@@ -2672,6 +2716,34 @@ mod tests {
         let mut items: Vec<String> = running(&list, "a").allowance.unwrap().items.into_iter().map(|i| i.item).collect();
         items.sort();
         assert_eq!(items, vec!["*", "youtube.com"]);
+    }
+
+    /// Where a lock may have let go (`lock_moments`): each change of a lock schedule (a second in), and
+    /// when it was started or got its lock if that is in the time looked at; a lock of another kind only
+    /// that. At most `MOMENTS`.
+    #[test]
+    fn the_moments_a_lock_may_have_let_go() {
+        let list = sessions("lock-moments");
+        list.clock.at_least(monday(7 * 3600));
+        let parts = || vec![part(sites(&["a.com"]), Actions::default())];
+        list.start("office", "Office", parts(), None, StartLock::Condition(weekly("mon-fri 08:00-17:00").unwrap())).unwrap();
+        list.start("restart", "Restart", parts(), None, StartLock::UntilRestart).unwrap();
+        let ids = |ids: &[&str]| ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+        // In whole seconds of Monday (they started a moment after 7:00).
+        let moments = |of: &[&str], from: u64, to: u64| -> Vec<u64> {
+            list.lock_moments(&ids(of), monday(from), monday(to))
+                .into_iter()
+                .map(|at| at.duration_since(monday(0)).unwrap().as_secs())
+                .collect()
+        };
+        // Monday 7:00:01 to 18:00: 8:00 and 17:00, a second in.
+        assert_eq!(moments(&["office"], 7 * 3600 + 1, 18 * 3600), vec![8 * 3600 + 1, 17 * 3600 + 1]);
+        // From before they started: each one's start too (a moment apart), the schedule's changes from then on.
+        assert_eq!(moments(&["office", "restart"], 6 * 3600, 9 * 3600), vec![7 * 3600, 7 * 3600, 8 * 3600 + 1]);
+        assert_eq!(moments(&["restart"], 7 * 3600 + 1, 48 * 3600), Vec::<u64>::new());
+        assert_eq!(moments(&["nothing"], 0, 48 * 3600), Vec::<u64>::new());
+        // Three years: the most there are.
+        assert_eq!(list.lock_moments(&ids(&["office"]), monday(7 * 3600), monday(3 * 365 * 24 * 3600)).len(), MOMENTS);
     }
 
     #[test]

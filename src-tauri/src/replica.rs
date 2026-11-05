@@ -466,6 +466,11 @@ impl Replica {
                 }
             }
             let outcome = handler::apply(context, &entry.action, state::from_unix(entry.at), proven);
+            // The server timestamps entries as they come in, in this order: whatever it took in before
+            // this one is here now (`Context::log_known`).
+            if let Some(proven) = proven {
+                context.log_known_until(proven);
+            }
             if matches!(outcome, Outcome::Applied) && keys.iter().any(|key| key == EVERYTHING) {
                 // What was changed here since comes after the import: done again on top of it.
                 let pending: Vec<Entry> = kept.pending.iter().filter(|own| own.action.is_library()).cloned().collect();
@@ -479,6 +484,10 @@ impl Replica {
                 hold(&mut kept.held, entry.clone(), why.clone(), proven.and_then(state::to_unix));
             }
             outcomes.push((entry.id, outcome));
+        }
+        // Less than a page: the log's end, everything the server has (`sync_api::PAGE`).
+        if batch.len() < crate::sync_api::PAGE {
+            context.log_known_until(context.now());
         }
         self.save(&kept);
         outcomes
@@ -1530,8 +1539,10 @@ mod tests {
             1 => Action::DeleteSession { id },
             // Whatever `waiting` comes with it is no part of what is saved.
             2 => {
-                let waiting =
-                    dice.pick(&[None, Some(crate::definitions::Waiting { entries: Default::default(), actions: Default::default() })]);
+                let waiting = dice.pick(&[
+                    None,
+                    Some(crate::definitions::Waiting { entries: Default::default(), actions: Default::default(), since: None }),
+                ]);
                 Action::SaveTarget { target: crate::definitions::Target { waiting, ..target(dice.pick(&["social", "other"]), sites) } }
             }
             3 => Action::DeleteTarget { id: dice.pick(&["social".to_string(), id]) },
@@ -1731,6 +1742,157 @@ mod tests {
         log.sync(&[&b]);
         assert!(b.context.library().session("work").is_none() && !b.runs("work"));
         assert_eq!(b.context.library().target("social"), a.context.library().target("social"));
+    }
+
+    /// The target "social" on `node`: what it blocks now, and whether something of it waits.
+    fn social(node: &Node) -> (Vec<String>, bool) {
+        node.ask(Request::Status);
+        let social = node.context.library().target("social").unwrap().clone();
+        (social.entries.filters, social.waiting.is_some())
+    }
+
+    /// youtube.com taken out of "social" on A at 10:00, while "work" is locked by its schedule (9-17)
+    /// on both: it waits on both, and A, on all day, makes it at 17:00.
+    fn loosened_at_ten(name: &str) -> (Node, Node, Log) {
+        let (a, b, mut log) = stamped(name, Lock::Condition { condition: "office".into() });
+        a.ok(Request::Start { id: "work".into() });
+        log.sync(&[&a, &b]);
+        at(&[&a, &b], &mut log, day(10.0));
+        a.ok(Request::SaveTarget { target: target("social", &["reddit.com"]) });
+        log.sync(&[&a]);
+        assert_eq!(social(&a), (vec!["reddit.com".to_string(), "youtube.com".to_string()], true));
+        at(&[&a, &b], &mut log, day(17.5));
+        assert_eq!(social(&a), (vec!["reddit.com".to_string()], false));
+        (a, b, log)
+    }
+
+    /// B, asleep from before the change until the next morning, is locked again by the schedule when it
+    /// is back: it makes the change all the same, as it would have at 17:00 had it been on.
+    #[test]
+    fn a_loosening_that_waited_reaches_a_computer_asleep_through_the_free_evening() {
+        let (a, b, mut log) = loosened_at_ten("slept");
+        at(&[&a, &b], &mut log, day(24.0 + 9.5));
+        log.sync(&[&b]);
+        assert!(b.locked());
+        assert_eq!(social(&b), (vec!["reddit.com".to_string()], false));
+        assert_eq!(a.context.library(), b.context.library());
+        // What runs follows: youtube.com is no longer blocked there.
+        let active = b.context.sessions().active().unwrap();
+        assert!(!active.blocks_page("https://youtube.com/") && active.blocks_page("https://reddit.com/"));
+    }
+
+    /// Not into a lock set since the free evening: B, back offline the next morning, locks "late" (of the
+    /// same target) until 12:00 before it hears of the change. That lock was not there at 17:00 and holds
+    /// it now: it waits. Once "late" is over only "work" holds it, which was free at 17:00: it is made.
+    #[test]
+    fn a_loosening_that_waited_does_not_reach_into_a_lock_set_since() {
+        let (a, b, mut log) = loosened_at_ten("since");
+        at(&[&a, &b], &mut log, day(24.0 + 8.5));
+        b.ok(Request::Start { id: "late".into() });
+        b.ok(Request::Lock { id: "late".into(), lock: Lock::Timed { kind: crate::lock::TimedKind::For, value: "3h 30m".into() } });
+        at(&[&a, &b], &mut log, day(24.0 + 9.5));
+        log.sync(&[&b]);
+        assert_eq!(social(&b), (vec!["reddit.com".to_string(), "youtube.com".to_string()], true));
+        at(&[&a, &b], &mut log, day(24.0 + 12.5));
+        assert!(b.locked() && !b.runs("late"));
+        assert_eq!(social(&b), (vec!["reddit.com".to_string()], false));
+    }
+
+    /// Nothing is caught up without a timestamp (it waits from when it came), with a lock whose past is not
+    /// known (a drive), or while the time of day is not known.
+    #[test]
+    fn a_loosening_that_waited_is_not_caught_up_without_knowing_it_was_free() {
+        // Without a timestamp: waits from 9:30 the next day, made at 17:00.
+        let (a, b, mut log) = stamped("unstamped", Lock::Condition { condition: "office".into() });
+        a.ok(Request::Start { id: "work".into() });
+        log.sync(&[&a, &b]);
+        log.stamp_at = None;
+        at(&[&a, &b], &mut log, day(10.0));
+        a.ok(Request::SaveTarget { target: target("social", &["reddit.com"]) });
+        log.sync(&[&a]);
+        at(&[&a, &b], &mut log, day(24.0 + 9.5));
+        log.sync(&[&b]);
+        assert!(social(&b).1);
+        at(&[&a, &b], &mut log, day(24.0 + 17.5));
+        assert!(!social(&b).1);
+
+        // A drive lock: its past is not known, so it counted as locked all along.
+        let (a, b, mut log) = stamped("drive", Lock::None);
+        let key = Condition {
+            id: "key".into(),
+            name: "Key".into(),
+            rule: crate::condition::Rule::FlashDrive { serial: "4E0985D05EC9".into(), drive: "Key".into() },
+        };
+        a.ok(Request::SaveCondition { condition: key });
+        a.ok(Request::SaveSession {
+            session: Definition { lock: Lock::Condition { condition: "key".into() }, ..session("work", &["social"]) },
+        });
+        a.ok(Request::Start { id: "work".into() });
+        log.sync(&[&a, &b]);
+        at(&[&a, &b], &mut log, day(10.0));
+        a.ok(Request::SaveTarget { target: target("social", &["reddit.com"]) });
+        log.sync(&[&a]);
+        at(&[&a, &b], &mut log, day(48.0));
+        log.sync(&[&b]);
+        assert!(b.locked() && social(&b).1);
+
+        // After a restart, until internet time is in: the schedule locks, and when it was free is not
+        // looked for either. With the time, it is.
+        let (_a, b, mut log) = loosened_at_ten("restart");
+        at(&[&b], &mut log, day(24.0 + 9.5));
+        let resumed = Node {
+            context: Context::new(
+                b.context.sessions().restarted("again"),
+                Definitions::at(Some(b.dir.join("sessions.json"))),
+                Arc::new(AppSlot::new(false)),
+            ),
+            replica: Replica::at(Some(b.dir.join("replica.json"))),
+            dir: b.dir.clone(),
+        };
+        assert!(!resumed.context.sessions().time_known() && resumed.runs("work"));
+        log.sync(&[&resumed]);
+        assert_eq!(social(&resumed), (vec!["reddit.com".to_string(), "youtube.com".to_string()], true));
+        resumed.context.sessions().synced_to(day(24.0 + 9.5));
+        assert!(resumed.locked());
+        assert_eq!(social(&resumed), (vec!["reddit.com".to_string()], false));
+    }
+
+    /// A lock schedule made stricter since (all day now) leaves no free moment: it waits everywhere. Also
+    /// on B, which takes in the change before the schedule: not as free by the schedule it had then, as a
+    /// computer that was on never had it so at 17:00. Nor from a page of the log that ends before the
+    /// stricter schedule: what of the log is not there yet may make it stricter (`Context::log_known`).
+    #[test]
+    fn a_loosening_that_waited_goes_by_the_lock_schedule_as_it_is_now() {
+        let (a, b, mut log) = stamped("widened", Lock::Condition { condition: "office".into() });
+        a.ok(Request::Start { id: "work".into() });
+        log.sync(&[&a, &b]);
+        at(&[&a, &b], &mut log, day(10.0));
+        a.ok(Request::SaveTarget { target: target("social", &["reddit.com"]) });
+        a.ok(Request::SaveCondition { condition: crate::definitions::tests::weekly("office", "daily 0-24") });
+        log.sync(&[&a]);
+        at(&[&a, &b], &mut log, day(48.0 + 9.5));
+        log.sync(&[&b]);
+        assert!(social(&a).1 && social(&b).1);
+
+        // Paged: the change, then a page's worth of other entries, then the stricter schedule.
+        let (a, b, mut log) = stamped("paged", Lock::Condition { condition: "office".into() });
+        a.ok(Request::Start { id: "work".into() });
+        log.sync(&[&a, &b]);
+        at(&[&a, &b], &mut log, day(10.0));
+        a.ok(Request::SaveTarget { target: target("social", &["reddit.com"]) });
+        for k in 0..crate::sync_api::PAGE {
+            let days = if k % 2 == 0 { "mon 9-10" } else { "tue 9-10" };
+            a.ok(Request::SaveCondition { condition: crate::definitions::tests::weekly("other", days) });
+        }
+        a.ok(Request::SaveCondition { condition: crate::definitions::tests::weekly("office", "daily 0-24") });
+        log.sync(&[&a]);
+        at(&[&a, &b], &mut log, day(48.0 + 9.5));
+        let after = b.replica.confirmed().unwrap();
+        let page: Vec<(u64, String)> = log.entries.iter().filter(|(seq, _)| *seq > after).take(crate::sync_api::PAGE).cloned().collect();
+        b.replica.receive(&b.context, &page);
+        assert_eq!(social(&b), (vec!["reddit.com".to_string(), "youtube.com".to_string()], true));
+        log.sync(&[&b]);
+        assert!(social(&b).1);
     }
 
     /// A delay lock waited out elsewhere: stopped on B when it is back. A wait asked for before one
