@@ -24,9 +24,6 @@ impl AppSlot {
         Ok(())
     }
     pub fn supervise(&self, _block_active: bool, _resumed: bool) -> Missing {
-        Missing {
-            app: true,
-            worker: true,
-        }
+        Missing { app: true, worker: true }
     }
 }
