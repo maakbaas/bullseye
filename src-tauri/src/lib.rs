@@ -424,7 +424,7 @@ pub fn run() {
     if std::env::args_os().any(|arg| arg == "--uninstall") {
         std::process::exit(setup::uninstall());
     }
-    // The closing, started by the service with the user's full rights (`watchdog.rs`).
+    // The closing, started by the service as SYSTEM, on the user's desktop (`watchdog.rs`).
     if std::env::args_os().any(|arg| arg == watchdog::WORKER_ARG) {
         run_worker();
     }

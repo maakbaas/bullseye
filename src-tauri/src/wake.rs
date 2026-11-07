@@ -10,7 +10,7 @@
 //!   processes; the hook's thread only checks the window's class and sets an event.
 //! - **From the service**, a program starting (`spawn_process_watch`) that a running session would
 //!   close: one in its program list, or Obsidian while its action is on. WMI's process start
-//!   trace needs administrator rights, which the worker may not have, so the service listens and
+//!   trace needs administrator rights, so the service listens (it always runs) and
 //!   sets a named event (`SERVICE_EVENT`) that the worker waits on. Only SYSTEM can create or set it
 //!   (`SDDL`; creating anything in `Global\` also needs a privilege users do not have), so no one
 //!   else can set it off or take its name first; interactive users may only wait on it.

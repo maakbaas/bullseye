@@ -210,6 +210,17 @@ fn lock_down_data_dir() {
             Err(e) => note("service", &format!("cannot run icacls: {e}")),
         }
     }
+    // The worker's log (`watchdog::log_place`), which users may read but not write to.
+    let logs = dir.join(watchdog::LOGS);
+    if let Err(e) = fs::create_dir_all(&logs) {
+        return note("service", &format!("cannot create {}: {e}", logs.display()));
+    }
+    let readable = ["/grant:r", "*S-1-5-32-545:(OI)(CI)RX"];
+    match Command::new("icacls.exe").arg(&logs).args(readable).creation_flags(CREATE_NO_WINDOW).output() {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => note("service", &format!("icacls {readable:?}: {}", String::from_utf8_lossy(&output.stdout).trim())),
+        Err(e) => note("service", &format!("cannot run icacls: {e}")),
+    }
 }
 
 #[cfg(test)]

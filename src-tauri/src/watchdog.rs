@@ -3,11 +3,13 @@
 //! The service (`service.rs`) runs as SYSTEM in session 0, which has no desktop, so it cannot
 //! close browser tabs itself. Two processes in the logged-on user's session do the rest:
 //! - **the app** (`bullseye-app.exe`): the tray and the window, as that user;
-//! - **the worker** (`bullseye-app.exe --worker`): the closing (`tab_closer/`), as that user with
-//!   their administrator rights where they have them (`launch_worker`). Windows lets no process
-//!   close, minimize or end what runs with more rights than its own, so a worker with the user's
-//!   plain rights could not touch a program run as administrator; one with their full rights can
-//!   touch everything they run. The window stays at plain rights: it has no need of more.
+//! - **the worker** (`bullseye-app.exe --worker`): the closing (`tab_closer/`), as SYSTEM, on that
+//!   user's desktop (`launch_worker`). Windows lets no process close, minimize or end what runs
+//!   with more rights than its own: a worker with the user's rights could not touch a program run
+//!   as administrator, whether with their own administrator rights or another account's (a
+//!   standard user's UAC asks for another account's password), nor one started as SYSTEM. As
+//!   SYSTEM it reaches them all. It has no window, so there is nothing on the desktop to send
+//!   it messages through. The window stays at the user's plain rights: it has no need of more.
 //!
 //! The service keeps both there: it starts them at every logon and, while a session runs, starts
 //! one again within about a second of it ending. With no session they are left alone.
@@ -26,8 +28,8 @@
 //! in, so the service starts the real ones anyway. And the worker has to keep asking for its
 //! policy: that request comes from the same thread that closes the tabs (`tab_closer/`), so a
 //! worker that was suspended, or whose closing thread hangs or is suspended, stops asking, and the
-//! service ends it and starts a new one (`AppSlot::supervise`). The worker runs as the user, so
-//! they could end it from an elevated Task Manager: it is started again at once, as the app is.
+//! service ends it and starts a new one (`AppSlot::supervise`). An administrator could end it from an
+//! elevated Task Manager: it is started again at once, as the app is.
 //!
 //! Nothing here is hidden or protected beyond that, on purpose: the service is named
 //! `bullseye` in the services list, the app and the worker run under their own name in Task
@@ -47,15 +49,15 @@ use std::time::{Duration, Instant};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, WAIT_TIMEOUT};
 use windows_sys::Win32::Security::{
-    GetTokenInformation, TokenElevationType, TokenElevationTypeLimited, TokenLinkedToken, SECURITY_ATTRIBUTES, TOKEN_ELEVATION_TYPE,
-    TOKEN_LINKED_TOKEN,
+    DuplicateTokenEx, SecurityImpersonation, SetTokenInformation, TokenPrimary, TokenSessionId, SECURITY_ATTRIBUTES, TOKEN_ALL_ACCESS,
+    TOKEN_DUPLICATE,
 };
 use windows_sys::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
 use windows_sys::Win32::System::RemoteDesktop::{ProcessIdToSessionId, WTSGetActiveConsoleSessionId, WTSQueryUserToken};
 use windows_sys::Win32::System::Threading::{
-    CreateProcessAsUserW, OpenProcess, QueryFullProcessImageNameW, ResumeThread, TerminateProcess, WaitForSingleObject, CREATE_SUSPENDED,
-    CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
-    STARTUPINFOW,
+    CreateProcessAsUserW, GetCurrentProcess, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW, ResumeThread, TerminateProcess,
+    WaitForSingleObject, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, STARTUPINFOW,
 };
 
 use crate::session::Sessions;
@@ -431,58 +433,50 @@ fn launch_app() -> Result<Started, String> {
     launch("", Rights::Plain)
 }
 
-/// Starts the worker there, as that user with all the rights they have: an administrator's full
-/// token (the one "Run as administrator" gives), so it can close what they run as administrator;
-/// a standard user's own, which is all they have. It never has more than the user could give it.
+/// Starts the worker there, as SYSTEM (see the top of this file for why).
 fn launch_worker() -> Result<Started, String> {
-    launch(WORKER_ARG, Rights::Full)
+    launch(WORKER_ARG, Rights::System)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Rights {
     /// The token Windows gives the user's programs.
     Plain,
-    /// Its elevated twin where it has one.
-    Full,
+    /// The service's own, moved into the user's session.
+    System,
 }
 
-/// Whether the logged-on user's token is to be swapped for its linked one: only for `Rights::Full`
-/// and only when it is the limited half of an administrator's pair. A standard user's token, or
-/// one with UAC off, has no elevated twin and is already all the user has.
-fn takes_linked(rights: Rights, elevation: TOKEN_ELEVATION_TYPE) -> bool {
-    rights == Rights::Full && elevation == TokenElevationTypeLimited
-}
-
-/// The elevated token linked to `token`, if it has one that is to be used (`takes_linked`).
-/// The service has the privilege (SeTcb) that makes it a token a process can be started with.
+/// A copy of the service's own token (SYSTEM) in `session`, to start a process with there. Moving a
+/// token to another session takes the privilege (SeTcb) only SYSTEM has.
 ///
 /// # Safety
-/// `token` must be an open token handle.
-unsafe fn full_token(token: HANDLE, rights: Rights) -> Option<HANDLE> {
-    let mut elevation: TOKEN_ELEVATION_TYPE = 0;
-    let mut length = 0u32;
-    let size = std::mem::size_of::<TOKEN_ELEVATION_TYPE>() as u32;
-    // SAFETY: `elevation` is as big as `size` says.
-    let asked = unsafe { GetTokenInformation(token, TokenElevationType, (&raw mut elevation).cast(), size, &mut length) };
-    if asked == 0 || !takes_linked(rights, elevation) {
-        return None;
+/// Plain calls; the token returned is the caller's to close.
+unsafe fn system_token(session: u32) -> Result<HANDLE, String> {
+    // SAFETY: every pointer is a valid place to write to; the handles are closed on every way out.
+    unsafe {
+        let mut own: HANDLE = null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE, &mut own) == 0 {
+            return Err(format!("cannot open the service's token (error {})", GetLastError()));
+        }
+        let mut token: HANDLE = null_mut();
+        let copied = DuplicateTokenEx(own, TOKEN_ALL_ACCESS, null(), SecurityImpersonation, TokenPrimary, &mut token);
+        let error = GetLastError();
+        CloseHandle(own);
+        if copied == 0 {
+            return Err(format!("cannot copy the service's token (error {error})"));
+        }
+        let size = std::mem::size_of::<u32>() as u32;
+        if SetTokenInformation(token, TokenSessionId, (&raw const session).cast(), size) == 0 {
+            let error = GetLastError();
+            CloseHandle(token);
+            return Err(format!("cannot move the service's token to session {session} (error {error})"));
+        }
+        Ok(token)
     }
-    let mut linked = TOKEN_LINKED_TOKEN { LinkedToken: null_mut() };
-    let size = std::mem::size_of::<TOKEN_LINKED_TOKEN>() as u32;
-    // SAFETY: as above.
-    let asked = unsafe { GetTokenInformation(token, TokenLinkedToken, (&raw mut linked).cast(), size, &mut length) };
-    if asked == 0 || linked.LinkedToken.is_null() {
-        note(
-            "service",
-            &format!("cannot have the administrator's full rights (error {}); the worker gets their plain ones", unsafe { GetLastError() }),
-        );
-        return None;
-    }
-    Some(linked.LinkedToken)
 }
 
-/// Starts this exe with `arguments` on the desktop of whoever is at the screen, as that user, with
-/// `rights`. Its first thread waits until the `Started` is let go of.
+/// Starts this exe with `arguments` on the desktop of whoever is at the screen, as that user or as
+/// SYSTEM (`rights`). Its first thread waits until the `Started` is let go of.
 fn launch(arguments: &str, rights: Rights) -> Result<Started, String> {
     let exe = exe().ok_or("no executable to start")?;
     let mut command = wide(format!("\"{}\" {arguments}", exe.display()).trim_end());
@@ -498,9 +492,10 @@ fn launch(arguments: &str, rights: Rights) -> Result<Started, String> {
         if WTSQueryUserToken(session, &mut token) == 0 {
             return Err(format!("no user is logged on yet (error {})", GetLastError()));
         }
-        if let Some(full) = full_token(token, rights) {
+        // Someone has to be logged on either way; the worker then takes SYSTEM's token instead.
+        if rights == Rights::System {
             CloseHandle(token);
-            token = full;
+            token = system_token(session)?;
         }
         let mut environment = null_mut();
         let have_environment = CreateEnvironmentBlock(&mut environment, token, 0) != 0;
@@ -575,8 +570,9 @@ fn exe() -> Option<PathBuf> {
 }
 
 /// Writes a line to a log file as well as to stderr: `service.log` next to the saved session for
-/// the service, `app.log` in `%LOCALAPPDATA%\bullseye` for the app and the worker (whose lines say
-/// `worker` where the app's say `app`: the closing is the same code in either).
+/// the service, `logs\worker.log` there for the worker (`log_place`), `app.log` in
+/// `%LOCALAPPDATA%\bullseye` for the app. The closing is the same code in the worker and, in
+/// development, the app: its lines say `worker` in the worker.
 ///
 /// Neither runs with a window, so stderr goes nowhere in a release build; the file is how the
 /// user can see what they actually did.
@@ -587,8 +583,11 @@ pub fn note(who: &str, message: &str) {
     if cfg!(test) {
         return;
     }
-    let (dir, file) = if IN_SERVICE.load(Ordering::Relaxed) { (state::dir(), "service.log") } else { (state::user_dir(), "app.log") };
-    let Some(dir) = dir else { return };
+    let Some((dir, file)) =
+        log_place(IN_SERVICE.load(Ordering::Relaxed), IN_WORKER.load(Ordering::Relaxed), state::dir(), state::user_dir())
+    else {
+        return;
+    };
     // The folder only exists once something has been written to it.
     let _ = fs::create_dir_all(&dir);
     let path = dir.join(file);
@@ -597,6 +596,22 @@ pub fn note(who: &str, message: &str) {
         let _ = writeln!(file, "{} {who}: {message}", timestamp());
     }
 }
+
+/// Where a process writes its log, from `%ProgramData%\bullseye` (`data`) and `%LOCALAPPDATA%\bullseye`
+/// (`own`): the service `service.log` beside its files; the worker, SYSTEM too, `worker.log` in
+/// their `logs` folder, which the service lets users read (`service::lock_down_data_dir`), and
+/// never anywhere the user can write to, where a link could send SYSTEM's writes elsewhere; the app
+/// `app.log` in its own folder.
+fn log_place(service: bool, worker: bool, data: Option<PathBuf>, own: Option<PathBuf>) -> Option<(PathBuf, &'static str)> {
+    match (service, worker) {
+        (true, _) => Some((data?, "service.log")),
+        (false, true) => Some((data?.join(LOGS), "worker.log")),
+        (false, false) => Some((own?, "app.log")),
+    }
+}
+
+/// The folder in `%ProgramData%\bullseye` that users may read: the worker's log.
+pub const LOGS: &str = "logs";
 
 /// A log that grows past this is moved to `<name>.old`, replacing the one before, and started again:
 /// the last half megabyte or so of history is kept, and the files never take over the disk.
@@ -782,14 +797,16 @@ mod tests {
     }
 
     #[test]
-    fn only_an_administrators_limited_token_is_swapped_and_only_for_the_worker() {
-        use windows_sys::Win32::Security::{TokenElevationTypeDefault, TokenElevationTypeFull};
-        assert!(takes_linked(Rights::Full, TokenElevationTypeLimited));
-        // Already elevated, or a standard user (or UAC off): nothing to swap.
-        assert!(!takes_linked(Rights::Full, TokenElevationTypeFull));
-        assert!(!takes_linked(Rights::Full, TokenElevationTypeDefault));
-        // The app keeps the plain token whatever it is.
-        assert!(!takes_linked(Rights::Plain, TokenElevationTypeLimited));
+    fn each_process_logs_where_it_should() {
+        let (data, own) = (PathBuf::from(r"C:\ProgramData\bullseye"), PathBuf::from(r"C:\Users\a\AppData\Local\bullseye"));
+        let place = |service, worker| log_place(service, worker, Some(data.clone()), Some(own.clone()));
+        assert_eq!(place(true, false), Some((data.clone(), "service.log")));
+        // The worker is SYSTEM: never in the user's own folder, where they could put a link.
+        assert_eq!(place(false, true), Some((data.join("logs"), "worker.log")));
+        assert_eq!(place(false, false), Some((own.clone(), "app.log")));
+        // Without the folder, no log.
+        assert_eq!(log_place(false, true, None, Some(own.clone())), None);
+        assert_eq!(log_place(false, false, Some(data.clone()), None), None);
     }
 
     #[test]
