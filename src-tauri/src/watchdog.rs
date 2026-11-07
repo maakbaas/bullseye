@@ -1,26 +1,37 @@
-//! The service's watch over the app.
+//! The service's watch over the app and the worker.
 //!
 //! The service (`service.rs`) runs as SYSTEM in session 0, which has no desktop, so it cannot
-//! close browser tabs itself. The app does that, in the logged-on user's session, and the service
-//! keeps it there: it starts the app at every logon and, while a session runs, starts it again
-//! within about a second of it ending. With no session the app is left alone, so quitting it with
-//! the unlock password sticks.
+//! close browser tabs itself. Two processes in the logged-on user's session do the rest:
+//! - **the app** (`bullseye-app.exe`): the tray and the window, as that user;
+//! - **the worker** (`bullseye-app.exe --worker`): the closing (`tab_closer/`), as that user with
+//!   their administrator rights where they have them (`launch_worker`). Windows lets no process
+//!   close, minimize or end what runs with more rights than its own, so a worker with the user's
+//!   plain rights could not touch a program run as administrator; one with their full rights can
+//!   touch everything they run. The window stays at plain rights: it has no need of more.
 //!
-//! **Which process is "the app" is the service's decision, not a matter of its name.** The service
-//! keeps a handle to one process, the app (`AppSlot`):
-//! - one it started itself (`launch_app`), or
-//! - one that asked to be taken in (`Request::Register`, or its first policy request), and only
-//!   if it runs the installed exe, in the console session, with no other app taken in. The
-//!   service learns who is asking from the pipe itself, and as SYSTEM it can look at any process.
+//! The service keeps both there: it starts them at every logon and, while a session runs, starts
+//! one again within about a second of it ending. With no session they are left alone.
 //!
-//! A copy of the exe under another name, or a look-alike, is therefore not the app: it is never
-//! taken in, so the service starts the real one anyway. And the app has to keep asking for its
-//! policy: that request comes from the same thread that closes the tabs (`tab_closer.rs`), so an
-//! app that was suspended, or whose closing thread hangs or is suspended, stops asking, and the
-//! service ends it and starts a new one (`AppSlot::supervise`).
+//! **Which process is the app, and which the worker, is the service's decision, not a matter of
+//! their names.** The service keeps a handle to each (`AppSlot`):
+//! - the app: one it started itself (`launch_app`), or one that asked to be taken in
+//!   (`Request::Register`), and only if it runs the installed exe, in the console session, with no
+//!   other app taken in. The service learns who is asking from the pipe itself, and as SYSTEM it
+//!   can look at any process.
+//! - the worker: only one it started itself. Any other `--worker` is refused
+//!   (`Request::RegisterWorker`) and ends itself, so a worker started by hand with fewer rights
+//!   cannot stand in for the real one.
+//!
+//! A copy of the exe under another name, or a look-alike, is therefore neither: it is never taken
+//! in, so the service starts the real ones anyway. And the worker has to keep asking for its
+//! policy: that request comes from the same thread that closes the tabs (`tab_closer/`), so a
+//! worker that was suspended, or whose closing thread hangs or is suspended, stops asking, and the
+//! service ends it and starts a new one (`AppSlot::supervise`). The worker runs as the user, so
+//! they could end it from an elevated Task Manager: it is started again at once, as the app is.
 //!
 //! Nothing here is hidden or protected beyond that, on purpose: the service is named
-//! `bullseye` in the services list, the app runs under its own name in Task Manager, and
+//! `bullseye` in the services list, the app and the worker run under their own name in Task
+//! Manager (the worker with `--worker` on its command line), and
 //! uninstalling the app (Settings > Apps) removes the service. The mechanism is here to add
 //! friction at a weak moment, not to be unknowable.
 
@@ -35,27 +46,34 @@ use std::time::{Duration, Instant};
 
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, WAIT_TIMEOUT};
-use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+use windows_sys::Win32::Security::{
+    GetTokenInformation, TokenElevationType, TokenElevationTypeLimited, TokenLinkedToken, SECURITY_ATTRIBUTES, TOKEN_ELEVATION_TYPE,
+    TOKEN_LINKED_TOKEN,
+};
 use windows_sys::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
 use windows_sys::Win32::System::RemoteDesktop::{ProcessIdToSessionId, WTSGetActiveConsoleSessionId, WTSQueryUserToken};
 use windows_sys::Win32::System::Threading::{
-    CreateProcessAsUserW, OpenProcess, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject, CREATE_UNICODE_ENVIRONMENT,
-    PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, STARTUPINFOW,
+    CreateProcessAsUserW, OpenProcess, QueryFullProcessImageNameW, ResumeThread, TerminateProcess, WaitForSingleObject, CREATE_SUSPENDED,
+    CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    STARTUPINFOW,
 };
 
 use crate::session::Sessions;
 use crate::state;
 use crate::sync::{spawn_critical, LockExt};
 
+/// What the worker is started with, and how it knows to be the worker (`lib.rs`).
+pub const WORKER_ARG: &str = "--worker";
+
 /// Cap, in seconds, on how long the app is left alone after failing to start, so a broken build
 /// cannot turn into a process being started over and over.
 const MAX_BACKOFF: u32 = 10;
 
-/// An app that has asked for its policy before must ask again within this time, while a session
+/// A worker that has asked for its policy before must ask again within this time, while a session
 /// runs, or it is ended and started again.
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// A freshly started app has this long to ask for the first time (Tauri and WebView2 start up).
+/// A freshly started worker has this long to ask for the first time.
 const STARTUP_GRACE: Duration = Duration::from_secs(20);
 
 /// A pause of the service's own loop this long or longer is taken to be the machine having slept,
@@ -64,13 +82,29 @@ const RESUME_GAP: Duration = Duration::from_secs(3);
 
 /// Set at logon (and when the service starts): the app is wanted even without a session.
 /// Cleared once an app is there: without a session, one that has ended is not started again.
-pub static LAUNCH_APP: AtomicBool = AtomicBool::new(true);
+static LAUNCH_APP: AtomicBool = AtomicBool::new(true);
+
+/// The same for the worker.
+static LAUNCH_WORKER: AtomicBool = AtomicBool::new(true);
+
+/// Someone logged on, or came back to their session: the app and the worker are wanted there.
+pub fn logged_on() {
+    LAUNCH_APP.store(true, Ordering::SeqCst);
+    LAUNCH_WORKER.store(true, Ordering::SeqCst);
+}
 
 /// Whether this process is the service, which only decides where `note` writes.
 static IN_SERVICE: AtomicBool = AtomicBool::new(false);
 
+/// Whether this process is the worker, which only decides what `note` calls it.
+static IN_WORKER: AtomicBool = AtomicBool::new(false);
+
 pub fn in_service() {
     IN_SERVICE.store(true, Ordering::Relaxed);
+}
+
+pub fn in_worker() {
+    IN_WORKER.store(true, Ordering::Relaxed);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -118,12 +152,13 @@ impl Drop for Process {
     }
 }
 
-/// The one app the service looks after.
+/// The app and the worker the service looks after.
 pub struct AppSlot {
     /// False where there is nothing to look after: development (the service's logic runs inside the
     /// app, `service::local_handler`) and the pipe test.
     supervised: bool,
     current: Mutex<Option<Adopted>>,
+    worker: Mutex<Option<Adopted>>,
 }
 
 struct Adopted {
@@ -134,14 +169,26 @@ struct Adopted {
     heard: Option<Instant>,
 }
 
+/// Which of the two is not there now (`AppSlot::supervise`), so the supervisor starts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Missing {
+    pub app: bool,
+    pub worker: bool,
+}
+
 impl AppSlot {
     pub fn new(supervised: bool) -> AppSlot {
-        AppSlot { supervised, current: Mutex::new(None) }
+        AppSlot { supervised, current: Mutex::new(None), worker: Mutex::new(None) }
     }
 
-    /// The service started this process itself.
+    /// The service started this process itself, as the app.
     fn launched(&self, process: Process) {
         *self.current.locked() = Some(Adopted { process, since: Instant::now(), heard: None });
+    }
+
+    /// The service started this process itself, as the worker.
+    fn launched_worker(&self, process: Process) {
+        *self.worker.locked() = Some(Adopted { process, since: Instant::now(), heard: None });
     }
 
     /// The app asks to be taken in when it starts. Refused if another app is running, or if it is
@@ -153,55 +200,87 @@ impl AppSlot {
         adopt(&mut self.current.locked(), pid)
     }
 
-    /// The app asked for its policy, which it does every second from the thread that closes tabs.
-    /// This is what shows the closing is going on. From anyone but the app, it counts for nothing.
-    pub fn heard(&self, pid: u32) {
-        if self.supervised {
-            // A refusal here is not an error: it only means this caller is not the app.
-            let _ = adopt(&mut self.current.locked(), pid);
+    /// The worker asks whether it is the one the service started, when it starts. Any other one is
+    /// refused and ends itself: only the service starts the worker, with the rights it chose.
+    pub fn register_worker(&self, pid: u32) -> Result<(), String> {
+        if !self.supervised {
+            return Ok(());
+        }
+        match self.worker.locked().as_ref() {
+            Some(worker) if worker.process.pid == pid => Ok(()),
+            _ => Err("not the worker the service started".into()),
         }
     }
 
-    /// Looks after the app once a second: forgets one that has ended and, while a session runs, ends
-    /// one that has stopped asking. `resumed` is set when the machine seems to have slept, which
-    /// is no fault of the app's. Returns whether there is no app now.
-    pub fn supervise(&self, session_active: bool, resumed: bool) -> bool {
-        let mut current = self.current.locked();
-        if let Some(app) = current.as_mut() {
-            let now = Instant::now();
-            if app.process.exited() {
-                note("service", "the app has ended");
-                *current = None;
-            } else if resumed {
-                app.since = now;
-                app.heard = app.heard.map(|_| now);
-            } else if session_active && is_stale(app.since, app.heard, now) {
-                note("service", "the app stopped asking for its policy; ending it");
-                app.process.terminate();
-                *current = None;
+    /// The worker asked for its policy, which it does every second from the thread that closes tabs.
+    /// This is what shows the closing is going on. Refused to anyone but the worker, which then ends
+    /// itself: a worker from before the service restarted, say, would otherwise close beside the new one.
+    pub fn heard(&self, pid: u32) -> Result<(), String> {
+        if !self.supervised {
+            return Ok(());
+        }
+        match self.worker.locked().as_mut() {
+            Some(worker) if worker.process.pid == pid => {
+                worker.heard = Some(Instant::now());
+                Ok(())
             }
+            _ => Err("not the worker the service started".into()),
         }
-        current.is_none()
     }
 
-    /// A slot holding `process` as if taken in at `since` and last heard at `heard`.
+    /// Looks after the app and the worker once a second: forgets one that has ended and, while a
+    /// session runs, ends a worker that has stopped asking. `resumed` is set when the machine seems
+    /// to have slept, which is no fault of the worker's. Returns which of them is not there now.
+    pub fn supervise(&self, session_active: bool, resumed: bool) -> Missing {
+        let app = look_after(&mut self.current.locked(), "the app", None);
+        let heartbeat = Heartbeat { session_active, resumed };
+        let worker = look_after(&mut self.worker.locked(), "the worker", Some(heartbeat));
+        Missing { app, worker }
+    }
+
+    /// A slot holding `process` as its worker as if started at `since` and last heard at `heard`.
     #[cfg(test)]
     fn set_for_test(&self, process: Process, since: Instant, heard: Option<Instant>) {
-        *self.current.locked() = Some(Adopted { process, since, heard });
+        *self.worker.locked() = Some(Adopted { process, since, heard });
     }
 }
 
-/// Takes the process `pid` in as the app, or says why not. Already being the app is fine and
-/// counts as having been heard.
+/// What judges whether the worker has stayed quiet for too long.
+#[derive(Clone, Copy)]
+struct Heartbeat {
+    session_active: bool,
+    resumed: bool,
+}
+
+/// Forgets the process held if it has ended, and ends it if it was to keep asking (`heartbeat`)
+/// and stopped. Returns whether nothing is held now.
+fn look_after(current: &mut Option<Adopted>, name: &str, heartbeat: Option<Heartbeat>) -> bool {
+    if let Some(held) = current.as_mut() {
+        let now = Instant::now();
+        if held.process.exited() {
+            note("service", &format!("{name} has ended"));
+            *current = None;
+        } else if let Some(Heartbeat { session_active, resumed }) = heartbeat {
+            if resumed {
+                held.since = now;
+                held.heard = held.heard.map(|_| now);
+            } else if session_active && is_stale(held.since, held.heard, now) {
+                note("service", &format!("{name} stopped asking for its policy; ending it"));
+                held.process.terminate();
+                *current = None;
+            }
+        }
+    }
+    current.is_none()
+}
+
+/// Takes the process `pid` in as the app, or says why not. Already being the app is fine.
 fn adopt(current: &mut Option<Adopted>, pid: u32) -> Result<(), String> {
     if current.as_ref().is_some_and(|app| app.process.exited()) {
         *current = None;
     }
     match current {
-        Some(app) if app.process.pid == pid => {
-            app.heard = Some(Instant::now());
-            return Ok(());
-        }
+        Some(app) if app.process.pid == pid => return Ok(()),
         Some(_) => return Err("Bullseye is already running".into()),
         None => {}
     }
@@ -222,7 +301,7 @@ fn adopt(current: &mut Option<Adopted>, pid: u32) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether an app taken in at `since` and last heard at `heard` has stayed quiet for too long.
+/// Whether a worker started at `since` and last heard at `heard` has stayed quiet for too long.
 fn is_stale(since: Instant, heard: Option<Instant>, now: Instant) -> bool {
     let (from, limit) = match heard {
         Some(heard) => (heard, HEARTBEAT_TIMEOUT),
@@ -243,13 +322,64 @@ fn session_of(pid: u32) -> u32 {
     session
 }
 
-/// The service's half: starts the app when it is wanted and not there, and looks after it.
+/// One of the two the supervisor keeps there: how it is started, and how its starting went.
+struct Kept {
+    name: &'static str,
+    /// Whether it is wanted even without a session (`LAUNCH_APP`, `LAUNCH_WORKER`).
+    wanted: &'static AtomicBool,
+    /// How many starts in a row have not led to a running process, which slows the starting down.
+    missed: u32,
+    not_before: Instant,
+    last_error: String,
+}
+
+impl Kept {
+    fn new(name: &'static str, wanted: &'static AtomicBool) -> Kept {
+        Kept { name, wanted, missed: 0, not_before: Instant::now(), last_error: String::new() }
+    }
+
+    /// One round: starts it with `launch` if it is wanted and not there. The process started, if any.
+    fn round<T>(&mut self, session_active: bool, missing: bool, launch: impl FnOnce() -> Result<T, String>) -> Option<T> {
+        if !session_active && !self.wanted.load(Ordering::SeqCst) {
+            self.missed = 0;
+            return None;
+        }
+        if !missing {
+            self.wanted.store(false, Ordering::SeqCst);
+            self.missed = 0;
+            return None;
+        }
+        if Instant::now() < self.not_before {
+            return None;
+        }
+        let started = match launch() {
+            Ok(process) => {
+                self.wanted.store(false, Ordering::SeqCst);
+                self.last_error.clear();
+                note("service", &format!("started {}", self.name));
+                Some(process)
+            }
+            // Nobody is logged on yet, say: expected, and not worth a line every second.
+            Err(e) => {
+                if e != self.last_error {
+                    note("service", &format!("cannot start {}: {e}", self.name));
+                    self.last_error = e;
+                }
+                None
+            }
+        };
+        self.missed += 1;
+        self.not_before = Instant::now() + Duration::from_secs(u64::from(self.missed.min(MAX_BACKOFF)));
+        started
+    }
+}
+
+/// The service's half: starts the app and the worker when they are wanted and not there, and
+/// looks after them.
 pub fn spawn_supervisor(sessions: Sessions, slot: Arc<AppSlot>) {
     spawn_critical("supervisor", move || {
-        // How many starts in a row have not led to a running app, which slows the starting down.
-        let mut missed = 0u32;
-        let mut not_before = Instant::now();
-        let mut last_error = String::new();
+        let mut app = Kept::new("the app", &LAUNCH_APP);
+        let mut worker = Kept::new("the worker", &LAUNCH_WORKER);
         let mut last_round = Instant::now();
         loop {
             thread::sleep(Duration::from_secs(1));
@@ -257,47 +387,107 @@ pub fn spawn_supervisor(sessions: Sessions, slot: Arc<AppSlot>) {
             last_round = Instant::now();
 
             let session_active = sessions.is_running();
-            let no_app = slot.supervise(session_active, resumed);
-            if !session_active && !LAUNCH_APP.load(Ordering::SeqCst) {
-                missed = 0;
-                continue;
+            let missing = slot.supervise(session_active, resumed);
+            // Each is held before it runs, so its first request finds it known.
+            if let Some(Started { process, thread }) = app.round(session_active, missing.app, launch_app) {
+                slot.launched(process);
+                thread.resume();
             }
-            if !no_app {
-                LAUNCH_APP.store(false, Ordering::SeqCst);
-                missed = 0;
-                continue;
+            if let Some(Started { process, thread }) = worker.round(session_active, missing.worker, launch_worker) {
+                slot.launched_worker(process);
+                thread.resume();
             }
-            if Instant::now() < not_before {
-                continue;
-            }
-            match launch_app() {
-                Ok(process) => {
-                    slot.launched(process);
-                    LAUNCH_APP.store(false, Ordering::SeqCst);
-                    last_error.clear();
-                    note("service", "started the app");
-                }
-                // Nobody is logged on yet, say: expected, and not worth a line every second.
-                Err(e) if e != last_error => {
-                    note("service", &format!("cannot start the app: {e}"));
-                    last_error = e;
-                }
-                Err(_) => {}
-            }
-            missed += 1;
-            not_before = Instant::now() + Duration::from_secs(u64::from(missed.min(MAX_BACKOFF)));
         }
     });
 }
 
-/// Starts the app on the desktop of whoever is at the screen, as that user and not as SYSTEM:
-/// closing their browser tabs goes through UI Automation, which needs their desktop, and the
-/// app has no business being SYSTEM.
-fn launch_app() -> Result<Process, String> {
+/// A process just started, its first thread not yet running (`launch`).
+struct Started {
+    process: Process,
+    thread: Suspended,
+}
+
+/// The first thread of a process started suspended. Dropping it lets it run too, so a process is
+/// never left hanging.
+struct Suspended(usize);
+
+impl Suspended {
+    fn resume(self) {}
+}
+
+impl Drop for Suspended {
+    fn drop(&mut self) {
+        // SAFETY: the handle is ours, from `CreateProcessAsUserW`, and is not used again.
+        unsafe {
+            ResumeThread(self.0 as HANDLE);
+            CloseHandle(self.0 as HANDLE);
+        }
+    }
+}
+
+/// Starts the app on the desktop of whoever is at the screen, as that user and not as SYSTEM: its
+/// window has no business being SYSTEM, nor having their administrator rights.
+fn launch_app() -> Result<Started, String> {
+    launch("", Rights::Plain)
+}
+
+/// Starts the worker there, as that user with all the rights they have: an administrator's full
+/// token (the one "Run as administrator" gives), so it can close what they run as administrator;
+/// a standard user's own, which is all they have. It never has more than the user could give it.
+fn launch_worker() -> Result<Started, String> {
+    launch(WORKER_ARG, Rights::Full)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Rights {
+    /// The token Windows gives the user's programs.
+    Plain,
+    /// Its elevated twin where it has one.
+    Full,
+}
+
+/// Whether the logged-on user's token is to be swapped for its linked one: only for `Rights::Full`
+/// and only when it is the limited half of an administrator's pair. A standard user's token, or
+/// one with UAC off, has no elevated twin and is already all the user has.
+fn takes_linked(rights: Rights, elevation: TOKEN_ELEVATION_TYPE) -> bool {
+    rights == Rights::Full && elevation == TokenElevationTypeLimited
+}
+
+/// The elevated token linked to `token`, if it has one that is to be used (`takes_linked`).
+/// The service has the privilege (SeTcb) that makes it a token a process can be started with.
+///
+/// # Safety
+/// `token` must be an open token handle.
+unsafe fn full_token(token: HANDLE, rights: Rights) -> Option<HANDLE> {
+    let mut elevation: TOKEN_ELEVATION_TYPE = 0;
+    let mut length = 0u32;
+    let size = std::mem::size_of::<TOKEN_ELEVATION_TYPE>() as u32;
+    // SAFETY: `elevation` is as big as `size` says.
+    let asked = unsafe { GetTokenInformation(token, TokenElevationType, (&raw mut elevation).cast(), size, &mut length) };
+    if asked == 0 || !takes_linked(rights, elevation) {
+        return None;
+    }
+    let mut linked = TOKEN_LINKED_TOKEN { LinkedToken: null_mut() };
+    let size = std::mem::size_of::<TOKEN_LINKED_TOKEN>() as u32;
+    // SAFETY: as above.
+    let asked = unsafe { GetTokenInformation(token, TokenLinkedToken, (&raw mut linked).cast(), size, &mut length) };
+    if asked == 0 || linked.LinkedToken.is_null() {
+        note(
+            "service",
+            &format!("cannot have the administrator's full rights (error {}); the worker gets their plain ones", unsafe { GetLastError() }),
+        );
+        return None;
+    }
+    Some(linked.LinkedToken)
+}
+
+/// Starts this exe with `arguments` on the desktop of whoever is at the screen, as that user, with
+/// `rights`. Its first thread waits until the `Started` is let go of.
+fn launch(arguments: &str, rights: Rights) -> Result<Started, String> {
     let exe = exe().ok_or("no executable to start")?;
-    let mut command = wide(&format!("\"{}\"", exe.display()));
+    let mut command = wide(format!("\"{}\" {arguments}", exe.display()).trim_end());
     let mut desktop = wide(r"winsta0\default");
-    // SAFETY: every pointer passed is valid for the call; the token, the environment block and
+    // SAFETY: every pointer passed is valid for the call; the tokens, the environment block and
     // the thread handle are released again whatever happens, and the process handle is handed on.
     unsafe {
         let session = WTSGetActiveConsoleSessionId();
@@ -307,6 +497,10 @@ fn launch_app() -> Result<Process, String> {
         let mut token: HANDLE = null_mut();
         if WTSQueryUserToken(session, &mut token) == 0 {
             return Err(format!("no user is logged on yet (error {})", GetLastError()));
+        }
+        if let Some(full) = full_token(token, rights) {
+            CloseHandle(token);
+            token = full;
         }
         let mut environment = null_mut();
         let have_environment = CreateEnvironmentBlock(&mut environment, token, 0) != 0;
@@ -323,7 +517,7 @@ fn launch_app() -> Result<Process, String> {
             none,
             none,
             0,
-            CREATE_UNICODE_ENVIRONMENT,
+            CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
             if have_environment { environment } else { null() },
             null(),
             &startup,
@@ -337,14 +531,16 @@ fn launch_app() -> Result<Process, String> {
         if started == 0 {
             return Err(format!("CreateProcessAsUserW failed (error {error})"));
         }
-        CloseHandle(process.hThread);
-        Ok(Process { handle: process.hProcess as usize, pid: process.dwProcessId })
+        Ok(Started {
+            process: Process { handle: process.hProcess as usize, pid: process.dwProcessId },
+            thread: Suspended(process.hThread as usize),
+        })
     }
 }
 
-/// Ends the app, when the service goes away for an uninstall. Every other process
-/// of this executable that was started without arguments; the service itself and the installer's
-/// calls are left alone.
+/// Ends the app and the worker, when the service goes away for an uninstall. Every other process
+/// of this executable that was started without arguments or as the worker; the service itself and
+/// the installer's calls are left alone.
 pub fn kill_apps() {
     let Some(exe) = exe() else { return };
     let name = file_name(&exe);
@@ -355,11 +551,21 @@ pub fn kill_apps() {
         ProcessRefreshKind::nothing().with_cmd(UpdateKind::OnlyIfNotSet).with_exe(UpdateKind::OnlyIfNotSet),
     );
     for (pid, process) in system.processes() {
-        let same = process.exe().is_some_and(|other| file_name(other) == name) && process.cmd().len() <= 1;
+        let same = process.exe().is_some_and(|other| file_name(other) == name) && is_app_or_worker(process.cmd());
         if same && pid.as_u32() != std::process::id() {
             let ended = process.kill();
-            note("service", &format!("{} the app ({pid})", if ended { "ended" } else { "could not end" }));
+            note("service", &format!("{} the app or worker ({pid})", if ended { "ended" } else { "could not end" }));
         }
+    }
+}
+
+/// Whether a process of this exe started with `command` (its exe first) is the app or the worker,
+/// not the service or an installer's call.
+fn is_app_or_worker(command: &[std::ffi::OsString]) -> bool {
+    match command {
+        [] | [_] => true,
+        [_, argument] => argument == WORKER_ARG,
+        _ => false,
     }
 }
 
@@ -369,11 +575,13 @@ fn exe() -> Option<PathBuf> {
 }
 
 /// Writes a line to a log file as well as to stderr: `service.log` next to the saved session for
-/// the service, `app.log` in `%LOCALAPPDATA%\bullseye` for the app.
+/// the service, `app.log` in `%LOCALAPPDATA%\bullseye` for the app and the worker (whose lines say
+/// `worker` where the app's say `app`: the closing is the same code in either).
 ///
 /// Neither runs with a window, so stderr goes nowhere in a release build; the file is how the
 /// user can see what they actually did.
 pub fn note(who: &str, message: &str) {
+    let who = if who == "app" && IN_WORKER.load(Ordering::Relaxed) { "worker" } else { who };
     eprintln!("{who}: {message}");
     // The tests must not write into the log of a real install on the machine they run on.
     if cfg!(test) {
@@ -527,7 +735,72 @@ mod tests {
     fn a_slot_that_is_not_supervised_takes_everyone() {
         let slot = AppSlot::new(false);
         assert_eq!(slot.register(0), Ok(()));
-        slot.heard(0);
+        assert_eq!(slot.register_worker(0), Ok(()));
+        assert_eq!(slot.heard(0), Ok(()));
+    }
+
+    #[test]
+    fn only_the_worker_the_service_started_is_the_worker() {
+        let (mut started, mut stranger) = (sleeper(), sleeper());
+        let slot = AppSlot::new(true);
+        let refused = Err("not the worker the service started".to_string());
+        // Before the service started one, no worker is taken.
+        assert_eq!(slot.register_worker(started.id()), refused);
+        assert_eq!(slot.supervise(true, false), Missing { app: true, worker: true });
+
+        slot.launched_worker(Process::open(started.id()).unwrap());
+        assert_eq!(slot.register_worker(started.id()), Ok(()));
+        assert_eq!(slot.register_worker(stranger.id()), refused);
+        // Started as a worker, not as the app: the app is still missing.
+        assert_eq!(slot.supervise(true, false), Missing { app: true, worker: false });
+        // The stranger asking for the policy is refused and keeps nobody alive; the worker asking does.
+        assert_eq!(slot.heard(stranger.id()), refused);
+        assert!(slot.worker.locked().as_ref().unwrap().heard.is_none());
+        assert_eq!(slot.heard(started.id()), Ok(()));
+        assert!(slot.worker.locked().as_ref().unwrap().heard.is_some());
+
+        // Once it has ended it is missing again.
+        let _ = started.kill();
+        let _ = started.wait();
+        assert!(slot.supervise(true, false).worker);
+        let _ = stranger.kill();
+        let _ = stranger.wait();
+    }
+
+    #[test]
+    fn the_app_is_kept_by_being_there_not_by_asking() {
+        let mut app = sleeper();
+        let slot = AppSlot::new(true);
+        let now = Instant::now();
+        // An app that never asked for anything, long ago, while a session runs: left alone.
+        *slot.current.locked() =
+            Some(Adopted { process: Process::open(app.id()).unwrap(), since: now - Duration::from_secs(600), heard: None });
+        assert!(!slot.supervise(true, false).app);
+        assert!(!Process::open(app.id()).unwrap().exited());
+        let _ = app.kill();
+        let _ = app.wait();
+    }
+
+    #[test]
+    fn only_an_administrators_limited_token_is_swapped_and_only_for_the_worker() {
+        use windows_sys::Win32::Security::{TokenElevationTypeDefault, TokenElevationTypeFull};
+        assert!(takes_linked(Rights::Full, TokenElevationTypeLimited));
+        // Already elevated, or a standard user (or UAC off): nothing to swap.
+        assert!(!takes_linked(Rights::Full, TokenElevationTypeFull));
+        assert!(!takes_linked(Rights::Full, TokenElevationTypeDefault));
+        // The app keeps the plain token whatever it is.
+        assert!(!takes_linked(Rights::Plain, TokenElevationTypeLimited));
+    }
+
+    #[test]
+    fn the_app_and_the_worker_are_ended_on_uninstall_but_not_the_service_or_the_installer() {
+        let command = |args: &[&str]| args.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
+        assert!(is_app_or_worker(&command(&[])));
+        assert!(is_app_or_worker(&command(&["bullseye-app.exe"])));
+        assert!(is_app_or_worker(&command(&["bullseye-app.exe", "--worker"])));
+        assert!(!is_app_or_worker(&command(&["bullseye-app.exe", "--service"])));
+        assert!(!is_app_or_worker(&command(&["bullseye-app.exe", "--uninstall"])));
+        assert!(!is_app_or_worker(&command(&["bullseye-app.exe", "--worker", "x"])));
     }
 
     #[test]
@@ -541,12 +814,11 @@ mod tests {
         // Not the installed exe, whatever it is called: refused, and nothing is taken in.
         let slot = AppSlot::new(true);
         assert_eq!(slot.register(child.id()), Err("not the installed Bullseye".into()));
-        slot.heard(child.id());
-        assert!(slot.supervise(true, false), "nothing should have been taken in");
+        assert!(slot.supervise(true, false).app, "nothing should have been taken in");
 
         // The installed exe (this test is it) is taken in, and then no other one is.
         assert_eq!(slot.register(me), Ok(()));
-        assert!(!slot.supervise(true, false));
+        assert!(!slot.supervise(true, false).app);
         assert_eq!(slot.register(me), Ok(()));
         assert_eq!(slot.register(child.id()), Err("Bullseye is already running".into()));
 
@@ -555,7 +827,7 @@ mod tests {
     }
 
     #[test]
-    fn an_app_that_stops_asking_is_ended_but_not_by_a_sleep_or_without_a_session() {
+    fn a_worker_that_stops_asking_is_ended_but_not_by_a_sleep_or_without_a_session() {
         let now = Instant::now();
         let ago = |seconds| now - Duration::from_secs(seconds);
         let quiet = |slot: &AppSlot, child: &Child| {
@@ -567,18 +839,18 @@ mod tests {
         // Quiet for 30 seconds while a session runs: ended, and the slot is empty for a new one.
         quiet(&slot, &stale);
         let held = Process::open(stale.id()).unwrap();
-        assert!(slot.supervise(true, false));
+        assert!(slot.supervise(true, false).worker);
         assert!(wait_until_exited(&held));
 
-        // The same after the machine slept: the app is given a fresh start instead.
+        // The same after the machine slept: the worker is given a fresh start instead.
         quiet(&slot, &slept);
-        assert!(!slot.supervise(true, true));
+        assert!(!slot.supervise(true, true).worker);
         assert!(!Process::open(slept.id()).unwrap().exited());
-        assert!(!slot.supervise(true, false), "the grace after a sleep should still be running");
+        assert!(!slot.supervise(true, false).worker, "the grace after a sleep should still be running");
 
         // And with no session there is nothing to enforce, so nothing to end it for.
         quiet(&slot, &idle);
-        assert!(!slot.supervise(false, false));
+        assert!(!slot.supervise(false, false).worker);
         assert!(!Process::open(idle.id()).unwrap().exited());
 
         for child in [&mut stale, &mut slept, &mut idle] {

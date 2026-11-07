@@ -50,7 +50,7 @@ pub enum Check {
 pub enum Request {
     /// What the UI shows: the targets, conditions and sessions, and which sessions run.
     Status,
-    /// What the app enforces: asked every second, from the thread that closes tabs, which is how
+    /// What the worker enforces: asked every second, from the thread that closes tabs, which is how
     /// the service knows the closing is going on (`watchdog::AppSlot`).
     Policy,
     /// The app, before it asks for the policy: what it has seen in use since, of what an allowance
@@ -59,6 +59,9 @@ pub enum Request {
     /// The app, when it starts: asks the service to take it in as the app. Refused if another app
     /// is running or this is not the installed exe, and then the app ends itself.
     Register,
+    /// The worker, when it starts: asks whether it is the one the service started. Refused
+    /// otherwise, and then it ends itself (`watchdog::AppSlot::register_worker`).
+    RegisterWorker,
     /// Adds a session, or replaces the one with its id. Refused while that session runs.
     SaveSession { session: Definition },
     /// Removes a session. Refused while it runs.

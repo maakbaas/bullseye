@@ -1,6 +1,6 @@
-//! The app's side of the service: asks the service what to show and what to enforce.
+//! The app's and the worker's side of the service: asks the service what to show and what to enforce.
 //!
-//! The app holds no session of its own. `tab_closer.rs` asks `Remote::active` every second, which
+//! Neither holds a session of its own. The worker's `tab_closer/` asks `Remote::active` every second, which
 //! has the same shape as `Sessions::active`: every running session's part.
 //! If the service cannot be reached (it is restarting, or being updated), the last answer keeps
 //! being enforced: a gap in the service must not open the session.
@@ -164,6 +164,12 @@ impl Remote {
             Ok(Response::Policy(policy)) => {
                 self.failing.store(false, Ordering::Relaxed);
                 self.apply(policy);
+            }
+            // Not the worker the service started (one from before it restarted, say): another does
+            // the closing, so this one ends.
+            Ok(Response::Refused(why)) => {
+                note("app", &format!("ending: {why}"));
+                std::process::exit(0);
             }
             Ok(other) => self.fail(&format!("unexpected answer: {other:?}")),
             Err(e) => {

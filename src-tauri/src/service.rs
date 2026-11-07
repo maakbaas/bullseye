@@ -23,7 +23,6 @@ use std::os::windows::process::CommandExt;
 #[cfg(debug_assertions)]
 use std::path::Path;
 use std::process::Command;
-use std::sync::atomic::Ordering;
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
@@ -70,10 +69,10 @@ fn service_main(_arguments: Vec<OsString>) {
 
 fn run_service() -> Result<(), String> {
     let status = service_control_handler::register(NAME, |control| match control {
-        // A user logging on, or coming back to their session: the app is wanted there.
+        // A user logging on, or coming back to their session: the app and the worker are wanted there.
         ServiceControl::SessionChange(change) => {
             if matches!(change.reason, SessionChangeReason::SessionLogon | SessionChangeReason::ConsoleConnect) {
-                watchdog::LAUNCH_APP.store(true, Ordering::SeqCst);
+                watchdog::logged_on();
             }
             ServiceControlHandlerResult::NoError
         }

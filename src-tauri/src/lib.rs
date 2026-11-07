@@ -365,7 +365,53 @@ fn remote_for_this_run() -> Remote {
     Remote::new()
 }
 
-/// Everything the tray app's exe does: the service, the installer's steps, or the app.
+/// The worker: the closing alone, with no window (`tab_closer/`, `wake.rs`). Only the one the service
+/// started may run; any other ends at once, so one started by hand, with fewer rights, cannot stand in
+/// for it. The service is there (it started this one), so a worker that cannot reach it ends too, and
+/// is started again.
+fn run_worker() -> ! {
+    watchdog::in_worker();
+    match client::call(&Request::RegisterWorker) {
+        Ok(Response::Done) => {}
+        Ok(Response::Refused(why)) => {
+            watchdog::note("app", &format!("not starting: {why}"));
+            std::process::exit(0);
+        }
+        Ok(other) => {
+            watchdog::note("app", &format!("not starting: unexpected answer {other:?}"));
+            std::process::exit(1);
+        }
+        Err(e) => {
+            watchdog::note("app", &format!("not starting: the service did not answer: {e}"));
+            std::process::exit(1);
+        }
+    }
+    watchdog::note("app", "started");
+    tab_closer::spawn(Remote::new());
+    wake::spawn_hook();
+    // The two threads do the work; a crash in either ends the process (`spawn_critical`).
+    loop {
+        std::thread::park();
+    }
+}
+
+/// Asks the service to take this app in until it answers: every few seconds, off the main thread.
+/// Refused (the service started an app of its own meanwhile), this one ends.
+fn register_later() {
+    sync::spawn_critical("register", || loop {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        match client::call(&Request::Register) {
+            Err(_) => continue,
+            Ok(Response::Refused(why)) => {
+                watchdog::note("app", &format!("ending: {why}"));
+                std::process::exit(0);
+            }
+            Ok(_) => return,
+        }
+    });
+}
+
+/// Everything the tray app's exe does: the service, the installer's steps, the worker, or the app.
 pub fn run() {
     // The service itself, started by Windows (`service.rs`).
     if std::env::args_os().any(|arg| arg == "--service") {
@@ -378,22 +424,30 @@ pub fn run() {
     if std::env::args_os().any(|arg| arg == "--uninstall") {
         std::process::exit(setup::uninstall());
     }
+    // The closing, started by the service with the user's full rights (`watchdog.rs`).
+    if std::env::args_os().any(|arg| arg == watchdog::WORKER_ARG) {
+        run_worker();
+    }
 
     let remote = remote_for_this_run();
 
-    // Ask the service to take this process in as the app. It refuses if another app is running
-    // (a second copy leaves the running one to do the work) or if this is not the installed exe.
-    // If the service cannot be reached, go on: it takes the app in on its first policy request.
-    // (A local service has nobody to register with.)
-    if !remote.is_local() {
-        if let Ok(Response::Refused(why)) = client::call(&Request::Register) {
-            watchdog::note("app", &format!("not starting: {why}"));
-            return;
+    if remote.is_local() {
+        // In development nobody starts a worker, so the app does the closing itself.
+        tab_closer::spawn(remote.clone());
+        wake::spawn_hook();
+    } else {
+        // Ask the service to take this process in as the app. It refuses if another app is running
+        // (a second copy leaves the running one to be) or if this is not the installed exe.
+        match client::call(&Request::Register) {
+            Ok(Response::Refused(why)) => {
+                watchdog::note("app", &format!("not starting: {why}"));
+                return;
+            }
+            Ok(_) => {}
+            // The service is away: asked again until it answers, so it does not start a second app.
+            Err(_) => register_later(),
         }
     }
-
-    tab_closer::spawn(remote.clone());
-    wake::spawn_hook();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

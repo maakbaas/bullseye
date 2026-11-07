@@ -293,6 +293,7 @@ fn shareable(request: &Request) -> Option<Request> {
         | Request::Policy
         | Request::Report { .. }
         | Request::Register
+        | Request::RegisterWorker
         | Request::Check { .. }
         | Request::Export
         | Request::PrepareUninstall
@@ -656,10 +657,18 @@ fn answer(context: &Context, caller: u32, request: Request) -> (Response, Option
             Ok(()) => (Response::Done, None),
             Err(why) => (Response::Refused(why), None),
         },
+        // The worker asks whether it is the one the service started; any other ends itself.
+        Request::RegisterWorker => match context.slot.register_worker(caller) {
+            Ok(()) => (Response::Done, None),
+            Err(why) => (Response::Refused(why), None),
+        },
         Request::Policy => {
             // This request comes from the thread that closes tabs: hearing it is how the service
-            // knows that is going on. It counts only from the process taken in as the app.
-            context.slot.heard(caller);
+            // knows that is going on. Only the worker the service started is answered; any other
+            // ends itself (`client::Remote::active`).
+            if let Err(why) = context.slot.heard(caller) {
+                return (Response::Refused(why), None);
+            }
             let policies = sessions
                 .active()
                 .map(|active| active.sessions)
@@ -1793,9 +1802,11 @@ mod tests {
         let (response, _) = handle(&context, stranger.id(), Request::Register);
         assert!(matches!(response, Response::Refused(why) if why.contains("not the installed")));
         assert!(matches!(handle(&context, 0, Request::Register).0, Response::Refused(_)));
-        // It may ask for the policy all the same; that is just information, and counts for nothing.
-        assert_eq!(handle(&context, stranger.id(), Request::Policy).0, Response::Policy(Vec::new()));
-        assert!(context.slot.supervise(true, false), "no app should have been taken in");
+        // Nor is it given the policy: only the worker the service started is.
+        assert!(matches!(handle(&context, stranger.id(), Request::Policy).0, Response::Refused(why) if why.contains("worker")));
+        assert!(context.slot.supervise(true, false).app, "no app should have been taken in");
+        // Nor is anyone the worker: only one the service started is.
+        assert!(matches!(handle(&context, stranger.id(), Request::RegisterWorker).0, Response::Refused(why) if why.contains("worker")));
 
         // This test process is the installed exe as far as the service can tell. Only if it runs
         // in the console session is it taken in; elsewhere an app just runs unwatched.

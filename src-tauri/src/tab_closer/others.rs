@@ -12,7 +12,7 @@ use crate::watchdog::note;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, UpdateKind};
 use uiautomation::patterns::UIWindowPattern;
 use uiautomation::types::TreeScope;
-use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::Foundation::{GetLastError, ERROR_ACCESS_DENIED, HWND};
 use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, ShowWindowAsync, SW_MINIMIZE, WM_CLOSE};
 
 impl Closer {
@@ -141,9 +141,11 @@ impl Closer {
                     };
                     if due {
                         // SAFETY: a window handle Windows handed over a moment ago; a stale one only fails.
-                        unsafe { PostMessageW(window.handle as HWND, WM_CLOSE, 0, 0) };
+                        let posted = unsafe { PostMessageW(window.handle as HWND, WM_CLOSE, 0, 0) } != 0;
+                        let error = last_error();
                         self.titles_asked.insert(window.handle, Instant::now());
-                        note("app", &format!("asked the window “{}” of {program} to close ({})", window.title, self.woken.describe()));
+                        let what = format!("the window “{}” of {program}", window.title);
+                        note("app", &asked(posted, &format!("asked {what} to close ({})", self.woken.describe()), &what, error));
                     }
                 }
                 TitleAction::Minimize => {
@@ -156,9 +158,11 @@ impl Closer {
                         Some(_) => {}
                         None => {
                             // SAFETY: as above; asynchronous, so a window that does not answer holds nothing up.
-                            unsafe { ShowWindowAsync(window.handle as HWND, SW_MINIMIZE) };
+                            let started = unsafe { ShowWindowAsync(window.handle as HWND, SW_MINIMIZE) } != 0;
+                            let error = last_error();
                             self.minimize_asked.insert(window.handle, Instant::now());
-                            note("app", &format!("minimized the window “{}” of {program} ({})", window.title, self.woken.describe()));
+                            let what = format!("the window “{}” of {program}", window.title);
+                            note("app", &asked(started, &format!("minimized {what} ({})", self.woken.describe()), &what, error));
                         }
                     }
                 }
@@ -169,5 +173,39 @@ impl Closer {
         self.titles_asked.retain(|handle, _| closing.contains(handle));
         self.minimize_asked.retain(|handle, _| minimizing.contains(handle));
         self.unminimizable.retain(|handle| windows.iter().any(|window| window.handle == *handle));
+    }
+}
+
+/// Windows' last error on this thread, read right after the call that failed.
+fn last_error() -> u32 {
+    // SAFETY: plain query with no arguments.
+    unsafe { GetLastError() }
+}
+
+/// The log line for asking `what` to close or minimize: `done` when Windows took the request, else
+/// why not. Refused access is a program with more rights than this worker's.
+fn asked(taken: bool, done: &str, what: &str, error: u32) -> String {
+    match (taken, error) {
+        (true, _) => done.to_string(),
+        (false, ERROR_ACCESS_DENIED) => {
+            format!("Windows refused to pass the request to {what}: it runs with more rights than Bullseye's worker")
+        }
+        (false, error) => format!("could not reach {what} (error {error})"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_request_windows_refused_is_logged_as_refused() {
+        let what = "the window “x” of y.exe";
+        assert_eq!(asked(true, "asked it", what, ERROR_ACCESS_DENIED), "asked it");
+        assert_eq!(
+            asked(false, "asked it", what, ERROR_ACCESS_DENIED),
+            "Windows refused to pass the request to the window “x” of y.exe: it runs with more rights than Bullseye's worker"
+        );
+        assert_eq!(asked(false, "asked it", what, 1400), "could not reach the window “x” of y.exe (error 1400)");
     }
 }

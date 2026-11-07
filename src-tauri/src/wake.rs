@@ -1,17 +1,17 @@
 //! What makes the closing worker (`tab_closer.rs`) look again at once, instead of at its next
 //! second, so a blocked page or program is closed sooner. The pass every second stays: an event
-//! can be missed, and the app's policy request each second is how the service knows it is alive.
+//! can be missed, and the worker's policy request each second is how the service knows it is alive.
 //!
 //! Two sources, both costing nothing while nothing happens:
-//! - **In the app**, a WinEvent hook (`spawn_hook`): a Chromium window's title changing (a tab
+//! - **In the worker** (the app in development), a WinEvent hook (`spawn_hook`): a Chromium window's title changing (a tab
 //!   navigated or was switched to), a value changing in the window itself (its address bar), or a
 //!   Chromium or Firefox window coming to the foreground. (A Firefox tab that navigates in the
 //!   background changes no title: that one waits for the pass every second.) Out of context, so no code goes into other
 //!   processes; the hook's thread only checks the window's class and sets an event.
 //! - **From the service**, a program starting (`spawn_process_watch`) that a running session would
 //!   close: one in its program list, or Obsidian while its action is on. WMI's process start
-//!   trace needs administrator rights, which the app does not have, so the service listens and
-//!   sets a named event (`SERVICE_EVENT`) that the app waits on. Only SYSTEM can create or set it
+//!   trace needs administrator rights, which the worker may not have, so the service listens and
+//!   sets a named event (`SERVICE_EVENT`) that the worker waits on. Only SYSTEM can create or set it
 //!   (`SDDL`; creating anything in `Global\` also needs a privilege users do not have), so no one
 //!   else can set it off or take its name first; interactive users may only wait on it.
 

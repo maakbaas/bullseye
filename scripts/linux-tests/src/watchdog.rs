@@ -5,6 +5,11 @@ pub fn note(who: &str, message: &str) {
 
 pub struct AppSlot;
 
+pub struct Missing {
+    pub app: bool,
+    pub worker: bool,
+}
+
 impl AppSlot {
     pub fn new(_supervised: bool) -> AppSlot {
         AppSlot
@@ -12,8 +17,16 @@ impl AppSlot {
     pub fn register(&self, _pid: u32) -> Result<(), String> {
         Ok(())
     }
-    pub fn heard(&self, _pid: u32) {}
-    pub fn supervise(&self, _block_active: bool, _resumed: bool) -> bool {
-        true
+    pub fn register_worker(&self, _pid: u32) -> Result<(), String> {
+        Ok(())
+    }
+    pub fn heard(&self, _pid: u32) -> Result<(), String> {
+        Ok(())
+    }
+    pub fn supervise(&self, _block_active: bool, _resumed: bool) -> Missing {
+        Missing {
+            app: true,
+            worker: true,
+        }
     }
 }
