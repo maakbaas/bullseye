@@ -292,8 +292,8 @@ mod tests {
         assert_eq!(Week::parse(""), Ok(None));
         assert_eq!(Week::parse(" Always "), Ok(None));
         let mut expected = Week::default();
-        for day in 0..5 {
-            expected.days[day] = vec![Span(480, 1020)];
+        for day in expected.days.iter_mut().take(5) {
+            *day = vec![Span(480, 1020)];
         }
         for same in [
             "mon-fri 08:00-17:00",
