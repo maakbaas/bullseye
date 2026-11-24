@@ -377,7 +377,8 @@ mod read {
         for process in system.processes().values() {
             let Some(path) = process.exe() else { continue };
             let program = of_file(path);
-            if program.is_protected() || super::is_protected(&program.name) {
+            // Only what a list can keep: Windows gives some processes a path without a file name.
+            if program.is_protected() || super::is_protected(&program.name) || Program::parse(&program.entry()).is_err() {
                 continue;
             }
             let described = program.describe();
