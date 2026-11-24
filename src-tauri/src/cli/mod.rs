@@ -46,7 +46,7 @@ use parse::*;
 
 /// Each command the window can invoke, and the CLI commands that do the same. Empty: it is about
 /// the window itself.
-pub const GUI_COMMANDS: [(&str, &[&str]); 39] = [
+pub const GUI_COMMANDS: [(&str, &[&str]); 42] = [
     ("status", &["status", "show", "target show", "condition show"]),
     ("save_session", &["new", "edit"]),
     ("delete_session", &["delete"]),
@@ -54,6 +54,11 @@ pub const GUI_COMMANDS: [(&str, &[&str]); 39] = [
     ("delete_target", &["target delete"]),
     // The installed Store apps the editor offers to tick.
     ("installed_apps", &["target apps"]),
+    // A program for a target's list: its file, or one of those running (by the path the CLI's list shows).
+    ("choose_program", &["target new", "target edit", "target add"]),
+    ("running_programs", &["target programs"]),
+    // A target's programs as its editor shows them.
+    ("describe_programs", &["target show"]),
     // The flash drives the editor of a flash drive condition offers.
     ("connected_drives", &["drives"]),
     ("save_condition", &["condition new", "condition edit"]),
@@ -106,6 +111,16 @@ enum Failure {
 
 fn failed(why: impl Into<String>) -> Failure {
     Failure::Failed(why.into())
+}
+
+/// The programs given (`--programs`: files, by path) as the list keeps them (`programs::entries_given`;
+/// `have`: what may be named by its file name, when removing).
+fn resolve_programs(lists: &mut BTreeMap<&'static str, Vec<String>>, have: &[String]) -> Result<(), Failure> {
+    if let Some(given) = lists.get_mut("programs") {
+        let read = |path: &std::path::Path| path.is_file().then(|| crate::programs::of_file(path));
+        *given = crate::programs::entries_given(given, have, &read).map_err(Failure::Usage)?;
+    }
+    Ok(())
 }
 
 /// A line of what a command says (`out`).
@@ -314,16 +329,28 @@ fn execute(command: Command) -> Result<(), Failure> {
                 }
             }
         }
-        Command::TargetNew { name, changes } => {
+        Command::TargetPrograms { json } => {
+            let programs = crate::programs::running();
+            if json {
+                say!("{}", serde_json::to_string_pretty(&programs).map_err(|e| failed(e.to_string()))?);
+            } else {
+                for program in programs {
+                    say!("{}\n  {}\n  {}", program.described.label, program.described.basis, program.path);
+                }
+            }
+        }
+        Command::TargetNew { name, mut changes } => {
             let mut list = Target { id: new_id(), name, entries: Entries::default(), actions: Actions::default(), waiting: None };
+            resolve_programs(&mut changes.lists, &[])?;
             changes.apply(&mut list);
             let name = list.name.clone();
             send(Request::SaveTarget { target: list })?;
             say!("Made the target “{name}”. Use it with: bullseye new <session> --targets \"{name}\"");
         }
-        Command::TargetEdit { target: list, changes } => {
+        Command::TargetEdit { target: list, mut changes } => {
             let overview = overview()?;
             let mut list = find(&overview.targets, &list, "target", |l| (&l.id, &l.name))?.desired();
+            resolve_programs(&mut changes.lists, &[])?;
             changes.apply(&mut list);
             let (id, name) = (list.id.clone(), list.name.clone());
             send(Request::SaveTarget { target: list })?;
@@ -389,9 +416,11 @@ fn execute(command: Command) -> Result<(), Failure> {
             send(Request::SaveSession { session })?;
             say!("Saved the session “{name}”.");
         }
-        Command::TargetItems { target: list, entries, actions, add } => {
+        Command::TargetItems { target: list, mut entries, actions, add } => {
             let overview = overview()?;
             let mut list = find(&overview.targets, &list, "target", |l| (&l.id, &l.name))?.desired();
+            // What is removed may also be named by its file name: it may not be on this computer.
+            resolve_programs(&mut entries, if add { &[][..] } else { &list.entries.programs[..] })?;
             for (key, given) in entries {
                 let what =
                     LIST_OPTIONS.iter().find(|(_, k)| *k == key).map(|(option, _)| option[2..].replace('-', " ")).unwrap_or_default();

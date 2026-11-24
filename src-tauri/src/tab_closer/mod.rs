@@ -121,7 +121,7 @@ pub fn spawn(remote: Remote) {
                 // Steam's browser is a window found like one by title, in the same pass.
                 let titles = active.watches_titles() || active.closes_steam_browser();
                 if obsidian || programs || store_apps || titles {
-                    closer.scan_processes(obsidian, store_apps);
+                    closer.scan_processes(obsidian, programs || store_apps || titles);
                 }
                 if obsidian {
                     closer.close_obsidian_with_web_content();
@@ -153,6 +153,12 @@ struct Closer {
     system: System,
     /// Programs that were asked to close, by process id and when, so the ones that do not are ended.
     asked: HashMap<u32, Instant>,
+    /// What each running process's file says it is, by process id and start time (a process never
+    /// changes its file), read once (`Closer::program_of`).
+    programs: HashMap<(u32, u64), crate::programs::Program>,
+    /// What each program file says, by its path, with its size and when it was written: read again
+    /// once an update changed it.
+    files: HashMap<std::path::PathBuf, (u64, Option<std::time::SystemTime>, crate::programs::Program)>,
     /// Windows that were asked to close because of their title, by handle and when, so one that
     /// stays (it asks to save first) is asked again later, not every pass.
     titles_asked: HashMap<isize, Instant>,
@@ -214,6 +220,8 @@ impl Closer {
             windows: HashMap::new(),
             system: System::new(),
             asked: HashMap::new(),
+            programs: HashMap::new(),
+            files: HashMap::new(),
             titles_asked: HashMap::new(),
             minimize_asked: HashMap::new(),
             unminimizable: HashSet::new(),
@@ -375,8 +383,26 @@ mod tests {
 
     /// What the loop does for the programs: one scan, then the check.
     fn pass(closer: &mut Closer, programs: &Active) {
-        closer.scan_processes(false, false);
+        closer.scan_processes(false, true);
         closer.close_processes(programs);
+    }
+
+    #[test]
+    fn a_renamed_copy_is_closed_by_what_its_file_says() {
+        let Ok(automation) = UIAutomation::new() else { return eprintln!("skipping: no UI Automation here") };
+        let mut closer = Closer::new(automation);
+        // Both copies are ping: the entry is made from one, and the other has another name.
+        let (mut picked, mut renamed) = (copy_of_ping("bullseye-test-picked"), copy_of_ping("bullseye-test-renamed"));
+        let path = std::env::temp_dir().join(format!("closer-{}", std::process::id())).join("bullseye-test-picked.exe");
+        let program = crate::programs::of_file(&path);
+        assert!(!program.original.is_empty() && !program.company.is_empty(), "ping says what it is: {program:?}");
+        let entry = program.entry();
+        pass(&mut closer, &active(&[], &[&entry]));
+        assert!(closer.asked.contains_key(&picked.id()) && closer.asked.contains_key(&renamed.id()));
+        for child in [&mut picked, &mut renamed] {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 
     #[test]
@@ -384,7 +410,7 @@ mod tests {
         let Ok(automation) = UIAutomation::new() else { return eprintln!("skipping: no UI Automation here") };
         let mut closer = Closer::new(automation);
         let (mut listed, mut other) = (copy_of_ping("bullseye-test-listed"), copy_of_ping("bullseye-test-other"));
-        let programs = active(&[], &["bullseye-test-l*"]);
+        let programs = active(&[], &["bullseye-test-listed.exe|||"]);
 
         // The first pass asks. This program has no window to ask, so it carries on for now.
         pass(&mut closer, &programs);

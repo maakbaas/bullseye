@@ -23,12 +23,14 @@ use crate::sync_api::{Device, SyncStatus};
 
 /// The app's commands a browser cannot use: what is this computer's own (its syncing, its installed
 /// Store apps and flash drives, files to export to and import from, its window).
-pub const COMPUTER_ONLY: [&str; 10] = [
+pub const COMPUTER_ONLY: [&str; 12] = [
     "sync_connect",
     "sync_disconnect",
     "sync_abort_disconnect",
     "sync_now",
     "installed_apps",
+    "choose_program",
+    "running_programs",
     "connected_drives",
     "export_settings",
     "open_settings",
@@ -124,6 +126,7 @@ pub fn invoke(
             let library = crate::definitions::Library { sessions: arg!("sessions"), conditions: arg!("conditions"), ..Default::default() };
             return value(&library.fallout(&arg!("id", String)));
         }
+        "describe_programs" => return value(&crate::programs::describe(&arg!("entries", Vec<String>))),
         "test_webhook" => return crate::webhook::probe(&arg!("hook")).map_err(Value::String).and_then(|probe| value(&probe)),
         name if COMPUTER_ONLY.contains(&name) => return Err(Value::String(t("web.computerOnly", &[]))),
         name => return Err(Value::String(format!("No such command: {name}"))),

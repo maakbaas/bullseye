@@ -112,11 +112,17 @@ Targets:
   target show <target> [--json]     One target, and the sessions that use it.
   target apps [--json]              The Store apps installed, by name and package family name, to
                                     block with --store-apps.
+  target programs [--json]          The programs running now, by what their files say and where
+                                    they are, to block with --programs.
   target new <name> [options]       Make a target. Options:
       --sites <sites>               The sites to block: each with its subdomains and everything
                                     under it, e.g. youtube.com. * as a wildcard.
       --allowed-sites <sites>       Sites that are always allowed, also when blocked.
-      --programs <names>            Programs to close, by exe name, e.g. steam.exe.
+      --programs <files>            Programs to close, by the path of their file, e.g.
+                                    C:\\Games\\Steam\\steam.exe, as 'target
+                                    programs' shows them. They are recognized by what is written
+                                    inside the file, so a renamed copy is closed too. target remove
+                                    also takes a program's file name.
       --store-apps <families>       Store apps to close, by their exact package family names, e.g.
                                     Microsoft.WindowsCalculator_8wekyb3d8bbwe, as 'target apps'
                                     shows them; no *.
@@ -288,6 +294,9 @@ pub(super) enum Command {
         json: bool,
     },
     TargetApps {
+        json: bool,
+    },
+    TargetPrograms {
         json: bool,
     },
     Drives {
@@ -561,6 +570,7 @@ fn parse_command(args: &[String]) -> Result<Command, String> {
         },
         "target show" => Command::TargetShow { target: named(&mut options, "target")?, json: options.flag("--json") },
         "target apps" => Command::TargetApps { json: options.flag("--json") },
+        "target programs" => Command::TargetPrograms { json: options.flag("--json") },
         "drives" => Command::Drives { json: options.flag("--json") },
         "target new" => {
             let name = options.positional().ok_or("Give the new target a name")?;

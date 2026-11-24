@@ -26,6 +26,7 @@ It sends the same requests to the Bullseye service as the window, so the service
 | `bullseye break <session> [--end]` | **Break** on a session with breaks, while its condition is active (`--end`: **End break**, early; it stays used up) |
 | `bullseye target show <target> [--json]` | a target's tile and its editor |
 | `bullseye target apps [--json]` | the installed Store apps the editor offers to tick, by name and package family name |
+| `bullseye target programs [--json]` | the programs running now, as the editor's Choose running program shows them: what each is, what it is recognized by, and the path of its file, for `--programs` |
 | `bullseye target new <name> [options]` | **New target**, then **Save** |
 | `bullseye target edit <target> [options]` | **Edit** a target, then **Save** |
 | `bullseye target add <target> [options]` | adding entries to a target (and ticking actions), then **Save** |
@@ -86,7 +87,7 @@ With `edit`, an option replaces only what it names: `--targets` replaces all its
 |---|---|---|
 | `--sites <sites>` | The sites to block: each site, its subdomains and everything under it (`youtube.com` is `www.youtube.com` and `music.youtube.com` too), with `*` as a wildcard as in the window: `reddit.com/r/*`, `*` (every site). `*.reddit.com` is the subdomains only. An exception for one subdomain goes in `--allowed-sites`. | none |
 | `--allowed-sites <sites>` | Sites that are always allowed, also when this list's sites match them. | none |
-| `--programs <names>` | Programs to close, by exe name: `steam`, `steam*.exe`. | none |
+| `--programs <files>` | Programs to close, by the path of their file, as `target programs` shows the running ones: `"C:\Program Files (x86)\Steam\steam.exe"`. Bullseye reads what is written inside the file (its original file name, description and company) and recognizes the program by that, so a renamed or moved copy is closed too; a program whose file says nothing more is recognized by its file name only. `target show --json` shows each as it is kept (`steam.exe\|steam.exe\|Steam\|Valve Corporation`: file name, original file name, description, company), which is taken too. `target remove` also takes a program's file name, for one that is not on this computer. Windows' own programs and Bullseye's are refused. | none |
 | `--store-apps <families>` | Store apps to close, by their exact package family names, as `target apps` shows the installed ones: `Microsoft.WindowsCalculator_8wekyb3d8bbwe`. No `*`, as in the window, where they are ticked. Windows' own apps are never closed. | none |
 | `--titles <titles>` | Windows to close, by their title, the whole title with `*` as a wildcard and letter case ignored: `*YouTube*`. The whole window closes, or is minimized (`--actions`), a browser's with all its tabs. A lone `*` matches every window but Bullseye's own and Windows' shell. | none |
 | `--allowed-titles <titles>` | Window titles that are always left alone, also when this list's titles match them, written as in `--titles`: `*Visual Studio Code`. | none |
@@ -139,7 +140,7 @@ bullseye edit "Focus" --allowance none
 ```powershell
 # What to block.
 bullseye target new "Social media" --sites youtube.com reddit.com --titles "Team chat" *Shorts*
-bullseye target new "Games" --programs-file games.txt
+bullseye target new "Games" --programs "C:\Program Files (x86)\Steam\steam.exe"
 
 # When.
 bullseye condition new "Work hours" --times "Mon-Fri 08:00-17:00"
@@ -213,7 +214,7 @@ The CLI uses the window's words (`src/strings.js`, read by the program itself), 
 
 ### `add` and `remove`
 
-`edit` replaces a whole set (`edit Work --targets Games` leaves Games as its only target); `add` and `remove` change only the items named and keep the rest: a session's targets (`--targets`), a target's entries (its list options, `--sites`, `--programs`, …, and `--actions` to turn on or off) and a combination's conditions (`--conditions`). Adding what is there already changes nothing. Taking out what is not there is refused, as a typo, and then nothing is saved; an entry is found however it is written (`Steam` is `steam.exe`, `YouTube.com` is `youtube.com`). The service checks the result like any other save: while a locked session uses a target, adding entries to block applies at once, and taking them out (or adding always-allowed ones, turning an action off) waits until no locked session uses it, as the command and `target show` say; a combination keeps at least two conditions, and a running session something to block.
+`edit` replaces a whole set (`edit Work --targets Games` leaves Games as its only target); `add` and `remove` change only the items named and keep the rest: a session's targets (`--targets`), a target's entries (its list options, `--sites`, `--programs`, …, and `--actions` to turn on or off) and a combination's conditions (`--conditions`). Adding what is there already changes nothing. Taking out what is not there is refused, as a typo, and then nothing is saved; an entry is found however it is written (`YouTube.com` is `youtube.com`; a program by its file, or its file name). The service checks the result like any other save: while a locked session uses a target, adding entries to block applies at once, and taking them out (or adding always-allowed ones, turning an action off) waits until no locked session uses it, as the command and `target show` say; a combination keeps at least two conditions, and a running session something to block.
 
 ### `duplicate`, `target duplicate`, `condition duplicate`
 

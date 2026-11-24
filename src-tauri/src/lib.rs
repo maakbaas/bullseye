@@ -206,6 +206,32 @@ async fn installed_apps(chosen: Vec<String>) -> Result<Vec<store_apps::StoreApp>
     Ok(store_apps::offered(installed, &chosen))
 }
 
+/// A program chosen in an Open dialog, as the target editor's programs list keeps it (`programs.rs`);
+/// `None` when the dialog was cancelled.
+#[tauri::command]
+async fn choose_program(app: tauri::AppHandle) -> Result<Option<programs::Described>, String> {
+    let chosen = app.dialog().file().add_filter(strings::t("targets.programs.fileType", &[]), &["exe"]).blocking_pick_file();
+    let Some(path) = chosen.map(|path| path.into_path().map_err(|e| e.to_string())).transpose()? else { return Ok(None) };
+    let program = programs::of_file(&path);
+    if program.is_protected() || programs::is_protected(&program.name) {
+        return Err(strings::t("targets.programs.protected", &[("programs", &program.describe().label)]));
+    }
+    Ok(Some(program.describe()))
+}
+
+/// The programs running now, for the target editor to offer (`programs::running`). Reading their
+/// files takes a moment, so not on the thread that draws the window.
+#[tauri::command]
+async fn running_programs() -> Result<Vec<programs::Running>, String> {
+    tauri::async_runtime::spawn_blocking(programs::running).await.map_err(|e| e.to_string())
+}
+
+/// A target's programs, as its editor shows them: what each is and what it is recognized by.
+#[tauri::command]
+fn describe_programs(entries: Vec<String>) -> Vec<programs::Described> {
+    programs::describe(&entries)
+}
+
 /// The flash drives connected now, for the Flash drive lock's settings to offer (`drives.rs`).
 /// Asking Windows takes a moment, so not on the thread that draws the window.
 #[tauri::command]
@@ -488,6 +514,9 @@ pub fn run() {
             describe_until,
             deletion_fallout,
             installed_apps,
+            choose_program,
+            running_programs,
+            describe_programs,
             connected_drives,
             export_settings,
             open_settings,

@@ -1,7 +1,9 @@
 //! What the closer does besides pages: closing the programs on a session's list and the programs of its
 //! Store apps, Obsidian when it shows web content, and windows (or Steam's browser) by their title.
 
-use std::time::Instant;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::{Instant, SystemTime};
 
 use super::win::{ask_to_close, top_level_windows, SHELL_CLASSES};
 use super::{explain, Closer, KILL_AFTER, MINIMIZE_AFTER};
@@ -18,7 +20,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, ShowWindowAsync,
 impl Closer {
     /// Looks at the running programs, once, for the checks below (`close_obsidian_with_web_content`,
     /// `close_processes`, `close_windows_by_title`). Command lines are only fetched when Obsidian's
-    /// check needs them, and where each program is only when Store apps are to be closed.
+    /// check needs them, and where each program is only when programs, Store apps or windows by title
+    /// are to be closed (once per process: it never moves).
     pub(super) fn scan_processes(&mut self, command_lines: bool, locations: bool) {
         let mut kind = ProcessRefreshKind::nothing();
         if command_lines {
@@ -28,6 +31,9 @@ impl Closer {
             kind = kind.with_exe(UpdateKind::OnlyIfNotSet);
         }
         self.system.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
+        // What a process's file says is forgotten once it has gone.
+        let system = &self.system;
+        self.programs.retain(|(pid, start), _| system.process(sysinfo::Pid::from_u32(*pid)).is_some_and(|p| p.start_time() == *start));
     }
 
     /// Closes Obsidian (like clicking its X) when it hosts web content. Obsidian's own UI runs in
@@ -72,10 +78,15 @@ impl Closer {
     pub(super) fn close_processes(&mut self, active: &Active) {
         let me = std::process::id();
         let mut running = Vec::new();
+        let closes_programs = active.closes_programs();
         for (pid, process) in self.system.processes() {
             let pid = pid.as_u32();
             let in_a_blocked_app = || process.exe().and_then(store_apps::family_of).is_some_and(|family| active.blocks_store_app(&family));
-            if pid == me || !(active.blocks_program(&process.name().to_string_lossy()) || in_a_blocked_app()) {
+            let blocked = closes_programs && {
+                let program = program_of(&mut self.programs, &mut self.files, pid, process);
+                active.blocks_program(program)
+            };
+            if pid == me || !(blocked || in_a_blocked_app()) {
                 continue;
             }
             running.push(pid);
@@ -102,8 +113,8 @@ impl Closer {
     /// nothing else is ended. Minimizing is asked once; a window still up `MINIMIZE_AFTER` later
     /// cannot be minimized and is left alone (never closed instead), and dialogs and tool windows
     /// are not minimized, as they go with the window they belong to. Not windows of programs Windows
-    /// needs (`programs::is_protected`; File Explorer's windows can go, but not the desktop and the
-    /// taskbar, `SHELL_CLASSES`), nor this app's.
+    /// needs (`programs::Program::is_protected`, by what their files say; File Explorer's windows can
+    /// go, but not the desktop and the taskbar, `SHELL_CLASSES`), nor this app's.
     pub(super) fn windows_by_title(&mut self, active: &Active) {
         let me = std::process::id();
         let windows = top_level_windows();
@@ -129,7 +140,9 @@ impl Closer {
                 None if programs::is_steam_browser(&window.title, &window.class, &program) => TitleAction::Close,
                 None => continue,
             };
-            if programs::is_protected(&program) && !program.eq_ignore_ascii_case("explorer.exe") {
+            // Windows' own by what its file says, so a program renamed after one of them is not spared.
+            let file = program_of(&mut self.programs, &mut self.files, window.pid, process);
+            if file.is_protected() && !file.name.eq_ignore_ascii_case("explorer.exe") {
                 continue;
             }
             match action {
@@ -174,6 +187,31 @@ impl Closer {
         self.minimize_asked.retain(|handle, _| minimizing.contains(handle));
         self.unminimizable.retain(|handle| windows.iter().any(|window| window.handle == *handle));
     }
+}
+
+/// What a running process's file says it is (`programs::Program`): read once per process (`programs`,
+/// by id and start time), and once per file while it stays as it is (`files`, by path, size and when
+/// it was written; an update changes those). A process whose file is not known is its name alone.
+fn program_of<'a>(
+    programs: &'a mut HashMap<(u32, u64), programs::Program>,
+    files: &mut HashMap<PathBuf, (u64, Option<SystemTime>, programs::Program)>,
+    pid: u32,
+    process: &sysinfo::Process,
+) -> &'a programs::Program {
+    programs.entry((pid, process.start_time())).or_insert_with(|| {
+        let name = process.name().to_string_lossy();
+        let Some(path) = process.exe() else { return programs::Program::named(&name) };
+        let Ok(metadata) = std::fs::metadata(path) else { return programs::Program::named(&name) };
+        let (size, written) = (metadata.len(), metadata.modified().ok());
+        match files.get(path) {
+            Some((s, w, program)) if *s == size && *w == written => program.clone(),
+            _ => {
+                let program = programs::of_file(path);
+                files.insert(path.to_path_buf(), (size, written, program.clone()));
+                program
+            }
+        }
+    })
 }
 
 /// Windows' last error on this thread, read right after the call that failed.

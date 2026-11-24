@@ -181,7 +181,7 @@ mod tests {
         assert!(!empty.has(Uses::Sites) && !empty.has(Uses::Programs) && !empty.has(Uses::StoreApps) && !empty.has(Uses::Titles));
         let full = Lists::parse(&Entries {
             filters: vec!["a.com".into()],
-            programs: vec!["game.exe".into()],
+            programs: vec!["game.exe|||".into()],
             store_apps: vec!["Microsoft.XboxApp_8wekyb3d8bbwe".into()],
             titles: vec!["*Chat*".into()],
             ..Entries::default()
@@ -191,9 +191,11 @@ mod tests {
         // A lone * is a title list of its own; what a list cannot read says which list.
         assert!(Lists::parse(&Entries { titles: vec!["*".into()], ..Entries::default() }).is_ok());
         let why = |entries: Entries| Lists::parse(&entries).err().unwrap_or_default();
-        assert!(
-            why(Entries { programs: vec!["*".into()], ..Entries::default() }).starts_with("Would close programs Windows or this app needs")
-        );
+        assert!(why(Entries {
+            programs: vec!["explorer.exe|EXPLORER.EXE.MUI|Windows Explorer|Microsoft Corporation".into()],
+            ..Entries::default()
+        })
+        .starts_with("Would close programs Windows or this app needs"));
     }
 
     #[test]

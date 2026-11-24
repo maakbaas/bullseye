@@ -405,9 +405,37 @@ window.STRINGS = {
     },
     programs: {
       label: "Programs to close", // reviewed
-      placeholder: "steam.exe", // reviewed
-      helper: "One per line. * matches any part. Windows programs cannot be added", // reviewed
+      helper: "Recognized by what is written inside the program's file, so a renamed or moved copy is closed too. Windows programs cannot be added",
       count: { one: "{n} program closed", other: "{n} programs closed" }, // reviewed
+      chooseFile: "Choose file",
+      chooseRunning: "Choose running program",
+      // The dialog that lists the running programs.
+      runningHeading: "Running programs",
+      runningLoading: "Loading running programs",
+      runningNone: "No other programs are running",
+      // The dialog's button, and what it says when nothing is marked.
+      add: "Add",
+      noneChosen: "Mark the programs to add",
+      // {why}: what Windows said.
+      failedWhy: "Could not read the program: {why}",
+      // The name of the file type in the Open dialog.
+      fileType: "Programs",
+      remove: "Remove",
+      // A program's row: {description}, what its file says it is; {name}, its file name.
+      named: "{description} ({name})",
+      // What a program on the list is recognized by. {original}: the file name written inside it;
+      // {company}: who made it, as the file says.
+      basis: {
+        original: "Recognized by its original name {original} from {company}",
+        originalOnly: "Recognized by its original name {original}",
+        description: "Recognized by its description from {company}",
+        descriptionOnly: "Recognized by its description",
+        name: "Recognized by its file name only: its file says nothing more, so a renamed copy is not closed",
+      },
+      // {entry}: what was given.
+      notAnEntry: "Not a program: {entry}. Give the path of a program's file",
+      // {programs}: their names.
+      protected: "Would close programs Windows or this app needs: {programs}",
     },
     store_apps: {
       label: "Microsoft Store apps to close", // reviewed

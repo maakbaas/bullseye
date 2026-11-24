@@ -236,7 +236,15 @@ impl Target {
             // What is in one and not in the other: what blocks no longer, or is allowed then.
             let (from, to, into) = if blocks { (&*is, &*will, &mut unblocked) } else { (&*will, &*is, &mut allowed) };
             let keys: Vec<String> = to.iter().map(|entry| Entries::key(field, entry)).collect();
-            into.extend(from.iter().filter(|entry| !keys.contains(&Entries::key(field, entry))).cloned());
+            let gone = from.iter().filter(|entry| !keys.contains(&Entries::key(field, entry)));
+            // A program by what it is, not its entry.
+            into.extend(gone.map(|entry| {
+                if field == "programs" {
+                    crate::programs::describe(std::slice::from_ref(entry))[0].label.clone()
+                } else {
+                    entry.clone()
+                }
+            }));
         }
         let mut changes = Vec::new();
         if !unblocked.is_empty() {
@@ -1335,16 +1343,24 @@ pub mod tests {
 
     #[test]
     fn what_loosens_a_target_waits_and_what_tightens_it_is_made_at_once() {
-        let old = listed(&[("filters", &["youtube.com", "Reddit.com"]), ("programs", &["steam.exe"]), ("allowed", &["google.com"])]);
-        // Steam typed as `Steam`, reddit in another case, a site gone, one added; an exception gone and
+        let old = listed(&[
+            ("filters", &["youtube.com", "Reddit.com"]),
+            ("programs", &["steam.exe|steam.exe|Steam|Valve Corporation"]),
+            ("allowed", &["google.com"]),
+        ]);
+        // Steam in another case, reddit in another case, a site gone, one added; an exception gone and
         // one added.
-        let new = listed(&[("filters", &["reddit.com", "x.com"]), ("programs", &["Steam"]), ("allowed", &["maps.com"])]);
+        let new = listed(&[
+            ("filters", &["reddit.com", "x.com"]),
+            ("programs", &["Steam.exe|STEAM.EXE|Steam|Valve Corporation"]),
+            ("allowed", &["maps.com"]),
+        ]);
         let split = old.split(new.clone());
         let mut filters = split.entries.filters.clone();
         filters.sort();
         // What blocked still blocks, as typed then; what is new blocks at once, as typed now.
         assert_eq!(filters, vec!["reddit.com", "x.com", "youtube.com"]);
-        assert_eq!(split.entries.programs, vec!["Steam"], "one program, typed as now");
+        assert_eq!(split.entries.programs, vec!["Steam.exe|STEAM.EXE|Steam|Valve Corporation"], "one program, as now");
         assert!(split.entries.allowed.is_empty(), "the new exception waits, the one taken out is gone at once");
         let waiting = split.waiting.clone().unwrap();
         assert_eq!((waiting.entries, waiting.actions), (new.entries.clone(), new.actions));
@@ -1355,7 +1371,8 @@ pub mod tests {
         );
 
         // Only stricter, or the same as typed otherwise: nothing waits.
-        let stricter = listed(&[("filters", &["YOUTUBE.com", "reddit.com", "a.com"]), ("programs", &["steam.exe"])]);
+        let stricter =
+            listed(&[("filters", &["YOUTUBE.com", "reddit.com", "a.com"]), ("programs", &["STEAM.exe|steam.exe|Steam|Valve Corporation"])]);
         assert_eq!(old.split(stricter.clone()), stricter);
         // A request's own `waiting` is no part of it.
         let claimed =
@@ -1368,7 +1385,7 @@ pub mod tests {
         for (field, blocks) in FIELDS {
             let one = |entries: &[&str]| listed(&[(field, entries)]);
             let entry = if field == "store_apps" { "Vendor.App_abc123" } else { "a.com" };
-            let entry = if field == "programs" { "a.exe" } else { entry };
+            let entry = if field == "programs" { "a.exe|||" } else { entry };
             let split = one(&[entry]).split(one(&[]));
             assert_eq!(split.waiting.is_some(), blocks, "{field}");
             let split = one(&[]).split(one(&[entry]));
@@ -1392,10 +1409,17 @@ pub mod tests {
 
         // What differs only in how it is typed is no change to name.
         let typed = Target {
-            waiting: Some(Waiting { entries: listed(&[("programs", &["Steam"])]).entries, actions: Actions::default(), since: None }),
-            ..listed(&[("programs", &["steam.exe"])])
+            waiting: Some(Waiting {
+                entries: listed(&[("programs", &["STEAM.EXE|steam.exe|Steam|Valve Corporation"])]).entries,
+                actions: Actions::default(),
+                since: None,
+            }),
+            ..listed(&[("programs", &["steam.exe|steam.exe|Steam|Valve Corporation"])])
         };
         assert_eq!(typed.waiting_words(), None);
+        // A program that waits to be taken out is named by what it is.
+        let steam = Target { waiting: Some(Waiting { entries: Entries::default(), actions: Actions::default(), since: None }), ..typed };
+        assert_eq!(steam.waiting_words().unwrap(), "Waiting until no locked session uses this target: Steam (steam.exe) no longer blocked");
     }
 
     #[test]

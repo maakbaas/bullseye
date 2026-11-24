@@ -278,7 +278,11 @@ pub(super) fn describe_target(overview: &Overview, list: &Target) -> String {
     for (section, lists, actions) in SECTIONS {
         let mut lines = String::new();
         for key in lists {
-            let items = entries.field(key).cloned().unwrap_or_default();
+            let mut items = entries.field(key).cloned().unwrap_or_default();
+            // A program by what it is, not its entry.
+            if *key == "programs" {
+                items = crate::programs::describe(&items).into_iter().map(|p| p.label).collect();
+            }
             if !items.is_empty() {
                 lines += &format!("  {}: {}\n", t(&format!("targets.{key}.label"), &[]), items.join(", "));
             }

@@ -212,6 +212,8 @@ fn class_of(window: HWND) -> String {
 #[serde(rename = "Win32_ProcessStartTrace", rename_all = "PascalCase")]
 struct ProcessStart {
     process_name: String,
+    #[serde(rename = "ProcessID")]
+    process_id: u32,
 }
 
 /// The service's watch on programs starting: sets `SERVICE_EVENT` when a running session would close
@@ -227,14 +229,16 @@ pub fn spawn_process_watch(sessions: Sessions) {
             Ok(connection) => connection,
             Err(e) => return not_heard(e),
         };
-        let starts = match connection.raw_notification::<ProcessStart>("SELECT ProcessName FROM Win32_ProcessStartTrace") {
+        let starts = match connection.raw_notification::<ProcessStart>("SELECT ProcessName, ProcessID FROM Win32_ProcessStartTrace") {
             Ok(starts) => starts,
             Err(e) => return not_heard(e),
         };
         for start in starts.flatten() {
             let Some(active) = sessions.active() else { continue };
             let name = start.process_name;
-            if active.blocks_program(&name) || (active.closes_obsidian() && name.eq_ignore_ascii_case("obsidian.exe")) {
+            // What its file says, read only while programs are closed.
+            let blocked = active.closes_programs() && active.blocks_program(&crate::programs::of_process(start.process_id, &name));
+            if blocked || (active.closes_obsidian() && name.eq_ignore_ascii_case("obsidian.exe")) {
                 // SAFETY: the event made above, open for as long as the service runs.
                 unsafe { SetEvent(event.0) };
             }

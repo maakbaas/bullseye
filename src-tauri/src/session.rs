@@ -195,13 +195,10 @@ impl Active {
         self.watches(Uses::Programs)
     }
 
-    /// Whether a program (by file name) is closed by any session that closes programs.
-    pub fn blocks_program(&self, file_name: &str) -> bool {
-        self.judge(
-            |b| b.actions.uses(Uses::Programs),
-            |b| b.lists.programs.is_blocked(file_name),
-            |lists| lists.programs.is_blocked(file_name),
-        )
+    /// Whether a running program (as its file says: `programs::Program`) is closed by any session that
+    /// closes programs.
+    pub fn blocks_program(&self, program: &crate::programs::Program) -> bool {
+        self.judge(|b| b.actions.uses(Uses::Programs), |b| b.lists.programs.is_blocked(program), |lists| lists.programs.is_blocked(program))
     }
 
     /// Whether any session closes Store apps and has some to close (or to see in use).
@@ -1901,18 +1898,21 @@ mod tests {
     #[test]
     fn a_resumed_session_keeps_its_programs() {
         let list = sessions("programs");
-        let lists = Lists { programs: ProgramList::parse(&["Steam*", "game"]).unwrap(), ..Lists::default() };
+        let lists = Lists { programs: ProgramList::parse(&["steamwebhelper.exe|||", "game.exe|||"]).unwrap(), ..Lists::default() };
         start(&list, "a", lists, Some(Duration::from_secs(3600))).unwrap();
-        assert_eq!(running(&list, "a").targets[0].entries.programs, vec!["steam*.exe", "game.exe"]);
+        assert_eq!(running(&list, "a").targets[0].entries.programs, vec!["steamwebhelper.exe|||", "game.exe|||"]);
 
         // A new run over the same store: the programs are still on the session.
         let resumed = reopened("programs");
         resumed.restore();
         let active = resumed.active().unwrap();
         assert!(active.closes_programs());
-        assert!(active.blocks_program("steamwebhelper.exe") && active.blocks_program("GAME.EXE"));
-        assert!(!active.blocks_program("chrome.exe"));
-        assert_eq!(running(&resumed, "a").targets[0].entries.programs, vec!["steam*.exe", "game.exe"]);
+        assert!(
+            active.blocks_program(&crate::programs::Program::named("steamwebhelper.exe"))
+                && active.blocks_program(&crate::programs::Program::named("GAME.EXE"))
+        );
+        assert!(!active.blocks_program(&crate::programs::Program::named("chrome.exe")));
+        assert_eq!(running(&resumed, "a").targets[0].entries.programs, vec!["steamwebhelper.exe|||", "game.exe|||"]);
     }
 
     #[test]
@@ -2066,7 +2066,7 @@ mod tests {
         let list = sessions("parts");
         let tabs_only = Actions { obsidian_web_viewer: false, window_titles_minimize: false, steam_browser: false };
         let programs_only = tabs_only;
-        let games = Lists { programs: ProgramList::parse(&["steam"]).unwrap(), ..Lists::default() };
+        let games = Lists { programs: ProgramList::parse(&["steam.exe|||"]).unwrap(), ..Lists::default() };
         let social = Part { name: "Social".into(), lists: sites(&["youtube.com"]), actions: tabs_only };
         list.start(
             "a",
@@ -2078,7 +2078,7 @@ mod tests {
         .unwrap();
         let active = list.active().unwrap();
         assert_eq!(active.sessions.len(), 2);
-        assert!(active.blocks_page("https://youtube.com/") && active.blocks_program("steam.exe"));
+        assert!(active.blocks_page("https://youtube.com/") && active.blocks_program(&crate::programs::Program::named("steam.exe")));
         let lists = running(&list, "a").targets;
         assert_eq!(lists.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), vec!["Social", "Games"]);
         // And again after a restart.
@@ -2508,7 +2508,9 @@ mod tests {
                 && active.title_action("Notes", false).is_none()
         );
         // Nothing else.
-        assert!(!active.closes_programs() && !active.closes_obsidian() && !active.blocks_program("chat.exe"));
+        assert!(
+            !active.closes_programs() && !active.closes_obsidian() && !active.blocks_program(&crate::programs::Program::named("chat.exe"))
+        );
         assert!(active.used.take().is_empty());
 
         // A list is its own switch: empty, it does nothing, whatever the actions say.
@@ -2517,11 +2519,13 @@ mod tests {
         let active = list.active().unwrap();
         assert!(!active.closes_store_apps() && !active.blocks_store_app("Microsoft.XboxApp_8wekyb3d8bbwe"));
         assert!(!active.watches_titles() && active.title_action("Team chat", false).is_none());
-        assert!(!active.closes_programs() && !active.blocks_program("chat.exe") && active.closes_obsidian());
+        assert!(
+            !active.closes_programs() && !active.blocks_program(&crate::programs::Program::named("chat.exe")) && active.closes_obsidian()
+        );
         // With entries, it acts with no action on at all.
         let list = sessions("kinds-on");
         let lists = lists_of(Entries {
-            programs: strings(&["chat.exe"]),
+            programs: strings(&["chat.exe|||"]),
             store_apps: strings(&["Microsoft.XboxApp_8wekyb3d8bbwe"]),
             titles: strings(&["*Chat*"]),
             ..Entries::default()
@@ -2530,7 +2534,9 @@ mod tests {
         let active = list.active().unwrap();
         assert!(active.closes_store_apps() && active.blocks_store_app("Microsoft.XboxApp_8wekyb3d8bbwe"));
         assert!(active.watches_titles() && active.title_action("Team chat", false) == Some(TitleAction::Close));
-        assert!(active.closes_programs() && active.blocks_program("chat.exe") && !active.closes_obsidian());
+        assert!(
+            active.closes_programs() && active.blocks_program(&crate::programs::Program::named("chat.exe")) && !active.closes_obsidian()
+        );
     }
 
     #[test]
@@ -2579,7 +2585,7 @@ mod tests {
         let lists = lists_of(Entries {
             store_apps: strings(&["Microsoft.XboxApp_8wekyb3d8bbwe"]),
             titles: strings(&["*Chat*"]),
-            programs: strings(&["game.exe"]),
+            programs: strings(&["game.exe|||"]),
             ..Entries::default()
         });
         list.start_with("a", "A", vec![part(lists, Actions::default())], None, Some(budget("1s", Scope::Each)), StartLock::None).unwrap();
@@ -2588,12 +2594,12 @@ mod tests {
         assert!(active.closes_store_apps() && active.watches_titles() && active.closes_programs());
         assert!(!active.blocks_store_app("Microsoft.XboxApp_8wekyb3d8bbwe"));
         assert!(active.title_action("Team chat", false).is_none());
-        assert!(!active.blocks_program("game.exe"));
+        assert!(!active.blocks_program(&crate::programs::Program::named("game.exe")));
         assert!(!active.blocks_page("https://a.com/"));
         let mut seen = active.used.take();
         seen.sort();
         let key = |k: &str| ("a".to_string(), k.to_string());
-        assert_eq!(seen, vec![key("app:Microsoft.XboxApp_8wekyb3d8bbwe"), key("program:game.exe"), key("title:*Chat*")]);
+        assert_eq!(seen, vec![key("app:Microsoft.XboxApp_8wekyb3d8bbwe"), key("program:game.exe|||"), key("title:*Chat*")]);
         // What could not be reported is taken back, to go with the next report.
         active.used.put_back(seen.clone());
         assert_eq!(active.used.take(), seen);
@@ -2606,7 +2612,7 @@ mod tests {
             active.blocks_store_app("Microsoft.XboxApp_8wekyb3d8bbwe")
                 && (active.title_action("Team chat", false) == Some(TitleAction::Close))
         );
-        assert!(!active.blocks_program("game.exe"), "the program has its own time");
+        assert!(!active.blocks_program(&crate::programs::Program::named("game.exe")), "the program has its own time");
     }
 
     #[test]

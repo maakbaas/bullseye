@@ -258,3 +258,8 @@ cds-link[inline] { display: inline-flex; }
 cds-overflow-menu-body[open]::after { block-size: 0.1875rem; inline-size: var(--cds-layout-size-height-local); inset-block-start: -0.1875rem; inset-inline-start: 0; }
 cds-overflow-menu-body[open][direction="top"]::after { block-size: 0.5rem; inset-block: auto -0.5rem; }
 cds-overflow-menu-body[open][flipped]::after { inset-inline: auto 0; }
+.program-picker { display: flex; flex-direction: column; gap: var(--cds-spacing-03); }
+.program-picker > .cds--type-label-01 { color: var(--cds-text-secondary); }
+.program-picker cds-contained-list-item > span { display: block; }
+.program-buttons { display: flex; flex-wrap: wrap; gap: var(--cds-spacing-03); }
+.running-programs cds-contained-list { max-block-size: 20rem; overflow-y: auto; }

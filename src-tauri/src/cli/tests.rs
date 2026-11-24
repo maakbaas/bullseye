@@ -138,13 +138,29 @@ fn sessions_targets_and_conditions_are_made_shown_changed_and_deleted() {
 #[test]
 fn items_are_added_and_removed() {
     serve("add-remove");
-    ok(&["target", "new", "Social", "--sites", "youtube.com", "reddit.com", "--programs", "Steam", "--actions", "obsidian_web_viewer"]);
-    ok(&["target", "new", "Games", "--programs", "game.exe"]);
+    let steam = "steam.exe|steam.exe|Steam|Valve Corporation";
+    ok(&["target", "new", "Social", "--sites", "youtube.com", "reddit.com", "--programs", steam, "--actions", "obsidian_web_viewer"]);
+    // A program by its file: one that says nothing more than its name.
+    let dir = std::env::temp_dir().join(format!("cli-programs-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let game = dir.join("game.exe");
+    std::fs::write(&game, b"not a program").unwrap();
+    ok(&["target", "new", "Games", "--programs", game.to_str().unwrap()]);
+    let games = ok(&["target", "show", "Games"]);
+    assert!(games.contains("  Programs to close: game.exe\n"), "{games}");
+    assert!(ok(&["target", "show", "Social"]).contains("  Programs to close: Steam (steam.exe)\n"));
+    // Not a file, nor a program as kept: nothing is saved.
+    assert_eq!(
+        refused(&["target", "add", "Games", "--programs", "nope.exe"]),
+        "Not a program: nope.exe. Give the path of a program's file"
+    );
+    assert_eq!(refused(&["target", "add", "Games", "--programs", "a|b"]), "Not a program: a|b. Give the path of a program's file");
+    let _ = std::fs::remove_dir_all(&dir);
     ok(&["target", "new", "News", "--sites", "nu.nl"]);
     let list = |name: &str| ok(&["target", "show", name]);
 
     // A target: entries added as typed (the service keeps them in order), and taken out however they are
-    // written, as the list reads them (Steam is steam.exe); what is there already stays once.
+    // written, as the list reads them (a program by its file name too); what is there already stays once.
     assert_eq!(
         ok(&[
             "target",

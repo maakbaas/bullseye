@@ -1395,7 +1395,7 @@ mod tests {
         let context = context("shared");
         // Two sessions share the list "social"; one also has a list of its own and a schedule.
         assert_eq!(handle(&context, 0, Request::SaveTarget { target: target("social", &["youtube.com"]) }).0, Response::Done);
-        assert_eq!(save(&context, definition("games", &[]).programs(&["steam"]).week("daily")), Response::Done);
+        assert_eq!(save(&context, definition("games", &[]).programs(&["steam.exe|||"]).week("daily")), Response::Done);
         let mut evening = session("evening", &["social", "games"]);
         evening.condition = Some("games-schedule".into());
         assert_eq!(handle(&context, 0, Request::SaveSession { session: evening }).0, Response::Done);
@@ -1828,17 +1828,23 @@ mod tests {
 
         // The programs action alone, with nothing listed, has nothing to do.
         assert!(failed(run(&context, one(&[]))));
-        // Entries that would close what Windows or this app needs, or are not names.
-        for bad in ["*", "explorer.exe", "s*", r"C:\Games\game.exe"] {
+        // Entries that would close what Windows or this app needs, or are not programs (typed names and
+        // wildcards are not: programs are chosen).
+        let needs = ["explorer.exe|||", "svchost.exe|svchost.exe.mui|Host Process for Windows Services|Microsoft Corporation"];
+        for bad in needs {
             let Response::Failed(why) = save(&context, one(&[bad])) else { panic!("{bad} was accepted") };
-            assert!(why.contains("needs") || why.contains("Not a program name"), "{bad}: {why}");
+            assert!(why.contains("needs"), "{bad}: {why}");
+        }
+        for bad in ["*", "steam.exe", "s*", r"C:\Games\game.exe"] {
+            let Response::Failed(why) = save(&context, one(&[bad])) else { panic!("{bad} was accepted") };
+            assert!(why.contains("Not a program"), "{bad}: {why}");
         }
         assert!(policies(&context).is_empty());
 
-        // A real one starts, and is what the app is told to close.
-        assert_eq!(run(&context, one(&["Steam*", "game"])), Response::Done);
+        // Real ones start, and are what the app is told to close.
+        assert_eq!(run(&context, one(&["steam.exe|steam.exe|Steam|Valve Corporation", "game.exe|||"])), Response::Done);
         let policy = &policies(&context)[0];
-        assert_eq!(policy.entries.programs, vec!["game.exe", "steam*.exe"]);
+        assert_eq!(policy.entries.programs, vec!["game.exe|||", "steam.exe|steam.exe|Steam|Valve Corporation"]);
         assert!(policy.entries.filters.is_empty());
         assert_eq!(policy.actions, programs_only);
     }

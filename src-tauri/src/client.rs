@@ -280,14 +280,18 @@ mod tests {
     #[test]
     fn the_programs_come_along_and_are_parsed_with_the_policy() {
         let remote = Remote::new();
-        let with_programs = Policy::new(Entries { programs: vec!["Steam*".into()], ..Entries::default() }, Actions::default());
+        let with_programs =
+            Policy::new(Entries { programs: vec!["steamwebhelper.exe|||".into()], ..Entries::default() }, Actions::default());
         remote.apply(vec![with_programs]);
         let active = current(&remote).unwrap();
-        assert!(active.blocks_program("steamwebhelper.exe") && !active.blocks_program("chrome.exe"));
+        assert!(
+            active.blocks_program(&crate::programs::Program::named("steamwebhelper.exe"))
+                && !active.blocks_program(&crate::programs::Program::named("chrome.exe"))
+        );
         // A list that cannot be read leaves what is being enforced as it was.
         let wrong = Policy::new(Entries { programs: vec!["*".into()], ..Entries::default() }, Actions::default());
         remote.apply(vec![wrong]);
-        assert!(current(&remote).unwrap().blocks_program("steamwebhelper.exe"));
+        assert!(current(&remote).unwrap().blocks_program(&crate::programs::Program::named("steamwebhelper.exe")));
     }
 
     #[test]

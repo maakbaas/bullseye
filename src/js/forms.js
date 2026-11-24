@@ -18,12 +18,13 @@ const LISTS = Object.fromEntries(
     key,
     {
       label: t(`targets.${key}.label`),
-      // The Store apps are ticked from the installed ones, so they have no placeholder.
-      placeholder: key === "store_apps" ? "" : t(`targets.${key}.placeholder`),
+      // The Store apps are ticked from the installed ones and programs chosen, so they have no placeholder.
+      placeholder: key === "store_apps" || key === "programs" ? "" : t(`targets.${key}.placeholder`),
       helper: t(`targets.${key}.helper`),
       count: (n) => t(`targets.${key}.count`, { n }),
-      // The Store apps are ticked from the installed ones, not typed (`appPicker`).
-      picker: key === "store_apps",
+      // The Store apps are ticked from the installed ones (`appPicker`), programs chosen (`programPicker`),
+      // not typed.
+      picker: key === "store_apps" ? appPicker : key === "programs" ? programPicker : null,
     },
   ]),
 );
@@ -160,6 +161,114 @@ function appPicker(list) {
   return picker;
 }
 
+// The programs of a target: chosen, never typed (`programs.rs`), from a file in an Open dialog
+// (`choose_program`) or among the running ones (`running_programs`, marked in the dialog). Each is a
+// row with what it is and what it is recognized by, as the backend words them (`describe_programs`),
+// and a button to remove it. It stands in for a text area as the Store apps' picker does: `value` is
+// the entries, one per line, and `disabled` is settable. The sync server's page cannot read a file
+// here, so it only shows and removes them.
+function programPicker(list) {
+  const label = el("p", { class: "cds--type-label-01" }, list.label);
+  const rows = el("cds-contained-list", { kind: "disclosed", size: "md", "aria-label": list.label });
+  const fromFile = el("cds-button", { kind: "tertiary", size: "md" }, t("targets.programs.chooseFile"), carbonIcon("document-import", "icon"));
+  const fromRunning = el("cds-button", { kind: "tertiary", size: "md" }, t("targets.programs.chooseRunning"), carbonIcon("application", "icon"));
+  const buttons = el("div", { class: "program-buttons", hidden: !!window.BULLSEYE_WEB }, fromFile, fromRunning);
+  const helper = el("p", { class: "cds--type-helper-text-01" }, list.helper);
+  const failed = el("cds-inline-notification", { kind: "error", "low-contrast": true, "hide-close-button": true, hidden: true });
+  const picker = el("div", { class: "program-picker" }, label, rows, buttons, helper, failed);
+  // The entries, each as the backend describes it.
+  let programs = [];
+  let disabled = false;
+  const same = (a, b) => a.toLowerCase() === b.toLowerCase();
+  const fail = (e) => {
+    failed.setAttribute("title", t("targets.programs.failedWhy", { why: String(e) }));
+    failed.hidden = false;
+  };
+  function draw() {
+    rows.replaceChildren(
+      ...programs.map((program) => {
+        const remove = el("cds-icon-button", { kind: "ghost", size: "md", align: "left", slot: "action" }, carbonIcon("trash-can", "icon"), el("span", { slot: "tooltip-content" }, t("targets.programs.remove")));
+        remove.disabled = disabled;
+        remove.addEventListener("click", () => {
+          programs = programs.filter((p) => p !== program);
+          draw();
+        });
+        return el("cds-contained-list-item", {}, el("span", {}, program.label), el("span", { class: "cds--type-helper-text-01" }, program.basis), remove);
+      }),
+    );
+    rows.hidden = !programs.length;
+  }
+  function add(chosen) {
+    failed.hidden = true;
+    for (const program of chosen) if (!programs.some((p) => same(p.entry, program.entry))) programs.push(program);
+    draw();
+  }
+  fromFile.addEventListener("click", () => invoke("choose_program").then((program) => program && add([program]), fail));
+  fromRunning.addEventListener("click", () => chooseRunning().then((chosen) => chosen && add(chosen), fail));
+  Object.defineProperties(picker, {
+    value: {
+      get: () => programs.map((p) => p.entry).join("\n"),
+      set: (text) => {
+        const entries = lines(text);
+        // As they are until the backend has described them, so saving meanwhile keeps them.
+        programs = entries.map((entry) => ({ entry, label: entry, basis: "" }));
+        draw();
+        if (entries.length) invoke("describe_programs", { entries }).then((described) => ((programs = described), draw()), fail);
+      },
+    },
+    disabled: {
+      get: () => disabled,
+      set: (off) => {
+        disabled = off;
+        fromFile.disabled = fromRunning.disabled = off;
+        draw();
+      },
+    },
+  });
+  draw();
+  return picker;
+}
+
+// The running programs to mark in the dialog; what was marked, or null when it was cancelled.
+function chooseRunning() {
+  const status = el("p", { class: "cds--type-body-01" }, t("targets.programs.runningLoading"));
+  const list = el("cds-contained-list", { kind: "disclosed", size: "md", "aria-label": t("targets.programs.runningHeading") });
+  list.hidden = true;
+  const picked = new Set();
+  const mark = (on) => (on ? carbonIcon("checkmark", "icon") : el("span", { slot: "icon", class: "no-mark" }));
+  invoke("running_programs").then(
+    (running) => {
+      status.hidden = running.length > 0;
+      status.textContent = t("targets.programs.runningNone");
+      list.hidden = !running.length;
+      list.replaceChildren(
+        ...running.map((program) => {
+          let marked = mark(false);
+          const item = el("cds-contained-list-item", { clickable: true }, marked, el("span", {}, program.label), el("span", { class: "cds--type-helper-text-01" }, program.basis));
+          item.addEventListener("cds-contained-list-item-click", () => {
+            if (picked.has(program)) picked.delete(program);
+            else picked.add(program);
+            const next = mark(picked.has(program));
+            marked.replaceWith(next);
+            marked = next;
+          });
+          return item;
+        }),
+      );
+    },
+    (e) => (status.textContent = t("targets.programs.failedWhy", { why: String(e) })),
+  );
+  return ask({
+    heading: t("targets.programs.runningHeading"),
+    action: t("targets.programs.add"),
+    fields: [el("div", { class: "running-programs" }, status, list)],
+    read: () => {
+      if (!picked.size) throw t("targets.programs.noneChosen");
+      return [...picked].map(({ entry, label, basis }) => ({ entry, label, basis }));
+    },
+  }).then((chosen) => chosen || null);
+}
+
 // A section whose actions exclude each other: radio buttons, the first for all of them off
 // (`section.choice`, its label in `targets.actions`). Each action gets a stand-in for its
 // checkbox in `checks` (`checked`, `disabled`), so the form reads and fills them as the others.
@@ -201,7 +310,7 @@ function targetForm() {
     const lists = el("div", { class: "lists" });
     for (const key of section.lists) {
       const list = LISTS[key];
-      areas[key] = list.picker ? appPicker(list) : el("cds-textarea", { label: list.label, placeholder: list.placeholder, "helper-text": list.helper, rows: 5 });
+      areas[key] = list.picker ? list.picker(list) : el("cds-textarea", { label: list.label, placeholder: list.placeholder, "helper-text": list.helper, rows: 5 });
       lists.append(areas[key]);
     }
     sameHeight(section.lists.map((key) => areas[key]));
