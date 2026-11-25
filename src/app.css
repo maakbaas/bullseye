@@ -245,7 +245,7 @@ cds-link[inline] { display: inline-flex; }
 /* A row's list in the dialog (`fields.js`): its New button on the right above it; no mark takes a mark's room. */
 .choices { display: flex; flex-direction: column; align-items: flex-end; gap: var(--cds-spacing-03); }
 .choices > cds-contained-list { align-self: stretch; }
-.no-mark { inline-size: 1rem; }
+.no-mark { display: block; inline-size: 1rem; block-size: 1rem; }
 
 /* The state tag beside the title, wrapping under it when the name is long; it sits on the letters'
    middle, which is a little below the line's. */
@@ -260,6 +260,8 @@ cds-overflow-menu-body[open][direction="top"]::after { block-size: 0.5rem; inset
 cds-overflow-menu-body[open][flipped]::after { inset-inline: auto 0; }
 .program-picker { display: flex; flex-direction: column; gap: var(--cds-spacing-03); }
 .program-picker > .cds--type-label-01 { color: var(--cds-text-secondary); }
-.program-picker cds-contained-list-item > span { display: block; }
+.program-picker cds-contained-list-item > span, .running-programs cds-contained-list-item > div > span { display: block; }
 .program-buttons { display: flex; flex-wrap: wrap; gap: var(--cds-spacing-03); }
 .running-programs cds-contained-list { max-block-size: 20rem; overflow-y: auto; }
+/* The programs' names line up with the label or heading above them: the list reaches out by its rows' padding. */
+.program-picker > cds-contained-list, .running-programs cds-contained-list { margin-inline: calc(-1 * var(--cds-spacing-05)); }

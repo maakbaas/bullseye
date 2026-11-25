@@ -2,7 +2,7 @@
 // its week grid, flash drive or webhook), and a session's allowance (`allowanceSection`). Every form has `nodes`, `fill(item)`, `read(item)`,
 // `disable(off)`, `settle()` and `error()`.
 
-import { el, errorNote, infoNote, invalid, invoke, lines, overview, t } from "./core.js";
+import { ask, el, errorNote, infoNote, invalid, invoke, lines, overview, t } from "./core.js";
 import { durationField, numberField } from "./duration.js";
 import { timingFields } from "./timing.js";
 
@@ -235,7 +235,8 @@ function chooseRunning() {
   const list = el("cds-contained-list", { kind: "disclosed", size: "md", "aria-label": t("targets.programs.runningHeading") });
   list.hidden = true;
   const picked = new Set();
-  const mark = (on) => (on ? carbonIcon("checkmark", "icon") : el("span", { slot: "icon", class: "no-mark" }));
+  // At the end of the row, so the names line up with the heading.
+  const mark = (on) => (on ? carbonIcon("checkmark", "action") : el("span", { slot: "action" }));
   invoke("running_programs").then(
     (running) => {
       status.hidden = running.length > 0;
@@ -244,7 +245,9 @@ function chooseRunning() {
       list.replaceChildren(
         ...running.map((program) => {
           let marked = mark(false);
-          const item = el("cds-contained-list-item", { clickable: true }, marked, el("span", {}, program.label), el("span", { class: "cds--type-helper-text-01" }, program.basis));
+          // One element for the text: Carbon's row is a grid whose every child takes a cell.
+          const text = el("div", {}, el("span", {}, program.label), el("span", { class: "cds--type-helper-text-01" }, program.basis));
+          const item = el("cds-contained-list-item", { clickable: true }, marked, text);
           item.addEventListener("cds-contained-list-item-click", () => {
             if (picked.has(program)) picked.delete(program);
             else picked.add(program);
@@ -260,6 +263,7 @@ function chooseRunning() {
   );
   return ask({
     heading: t("targets.programs.runningHeading"),
+    size: "md",
     action: t("targets.programs.add"),
     fields: [el("div", { class: "running-programs" }, status, list)],
     read: () => {

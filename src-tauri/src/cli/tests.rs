@@ -148,7 +148,7 @@ fn items_are_added_and_removed() {
     ok(&["target", "new", "Games", "--programs", game.to_str().unwrap()]);
     let games = ok(&["target", "show", "Games"]);
     assert!(games.contains("  Programs to close: game.exe\n"), "{games}");
-    assert!(ok(&["target", "show", "Social"]).contains("  Programs to close: Steam (steam.exe)\n"));
+    assert!(ok(&["target", "show", "Social"]).contains("  Programs to close: steam.exe\n"));
     // Not a file, nor a program as kept: nothing is saved.
     assert_eq!(
         refused(&["target", "add", "Games", "--programs", "nope.exe"]),

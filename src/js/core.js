@@ -185,7 +185,8 @@ const infoNote = (title = "") => formNote("info", title);
 // The one dialog: a question before anything that cannot be taken back, or a short form (a
 // lock's settings, a password). Resolves false for Cancel, the X or Escape; otherwise true,
 // or with `fields`, what `read` makes of them: the dialog stays open while that is null (the
-// fields then say what is wrong) or `read` throws (what it says is shown in the dialog).
+// fields then say what is wrong) or `read` throws (what it says is shown in the dialog). `size`:
+// Carbon's, for a form that needs more room than `sm`.
 let answer = null;
 let reader = null;
 // Carbon's modal gives focus back to what opened it when it closes, so a keyboard goes on from there.
@@ -197,7 +198,7 @@ document.addEventListener("pointerdown", () => (pointer = true), true);
 document.addEventListener("keydown", () => (pointer = false), true);
 // Once the dialog has closed and Carbon has given the focus back: let it go, if a pointer opened it.
 const letGo = () => openedByPointer && setTimeout(() => !$("confirm").open && document.activeElement && document.activeElement.blur());
-function ask({ heading, body = "", action, kind, fields = [], read = null }) {
+function ask({ heading, body = "", action, kind, fields = [], read = null, size = null }) {
   if (answer) answer(false);
   if (!$("confirm").open) openedByPointer = pointer;
   $("confirm-heading").textContent = heading;
@@ -208,7 +209,7 @@ function ask({ heading, body = "", action, kind, fields = [], read = null }) {
   if (kind) $("confirm-action").setAttribute("kind", kind);
   $("confirm-fields").replaceChildren(...fields);
   $("confirm-fields").hidden = fields.length === 0;
-  $("confirm").setAttribute("size", fields.length ? "sm" : "xs");
+  $("confirm").setAttribute("size", size || (fields.length ? "sm" : "xs"));
   reader = read;
   $("confirm").open = true;
   // A form starts in its first field; a question on Cancel.

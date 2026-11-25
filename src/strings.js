@@ -405,7 +405,7 @@ window.STRINGS = {
     },
     programs: {
       label: "Programs to close", // reviewed
-      helper: "Recognized by what is written inside the program's file, so a renamed or moved copy is closed too. Windows programs cannot be added",
+      helper: "Recognized by what is written inside the program's file, so a renamed or moved copy is closed too",
       count: { one: "{n} program closed", other: "{n} programs closed" }, // reviewed
       chooseFile: "Choose file",
       chooseRunning: "Choose running program",
@@ -421,16 +421,14 @@ window.STRINGS = {
       // The name of the file type in the Open dialog.
       fileType: "Programs",
       remove: "Remove",
-      // A program's row: {description}, what its file says it is; {name}, its file name.
-      named: "{description} ({name})",
       // What a program on the list is recognized by. {original}: the file name written inside it;
-      // {company}: who made it, as the file says.
+      // {description}: what the file says the program is; {company}: who made it, as the file says.
       basis: {
         original: "Recognized by its original name {original} from {company}",
         originalOnly: "Recognized by its original name {original}",
-        description: "Recognized by its description from {company}",
-        descriptionOnly: "Recognized by its description",
-        name: "Recognized by its file name only: its file says nothing more, so a renamed copy is not closed",
+        description: "Recognized by its description {description} from {company}",
+        descriptionOnly: "Recognized by its description {description}",
+        name: "Recognized by its file name only",
       },
       // {entry}: what was given.
       notAnEntry: "Not a program: {entry}. Give the path of a program's file",

@@ -1419,7 +1419,7 @@ pub mod tests {
         assert_eq!(typed.waiting_words(), None);
         // A program that waits to be taken out is named by what it is.
         let steam = Target { waiting: Some(Waiting { entries: Entries::default(), actions: Actions::default(), since: None }), ..typed };
-        assert_eq!(steam.waiting_words().unwrap(), "Waiting until no locked session uses this target: Steam (steam.exe) no longer blocked");
+        assert_eq!(steam.waiting_words().unwrap(), "Waiting until no locked session uses this target: steam.exe no longer blocked");
     }
 
     #[test]

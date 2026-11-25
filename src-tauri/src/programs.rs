@@ -92,7 +92,7 @@ pub enum Basis {
 pub struct Described {
     /// The entry itself, as the list keeps it.
     pub entry: String,
-    /// What it is: its description and file name, or its file name.
+    /// What it is: its file name.
     pub label: String,
     /// What it is recognized by, in a sentence.
     pub basis: String,
@@ -184,11 +184,6 @@ impl Program {
 
     /// The entry as the window and the CLI show it.
     pub fn describe(&self) -> Described {
-        let label = if self.description.is_empty() {
-            self.name.clone()
-        } else {
-            t("targets.programs.named", &[("description", &self.description), ("name", &self.name)])
-        };
         let values = [("original", self.original.as_str()), ("description", self.description.as_str()), ("company", self.company.as_str())];
         let key = match (self.basis(), self.company.is_empty()) {
             (Basis::Original, false) => "original",
@@ -197,7 +192,7 @@ impl Program {
             (Basis::Description, true) => "descriptionOnly",
             (Basis::Name, _) => "name",
         };
-        Described { entry: self.entry(), label, basis: t(&format!("targets.programs.basis.{key}"), &values) }
+        Described { entry: self.entry(), label: self.name.clone(), basis: t(&format!("targets.programs.basis.{key}"), &values) }
     }
 }
 
@@ -220,7 +215,7 @@ pub fn describe(entries: &[String]) -> Vec<Described> {
 
 /// The programs the CLI is given (`--programs`), as entries: an entry as it is (as `target show --json`
 /// has it), else the path of a program's file, read by `read` (`None`: no such file), else, when
-/// removing from `have`, the entries of that file name or label. The error names what is none of them.
+/// removing from `have`, the entries of that file name. The error names what is none of them.
 pub fn entries_given(given: &[String], have: &[String], read: &dyn Fn(&std::path::Path) -> Option<Program>) -> Result<Vec<String>, String> {
     let mut entries = Vec::new();
     for value in given.iter().map(|v| v.trim()).filter(|v| !v.is_empty()) {
@@ -229,14 +224,8 @@ pub fn entries_given(given: &[String], have: &[String], read: &dyn Fn(&std::path
         } else if let Some(program) = read(std::path::Path::new(value)) {
             entries.push(program.entry());
         } else {
-            let named: Vec<String> = have
-                .iter()
-                .filter(|entry| {
-                    Program::parse(entry)
-                        .is_ok_and(|p| p.name.eq_ignore_ascii_case(value) || p.describe().label.eq_ignore_ascii_case(value))
-                })
-                .cloned()
-                .collect();
+            let named: Vec<String> =
+                have.iter().filter(|entry| Program::parse(entry).is_ok_and(|p| p.name.eq_ignore_ascii_case(value))).cloned().collect();
             if named.is_empty() {
                 return Err(t("targets.programs.notAnEntry", &[("entry", value)]));
             }
@@ -530,18 +519,15 @@ mod tests {
             said(STEAM),
             Described {
                 entry: STEAM.into(),
-                label: "Steam (steam.exe)".into(),
+                label: "steam.exe".into(),
                 basis: "Recognized by its original name steam.exe from Valve Corporation".into()
             }
         );
         assert_eq!(said("a.exe|a.exe||").basis, "Recognized by its original name a.exe");
-        assert_eq!(said("claude.exe||Claude Code|Anthropic PBC").basis, "Recognized by its description from Anthropic PBC");
-        assert_eq!(said("b.exe||Tool|").basis, "Recognized by its description");
+        assert_eq!(said("claude.exe||Claude Code|Anthropic PBC").basis, "Recognized by its description Claude Code from Anthropic PBC");
+        assert_eq!(said("b.exe||Tool|").basis, "Recognized by its description Tool");
         let bare = said("tool.exe|||");
-        assert_eq!(
-            (bare.label.as_str(), bare.basis.as_str()),
-            ("tool.exe", "Recognized by its file name only: its file says nothing more, so a renamed copy is not closed")
-        );
+        assert_eq!((bare.label.as_str(), bare.basis.as_str()), ("tool.exe", "Recognized by its file name only"));
         // One that cannot be read is shown as it is, with why.
         let old = &describe(&["steam*".to_string()])[0];
         assert_eq!((old.label.as_str(), old.basis.as_str()), ("steam*", "Not a program: steam*. Give the path of a program's file"));
@@ -563,9 +549,10 @@ mod tests {
         let given =
             |values: &[&str], have: &[String]| entries_given(&values.iter().map(|v| v.to_string()).collect::<Vec<_>>(), have, &files);
         assert_eq!(given(&[r"C:\Games\game.exe", " ", STEAM], &[]).unwrap(), vec!["game.exe|||", STEAM]);
-        // To remove: also by file name or label, which the list has.
+        // To remove: also by file name, which the list shows.
         assert_eq!(given(&["STEAM.EXE"], &have).unwrap(), vec![STEAM]);
-        assert_eq!(given(&["Steam (steam.exe)", "tool.exe"], &have).unwrap(), vec![STEAM, "tool.exe|||"]);
+        assert_eq!(given(&["steam.exe", "tool.exe"], &have).unwrap(), vec![STEAM, "tool.exe|||"]);
+        assert_eq!(given(&["Steam"], &have).unwrap_err(), "Not a program: Steam. Give the path of a program's file");
         assert_eq!(given(&["nope.exe"], &have).unwrap_err(), "Not a program: nope.exe. Give the path of a program's file");
         assert_eq!(given(&["a|b"], &[]).unwrap_err(), "Not a program: a|b. Give the path of a program's file");
     }
