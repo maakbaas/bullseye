@@ -498,7 +498,7 @@ mod tests {
         let why = ProgramList::parse(&[STEAM, "explorer.exe|EXPLORER.EXE.MUI|Windows Explorer|Microsoft Corporation", "dwm.exe|||"])
             .err()
             .unwrap();
-        assert_eq!(why, "Would close programs Windows or this app needs: Windows Explorer (explorer.exe), dwm.exe");
+        assert_eq!(why, "Would close programs Windows or this app needs: explorer.exe, dwm.exe");
     }
 
     #[test]
